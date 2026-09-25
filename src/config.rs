@@ -424,13 +424,10 @@ impl Shortcut {
         }
         let Some(shortcut) = self.parse() else { return self.0.clone() };
         let m = shortcut.modifiers;
-        let mut out = String::new();
-        for (on, symbol) in [(m.ctrl, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.mac_cmd, "⌘")] {
-            if on {
-                out.push_str(symbol);
-            }
-        }
-        format!("{out} {}", shortcut.logical_key.symbol_or_name())
+        // Keys spaced apart ("⇧ ⌘ K"): stuck together they are hard to read.
+        let mut keys: Vec<&str> = [(m.ctrl, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.mac_cmd, "⌘")].into_iter().filter(|(on, _)| *on).map(|(_, s)| s).collect();
+        keys.push(shortcut.logical_key.symbol_or_name());
+        keys.join(" ")
     }
 }
 

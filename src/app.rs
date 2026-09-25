@@ -828,12 +828,12 @@ impl App {
                 ui.set_width(width - 20.0);
                 let mac = cfg!(target_os = "macos");
                 ui.horizontal(|ui| {
-                    let text_label = format!("{}  {}", t.search_text, if mac { "⌘F" } else { "Ctrl+Shift+F" });
+                    let text_label = format!("{}  {}", t.search_text, if mac { "⌘ F" } else { "Ctrl+Shift+F" });
                     if ui.selectable_label(search.text, egui::RichText::new(text_label).size(12.5)).clicked() {
                         search.text = true;
                     }
                     if search.local {
-                        let commands_label = format!("{}  {}", t.search_commands, if mac { "⌘R" } else { "Ctrl+Shift+R" });
+                        let commands_label = format!("{}  {}", t.search_commands, if mac { "⌘ R" } else { "Ctrl+Shift+R" });
                         if ui.selectable_label(!search.text, egui::RichText::new(commands_label).size(12.5)).clicked() {
                             search.text = false;
                         }
@@ -865,7 +865,7 @@ impl App {
                         let status = if search.query.is_empty() { String::new() } else if total == 0 { t.search_none.to_owned() } else { format!("{current} / {total}") };
                         ui.label(egui::RichText::new(status).size(12.5).color(theme.text_muted));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add_enabled(total > 0, egui::Button::new("↓")).on_hover_text("⇧↩").clicked() {
+                            if ui.add_enabled(total > 0, egui::Button::new("↓")).on_hover_text("⇧ ↩").clicked() {
                                 step = Some(false);
                             }
                             if ui.add_enabled(total > 0, egui::Button::new("↑")).on_hover_text("↩").clicked() {
@@ -1355,7 +1355,7 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
             ui.label(egui::RichText::new(t.no_tabs).size(18.0).color(self.theme.text));
             ui.add_space(12.0);
-            let hint = if cfg!(target_os = "macos") { "⌘T" } else { "Ctrl+Shift+T" };
+            let hint = if cfg!(target_os = "macos") { "⌘ T" } else { "Ctrl+Shift+T" };
             if ui.add(egui::Button::new(t.new_terminal).shortcut_text(hint).min_size(Vec2::new(width, 32.0))).clicked() {
                 new = true;
             }
@@ -2494,10 +2494,10 @@ impl App {
             (t.shortcut_new_tab, if mac { "⌘ T" } else { "Ctrl+Shift+T" }),
             (t.shortcut_close_pane, if mac { "⌘ W" } else { "Ctrl+Shift+W" }),
             (t.shortcut_split_right, if mac { "⌘ D" } else { "Ctrl+Shift+D" }),
-            (t.shortcut_split_down, if mac { "⇧⌘ D" } else { "Ctrl+Shift+E" }),
+            (t.shortcut_split_down, if mac { "⇧ ⌘ D" } else { "Ctrl+Shift+E" }),
             (t.search_text_hint, if mac { "⌘ F" } else { "Ctrl+Shift+F" }),
             (t.history_search, if mac { "⌘ R" } else { "Ctrl+Shift+R" }),
-            (t.shortcut_reopen, if mac { "⇧⌘ T" } else { "Ctrl+Shift+Alt+T" }),
+            (t.shortcut_reopen, if mac { "⇧ ⌘ T" } else { "Ctrl+Shift+Alt+T" }),
             (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
             (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
         ];
@@ -3061,7 +3061,7 @@ impl App {
         let mut y = origin.y;
 
         // Local section: open tabs that are neither a profile nor an SSH host, then local profiles.
-        let new_hint = format!("{} ({})", t.new_tab, if cfg!(target_os = "macos") { "⌘T" } else { "Ctrl+Shift+T" });
+        let new_hint = format!("{} ({})", t.new_tab, if cfg!(target_os = "macos") { "⌘ T" } else { "Ctrl+Shift+T" });
         if self.section_header(ui, t.terminals, Pos2::new(left, y), row_w, Some(&new_hint)) {
             action = Some(TabAction::New);
         }
@@ -3812,12 +3812,12 @@ fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, 
             ui.close();
         }
     };
-    item(ui, can_copy, t.copy, shortcut("⌘C", "Ctrl+Shift+C"), PaneAction::Copy(id));
-    item(ui, true, t.paste, shortcut("⌘V", "Ctrl+Shift+V"), PaneAction::Paste(id));
+    item(ui, can_copy, t.copy, shortcut("⌘ C", "Ctrl+Shift+C"), PaneAction::Copy(id));
+    item(ui, true, t.paste, shortcut("⌘ V", "Ctrl+Shift+V"), PaneAction::Paste(id));
     ui.separator();
     item(ui, true, t.split_up, String::new(), PaneAction::Split(id, Direction::Up));
-    item(ui, true, t.split_right, shortcut("⌘D", "Ctrl+Shift+D"), PaneAction::Split(id, Direction::Right));
-    item(ui, true, t.split_down, shortcut("⇧⌘D", "Ctrl+Shift+E"), PaneAction::Split(id, Direction::Down));
+    item(ui, true, t.split_right, shortcut("⌘ D", "Ctrl+Shift+D"), PaneAction::Split(id, Direction::Right));
+    item(ui, true, t.split_down, shortcut("⇧ ⌘ D", "Ctrl+Shift+E"), PaneAction::Split(id, Direction::Down));
     item(ui, true, t.split_left, String::new(), PaneAction::Split(id, Direction::Left));
     ui.separator();
     if local {
@@ -3847,7 +3847,7 @@ fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, 
         }
     });
     ui.separator();
-    item(ui, true, t.close_pane, shortcut("⌘W", "Ctrl+Shift+W"), PaneAction::Close(id));
+    item(ui, true, t.close_pane, shortcut("⌘ W", "Ctrl+Shift+W"), PaneAction::Close(id));
     if picked.is_some() {
         *action = picked;
     }
@@ -4005,7 +4005,7 @@ impl eframe::App for App {
 
                 if let (Some(_), Some(term)) = (prompt, tab.panes.get(&tab.focused)) {
                     let pos = term.cursor_pos() + Vec2::new(10.0, -3.0);
-                    let hint = if cfg!(target_os = "macos") { "⌘↩" } else { "Ctrl+↩" };
+                    let hint = if cfg!(target_os = "macos") { "⌘ ↩" } else { "Ctrl+↩" };
                     egui::Area::new(egui::Id::new("fill-password")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
                         let text = egui::RichText::new(format!("🔑  {}   {hint}", strings.fill_password)).size(13.0).color(self.theme.bg);
                         let button = egui::Button::new(text).fill(self.theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 24.0));
