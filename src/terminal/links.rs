@@ -96,6 +96,51 @@ fn ends_url(c: char) -> bool {
     c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '"' | '`' | '{' | '}' | '|' | '\\' | '^')
 }
 
+/// Occurrences of `query` (case-insensitive) in the whole grid, scrollback included, top to bottom, as
+/// the cells they cover. At most `limit` of them (the most recent).
+pub fn find_text<L: EventListener>(term: &Term<L>, query: &str, limit: usize) -> Vec<Vec<Point>> {
+    let needle: Vec<char> = query.to_lowercase().chars().collect();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let grid = term.grid();
+    let last_col = Column(grid.columns() - 1);
+    let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
+    let mut found = Vec::new();
+    let mut chars: Vec<char> = Vec::new();
+    let mut cells: Vec<Point> = Vec::new();
+    for line in top.0..=bottom.0 {
+        let row = &grid[Line(line)];
+        for col in 0..grid.columns() {
+            let cell = &row[Column(col)];
+            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            // One lowercase char per cell keeps chars and cells aligned.
+            chars.push(cell.c.to_lowercase().next().unwrap_or(cell.c));
+            cells.push(Point::new(Line(line), Column(col)));
+        }
+        // A soft-wrapped row continues on the next one.
+        if row[last_col].flags.contains(Flags::WRAPLINE) && line < bottom.0 {
+            continue;
+        }
+        let mut i = 0;
+        while i + needle.len() <= chars.len() {
+            if chars[i..i + needle.len()] == needle[..] {
+                found.push(cells[i..i + needle.len()].to_vec());
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        chars.clear();
+        cells.clear();
+    }
+    let excess = found.len().saturating_sub(limit);
+    found.drain(..excess);
+    found
+}
+
 /// A server on this machine announced in the output (`http://localhost:3002/`...).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocalUrl {

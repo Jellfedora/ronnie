@@ -35,6 +35,8 @@ const PADDING: f32 = 8.0;
 const CWD_TTL: Duration = Duration::from_millis(500);
 /// How often the foreground program and the local server URLs are looked up again.
 const ACTIVITY_TTL: Duration = Duration::from_secs(1);
+/// Most occurrences kept by the text search.
+const FIND_LIMIT: usize = 5000;
 /// Rows of output (scrollback included) searched for local server URLs.
 const URL_SCAN_ROWS: usize = 2000;
 
@@ -84,6 +86,16 @@ impl Dimensions for GridSize {
     }
 }
 
+/// Occurrences of a searched text, and the one shown.
+struct Find {
+    query: String,
+    matches: Vec<Vec<Point>>,
+    /// Index of the current occurrence in `matches` (top to bottom).
+    current: usize,
+    /// `output_seq` when searched: new output moves lines, the search is then redone.
+    seq: u64,
+}
+
 /// What a terminal is busy with, refreshed at most every `ACTIVITY_TTL`.
 #[derive(Default)]
 struct Activity {
@@ -113,6 +125,8 @@ pub struct Terminal {
     mouse_down: bool,
     /// Link under the pointer, underlined and opened on click.
     hover_link: Option<links::Link>,
+    /// Text search in the output (Cmd+F), highlighted on screen.
+    find: Option<Find>,
     /// Where the grid was drawn last frame, to place things next to the cursor.
     grid_origin: Pos2,
     /// Last looked-up working directory and when, so painting every frame stays cheap.
@@ -181,6 +195,7 @@ impl Terminal {
             scroll_acc: 0.0,
             mouse_down: false,
             hover_link: None,
+            find: None,
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
         }
@@ -292,6 +307,67 @@ impl Terminal {
         self.paste(text, mode);
     }
 
+    /// Searches `query` in the output and shows the most recent occurrence. Returns (current, total).
+    pub fn find(&mut self, query: &str) -> (usize, usize) {
+        let matches = links::find_text(&self.term.lock(), query, FIND_LIMIT);
+        let current = matches.len().saturating_sub(1);
+        self.find = Some(Find { query: query.to_owned(), matches, current, seq: self.output_seq.load(Ordering::Relaxed) });
+        self.reveal_find();
+        self.find_status()
+    }
+
+    /// Moves to the previous (`older`, upward) or next occurrence, wrapping around.
+    pub fn find_step(&mut self, older: bool) {
+        let Some(find) = &mut self.find else { return };
+        let n = find.matches.len();
+        if n == 0 {
+            return;
+        }
+        find.current = if older { (find.current + n - 1) % n } else { (find.current + 1) % n };
+        self.reveal_find();
+    }
+
+    /// (1-based current occurrence, total); (0, 0) without any.
+    pub fn find_status(&self) -> (usize, usize) {
+        match &self.find {
+            Some(f) if !f.matches.is_empty() => (f.current + 1, f.matches.len()),
+            _ => (0, 0),
+        }
+    }
+
+    pub fn clear_find(&mut self) {
+        self.find = None;
+    }
+
+    /// Scrolls so that the current occurrence is on screen.
+    fn reveal_find(&mut self) {
+        let Some(line) = self.find.as_ref().and_then(|f| f.matches.get(f.current)).and_then(|m| m.first()).map(|p| p.line.0) else { return };
+        let mut term = self.term.lock();
+        let offset = term.grid().display_offset() as i32;
+        let rows = self.size.rows as i32;
+        if line >= -offset && line < rows - offset {
+            return;
+        }
+        let history = term.grid().history_size() as i32;
+        let target = (rows / 2 - line).clamp(0, history);
+        term.scroll_display(Scroll::Delta(target - offset));
+    }
+
+    /// Redoes the search after new output (lines moved), staying on the same occurrence counted from
+    /// the most recent one.
+    fn refresh_find(&mut self) {
+        let seq = self.output_seq.load(Ordering::Relaxed);
+        let Some(find) = &self.find else { return };
+        if find.seq == seq {
+            return;
+        }
+        let from_end = find.matches.len().saturating_sub(find.current + 1);
+        let query = find.query.clone();
+        let matches = links::find_text(&self.term.lock(), &query, FIND_LIMIT);
+        let current = matches.len().saturating_sub(1 + from_end);
+        self.find = Some(Find { query, matches, current, seq });
+    }
+
     /// Clears the screen and the scrollback (Cmd+K). An idle shell is asked to redraw its prompt;
     /// a running program is left alone.
     pub fn clear(&mut self) {
@@ -390,6 +466,7 @@ impl Terminal {
     /// Draws the terminal in `rect` and handles its keyboard and mouse input.
     pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, fonts: &FontSet) -> Response {
         self.process_events(ui.ctx(), theme);
+        self.refresh_find();
         let cell = fonts.cell_size(ui);
         let grid_rect = rect.shrink(PADDING);
         self.resize_to(grid_rect, cell);
@@ -431,6 +508,21 @@ impl Terminal {
                 let x = grid_rect.min.x + p.column.0 as f32 * cell.x;
                 let y = grid_rect.min.y + (row + 1) as f32 * cell.y - 2.0;
                 painter.hline(x..=x + cell.x, y, egui::Stroke::new(1.0, theme.accent));
+            }
+        }
+        // Text search: every occurrence on screen, the current one stronger.
+        if let Some(find) = &self.find {
+            let offset = term.grid().display_offset() as i32;
+            for (i, cells) in find.matches.iter().enumerate() {
+                let color = if i == find.current { theme.accent.gamma_multiply(0.55) } else { theme.ansi[3].gamma_multiply(0.28) };
+                for p in cells {
+                    let row = p.line.0 + offset;
+                    if row < 0 || row >= self.size.rows as i32 {
+                        continue;
+                    }
+                    let min = grid_rect.min + Vec2::new(p.column.0 as f32 * cell.x, row as f32 * cell.y);
+                    painter.rect_filled(Rect::from_min_size(min, cell), 0.0, color);
+                }
             }
         }
         drop(term);

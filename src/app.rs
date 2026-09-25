@@ -322,6 +322,12 @@ struct HistorySearch {
     selected: usize,
     /// Just opened: take the keyboard focus.
     fresh: bool,
+    /// Searching the displayed text rather than the typed commands.
+    text: bool,
+    /// Local pane: its typed commands can be searched too.
+    local: bool,
+    /// Text mode: (current occurrence, total).
+    status: (usize, usize),
 }
 
 impl HistorySearch {
@@ -728,62 +734,129 @@ impl App {
         }
     }
 
-    /// Opens the history search over a local pane (toggles it when already open there).
-    fn open_history_search(&mut self, index: usize, pane: PaneId) {
-        if self.history_search.as_ref().is_some_and(|s| s.tab == index && s.pane == pane) {
-            self.history_search = None;
-            self.focus_terminal = true;
+    /// Opens the search box over a pane, on the displayed text (`text`) or on the commands typed there
+    /// (local panes only). The same shortcut again closes it; the other one switches mode.
+    fn open_search(&mut self, index: usize, pane: PaneId, text: bool) {
+        if let Some(search) = self.history_search.as_mut().filter(|s| s.tab == index && s.pane == pane) {
+            if search.text == text {
+                self.close_search();
+            } else {
+                search.text = text;
+                search.fresh = true;
+            }
             return;
         }
-        let Some(tab) = self.tabs.get_mut(index).filter(|t| t.ssh.is_none()) else { return };
-        let entries = tab.history_path(pane).map(|p| crate::shell::read_history(&p)).unwrap_or_default();
-        self.history_search = Some(HistorySearch { tab: index, pane, query: String::new(), entries, selected: 0, fresh: true });
+        self.close_search();
+        let Some(tab) = self.tabs.get_mut(index) else { return };
+        let local = tab.ssh.is_none();
+        let entries = if local { tab.history_path(pane).map(|p| crate::shell::read_history(&p)).unwrap_or_default() } else { Vec::new() };
+        self.history_search = Some(HistorySearch { tab: index, pane, query: String::new(), entries, selected: 0, fresh: true, text: text || !local, local, status: (0, 0) });
     }
 
-    /// The history search box, at the top of its pane. Enter pastes the command at the prompt,
-    /// Cmd+Enter runs it.
+    fn close_search(&mut self) {
+        if let Some(search) = self.history_search.take() {
+            if let Some(term) = self.tabs.get_mut(search.tab).and_then(|t| t.panes.get_mut(&search.pane)) {
+                term.clear_find();
+            }
+            self.focus_terminal = true;
+        }
+    }
+
+    /// The search box, at the top of its pane. Text mode highlights the occurrences in the output
+    /// (Enter: older one, Shift+Enter: newer one). Commands mode lists the commands typed in the pane:
+    /// Enter pastes one at the prompt, Cmd+Enter runs it.
     fn history_search_ui(&mut self, ctx: &egui::Context) {
         let Some(search) = &mut self.history_search else { return };
         let Some(pane_rect) = self.tabs.get(search.tab).filter(|_| search.tab == self.active).and_then(|t| t.rects.iter().find(|(id, _)| *id == search.pane)).map(|(_, r)| *r) else {
             self.history_search = None;
             return;
         };
+        let (index, pane) = (search.tab, search.pane);
         let t = self.config.settings.language.strings();
-        let theme = &self.theme;
+        let theme = self.theme.clone();
         let width = (pane_rect.width() - 32.0).clamp(200.0, 620.0);
         let pos = Pos2::new(pane_rect.center().x - width / 2.0, pane_rect.min.y + PANE_HEADER_H + 10.0);
 
-        let (up, down, enter, run, escape) = ctx.input_mut(|i| {
+        let (up, down, newer, enter, run, escape) = ctx.input_mut(|i| {
             let run = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter));
-            (i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::Enter), run, i.consume_key(Modifiers::NONE, Key::Escape))
+            let newer = i.consume_key(Modifiers::SHIFT, Key::Enter);
+            (i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::ArrowDown), newer, i.consume_key(Modifiers::NONE, Key::Enter), run, i.consume_key(Modifiers::NONE, Key::Escape))
         });
         let count = search.matches().len();
-        if up {
-            search.selected = search.selected.saturating_sub(1);
-        }
-        if down && count > 0 {
-            search.selected = (search.selected + 1).min(count - 1);
+        if !search.text {
+            if up {
+                search.selected = search.selected.saturating_sub(1);
+            }
+            if down && count > 0 {
+                search.selected = (search.selected + 1).min(count - 1);
+            }
         }
         let mut chosen: Option<(String, bool)> = None;
+        let mut find: Option<String> = None;
+        let mut step: Option<bool> = None; // Some(true): older occurrence
         let mut close = escape;
+        let was_text = search.text;
 
         egui::Area::new(egui::Id::new("history-search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
             Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
                 ui.set_width(width - 20.0);
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut search.query)
-                        .hint_text(format!("🔍  {}", t.history_search))
-                        .font(FontId::monospace(13.0))
-                        .desired_width(f32::INFINITY),
-                );
+                let mac = cfg!(target_os = "macos");
+                ui.horizontal(|ui| {
+                    let text_label = format!("{}  {}", t.search_text, if mac { "⌘F" } else { "Ctrl+Shift+F" });
+                    if ui.selectable_label(search.text, egui::RichText::new(text_label).size(12.5)).clicked() {
+                        search.text = true;
+                    }
+                    if search.local {
+                        let commands_label = format!("{}  {}", t.search_commands, if mac { "⌘R" } else { "Ctrl+Shift+R" });
+                        if ui.selectable_label(!search.text, egui::RichText::new(commands_label).size(12.5)).clicked() {
+                            search.text = false;
+                        }
+                    }
+                });
+                if search.text != was_text {
+                    search.fresh = true;
+                    // Switching to text mode searches what was typed; leaving it clears the highlights.
+                    find = Some(if search.text { search.query.clone() } else { String::new() });
+                }
+                ui.add_space(4.0);
+                let hint = if search.text { t.search_text_hint } else { t.history_search };
+                let edit = ui.add(egui::TextEdit::singleline(&mut search.query).hint_text(format!("🔍  {hint}")).font(FontId::monospace(13.0)).desired_width(f32::INFINITY));
                 if search.fresh || !edit.has_focus() {
                     edit.request_focus();
                     search.fresh = false;
                 }
                 if edit.changed() {
                     search.selected = 0;
+                    if search.text {
+                        find = Some(search.query.clone());
+                    }
                 }
                 ui.add_space(6.0);
+
+                if search.text {
+                    ui.horizontal(|ui| {
+                        let (current, total) = search.status;
+                        let status = if search.query.is_empty() { String::new() } else if total == 0 { t.history_empty.to_owned() } else { format!("{current} / {total}") };
+                        ui.label(egui::RichText::new(status).size(12.5).color(theme.text_muted));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add_enabled(total > 0, egui::Button::new("↓")).on_hover_text("⇧↩").clicked() {
+                                step = Some(false);
+                            }
+                            if ui.add_enabled(total > 0, egui::Button::new("↑")).on_hover_text("↩").clicked() {
+                                step = Some(true);
+                            }
+                        });
+                    });
+                    if enter || up {
+                        step = Some(true);
+                    }
+                    if newer || down {
+                        step = Some(false);
+                    }
+                    ui.label(egui::RichText::new(t.search_text_keys).size(11.0).color(theme.text_muted));
+                    return;
+                }
+
                 let matches = search.matches();
                 if matches.is_empty() {
                     ui.label(egui::RichText::new(t.history_empty).size(12.5).color(theme.text_muted));
@@ -813,19 +886,33 @@ impl App {
             });
         });
 
-        if let Some((command, run)) = chosen {
-            let (index, pane) = (search.tab, search.pane);
-            if let Some(term) = self.tabs.get_mut(index).and_then(|t| t.panes.get_mut(&pane)) {
-                term.paste_text(&command);
-                if run {
+        if let Some(term) = self.tabs.get_mut(index).and_then(|t| t.panes.get_mut(&pane)) {
+            let mut status = None;
+            if let Some(query) = find {
+                status = Some(if query.is_empty() {
+                    term.clear_find();
+                    (0, 0)
+                } else {
+                    term.find(&query)
+                });
+            }
+            if let Some(older) = step {
+                term.find_step(older);
+                status = Some(term.find_status());
+            }
+            if let Some((command, run)) = &chosen {
+                term.paste_text(command);
+                if *run {
                     term.type_text("\r");
                 }
+                close = true;
             }
-            close = true;
+            if let (Some(status), Some(search)) = (status, self.history_search.as_mut()) {
+                search.status = status;
+            }
         }
         if close {
-            self.history_search = None;
-            self.focus_terminal = true;
+            self.close_search();
         }
     }
 
@@ -1167,10 +1254,13 @@ impl App {
                 term.clear();
             }
         }
-        // History search in the focused pane: Cmd+R (Ctrl+Shift+R).
-        if pressed(Key::R) {
-            if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
-                self.open_history_search(self.active, pane);
+        // Search in the focused pane: its displayed text with Cmd+F, its typed commands with Cmd+R
+        // (Ctrl+Shift+F / Ctrl+Shift+R).
+        for (key, text) in [(Key::F, true), (Key::R, false)] {
+            if pressed(key) {
+                if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
+                    self.open_search(self.active, pane, text);
+                }
             }
         }
         if pressed(Key::W) {
@@ -2364,6 +2454,7 @@ impl App {
             (t.shortcut_close_pane, if mac { "⌘ W" } else { "Ctrl+Shift+W" }),
             (t.shortcut_split_right, if mac { "⌘ D" } else { "Ctrl+Shift+D" }),
             (t.shortcut_split_down, if mac { "⇧⌘ D" } else { "Ctrl+Shift+E" }),
+            (t.search_text_hint, if mac { "⌘ F" } else { "Ctrl+Shift+F" }),
             (t.history_search, if mac { "⌘ R" } else { "Ctrl+Shift+R" }),
             (t.shortcut_reopen, if mac { "⇧⌘ T" } else { "Ctrl+Shift+Alt+T" }),
             (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
@@ -3374,8 +3465,8 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     let mut right = rect.max.x - 4.0;
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls) = header {
-        let shortcut = if cfg!(target_os = "macos") { "⌘ R" } else { "Ctrl+Shift+R" };
-        clicks.search = icon(ui, right, "🔍", format!("{}  ({shortcut})", t.history_search));
+        let shortcut = if cfg!(target_os = "macos") { "⌘ F" } else { "Ctrl+Shift+F" };
+        clicks.search = icon(ui, right, "🔍", format!("{}  ({shortcut})", t.search_text_hint));
         right -= 26.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
         right -= 26.0;
@@ -3862,7 +3953,7 @@ impl eframe::App for App {
                     self.close_pane(self.active, id);
                 }
                 if let Some(id) = open_search {
-                    self.open_history_search(self.active, id);
+                    self.open_search(self.active, id, true);
                 }
                 if let Some(id) = open_commands {
                     self.commands_menu = if self.commands_menu.as_ref().is_some_and(|m| m.pane == id) { None } else { Some(CommandsMenu::new(self.active, id)) };
