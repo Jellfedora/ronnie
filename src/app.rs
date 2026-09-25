@@ -637,7 +637,7 @@ impl App {
                                     remove = Some((*scope, i));
                                 }
                                 let label = egui::RichText::new(command.replace('\n', " ⏎ ")).monospace().size(12.5).color(theme.text);
-                                let row = ui.add(egui::Button::new(label).frame(false).truncate().min_size(Vec2::new(ui.available_width(), 22.0)));
+                                let row = ui.add(egui::Button::new(label).frame_when_inactive(false).truncate());
                                 if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                     insert = Some(command.clone());
                                 }
@@ -768,7 +768,8 @@ impl App {
                         let selected = i == search.selected;
                         let one_line = command.replace('\n', " ⏎ ");
                         let text = egui::RichText::new(one_line).monospace().size(12.5).color(if selected { theme.text } else { theme.text_muted });
-                        let row = ui.add(egui::Button::selectable(selected, text).truncate().min_size(Vec2::new(ui.available_width(), 22.0)));
+                        // Left-aligned: a full-width button would center the command.
+                        let row = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(egui::Button::selectable(selected, text).truncate())).inner;
                         if selected && (up || down) {
                             row.scroll_to_me(None);
                         }
