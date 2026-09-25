@@ -302,7 +302,7 @@ pub static FR: Strings = Strings {
     history_empty: "Aucune commande trouvée",
     close_anyway_title: "Fermer quand même ?",
     close_anyway_body: "Ces programmes tournent encore et seront arrêtés :",
-    no_group: "Hors groupe",
+    no_group: "Sans groupe",
     host_required: "L'hôte est obligatoire",
     invalid_port: "Port invalide",
     keychain_failed: "Trousseau",

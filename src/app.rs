@@ -1823,14 +1823,40 @@ impl App {
     }
 
     /// Settings page listing the profiles: rename, recolor, open or delete them.
+    /// Profiles (`local`) or SSH hosts as in the sidebar: each group in order, then those without a
+    /// group. The section name is None when there are no groups at all (a plain list).
+    fn grouped_ids(&self, local: bool) -> Vec<(Option<String>, Vec<Uuid>)> {
+        let of_kind = |id: &Uuid| if local { self.config.profiles.iter().any(|p| p.id == *id) } else { self.config.ssh.iter().any(|h| h.id == *id) };
+        let mut sections: Vec<(Option<String>, Vec<Uuid>)> = self
+            .config
+            .groups
+            .iter()
+            .filter(|g| g.local == local)
+            .map(|g| (Some(g.name.clone()), g.items.iter().copied().filter(of_kind).collect::<Vec<_>>()))
+            .filter(|(_, ids)| !ids.is_empty())
+            .collect();
+        let loose: Vec<Uuid> = self.config.ungrouped.iter().copied().filter(of_kind).collect();
+        if !loose.is_empty() {
+            let name = (!sections.is_empty()).then(|| self.t().no_group.to_owned());
+            sections.push((name, loose));
+        }
+        sections
+    }
+
     fn profiles_ui(&mut self, ui: &mut Ui, t: &Strings) {
         if self.config.profiles.is_empty() {
             ui.label(egui::RichText::new(t.no_profiles).size(13.0).color(self.theme.text_muted));
             return;
         }
         let (mut rename, mut recolor, mut open, mut delete) = (None, None, None, None);
+        let sections = self.grouped_ids(true);
         egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
-            for p in &self.config.profiles {
+            for (name, ids) in &sections {
+                if let Some(name) = name {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(name.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
+                }
+            for p in ids.iter().filter_map(|id| self.config.profiles.iter().find(|p| p.id == *id)) {
                 ui.horizontal(|ui| {
                     ui.set_min_height(34.0);
                     let dot = egui::RichText::new("●").size(18.0).color(p.tab.color.unwrap_or(self.theme.text_muted));
@@ -1871,6 +1897,7 @@ impl App {
                         }
                     });
                 });
+            }
             }
         });
         if let Some(err) = self.profile_error {
@@ -1967,8 +1994,14 @@ impl App {
             return;
         }
         let (mut edit, mut delete) = (None, None);
+        let sections = self.grouped_ids(false);
         egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
-            for host in &self.config.ssh {
+            for (name, ids) in &sections {
+                if let Some(name) = name {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(name.to_uppercase()).size(12.0).strong().color(muted));
+                }
+            for host in ids.iter().filter_map(|id| self.config.ssh.iter().find(|h| h.id == *id)) {
                 ui.horizontal(|ui| {
                     ui.set_min_height(30.0);
                     ui.label(egui::RichText::new("●").size(16.0).color(host.color.unwrap_or(muted)));
@@ -1983,6 +2016,7 @@ impl App {
                         }
                     });
                 });
+            }
             }
         });
         let imported = self.config.ssh.iter().filter(|h| h.imported).count();
