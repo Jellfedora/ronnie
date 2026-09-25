@@ -121,9 +121,10 @@ pub struct Terminal {
 
 impl Terminal {
     /// Starts `launch` (the user's shell if none) in a local pseudo-terminal.
-    pub fn local(ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>) -> Result<Self> {
+    /// A shell keeps its command history in `history` (ignored for other programs).
+    pub fn local(ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Option<&Path>) -> Result<Self> {
         let size = GridSize { cols: 80, rows: 24 };
-        let (backend, reader) = pty::LocalPty::spawn(size.cols as u16, size.rows as u16, cwd, launch)?;
+        let (backend, reader) = pty::LocalPty::spawn(size.cols as u16, size.rows as u16, cwd, launch, history)?;
         Ok(Self::start(ctx, Box::new(backend), reader, size))
     }
 

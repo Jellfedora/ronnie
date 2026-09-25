@@ -22,6 +22,9 @@ pub enum Layout {
     Pane {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,
+        /// Identifies the pane's command history file (see `shell`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<Uuid>,
     },
     Split {
         axis: Axis,
@@ -39,11 +42,22 @@ impl Layout {
             Layout::Split { a, b, .. } => a.panes() + b.panes(),
         }
     }
+
+    /// History ids of its panes.
+    pub fn histories(&self, out: &mut Vec<Uuid>) {
+        match self {
+            Layout::Pane { history, .. } => out.extend(*history),
+            Layout::Split { a, b, .. } => {
+                a.histories(out);
+                b.histories(out);
+            }
+        }
+    }
 }
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout::Pane { cwd: None }
+        Layout::Pane { cwd: None, history: None }
     }
 }
 
@@ -287,7 +301,7 @@ impl Default for Settings {
     }
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     // RONNIE_CONFIG_DIR runs an instance with separate profiles and session (handy for testing).
     if let Some(dir) = std::env::var_os("RONNIE_CONFIG_DIR") {
         return Some(dir.into());
@@ -363,8 +377,8 @@ mod tests {
                 layout: Layout::Split {
                     axis: Axis::Horizontal,
                     ratio: 0.3,
-                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()) }),
-                    b: Box::new(Layout::Pane { cwd: None }),
+                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()) }),
+                    b: Box::new(Layout::Pane { cwd: None, history: None }),
                 },
                 focused: 1,
             },

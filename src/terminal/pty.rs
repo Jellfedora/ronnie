@@ -15,9 +15,9 @@ pub struct LocalPty {
 }
 
 impl LocalPty {
-    /// Spawns `launch` (the user's default shell if none) in `cwd` (home if unset). Returns the backend and a
-    /// reader for its output.
-    pub fn spawn(cols: u16, rows: u16, cwd: Option<&Path>, launch: Option<&Launch>) -> Result<(Self, Box<dyn Read + Send>)> {
+    /// Spawns `launch` (the user's default shell if none) in `cwd` (home if unset). The shell keeps its
+    /// command history in `history`. Returns the backend and a reader for its output.
+    pub fn spawn(cols: u16, rows: u16, cwd: Option<&Path>, launch: Option<&Launch>, history: Option<&Path>) -> Result<(Self, Box<dyn Read + Send>)> {
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .context("ouverture du PTY")?;
@@ -31,7 +31,13 @@ impl LocalPty {
                 }
                 cmd
             }
-            None => CommandBuilder::new_default_prog(),
+            None => {
+                let mut cmd = CommandBuilder::new_default_prog();
+                if let Some(history) = history {
+                    crate::shell::use_history(&mut cmd, history);
+                }
+                cmd
+            }
         };
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -135,7 +141,7 @@ mod tests {
     #[test]
     fn sees_foreground_program() {
         use super::super::Backend;
-        let (mut pty, mut reader) = super::LocalPty::spawn(80, 24, None, None).unwrap();
+        let (mut pty, mut reader) = super::LocalPty::spawn(80, 24, None, None, None).unwrap();
         // Drain the output so the shell never blocks on a full pipe.
         std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
         std::thread::sleep(std::time::Duration::from_millis(1500));

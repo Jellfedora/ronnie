@@ -1,0 +1,20 @@
+# Ronnie shell integration (generated).
+ZDOTDIR=$RONNIE_USER_ZDOTDIR
+# /etc/zshrc derived HISTFILE from Ronnie's ZDOTDIR: point it back to the user's.
+[[ $HISTFILE == $RONNIE_ZDOTDIR/* ]] && HISTFILE=$ZDOTDIR/.zsh_history
+[[ -r $ZDOTDIR/.zshrc ]] && source $ZDOTDIR/.zshrc
+
+# This terminal's own history, kept across restarts. A new terminal starts from the usual history.
+if [[ -n $RONNIE_HISTFILE ]]; then
+  if [[ ! -e $RONNIE_HISTFILE ]]; then
+    mkdir -p ${RONNIE_HISTFILE:h}
+    [[ -r ${HISTFILE:-$ZDOTDIR/.zsh_history} ]] && cp ${HISTFILE:-$ZDOTDIR/.zsh_history} $RONNIE_HISTFILE
+  fi
+  HISTFILE=$RONNIE_HISTFILE
+  (( SAVEHIST >= 1000 )) || SAVEHIST=10000
+  (( HISTSIZE >= SAVEHIST )) || HISTSIZE=$SAVEHIST
+  # Written as commands run: nothing lost if the terminal is closed abruptly.
+  setopt INC_APPEND_HISTORY
+fi
+# .zlogin comes next for login shells.
+[[ -o login ]] && ZDOTDIR=$RONNIE_ZDOTDIR

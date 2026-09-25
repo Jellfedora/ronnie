@@ -1,0 +1,4 @@
+# Ronnie shell integration (generated).
+ZDOTDIR=$RONNIE_USER_ZDOTDIR
+[[ -r $ZDOTDIR/.zprofile ]] && source $ZDOTDIR/.zprofile
+ZDOTDIR=$RONNIE_ZDOTDIR

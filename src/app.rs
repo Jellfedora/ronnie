@@ -53,6 +53,8 @@ pub struct Tab {
     ssh: Option<Uuid>,
     /// Last known directory of each pane, kept once its shell has exited.
     cwds: HashMap<PaneId, PathBuf>,
+    /// Command history id of each pane (see `shell`).
+    histories: HashMap<PaneId, Uuid>,
     /// SSH panes whose connection ended: kept on screen with their last output until reconnected or closed.
     dead: std::collections::HashSet<PaneId>,
     /// Panes whose shell starts the first time the tab is shown: restoring many tabs at once
@@ -63,7 +65,7 @@ pub struct Tab {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), dead: Default::default(), pending: Vec::new() }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), dead: Default::default(), pending: Vec::new() }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -79,7 +81,7 @@ impl Tab {
 
     fn layout_of(&self, node: &Node) -> Layout {
         match node {
-            Node::Leaf(id) => Layout::Pane { cwd: self.cwds.get(id).cloned() },
+            Node::Leaf(id) => Layout::Pane { cwd: self.cwds.get(id).cloned(), history: self.histories.get(id).copied() },
             Node::Split { axis, ratio, a, b } => Layout::Split {
                 axis: *axis,
                 ratio: *ratio,
@@ -87,6 +89,11 @@ impl Tab {
                 b: Box::new(self.layout_of(b)),
             },
         }
+    }
+
+    /// History file of pane `id`, given an id on first use.
+    fn history_path(&mut self, id: PaneId) -> Option<PathBuf> {
+        crate::shell::history_path(*self.histories.entry(id).or_insert_with(Uuid::new_v4))
     }
 
     fn title(&self) -> &str {
@@ -174,6 +181,8 @@ pub struct App {
     update_attempted: bool,
     /// Per tab, the program running in it (if any), for the sidebar's live badge. Refreshed each frame.
     live: Vec<Option<String>>,
+    /// History search open over a pane.
+    history_search: Option<HistorySearch>,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -260,6 +269,35 @@ fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config)
             }
             (TabAction::DropGroup(id, None), Mark::Line(bottom))
         }
+    }
+}
+
+/// Search box over a pane's command history.
+struct HistorySearch {
+    tab: usize,
+    pane: PaneId,
+    query: String,
+    /// The pane's commands, most recent first.
+    entries: Vec<String>,
+    /// Index in the filtered list.
+    selected: usize,
+    /// Just opened: take the keyboard focus.
+    fresh: bool,
+}
+
+impl HistorySearch {
+    /// Commands containing every word typed (case-insensitive), most recent first.
+    fn matches(&self) -> Vec<&str> {
+        let words: Vec<String> = self.query.split_whitespace().map(str::to_lowercase).collect();
+        self.entries
+            .iter()
+            .filter(|e| {
+                let e = e.to_lowercase();
+                words.iter().all(|w| e.contains(w))
+            })
+            .map(String::as_str)
+            .take(200)
+            .collect()
     }
 }
 
@@ -385,6 +423,7 @@ impl App {
             update_dismissed: false,
             update_attempted: false,
             live: Vec::new(),
+            history_search: None,
             confirm_close: None,
             close_confirmed: false,
             splash: Some(f64::NAN),
@@ -421,6 +460,7 @@ impl App {
         if app.tabs.is_empty() {
             app.new_tab(&cc.egui_ctx);
         }
+        app.forget_unused_histories();
         app
     }
 
@@ -432,11 +472,12 @@ impl App {
     /// Opens a tab rebuilt from a saved state (profile, closed tab or previous session).
     /// Shells start lazily: see `Tab::pending`.
     fn open_tab(&mut self, state: &TabState, profile: Option<Uuid>) {
-        let mut cwds = HashMap::new();
-        let layout = self.build(&state.layout, &mut cwds);
+        let (mut cwds, mut histories) = (HashMap::new(), HashMap::new());
+        let layout = self.build(&state.layout, &mut cwds, &mut histories);
         let mut tab = Tab::new(layout, HashMap::new());
         tab.pending = tab.layout.leaves();
         tab.cwds = cwds;
+        tab.histories = histories;
         if let Some(id) = tab.layout.leaves().get(state.focused) {
             tab.focused = *id;
         }
@@ -449,23 +490,139 @@ impl App {
     }
 
     /// Turns a saved layout into a tree with fresh pane ids, collecting each pane's directory.
-    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>) -> Node {
+    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>) -> Node {
         match layout {
-            Layout::Pane { cwd } => {
+            Layout::Pane { cwd, history } => {
                 let id = self.next_pane;
                 self.next_pane += 1;
                 if let Some(cwd) = cwd {
                     cwds.insert(id, cwd.clone());
+                }
+                if let Some(history) = history {
+                    histories.insert(id, *history);
                 }
                 Node::Leaf(id)
             }
             Layout::Split { axis, ratio, a, b } => Node::Split {
                 axis: *axis,
                 ratio: ratio.clamp(0.1, 0.9),
-                a: Box::new(self.build(a, cwds)),
-                b: Box::new(self.build(b, cwds)),
+                a: Box::new(self.build(a, cwds, histories)),
+                b: Box::new(self.build(b, cwds, histories)),
             },
         }
+    }
+
+    /// Opens the history search over a local pane (toggles it when already open there).
+    fn open_history_search(&mut self, index: usize, pane: PaneId) {
+        if self.history_search.as_ref().is_some_and(|s| s.tab == index && s.pane == pane) {
+            self.history_search = None;
+            self.focus_terminal = true;
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(index).filter(|t| t.ssh.is_none()) else { return };
+        let entries = tab.history_path(pane).map(|p| crate::shell::read_history(&p)).unwrap_or_default();
+        self.history_search = Some(HistorySearch { tab: index, pane, query: String::new(), entries, selected: 0, fresh: true });
+    }
+
+    /// The history search box, at the top of its pane. Enter pastes the command at the prompt,
+    /// Cmd+Enter runs it.
+    fn history_search_ui(&mut self, ctx: &egui::Context) {
+        let Some(search) = &mut self.history_search else { return };
+        let Some(pane_rect) = self.tabs.get(search.tab).filter(|_| search.tab == self.active).and_then(|t| t.rects.iter().find(|(id, _)| *id == search.pane)).map(|(_, r)| *r) else {
+            self.history_search = None;
+            return;
+        };
+        let t = self.config.settings.language.strings();
+        let theme = &self.theme;
+        let width = (pane_rect.width() - 32.0).clamp(200.0, 620.0);
+        let pos = Pos2::new(pane_rect.center().x - width / 2.0, pane_rect.min.y + PANE_HEADER_H + 10.0);
+
+        let (up, down, enter, run, escape) = ctx.input_mut(|i| {
+            let run = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter));
+            (i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::Enter), run, i.consume_key(Modifiers::NONE, Key::Escape))
+        });
+        let count = search.matches().len();
+        if up {
+            search.selected = search.selected.saturating_sub(1);
+        }
+        if down && count > 0 {
+            search.selected = (search.selected + 1).min(count - 1);
+        }
+        let mut chosen: Option<(String, bool)> = None;
+        let mut close = escape;
+
+        egui::Area::new(egui::Id::new("history-search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+            Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
+                ui.set_width(width - 20.0);
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut search.query)
+                        .hint_text(format!("🔍  {}", t.history_search))
+                        .font(FontId::monospace(13.0))
+                        .desired_width(f32::INFINITY),
+                );
+                if search.fresh || !edit.has_focus() {
+                    edit.request_focus();
+                    search.fresh = false;
+                }
+                if edit.changed() {
+                    search.selected = 0;
+                }
+                ui.add_space(6.0);
+                let matches = search.matches();
+                if matches.is_empty() {
+                    ui.label(egui::RichText::new(t.history_empty).size(12.5).color(theme.text_muted));
+                }
+                egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, command) in matches.iter().enumerate() {
+                        let selected = i == search.selected;
+                        let one_line = command.replace('\n', " ⏎ ");
+                        let text = egui::RichText::new(one_line).monospace().size(12.5).color(if selected { theme.text } else { theme.text_muted });
+                        let row = ui.add(egui::Button::selectable(selected, text).truncate().min_size(Vec2::new(ui.available_width(), 22.0)));
+                        if selected && (up || down) {
+                            row.scroll_to_me(None);
+                        }
+                        if row.clicked() {
+                            chosen = Some((command.to_string(), false));
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(t.history_search_hint).size(11.0).color(theme.text_muted));
+                if (enter || run) && chosen.is_none() {
+                    if let Some(command) = matches.get(search.selected) {
+                        chosen = Some((command.to_string(), run));
+                    }
+                }
+            });
+        });
+
+        if let Some((command, run)) = chosen {
+            let (index, pane) = (search.tab, search.pane);
+            if let Some(term) = self.tabs.get_mut(index).and_then(|t| t.panes.get_mut(&pane)) {
+                term.paste_text(&command);
+                if run {
+                    term.type_text("\r");
+                }
+            }
+            close = true;
+        }
+        if close {
+            self.history_search = None;
+            self.focus_terminal = true;
+        }
+    }
+
+    /// Deletes the command histories of terminals that were closed for good: neither open, nor in a
+    /// profile or the recently closed tabs.
+    fn forget_unused_histories(&self) {
+        let mut keep: Vec<Uuid> = self.tabs.iter().flat_map(|t| t.histories.values().copied()).collect();
+        for p in &self.config.profiles {
+            p.tab.layout.histories(&mut keep);
+        }
+        for c in &self.closed {
+            c.tab.layout.histories(&mut keep);
+        }
+        crate::shell::forget_others(&keep.into_iter().collect());
     }
 
     /// What a new pane of this tab runs: an ssh session for SSH tabs, the user's shell otherwise.
@@ -479,7 +636,8 @@ impl App {
         let launch = self.launch_for(index);
         let Some(tab) = self.tabs.get_mut(index) else { return };
         for id in std::mem::take(&mut tab.pending) {
-            match Terminal::local(ctx, tab.cwds.get(&id).map(PathBuf::as_path), launch.as_ref()) {
+            let history = tab.history_path(id);
+            match Terminal::local(ctx, tab.cwds.get(&id).map(PathBuf::as_path), launch.as_ref(), history.as_deref()) {
                 Ok(term) => {
                     tab.panes.insert(id, term);
                 }
@@ -493,7 +651,8 @@ impl App {
         let launch = self.launch_for(index);
         let Some(tab) = self.tabs.get_mut(index) else { return };
         for &id in panes {
-            match Terminal::local(ctx, None, launch.as_ref()) {
+            let history = tab.history_path(id);
+            match Terminal::local(ctx, None, launch.as_ref(), history.as_deref()) {
                 Ok(term) => {
                     tab.panes.insert(id, term);
                     tab.dead.remove(&id);
@@ -664,8 +823,8 @@ impl App {
         self.error = None;
     }
 
-    fn spawn(&mut self, ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>) -> Option<(PaneId, Terminal)> {
-        match Terminal::local(ctx, cwd, launch) {
+    fn spawn(&mut self, ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Uuid) -> Option<(PaneId, Terminal)> {
+        match Terminal::local(ctx, cwd, launch, crate::shell::history_path(history).as_deref()) {
             Ok(term) => {
                 let id = self.next_pane;
                 self.next_pane += 1;
@@ -679,8 +838,11 @@ impl App {
     }
 
     fn new_tab(&mut self, ctx: &egui::Context) {
-        if let Some((id, term)) = self.spawn(ctx, None, None) {
-            self.tabs.push(Tab::new(Node::Leaf(id), HashMap::from([(id, term)])));
+        let history = Uuid::new_v4();
+        if let Some((id, term)) = self.spawn(ctx, None, None, history) {
+            let mut tab = Tab::new(Node::Leaf(id), HashMap::from([(id, term)]));
+            tab.histories.insert(id, history);
+            self.tabs.push(tab);
             self.active = self.tabs.len() - 1;
             self.focus_terminal = true;
         }
@@ -694,10 +856,12 @@ impl App {
         let tab = &self.tabs[index];
         let cwd = tab.panes.get(&tab.focused).and_then(Terminal::cwd);
         let launch = self.launch_for(index);
-        if let Some((id, term)) = self.spawn(ctx, cwd.as_deref(), launch.as_ref()) {
+        let history = Uuid::new_v4();
+        if let Some((id, term)) = self.spawn(ctx, cwd.as_deref(), launch.as_ref(), history) {
             let tab = &mut self.tabs[index];
             tab.layout.split(tab.focused, id, side);
             tab.panes.insert(id, term);
+            tab.histories.insert(id, history);
             tab.focused = id;
             self.focus_terminal = true;
         }
@@ -773,6 +937,12 @@ impl App {
         let comma = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)));
         if pressed(Key::P) || comma {
             self.settings_dialog = !self.settings_dialog;
+        }
+        // History search in the focused pane: Cmd+R (Ctrl+Shift+R).
+        if pressed(Key::R) {
+            if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
+                self.open_history_search(self.active, pane);
+            }
         }
         if pressed(Key::W) {
             if let Some(focused) = self.tabs.get(self.active).map(|t| t.focused) {
@@ -2692,8 +2862,9 @@ enum Header<'a> {
 }
 
 /// Strip above a pane: its working directory (home as `~`, leading folders elided to fit) or its SSH
-/// host with a reconnect button. Returns (strip clicked, to focus the pane; reconnect clicked).
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings) -> (bool, bool) {
+/// host with a reconnect button. Returns (strip clicked, to focus the pane; reconnect clicked; history
+/// search clicked).
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings) -> (bool, bool, bool) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click());
@@ -2701,10 +2872,15 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     let color = if focused { theme.text } else { theme.text_muted };
     let mut max_w = rect.width() - 20.0;
 
-    let mut reconnect = false;
-    // Local servers, right-aligned, newest on the right: a click opens them in the browser.
+    let (mut reconnect, mut search) = (false, false);
+    // History search button, then the local servers (newest on the right): a click opens them in the browser.
     if let Header::Local(_, urls) = header {
-        let mut right = rect.max.x - 4.0;
+        let at = Rect::from_min_size(Pos2::new(rect.max.x - 26.0, rect.min.y + 2.0), Vec2::new(22.0, rect.height() - 4.0));
+        let shortcut = if cfg!(target_os = "macos") { "⌘ R" } else { "Ctrl+Shift+R" };
+        let button = egui::Button::new(egui::RichText::new("🔍").size(11.0)).frame(false);
+        search = ui.put(at, button).on_hover_text(format!("{}  ({shortcut})", t.history_search)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        max_w -= 30.0;
+        let mut right = at.min.x - 6.0;
         for url in urls.iter().rev() {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
             let button = egui::Button::new(text).fill(theme.ansi[2]).corner_radius(4.0);
@@ -2731,7 +2907,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
 
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
-        Header::Local(None, _) => return (resp.clicked(), false),
+        Header::Local(None, _) => return (resp.clicked(), false, search),
         Header::Local(Some(cwd), _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
@@ -2759,7 +2935,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
         Some(tip) => resp.on_hover_text(tip),
         None => resp,
     };
-    (resp.clicked(), reconnect)
+    (resp.clicked(), reconnect, search)
 }
 
 /// Bar at the bottom of an SSH pane whose connection ended. Returns (reconnect, close) clicks.
@@ -3011,6 +3187,7 @@ impl eframe::App for App {
                 let mut pane_action = None;
                 let mut reconnect: Option<Vec<PaneId>> = None;
                 let mut close_dead = None;
+                let mut open_search = None;
                 // Checked before the panes handle keys, so Cmd+Enter doesn't reach the terminal.
                 let prompt = password_host.filter(|_| tab.panes.get(&tab.focused).is_some_and(Terminal::awaits_password));
                 let mut fill_password = prompt.is_some()
@@ -3024,7 +3201,10 @@ impl eframe::App for App {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(&ssh_label) };
-                        let (clicked, again) = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings);
+                        let (clicked, again, search) = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings);
+                        if search {
+                            open_search = Some(id);
+                        }
                         if clicked {
                             term.request_focus(ui);
                         }
@@ -3134,6 +3314,9 @@ impl eframe::App for App {
                 if let Some(id) = close_dead {
                     self.close_pane(self.active, id);
                 }
+                if let Some(id) = open_search {
+                    self.open_history_search(self.active, id);
+                }
                 if let Some(panes) = reconnect {
                     self.reconnect(ui.ctx(), self.active, &panes);
                 }
@@ -3150,6 +3333,7 @@ impl eframe::App for App {
                 self.confirm_close = Some(ConfirmClose { request: CloseRequest::Window, busy });
             }
         }
+        self.history_search_ui(ui.ctx());
         self.confirm_close_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
