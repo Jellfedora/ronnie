@@ -67,7 +67,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      # The release notes are this version's section of CHANGELOG.md (commit list if it has none).
+      - name: Release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## \[/ { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            found { print }
+          ' src/CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then echo "notes=--notes-file notes.md" >> "$GITHUB_ENV"; else echo "notes=--generate-notes" >> "$GITHUB_ENV"; fi
+          cat notes.md
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Ronnie ${GITHUB_REF_NAME#v}" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Ronnie ${GITHUB_REF_NAME#v}" $notes
