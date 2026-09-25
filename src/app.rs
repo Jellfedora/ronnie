@@ -18,6 +18,8 @@ use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
 const SIDEBAR_WIDTH: f32 = 220.0;
+/// Window title: dev builds are told apart from the installed app.
+const APP_TITLE: &str = if config::OFFICIAL { "Ronnie" } else { "Ronnie (dev)" };
 const SIDEBAR_PAD: f32 = 8.0;
 /// Space above the first section: room for the macOS traffic lights (the title bar is merged into the sidebar).
 const SIDEBAR_TOP: f32 = if cfg!(target_os = "macos") { 40.0 } else { 10.0 };
@@ -2925,6 +2927,14 @@ impl App {
         let footer_top = bar.max.y - FOOTER_H;
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + SIDEBAR_TOP), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
+        // Dev builds say so, next to the logo: they don't share the installed app's profiles.
+        if !config::OFFICIAL {
+            let at = Pos2::new(logo_rect.center().x + 58.0, logo_rect.center().y - 12.0);
+            let galley = ui.painter().layout_no_wrap("DEV".to_owned(), FontId::monospace(9.5), self.theme.bg);
+            let badge = Rect::from_min_size(at, galley.size() + Vec2::new(8.0, 2.0));
+            ui.painter().rect_filled(badge, 3.0, self.theme.ansi[3]);
+            ui.painter().galley(badge.min + Vec2::new(4.0, 1.0), galley, self.theme.bg);
+        }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
 
@@ -3753,7 +3763,8 @@ fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         // Debug builds don't look for updates (they would replace themselves with a release), unless asked.
-        let updates_on = !cfg!(debug_assertions) || std::env::var_os("RONNIE_UPDATE_CHECK").is_some();
+        // Only published builds update themselves: a local build would replace itself with the release.
+        let updates_on = config::OFFICIAL || std::env::var_os("RONNIE_UPDATE_CHECK").is_some();
         if updates_on && self.config.settings.auto_update {
             let now = ui.input(|i| i.time);
             if self.last_update_check.is_none_or(|last| now - last >= UPDATE_INTERVAL) {
@@ -4031,7 +4042,7 @@ impl eframe::App for App {
 
         // Keep the window title in sync (visible in the OS task switcher).
         {
-            let title = self.tabs.get(self.active).map_or_else(|| "Ronnie".to_owned(), |t| format!("{} — Ronnie", t.title()));
+            let title = self.tabs.get(self.active).map_or_else(|| APP_TITLE.to_owned(), |t| format!("{} — {APP_TITLE}", t.title()));
             if title != self.window_title {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Title(title.clone()));
                 self.window_title = title;

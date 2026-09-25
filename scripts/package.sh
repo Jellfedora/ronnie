@@ -5,6 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+# A published build: its own config directory and in-app updates (builds made locally are "dev").
+export RONNIE_OFFICIAL=1
 rm -rf dist
 mkdir -p dist/stage
 

@@ -448,11 +448,50 @@ impl Default for Settings {
     }
 }
 
+/// A published build (made by scripts/package.sh). Builds made locally are "dev" builds: they keep
+/// their config apart, so that trying a change never touches the installed app's profiles.
+pub const OFFICIAL: bool = option_env!("RONNIE_OFFICIAL").is_some();
+
 pub fn config_dir() -> Option<PathBuf> {
     // RONNIE_CONFIG_DIR runs an instance with separate profiles and session (handy for testing).
     if let Some(dir) = std::env::var_os("RONNIE_CONFIG_DIR") {
         return Some(dir.into());
     }
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let official = official_dir()?;
+        if OFFICIAL {
+            return Some(official);
+        }
+        let dev = directories::ProjectDirs::from("", "", "ronnie-dev")?.config_dir().to_path_buf();
+        // The first dev run starts from a copy of the installed app's data.
+        if !dev.exists() && official.is_dir() {
+            let _ = copy_dir(&official, &dev);
+        }
+        Some(dev)
+    })
+    .clone()
+}
+
+/// Copies `from` into `to` (files and subdirectories), skipping the instance lock.
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)?.flatten() {
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        if entry.file_name() == "instance.lock" {
+            continue;
+        }
+        if src.is_dir() {
+            copy_dir(&src, &dst)?;
+        } else {
+            fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// The published app's config directory.
+fn official_dir() -> Option<PathBuf> {
     let dir = directories::ProjectDirs::from("", "", "ronnie")?.config_dir().to_path_buf();
     // The app used to be called bipbip: carry its profiles and session over.
     if !dir.exists() {

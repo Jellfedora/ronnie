@@ -34,8 +34,9 @@ Décompresse `ronnie-x86_64-pc-windows-msvc.zip` où tu veux (par exemple `%LOCA
 cargo run
 ```
 
-- `RONNIE_CONFIG_DIR=/tmp/ronnie cargo run` lance une instance avec sa propre config (pratique pour tester sans toucher à ses profils).
-- Les builds de debug ne cherchent pas de mise à jour ; `RONNIE_UPDATE_CHECK=1` force la vérification.
+- Un build fait localement (`cargo run`, même `--release`) est un build **dev** : badge DEV, titre « Ronnie (dev) », config séparée dans le dossier `ronnie-dev` (initialisée au premier lancement avec une copie de la config de l'app installée). Il ne touche donc jamais aux profils de l'app installée, et ne se met pas à jour tout seul (`RONNIE_UPDATE_CHECK=1` force la vérification).
+- Les builds publiés sont compilés par `scripts/package.sh`, qui définit `RONNIE_OFFICIAL=1`.
+- `RONNIE_CONFIG_DIR=/tmp/ronnie cargo run` lance une instance avec sa propre config (pratique pour tester).
 - `scripts/make-icon.py` régénère l'icône (`assets/icon/`) à partir de la police du logo.
 
 ## Publier une version

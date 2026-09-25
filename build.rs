@@ -10,5 +10,7 @@ fn main() {
         res.compile().expect("compile Windows resources");
     }
     println!("cargo:rerun-if-changed=build.rs");
+    // Set by scripts/package.sh for the published builds (see config::OFFICIAL).
+    println!("cargo:rerun-if-env-changed=RONNIE_OFFICIAL");
     println!("cargo:rerun-if-changed=assets/icon/ronnie.ico");
 }

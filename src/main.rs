@@ -120,7 +120,7 @@ fn main() -> eframe::Result {
     let config = config::load_config();
     let theme = theme::Preset::find(config.as_ref().map_or(theme::DEFAULT_THEME, |c| &c.settings.theme)).theme();
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Ronnie")
+        .with_title(if config::OFFICIAL { "Ronnie" } else { "Ronnie (dev)" })
         .with_inner_size([1100.0, 700.0])
         .with_min_inner_size([400.0, 240.0]);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/icon.png")) {
