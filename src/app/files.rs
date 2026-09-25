@@ -392,7 +392,9 @@ impl FileManager {
         let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 34.0));
         ui.painter().rect_filled(bar, 0.0, theme.chrome_bg);
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(Vec2::new(10.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.label(egui::RichText::new(format!("📁  {host_name}")).size(14.0).strong());
+            let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+            paint_file_icon(ui.painter(), icon, true, false, theme);
+            ui.label(egui::RichText::new(host_name).size(14.0).strong());
             ui.add_space(8.0);
             let (text, color) = match &self.status {
                 Status::Connecting => (t.files_connecting.to_owned(), theme.text_muted),
@@ -424,11 +426,10 @@ impl FileManager {
         // Panels, with the transfer buttons between them, and the queue below.
         let queue_h = 150.0_f32.min(rect.height() * 0.35);
         let body = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), Pos2::new(rect.max.x, rect.max.y - queue_h));
-        let middle_w = 110.0;
-        let panel_w = (body.width() - middle_w) / 2.0;
+        // Transfers: double-click a file, or drag from one panel to the other.
+        let panel_w = body.width() / 2.0;
         let left = Rect::from_min_size(body.min, Vec2::new(panel_w, body.height()));
-        let middle = Rect::from_min_size(Pos2::new(left.max.x, body.min.y), Vec2::new(middle_w, body.height()));
-        let right = Rect::from_min_max(Pos2::new(middle.max.x, body.min.y), body.max);
+        let right = Rect::from_min_max(Pos2::new(left.max.x, body.min.y), body.max);
 
         let connected = matches!(self.status, Status::Ready);
         let local_out = self.panel_ui(ui, left.shrink(6.0), Side::Local, theme, t, connected);
@@ -436,19 +437,6 @@ impl FileManager {
         for out in [local_out, remote_out] {
             self.apply(out);
         }
-
-        ui.scope_builder(egui::UiBuilder::new().max_rect(middle.shrink(8.0)).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
-            ui.add_space((middle.height() / 2.0 - 50.0).max(0.0));
-            let upload = egui::Button::new(egui::RichText::new(format!("{}  →", t.files_upload)).size(13.0)).min_size(Vec2::new(94.0, 30.0));
-            if ui.add_enabled(connected && !self.local.selected.is_empty(), upload).on_hover_text(t.files_upload_hint).clicked() {
-                self.transfer(Side::Local, self.local.selection(), None);
-            }
-            ui.add_space(8.0);
-            let download = egui::Button::new(egui::RichText::new(format!("←  {}", t.files_download)).size(13.0)).min_size(Vec2::new(94.0, 30.0));
-            if ui.add_enabled(connected && !self.remote.selected.is_empty(), download).on_hover_text(t.files_download_hint).clicked() {
-                self.transfer(Side::Remote, self.remote.selection(), None);
-            }
-        });
 
         let queue = Rect::from_min_max(Pos2::new(rect.min.x, body.max.y), rect.max);
         self.queue_ui(ui, queue, theme, t);
@@ -540,12 +528,12 @@ impl FileManager {
                 };
                 ui.painter().rect_filled(row, 3.0, fill);
                 let y = row.center().y;
-                let icon = if entry.is_dir { "📁" } else if entry.is_link { "🔗" } else { "📄" };
+                paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(row.min.x + 13.0, y), Vec2::splat(15.0)), entry.is_dir, entry.is_link, theme);
                 let name_rect = Rect::from_min_size(row.min, Vec2::new(cols.name - 6.0, row.height()));
-                let mut job = egui::text::LayoutJob::simple_singleline(format!("{icon}  {}", entry.name), FontId::proportional(13.0), theme.text);
-                job.wrap = egui::text::TextWrapping::truncate_at_width(name_rect.width() - 6.0);
+                let mut job = egui::text::LayoutJob::simple_singleline(entry.name.clone(), FontId::proportional(13.0), theme.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(name_rect.width() - 30.0);
                 let galley = ui.painter().layout_job(job);
-                ui.painter().galley(Pos2::new(row.min.x + 4.0, y - galley.size().y / 2.0), galley, theme.text);
+                ui.painter().galley(Pos2::new(row.min.x + 26.0, y - galley.size().y / 2.0), galley, theme.text);
                 let muted = FontId::proportional(12.0);
                 if cols.size > 0.0 && !entry.is_dir {
                     ui.painter().text(Pos2::new(row.min.x + cols.size_x + cols.size - 6.0, y), Align2::RIGHT_CENTER, format_size(entry.size, t), muted.clone(), theme.text_muted);
@@ -1111,8 +1099,8 @@ struct Columns {
 impl Columns {
     fn new(width: f32, with_mode: bool) -> Self {
         let size = 80.0;
-        let date = if width > 460.0 { 125.0 } else { 0.0 };
-        let mode = if with_mode && width > 560.0 { 95.0 } else { 0.0 };
+        let date = if width > 360.0 { 125.0 } else { 0.0 };
+        let mode = if with_mode && width > 460.0 { 90.0 } else { 0.0 };
         let name = (width - size - date - mode).max(80.0);
         Self { name, size_x: name, size, date_x: name + size, date, mode_x: name + size + date, mode }
     }
@@ -1139,6 +1127,33 @@ fn local_entry(entry: &std::fs::DirEntry) -> Option<Entry> {
         mode,
         owner: None,
     })
+}
+
+/// A small drawn icon (emoji fonts lack or garble 📁 📄): a folder in the theme's accent color, or a
+/// page with a folded corner; a link gets a small arrow.
+fn paint_file_icon(painter: &egui::Painter, rect: Rect, is_dir: bool, is_link: bool, theme: &Theme) {
+    let r = rect.shrink(1.0);
+    if is_dir {
+        let color = theme.accent.gamma_multiply(0.85);
+        let tab = Rect::from_min_size(r.min + Vec2::new(0.0, 1.0), Vec2::new(r.width() * 0.45, r.height() * 0.3));
+        painter.rect_filled(tab, 1.5, color);
+        let body = Rect::from_min_max(Pos2::new(r.min.x, r.min.y + r.height() * 0.22), r.max);
+        painter.rect_filled(body, 2.0, color);
+    } else {
+        let color = theme.text_muted;
+        let page = Rect::from_center_size(r.center(), Vec2::new(r.width() * 0.72, r.height()));
+        let fold = page.width() * 0.35;
+        let points = vec![page.left_top(), Pos2::new(page.max.x - fold, page.min.y), Pos2::new(page.max.x, page.min.y + fold), page.right_bottom(), page.left_bottom()];
+        painter.add(egui::Shape::closed_line(points, Stroke::new(1.2, color)));
+        painter.line_segment([Pos2::new(page.max.x - fold, page.min.y), Pos2::new(page.max.x - fold, page.min.y + fold)], Stroke::new(1.0, color));
+        painter.line_segment([Pos2::new(page.max.x - fold, page.min.y + fold), Pos2::new(page.max.x, page.min.y + fold)], Stroke::new(1.0, color));
+    }
+    if is_link {
+        let a = Pos2::new(r.min.x + 1.0, r.max.y - 1.0);
+        painter.line_segment([a, a + Vec2::new(5.0, -5.0)], Stroke::new(1.4, theme.text));
+        painter.line_segment([a + Vec2::new(5.0, -5.0), a + Vec2::new(1.5, -5.0)], Stroke::new(1.4, theme.text));
+        painter.line_segment([a + Vec2::new(5.0, -5.0), a + Vec2::new(5.0, -1.5)], Stroke::new(1.4, theme.text));
+    }
 }
 
 /// "12,3 Mo" / "12.3 MB".
