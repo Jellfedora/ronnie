@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+#[cfg(unix)]
+mod askpass;
 mod config;
 mod i18n;
 mod log;

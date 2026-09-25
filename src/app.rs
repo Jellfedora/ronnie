@@ -207,6 +207,9 @@ pub struct App {
     link_confirm: Option<String>,
     /// "Reset everything?" dialog shown.
     confirm_reset: bool,
+    /// Hands saved SSH passwords to the ssh processes of this window's panes (Unix).
+    #[cfg(unix)]
+    askpass: crate::askpass::Server,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -566,6 +569,8 @@ impl App {
             update_attempted: false,
             live: Vec::new(),
             _instance_lock: None,
+            #[cfg(unix)]
+            askpass: crate::askpass::Server::start(),
             read_only: false,
             session_frozen: false,
             confirm_reset: false,
@@ -1050,6 +1055,21 @@ impl App {
                 Err(e) => self.error = Some(format!("{e:#}")),
             }
         }
+        self.allow_ssh_panes(index);
+    }
+
+    /// Lets the ssh processes of tab `index` get their host's saved password from the askpass helper.
+    fn allow_ssh_panes(&self, index: usize) {
+        #[cfg(unix)]
+        if let Some((tab, host)) = self.tabs.get(index).and_then(|t| Some((t, t.ssh?))) {
+            for term in tab.panes.values() {
+                if let Some(pid) = term.pid() {
+                    self.askpass.allow(pid, host);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = index;
     }
 
     /// Restarts panes of a tab (a new ssh session replaces the old or ended one).
@@ -1067,6 +1087,7 @@ impl App {
                 Err(e) => self.error = Some(format!("{e:#}")),
             }
         }
+        self.allow_ssh_panes(index);
         self.focus_terminal = true;
     }
 
@@ -1278,6 +1299,7 @@ impl App {
             tab.histories.insert(id, history);
             tab.focused = id;
             self.focus_terminal = true;
+            self.allow_ssh_panes(index);
         }
     }
 
@@ -2369,6 +2391,12 @@ impl App {
         host.host = host.host.trim().to_owned();
         if host.host.is_empty() {
             editor.error = Some(t.host_required.to_owned());
+            return;
+        }
+        // ssh would read a value starting with "-" as an option.
+        let dashed = |v: &Option<String>| v.as_deref().is_some_and(|v| v.trim_start().starts_with('-'));
+        if host.host.starts_with('-') || dashed(&host.user) || dashed(&host.jump) {
+            editor.error = Some(t.invalid_dash.to_owned());
             return;
         }
         host.port = match editor.port.trim() {
@@ -4300,6 +4328,8 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.sync();
+        #[cfg(unix)]
+        crate::askpass::cleanup();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

@@ -48,6 +48,10 @@ pub trait Backend: Send {
     fn cwd(&self) -> Option<PathBuf> {
         None
     }
+    /// Process id of the program started (the shell, or ssh).
+    fn pid(&self) -> Option<u32> {
+        None
+    }
     /// Name of the program in the foreground when it isn't the one started (the shell): something
     /// that closing the terminal would interrupt.
     fn foreground(&self) -> Option<String> {
@@ -248,6 +252,11 @@ impl Terminal {
     pub fn local_urls(&mut self, ctx: &egui::Context) -> &[links::LocalUrl] {
         self.refresh_activity(ctx);
         &self.activity.urls
+    }
+
+    /// Process id of the program started in the pane (the shell, or ssh).
+    pub fn pid(&self) -> Option<u32> {
+        self.backend.pid()
     }
 
     /// Program running in the foreground instead of the shell (`npm`, `vim`...), if any.

@@ -83,6 +83,10 @@ impl Backend for LocalPty {
         None
     }
 
+    fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     fn foreground(&self) -> Option<String> {
         #[cfg(unix)]
         {

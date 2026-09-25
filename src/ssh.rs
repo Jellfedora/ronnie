@@ -12,6 +12,12 @@ use crate::config::hex_color;
 
 /// Set on ssh's environment so that ronnie, started by ssh as askpass helper, knows which host it answers for.
 const ASKPASS_ENV: &str = "RONNIE_ASKPASS";
+/// Where the window listens for the askpass helper (Unix).
+#[cfg(unix)]
+const ASKPASS_SOCKET_ENV: &str = "RONNIE_ASKPASS_SOCKET";
+/// A random id per connection, naming its "already tried" marker (Windows).
+#[cfg(windows)]
+const ASKPASS_NONCE_ENV: &str = "RONNIE_ASKPASS_NONCE";
 const KEYCHAIN_SERVICE: &str = "ronnie-ssh";
 /// Where passwords were saved when the app was called bipbip.
 const LEGACY_KEYCHAIN_SERVICE: &str = "bipbip-ssh";
@@ -115,6 +121,8 @@ impl SshHost {
         if !self.options.iter().any(|o| o.to_lowercase().starts_with("connecttimeout")) {
             args.extend(["-o".to_owned(), format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}")]);
         }
+        // "--": a host field starting with "-" can't be taken for an option.
+        args.push("--".to_owned());
         args.push(self.host.clone());
 
         let mut env = Vec::new();
@@ -123,6 +131,14 @@ impl SshHost {
                 env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
                 env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
                 env.push((ASKPASS_ENV.to_owned(), self.id.to_string()));
+                // Unix: the helper asks the window, which checks who is asking (see askpass.rs).
+                #[cfg(unix)]
+                if let Some(socket) = crate::askpass::socket_path() {
+                    env.push((ASKPASS_SOCKET_ENV.to_owned(), socket.display().to_string()));
+                }
+                // Windows: identifies this connection, for its single automatic try.
+                #[cfg(windows)]
+                env.push((ASKPASS_NONCE_ENV.to_owned(), Uuid::new_v4().to_string()));
             }
         }
         Launch { program: "ssh".to_owned(), args, env }
@@ -223,7 +239,14 @@ pub fn load_password(id: Uuid) -> Option<String> {
 pub fn run_askpass() -> bool {
     let Ok(id) = std::env::var(ASKPASS_ENV) else { return false };
     let prompt = std::env::args().nth(1).unwrap_or_default();
-    let answer = saved_answer(&id, &prompt).or_else(|| ask_on_terminal(&prompt));
+    // Unix: only the window may hand out the password, after checking that this helper belongs to an ssh
+    // it started. Without it (older window, no socket), the user types the password.
+    #[cfg(unix)]
+    let saved = std::env::var_os(ASKPASS_SOCKET_ENV).and_then(|socket| crate::askpass::ask_window(std::path::Path::new(&socket), &prompt));
+    #[cfg(not(unix))]
+    let saved = saved_answer(&id, &prompt);
+    let _ = &id;
+    let answer = saved.or_else(|| ask_on_terminal(&prompt));
     match answer {
         Some(answer) => {
             println!("{answer}");
@@ -233,24 +256,19 @@ pub fn run_askpass() -> bool {
     }
 }
 
+/// Windows: the saved password, once per connection (a marker file named after the connection's id).
+#[cfg(not(unix))]
 fn saved_answer(id: &str, prompt: &str) -> Option<String> {
     let id: Uuid = id.parse().ok()?;
     let lower = prompt.to_lowercase();
     if !lower.contains("password") || lower.contains("passphrase") {
         return None;
     }
-    // One automatic try per ssh process: if it was wrong, ssh asks again and the user types it.
-    #[cfg(unix)]
-    let ssh_pid = unsafe { libc::getppid() };
-    #[cfg(not(unix))]
-    let ssh_pid = 0;
-    let marker = std::env::temp_dir().join(format!("ronnie-askpass-{ssh_pid}-{id}"));
-    if marker.exists() {
-        return None;
-    }
-    let password = load_password(id)?;
-    let _ = std::fs::write(&marker, b"");
-    Some(password)
+    let nonce: Uuid = std::env::var(ASKPASS_NONCE_ENV).ok()?.parse().ok()?;
+    let marker = std::env::temp_dir().join(format!("ronnie-askpass-{nonce}"));
+    // create_new: fails if it exists (already tried) and never follows a planted link.
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).ok()?;
+    load_password(id)
 }
 
 #[cfg(unix)]
@@ -384,22 +402,6 @@ Host db
     }
 
     /// Touches the real keychain, so it only runs on demand: `cargo test -- --ignored keychain`.
-    #[test]
-    #[ignore]
-    fn keychain_password_answers_once() {
-        let id = Uuid::new_v4();
-        save_password(id, "s3cret").unwrap();
-        let prompt = "demo@host's password: ";
-        let first = saved_answer(&id.to_string(), prompt);
-        let second = saved_answer(&id.to_string(), prompt);
-        let passphrase = saved_answer(&id.to_string(), "Enter passphrase for key: ");
-        delete_password(id);
-        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("ronnie-askpass-{}-{id}", unsafe { libc::getppid() })));
-        assert_eq!(first.as_deref(), Some("s3cret"));
-        assert_eq!(second, None, "a wrong password must not be retried automatically");
-        assert_eq!(passphrase, None);
-        assert!(load_password(id).is_none());
-    }
 
     #[test]
     fn builds_ssh_command() {
@@ -408,7 +410,7 @@ Host db
         let launch = host.command();
         let args = launch.args.join(" ");
         assert!(args.starts_with("-p 2222 -l deploy -i "), "{args}");
-        assert!(args.ends_with("-o IdentitiesOnly=yes -o ConnectTimeout=10 10.0.0.1"), "{args}");
+        assert!(args.ends_with("-o IdentitiesOnly=yes -o ConnectTimeout=10 -- 10.0.0.1"), "{args}");
         assert!(launch.env.is_empty());
     }
 }
