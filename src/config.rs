@@ -473,6 +473,19 @@ pub fn config_dir() -> Option<PathBuf> {
     .clone()
 }
 
+/// Deletes everything Ronnie stores in its config directory (the instance lock excepted).
+pub fn erase_all() -> std::io::Result<()> {
+    let Some(dir) = config_dir() else { return Ok(()) };
+    for entry in fs::read_dir(&dir)?.flatten() {
+        if entry.file_name() == "instance.lock" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() { fs::remove_dir_all(&path)? } else { fs::remove_file(&path)? }
+    }
+    Ok(())
+}
+
 /// Copies `from` into `to` (files and subdirectories), skipping the instance lock.
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
@@ -583,6 +596,22 @@ mod tests {
         config.normalize();
         assert!(config.groups[0].local && config.groups[0].items == [p]);
         assert!(!config.groups[1].local && config.groups[1].items == [h]);
+    }
+
+    #[test]
+    fn erases_everything_but_the_lock() {
+        let dir = std::env::temp_dir().join(format!("ronnie-erase-{}", std::process::id()));
+        fs::create_dir_all(dir.join("history")).unwrap();
+        for f in ["config.json", "session.json", "instance.lock", "history/abc"] {
+            fs::write(dir.join(f), b"x").unwrap();
+        }
+        // SAFETY: no other test reads RONNIE_CONFIG_DIR.
+        unsafe { std::env::set_var("RONNIE_CONFIG_DIR", &dir) };
+        erase_all().unwrap();
+        unsafe { std::env::remove_var("RONNIE_CONFIG_DIR") };
+        let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, ["instance.lock"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

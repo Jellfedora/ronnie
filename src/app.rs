@@ -200,6 +200,8 @@ pub struct App {
     _instance_lock: Option<std::fs::File>,
     /// Another Ronnie runs on the same config: this one writes nothing.
     read_only: bool,
+    /// "Reset everything?" dialog shown.
+    confirm_reset: bool,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -497,6 +499,7 @@ impl App {
             live: Vec::new(),
             _instance_lock: None,
             read_only: false,
+            confirm_reset: false,
             history_search: None,
             commands_menu: None,
             profile_editor: None,
@@ -2393,6 +2396,18 @@ impl App {
                 }
                 ui.add_space(6.0);
             }
+            ui.add_space(12.0);
+
+            heading(ui, &t.reset_section.to_uppercase());
+            let reset = egui::Button::new(egui::RichText::new(t.reset_button).size(13.5).color(self.theme.ansi[1]))
+                .stroke(Stroke::new(1.0, self.theme.ansi[1].gamma_multiply(0.7)))
+                .fill(Color32::TRANSPARENT)
+                .corner_radius(6.0)
+                .min_size(Vec2::new(0.0, 30.0));
+            if ui.add(reset).clicked() {
+                self.confirm_reset = true;
+            }
+            ui.add_space(8.0);
             });
             });
         });
@@ -2844,6 +2859,71 @@ impl App {
                 self.ctx.send_viewport_cmd(ViewportCommand::Close);
             }
             CloseRequest::Restart => self.restart(),
+        }
+    }
+
+    /// "Reset everything?" dialog: erases the whole configuration, then restarts.
+    fn confirm_reset_window(&mut self, ctx: &egui::Context) {
+        if !self.confirm_reset {
+            return;
+        }
+        let t = self.t();
+        let mut answer = None;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("confirm-reset")).frame(frame).backdrop_color(Color32::from_black_alpha(190)).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(egui::RichText::new(format!("⚠  {}", t.reset_title)).size(17.0).strong().color(self.theme.ansi[1]));
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(t.reset_body).size(13.5));
+            if let Some(dir) = config::config_dir() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(dir.display().to_string()).size(11.5).monospace().color(self.theme.text_muted));
+            }
+            ui.add_space(16.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let erase = egui::Button::new(egui::RichText::new(t.reset_confirm).size(13.5).color(Color32::WHITE)).fill(self.theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0));
+                if ui.add(erase).clicked() {
+                    answer = Some(true);
+                }
+                let cancel = ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0)));
+                // Cancel is the default: Enter or Escape erase nothing.
+                cancel.request_focus();
+                if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                    answer = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            answer = Some(false);
+        }
+        match answer {
+            Some(true) => {
+                self.confirm_reset = false;
+                self.reset_everything();
+            }
+            Some(false) => self.confirm_reset = false,
+            None => {}
+        }
+    }
+
+    /// Erases every profile, host, setting, tab and history (and the saved passwords), then restarts.
+    fn reset_everything(&mut self) {
+        for host in self.config.ssh.iter().filter(|h| h.password_saved) {
+            ssh::delete_password(host.id);
+        }
+        // Nothing may be written again before quitting (not even the session on exit).
+        self.read_only = true;
+        self.config_writable = false;
+        if let Err(e) = config::erase_all() {
+            self.error = Some(format!("{e:#}"));
+            return;
+        }
+        match self.updater.relaunch() {
+            Ok(()) => {
+                self.close_confirmed = true;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            Err(e) => self.error = Some(format!("{e:#}")),
         }
     }
 
@@ -4026,6 +4106,7 @@ impl eframe::App for App {
         self.history_search_ui(ui.ctx());
         self.commands_menu_ui(ui.ctx());
         self.confirm_close_window(ui.ctx());
+        self.confirm_reset_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash {
