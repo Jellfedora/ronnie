@@ -2,7 +2,7 @@
 name = "ronnie"
 version = "0.1.0"
 edition = "2024"
-description = "Terminal rapide avec onglets, splits et profils SSH"
+description = "Terminal Power Métal"
 repository = "https://github.com/Jellfedora/ronnie"
 
 [dependencies]

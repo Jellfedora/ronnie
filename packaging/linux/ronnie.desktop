@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Ronnie
-Comment=Terminal rapide avec onglets, splits et profils SSH
+Comment=Terminal Power Métal
 Exec=ronnie
 Icon=ronnie
 Terminal=false
