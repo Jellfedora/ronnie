@@ -50,9 +50,13 @@ fn install_fonts(ctx: &egui::Context) {
     // The sidebar logo.
     fonts.font_data.insert("metal".to_owned(), Arc::new(FontData::from_static(include_bytes!("../assets/fonts/MetalMania-Regular.ttf"))));
     fonts.families.insert(FontFamily::Name("metal".into()), vec!["metal".to_owned()]);
-    // Last-resort fallback for the UI: egui's proportional font lacks the ⇧ ⌘ ⌥ key symbols.
+    // Key symbols (⌘ ⇧ ⌥ ⌃ ⌫ ↩ arrows): egui's fonts lack some and draw others tiny, JetBrains Mono has
+    // them all. It comes right after the UI font, before the emoji fonts, and is the UI's monospace font.
     if let Some(ui_family) = fonts.families.get_mut(&FontFamily::Proportional) {
-        ui_family.push("mono".to_owned());
+        ui_family.insert(1.min(ui_family.len()), "mono".to_owned());
+    }
+    if let Some(mono_family) = fonts.families.get_mut(&FontFamily::Monospace) {
+        mono_family.insert(0, "mono".to_owned());
     }
     ctx.set_fonts(fonts);
 }

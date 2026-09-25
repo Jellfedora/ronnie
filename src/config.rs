@@ -353,6 +353,15 @@ pub struct Settings {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Shortcuts {
+    pub new_tab: Shortcut,
+    pub close_pane: Shortcut,
+    pub split_right: Shortcut,
+    pub split_down: Shortcut,
+    /// Searches the focused pane's displayed text.
+    pub find_text: Shortcut,
+    /// Searches the commands typed in the focused pane.
+    pub find_commands: Shortcut,
+    pub reopen_tab: Shortcut,
     /// Clears the focused pane's screen and scrollback.
     pub clear_pane: Shortcut,
     pub open_settings: Shortcut,
@@ -360,7 +369,18 @@ pub struct Shortcuts {
 
 impl Default for Shortcuts {
     fn default() -> Self {
-        Self { clear_pane: Shortcut::command('K'), open_settings: Shortcut::command('P') }
+        let mac = cfg!(target_os = "macos");
+        Self {
+            new_tab: Shortcut::command('T'),
+            close_pane: Shortcut::command('W'),
+            split_right: Shortcut::command('D'),
+            split_down: Shortcut(if mac { "Cmd+Shift+D" } else { "Ctrl+Shift+E" }.into()),
+            find_text: Shortcut::command('F'),
+            find_commands: Shortcut::command('R'),
+            reopen_tab: Shortcut(if mac { "Cmd+Shift+T" } else { "Ctrl+Alt+Shift+T" }.into()),
+            clear_pane: Shortcut::command('K'),
+            open_settings: Shortcut::command('P'),
+        }
     }
 }
 

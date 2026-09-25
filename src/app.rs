@@ -445,8 +445,71 @@ enum SettingsTab {
 /// A shortcut that can be changed in the settings.
 #[derive(Clone, Copy, PartialEq)]
 enum ShortcutAction {
+    NewTab,
+    ClosePane,
+    SplitRight,
+    SplitDown,
+    FindText,
+    FindCommands,
+    ReopenTab,
     ClearPane,
     OpenSettings,
+}
+
+impl ShortcutAction {
+    const ALL: [ShortcutAction; 9] = [
+        Self::NewTab,
+        Self::ClosePane,
+        Self::SplitRight,
+        Self::SplitDown,
+        Self::FindText,
+        Self::FindCommands,
+        Self::ReopenTab,
+        Self::ClearPane,
+        Self::OpenSettings,
+    ];
+
+    fn label(self, t: &Strings) -> &'static str {
+        match self {
+            Self::NewTab => t.shortcut_new_tab,
+            Self::ClosePane => t.shortcut_close_pane,
+            Self::SplitRight => t.shortcut_split_right,
+            Self::SplitDown => t.shortcut_split_down,
+            Self::FindText => t.shortcut_find_text,
+            Self::FindCommands => t.history_search,
+            Self::ReopenTab => t.shortcut_reopen,
+            Self::ClearPane => t.shortcut_clear_pane,
+            Self::OpenSettings => t.shortcut_open_settings,
+        }
+    }
+
+    fn get(self, s: &config::Shortcuts) -> &config::Shortcut {
+        match self {
+            Self::NewTab => &s.new_tab,
+            Self::ClosePane => &s.close_pane,
+            Self::SplitRight => &s.split_right,
+            Self::SplitDown => &s.split_down,
+            Self::FindText => &s.find_text,
+            Self::FindCommands => &s.find_commands,
+            Self::ReopenTab => &s.reopen_tab,
+            Self::ClearPane => &s.clear_pane,
+            Self::OpenSettings => &s.open_settings,
+        }
+    }
+
+    fn get_mut(self, s: &mut config::Shortcuts) -> &mut config::Shortcut {
+        match self {
+            Self::NewTab => &mut s.new_tab,
+            Self::ClosePane => &mut s.close_pane,
+            Self::SplitRight => &mut s.split_right,
+            Self::SplitDown => &mut s.split_down,
+            Self::FindText => &mut s.find_text,
+            Self::FindCommands => &mut s.find_commands,
+            Self::ReopenTab => &mut s.reopen_tab,
+            Self::ClearPane => &mut s.clear_pane,
+            Self::OpenSettings => &mut s.open_settings,
+        }
+    }
 }
 
 struct ConfigEditor {
@@ -800,6 +863,7 @@ impl App {
         let (index, pane) = (search.tab, search.pane);
         let t = self.config.settings.language.strings();
         let theme = self.theme.clone();
+        let shortcuts = self.config.settings.shortcuts.clone();
         let width = (pane_rect.width() - 32.0).clamp(200.0, 620.0);
         let pos = Pos2::new(pane_rect.center().x - width / 2.0, pane_rect.min.y + PANE_HEADER_H + 10.0);
 
@@ -826,14 +890,13 @@ impl App {
         egui::Area::new(egui::Id::new("history-search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
             Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
                 ui.set_width(width - 20.0);
-                let mac = cfg!(target_os = "macos");
                 ui.horizontal(|ui| {
-                    let text_label = format!("{}  {}", t.search_text, if mac { "⌘ F" } else { "Ctrl+Shift+F" });
+                    let text_label = format!("{}  {}", t.search_text, shortcuts.find_text.label());
                     if ui.selectable_label(search.text, egui::RichText::new(text_label).size(12.5)).clicked() {
                         search.text = true;
                     }
                     if search.local {
-                        let commands_label = format!("{}  {}", t.search_commands, if mac { "⌘ R" } else { "Ctrl+Shift+R" });
+                        let commands_label = format!("{}  {}", t.search_commands, shortcuts.find_commands.label());
                         if ui.selectable_label(!search.text, egui::RichText::new(commands_label).size(12.5)).clicked() {
                             search.text = false;
                         }
@@ -1255,60 +1318,50 @@ impl App {
         if self.shortcut_capture.is_some() {
             return;
         }
-        // Cmd on macOS; Ctrl+Shift elsewhere so plain Ctrl keys stay available to the shell.
-        let cmd = if cfg!(target_os = "macos") { Modifiers::MAC_CMD } else { Modifiers::CTRL | Modifiers::SHIFT };
-        let pressed = |key| ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(cmd, key)));
-
-        // Reopen the last closed tab: Cmd+Shift+T (Ctrl+Shift+Alt+T outside macOS). Checked before Cmd+T,
-        // which would also match it.
-        let reopen = if cfg!(target_os = "macos") { cmd | Modifiers::SHIFT } else { cmd | Modifiers::ALT };
-        if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(reopen, Key::T))) {
-            if let Some(last) = self.closed.len().checked_sub(1) {
-                self.reopen_closed(last);
-            }
-        }
-        if pressed(Key::T) {
-            self.new_tab(ui.ctx());
-        }
-        // Settings: configurable (Cmd+P by default); the usual Cmd+, works too.
+        // The configurable shortcuts (Settings > Shortcuts), the most specific first: consume_shortcut
+        // ignores extra Shift / Alt, so Cmd+T would otherwise also take Cmd+Shift+T.
         let shortcuts = self.config.settings.shortcuts.clone();
-        let hit = |s: &config::Shortcut| s.parse().is_some_and(|k| ui.input_mut(|i| i.consume_shortcut(&k)));
-        let comma = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)));
-        if hit(&shortcuts.open_settings) || comma {
-            self.settings_dialog = !self.settings_dialog;
-        }
-        // Clear the focused pane: configurable, Cmd+K by default.
-        if hit(&shortcuts.clear_pane) {
-            if let Some(term) = self.tabs.get_mut(self.active).and_then(|t| t.panes.get_mut(&t.focused)) {
-                term.clear();
+        let mut bound: Vec<(KeyboardShortcut, ShortcutAction)> = ShortcutAction::ALL.iter().filter_map(|a| Some((a.get(&shortcuts).parse()?, *a))).collect();
+        let weight = |k: &KeyboardShortcut| [k.modifiers.shift, k.modifiers.alt, k.modifiers.ctrl, k.modifiers.mac_cmd].iter().filter(|m| **m).count();
+        bound.sort_by_key(|(k, _)| std::cmp::Reverse(weight(k)));
+        let mut fired = Vec::new();
+        for (shortcut, action) in bound {
+            if ui.input_mut(|i| i.consume_shortcut(&shortcut)) {
+                fired.push(action);
             }
         }
-        // Search in the focused pane: its displayed text with Cmd+F, its typed commands with Cmd+R
-        // (Ctrl+Shift+F / Ctrl+Shift+R).
-        for (key, text) in [(Key::F, true), (Key::R, false)] {
-            if pressed(key) {
-                if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
-                    self.open_search(self.active, pane, text);
+        // The usual Cmd+, opens the settings too.
+        if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma))) {
+            fired.push(ShortcutAction::OpenSettings);
+        }
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        for action in fired {
+            match action {
+                ShortcutAction::NewTab => self.new_tab(ui.ctx()),
+                ShortcutAction::ClosePane => {
+                    if let Some(pane) = focused {
+                        self.request_close(CloseRequest::Pane(self.active, pane));
+                    }
                 }
+                ShortcutAction::SplitRight => self.split(ui.ctx(), self.active, Direction::Right),
+                ShortcutAction::SplitDown => self.split(ui.ctx(), self.active, Direction::Down),
+                ShortcutAction::FindText | ShortcutAction::FindCommands => {
+                    if let Some(pane) = focused {
+                        self.open_search(self.active, pane, action == ShortcutAction::FindText);
+                    }
+                }
+                ShortcutAction::ReopenTab => {
+                    if let Some(last) = self.closed.len().checked_sub(1) {
+                        self.reopen_closed(last);
+                    }
+                }
+                ShortcutAction::ClearPane => {
+                    if let Some(term) = self.tabs.get_mut(self.active).and_then(|t| t.panes.get_mut(&t.focused)) {
+                        term.clear();
+                    }
+                }
+                ShortcutAction::OpenSettings => self.settings_dialog = !self.settings_dialog,
             }
-        }
-        if pressed(Key::W) {
-            if let Some(focused) = self.tabs.get(self.active).map(|t| t.focused) {
-                self.request_close(CloseRequest::Pane(self.active, focused));
-            }
-        }
-        // Split right / down: Cmd+D / Cmd+Shift+D on macOS, Ctrl+Shift+D / Ctrl+Shift+E elsewhere.
-        let (right, down) = if cfg!(target_os = "macos") {
-            (KeyboardShortcut::new(cmd, Key::D), KeyboardShortcut::new(cmd | Modifiers::SHIFT, Key::D))
-        } else {
-            (KeyboardShortcut::new(cmd, Key::D), KeyboardShortcut::new(cmd, Key::E))
-        };
-        // Check the longer shortcut first: consume_shortcut ignores extra Shift.
-        if ui.input_mut(|i| i.consume_shortcut(&down)) {
-            self.split(ui.ctx(), self.active, Direction::Down);
-        }
-        if ui.input_mut(|i| i.consume_shortcut(&right)) {
-            self.split(ui.ctx(), self.active, Direction::Right);
         }
         // Move between panes: Cmd+Alt+arrows (Ctrl+Alt+arrows outside macOS).
         let nav = Modifiers::COMMAND | Modifiers::ALT;
@@ -1355,7 +1408,7 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
             ui.label(egui::RichText::new(t.no_tabs).size(18.0).color(self.theme.text));
             ui.add_space(12.0);
-            let hint = if cfg!(target_os = "macos") { "⌘ T" } else { "Ctrl+Shift+T" };
+            let hint = self.config.settings.shortcuts.new_tab.label();
             if ui.add(egui::Button::new(t.new_terminal).shortcut_text(hint).min_size(Vec2::new(width, 32.0))).clicked() {
                 new = true;
             }
@@ -2432,7 +2485,8 @@ impl App {
         }
     }
 
-    /// "Shortcuts" settings page: the changeable ones (click, then type the combination), then the others.
+    /// "Shortcuts" settings page: each action's shortcut can be recorded (click, then type the
+    /// combination); a few fixed ones are listed below.
     fn shortcuts_ui(&mut self, ui: &mut Ui, t: &Strings, picked: &mut config::Settings) {
         let muted = self.theme.text_muted;
         // Recording: the next key pressed with a modifier becomes the shortcut; Escape cancels.
@@ -2450,11 +2504,7 @@ impl App {
             match typed {
                 Some((Key::Escape, _)) => self.shortcut_capture = None,
                 Some((key, m)) if m.command || m.ctrl || m.alt || m.mac_cmd => {
-                    let shortcut = config::Shortcut::typed(m, key);
-                    match action {
-                        ShortcutAction::ClearPane => picked.shortcuts.clear_pane = shortcut,
-                        ShortcutAction::OpenSettings => picked.shortcuts.open_settings = shortcut,
-                    }
+                    *action.get_mut(&mut picked.shortcuts) = config::Shortcut::typed(m, key);
                     self.shortcut_capture = None;
                 }
                 _ => {}
@@ -2462,51 +2512,52 @@ impl App {
         }
 
         let defaults = config::Shortcuts::default();
-        let rows = [
-            (ShortcutAction::ClearPane, t.shortcut_clear_pane, picked.shortcuts.clear_pane.clone(), defaults.clear_pane.clone()),
-            (ShortcutAction::OpenSettings, t.shortcut_open_settings, picked.shortcuts.open_settings.clone(), defaults.open_settings.clone()),
-        ];
-        egui::Grid::new("shortcuts-grid").num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
-            for (action, label, current, default) in rows {
-                ui.label(egui::RichText::new(label).size(14.0));
-                let recording = self.shortcut_capture == Some(action);
-                let text = if recording { t.shortcut_press.to_owned() } else { current.label() };
-                let color = if recording { self.theme.accent } else { self.theme.text };
-                let button = egui::Button::new(egui::RichText::new(text).size(13.5).monospace().color(color)).corner_radius(6.0).min_size(Vec2::new(150.0, 28.0));
-                if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    self.shortcut_capture = if recording { None } else { Some(action) };
-                }
-                if current != default && ui.button(t.shortcut_reset).clicked() {
-                    match action {
-                        ShortcutAction::ClearPane => picked.shortcuts.clear_pane = default,
-                        ShortcutAction::OpenSettings => picked.shortcuts.open_settings = default,
+        let parsed: Vec<Option<KeyboardShortcut>> = ShortcutAction::ALL.iter().map(|a| a.get(&picked.shortcuts).parse()).collect();
+        egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
+            egui::Grid::new("shortcuts-grid").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
+                for (i, action) in ShortcutAction::ALL.into_iter().enumerate() {
+                    let current = action.get(&picked.shortcuts).clone();
+                    let default = action.get(&defaults).clone();
+                    ui.label(egui::RichText::new(action.label(t)).size(14.0));
+                    let recording = self.shortcut_capture == Some(action);
+                    // The same combination on two actions: only one would work.
+                    let conflict = parsed[i].is_some() && parsed.iter().enumerate().any(|(j, p)| j != i && *p == parsed[i]);
+                    let text = if recording { t.shortcut_press.to_owned() } else { current.label() };
+                    let color = if recording { self.theme.accent } else if conflict { self.theme.ansi[1] } else { self.theme.text };
+                    let button = egui::Button::new(egui::RichText::new(text).size(13.5).monospace().color(color)).corner_radius(6.0).min_size(Vec2::new(150.0, 26.0));
+                    let resp = ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let resp = if conflict { resp.on_hover_text(t.shortcut_conflict) } else { resp };
+                    if resp.clicked() {
+                        self.shortcut_capture = if recording { None } else { Some(action) };
                     }
+                    if current != default {
+                        if ui.button(t.shortcut_reset).clicked() {
+                            *action.get_mut(&mut picked.shortcuts) = default;
+                        }
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
                 }
-                ui.end_row();
-            }
-        });
+            });
 
-        ui.add_space(22.0);
-        ui.label(egui::RichText::new(t.shortcut_fixed.to_uppercase()).size(12.0).strong().color(muted));
-        ui.add_space(6.0);
-        let mac = cfg!(target_os = "macos");
-        let fixed = [
-            (t.shortcut_new_tab, if mac { "⌘ T" } else { "Ctrl+Shift+T" }),
-            (t.shortcut_close_pane, if mac { "⌘ W" } else { "Ctrl+Shift+W" }),
-            (t.shortcut_split_right, if mac { "⌘ D" } else { "Ctrl+Shift+D" }),
-            (t.shortcut_split_down, if mac { "⇧ ⌘ D" } else { "Ctrl+Shift+E" }),
-            (t.search_text_hint, if mac { "⌘ F" } else { "Ctrl+Shift+F" }),
-            (t.history_search, if mac { "⌘ R" } else { "Ctrl+Shift+R" }),
-            (t.shortcut_reopen, if mac { "⇧ ⌘ T" } else { "Ctrl+Shift+Alt+T" }),
-            (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
-            (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
-        ];
-        egui::Grid::new("fixed-shortcuts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-            for (label, keys) in fixed {
-                ui.label(egui::RichText::new(label).size(13.5).color(muted));
-                ui.label(egui::RichText::new(keys).size(13.5).monospace());
-                ui.end_row();
-            }
+            ui.add_space(22.0);
+            ui.label(egui::RichText::new(t.shortcut_fixed.to_uppercase()).size(12.0).strong().color(muted));
+            ui.add_space(6.0);
+            let mac = cfg!(target_os = "macos");
+            let fixed = [
+                (t.copy, if mac { "⌘ C" } else { "Ctrl+Shift+C" }),
+                (t.paste, if mac { "⌘ V" } else { "Ctrl+Shift+V" }),
+                (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
+                (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
+            ];
+            egui::Grid::new("fixed-shortcuts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                for (label, keys) in fixed {
+                    ui.label(egui::RichText::new(label).size(13.5).color(muted));
+                    ui.label(egui::RichText::new(keys).size(13.5).monospace());
+                    ui.end_row();
+                }
+            });
         });
     }
 
@@ -3061,7 +3112,7 @@ impl App {
         let mut y = origin.y;
 
         // Local section: open tabs that are neither a profile nor an SSH host, then local profiles.
-        let new_hint = format!("{} ({})", t.new_tab, if cfg!(target_os = "macos") { "⌘ T" } else { "Ctrl+Shift+T" });
+        let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
         if self.section_header(ui, t.terminals, Pos2::new(left, y), row_w, Some(&new_hint)) {
             action = Some(TabAction::New);
         }
@@ -3573,7 +3624,7 @@ enum Header<'a> {
 
 /// Strip above a pane: its working directory (home as `~`, leading folders elided to fit) or its SSH
 /// host with a reconnect button, plus the saved commands (⚡) and, for local panes, history search.
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings) -> HeaderClicks {
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click());
@@ -3590,8 +3641,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     let mut right = rect.max.x - 4.0;
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls) = header {
-        let shortcut = if cfg!(target_os = "macos") { "⌘ F" } else { "Ctrl+Shift+F" };
-        clicks.search = icon(ui, right, "🔍", format!("{}  ({shortcut})", t.search_text_hint));
+        clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label()));
         right -= 26.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
         right -= 26.0;
@@ -3802,7 +3852,7 @@ enum PaneAction {
 }
 
 /// Right-click menu of a terminal pane.
-fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, commands: &[String], action: &mut Option<PaneAction>) {
+fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, commands: &[String], action: &mut Option<PaneAction>) {
     ui.set_min_width(180.0);
     let shortcut = |mac: &str, other: &str| if cfg!(target_os = "macos") { mac.to_owned() } else { other.to_owned() };
     let mut item = |ui: &mut Ui, enabled: bool, label: &str, hint: String, a: PaneAction| {
@@ -3816,8 +3866,8 @@ fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, 
     item(ui, true, t.paste, shortcut("⌘ V", "Ctrl+Shift+V"), PaneAction::Paste(id));
     ui.separator();
     item(ui, true, t.split_up, String::new(), PaneAction::Split(id, Direction::Up));
-    item(ui, true, t.split_right, shortcut("⌘ D", "Ctrl+Shift+D"), PaneAction::Split(id, Direction::Right));
-    item(ui, true, t.split_down, shortcut("⇧ ⌘ D", "Ctrl+Shift+E"), PaneAction::Split(id, Direction::Down));
+    item(ui, true, t.split_right, shortcuts.split_right.label(), PaneAction::Split(id, Direction::Right));
+    item(ui, true, t.split_down, shortcuts.split_down.label(), PaneAction::Split(id, Direction::Down));
     item(ui, true, t.split_left, String::new(), PaneAction::Split(id, Direction::Left));
     ui.separator();
     if local {
@@ -3847,7 +3897,7 @@ fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, 
         }
     });
     ui.separator();
-    item(ui, true, t.close_pane, shortcut("⌘ W", "Ctrl+Shift+W"), PaneAction::Close(id));
+    item(ui, true, t.close_pane, shortcuts.close_pane.label(), PaneAction::Close(id));
     if picked.is_some() {
         *action = picked;
     }
@@ -3955,7 +4005,7 @@ impl eframe::App for App {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(&ssh_label) };
-                        let clicks = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings);
+                        let clicks = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.search {
                             open_search = Some(id);
                         }
@@ -3980,7 +4030,7 @@ impl eframe::App for App {
                         tab.focused = id;
                     }
                     let can_copy = term.selection_text().is_some();
-                    resp.context_menu(|ui| pane_menu(ui, strings, id, can_copy, local, &saved_commands, &mut pane_action));
+                    resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, &saved_commands, &mut pane_action));
                     if tab.dead.contains(&id) {
                         let (again, close) = closed_banner(ui, r, &self.theme, strings);
                         if again {
