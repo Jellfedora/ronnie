@@ -37,8 +37,11 @@ const CWD_TTL: Duration = Duration::from_millis(500);
 const ACTIVITY_TTL: Duration = Duration::from_secs(1);
 /// Most occurrences kept by the text search.
 const FIND_LIMIT: usize = 5000;
-/// Rows of output (scrollback included) searched for local server URLs.
-const URL_SCAN_ROWS: usize = 2000;
+/// While output streams in, the text search is redone at most this often.
+const FIND_REFRESH: Duration = Duration::from_millis(250);
+/// Rows of output (scrollback included) searched for local server URLs. Found URLs are kept while the
+/// program runs, so only the recent output needs searching.
+const URL_SCAN_ROWS: usize = 500;
 
 /// Where the bytes of a terminal come from and go to (local shell, SSH channel...).
 pub trait Backend: Send {
@@ -98,12 +101,16 @@ struct Find {
     current: usize,
     /// `output_seq` when searched: new output moves lines, the search is then redone.
     seq: u64,
+    /// When it was last searched: streaming output redoes it at most every FIND_REFRESH.
+    at: Instant,
 }
 
 /// What a terminal is busy with, refreshed at most every `ACTIVITY_TTL`.
 #[derive(Default)]
 struct Activity {
     checked: Option<Instant>,
+    /// `output_seq` at the last check.
+    checked_seq: u64,
     /// `output_seq` when the URLs were last searched.
     scanned: u64,
     program: Option<String>,
@@ -121,6 +128,8 @@ pub struct Terminal {
     received: Arc<AtomicBool>,
     /// Bumped by the reader thread on each chunk of output, to rescan only when something changed.
     output_seq: Arc<AtomicU64>,
+    /// Shown on screen (in the active tab): its output redraws the window right away.
+    visible: Arc<AtomicBool>,
     activity: Activity,
     title: Option<String>,
     size: GridSize,
@@ -136,7 +145,7 @@ pub struct Terminal {
     /// Where the grid was drawn last frame, to place things next to the cursor.
     grid_origin: Pos2,
     /// Last looked-up working directory and when, so painting every frame stays cheap.
-    cwd_cache: Option<(Instant, Option<PathBuf>)>,
+    cwd_cache: Option<(Instant, Option<PathBuf>, u64)>,
 }
 
 impl Terminal {
@@ -155,12 +164,14 @@ impl Terminal {
         let exited = Arc::new(AtomicBool::new(false));
         let received = Arc::new(AtomicBool::new(false));
         let output_seq = Arc::new(AtomicU64::new(0));
+        let visible = Arc::new(AtomicBool::new(true));
 
         {
             let term = term.clone();
             let exited = exited.clone();
             let received = received.clone();
             let output_seq = output_seq.clone();
+            let visible = visible.clone();
             let ctx = ctx.clone();
             thread::Builder::new()
                 .name("pty-reader".into())
@@ -174,7 +185,13 @@ impl Terminal {
                                 received.store(true, Ordering::Relaxed);
                                 output_seq.fetch_add(1, Ordering::Relaxed);
                                 parser.advance(&mut *term.lock(), &buf[..n]);
-                                ctx.request_repaint();
+                                // A hidden pane (other tab) needn't redraw the window at the pace of its
+                                // output: its badge and title catch up twice a second.
+                                if visible.load(Ordering::Relaxed) {
+                                    ctx.request_repaint();
+                                } else {
+                                    ctx.request_repaint_after(Duration::from_millis(500));
+                                }
                             }
                             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                             Err(_) => break,
@@ -194,6 +211,7 @@ impl Terminal {
             exited,
             received,
             output_seq,
+            visible,
             activity: Activity::default(),
             title: None,
             size,
@@ -219,13 +237,18 @@ impl Terminal {
 
     /// Refreshes the foreground program and the local servers it announced (dropped once it stops).
     fn refresh_activity(&mut self, ctx: &egui::Context) {
-        let now = Instant::now();
+        // Only after new output (a program starting echoes its command line, one ending prints the
+        // prompt), at most every ACTIVITY_TTL: idle terminals cost nothing and wake nothing up.
+        let (now, seq) = (Instant::now(), self.output_seq.load(Ordering::Relaxed));
+        if self.activity.checked.is_some() && self.activity.checked_seq == seq {
+            return;
+        }
         if let Some(at) = self.activity.checked.filter(|at| now.duration_since(*at) < ACTIVITY_TTL) {
-            // Come back when it's stale, so a program starting or stopping shows up without input.
             ctx.request_repaint_after(ACTIVITY_TTL - now.duration_since(at));
             return;
         }
         self.activity.checked = Some(now);
+        self.activity.checked_seq = seq;
         self.activity.program = self.foreground();
         if self.activity.program.is_none() {
             self.activity.urls.clear();
@@ -264,15 +287,17 @@ impl Terminal {
         if self.has_exited() { None } else { self.backend.foreground() }
     }
 
-    /// Working directory for display, looked up at most every `CWD_TTL`. Schedules a repaint when the
-    /// cached value is reused, so a `cd` shows up even if nothing else redraws.
+    /// Working directory for display. Looked up again only after new output (a `cd` prints a new
+    /// prompt), at most every `CWD_TTL`: an idle terminal costs nothing and wakes nothing up.
     pub fn cached_cwd(&mut self, ctx: &egui::Context) -> Option<&Path> {
-        let now = Instant::now();
+        let (now, seq) = (Instant::now(), self.output_seq.load(Ordering::Relaxed));
         match &self.cwd_cache {
-            Some((at, _)) if now.duration_since(*at) < CWD_TTL => ctx.request_repaint_after(CWD_TTL - now.duration_since(*at)),
-            _ => self.cwd_cache = Some((now, self.backend.cwd())),
+            Some((_, _, seen)) if *seen == seq => {}
+            // Changed very recently: look once the throttle allows.
+            Some((at, _, _)) if now.duration_since(*at) < CWD_TTL => ctx.request_repaint_after(CWD_TTL - now.duration_since(*at)),
+            _ => self.cwd_cache = Some((now, self.backend.cwd(), seq)),
         }
-        self.cwd_cache.as_ref().and_then(|(_, cwd)| cwd.as_deref())
+        self.cwd_cache.as_ref().and_then(|(_, cwd, _)| cwd.as_deref())
     }
 
     /// Whether the program has written anything yet.
@@ -309,6 +334,15 @@ impl Terminal {
     }
 
     /// Text currently selected with the mouse, if any.
+    /// Whether text is selected (cheap, unlike building the selected text).
+    pub fn has_selection(&self) -> bool {
+        self.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty())
+    }
+
+    pub fn set_visible(&self, visible: bool) {
+        self.visible.store(visible, Ordering::Relaxed);
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.term.lock().selection_to_string().filter(|s| !s.is_empty())
     }
@@ -328,7 +362,7 @@ impl Terminal {
     pub fn find(&mut self, query: &str) -> (usize, usize) {
         let matches = links::find_text(&self.term.lock(), query, FIND_LIMIT);
         let current = matches.len().saturating_sub(1);
-        self.find = Some(Find { query: query.to_owned(), matches, current, seq: self.output_seq.load(Ordering::Relaxed) });
+        self.find = Some(Find { query: query.to_owned(), matches, current, seq: self.output_seq.load(Ordering::Relaxed), at: Instant::now() });
         self.reveal_find();
         self.find_status()
     }
@@ -372,17 +406,23 @@ impl Terminal {
 
     /// Redoes the search after new output (lines moved), staying on the same occurrence counted from
     /// the most recent one.
-    fn refresh_find(&mut self) {
+    fn refresh_find(&mut self, ctx: &egui::Context) {
         let seq = self.output_seq.load(Ordering::Relaxed);
         let Some(find) = &self.find else { return };
         if find.seq == seq {
+            return;
+        }
+        // A log streaming in would otherwise rescan the whole scrollback on every frame.
+        let age = find.at.elapsed();
+        if age < FIND_REFRESH {
+            ctx.request_repaint_after(FIND_REFRESH - age);
             return;
         }
         let from_end = find.matches.len().saturating_sub(find.current + 1);
         let query = find.query.clone();
         let matches = links::find_text(&self.term.lock(), &query, FIND_LIMIT);
         let current = matches.len().saturating_sub(1 + from_end);
-        self.find = Some(Find { query, matches, current, seq });
+        self.find = Some(Find { query, matches, current, seq, at: Instant::now() });
     }
 
     /// Clears the screen and the scrollback (Cmd+K). An idle shell is asked to redraw its prompt;
@@ -483,7 +523,7 @@ impl Terminal {
     /// Draws the terminal in `rect` and handles its keyboard and mouse input.
     pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, fonts: &FontSet) -> Response {
         self.process_events(ui.ctx(), theme);
-        self.refresh_find();
+        self.refresh_find(ui.ctx());
         let cell = fonts.cell_size(ui);
         let grid_rect = rect.shrink(PADDING);
         self.resize_to(grid_rect, cell);

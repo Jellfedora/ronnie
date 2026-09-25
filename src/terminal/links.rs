@@ -66,9 +66,10 @@ fn find_urls(text: &str) -> Vec<(usize, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
     let mut i = 0;
+    // Compared on the chars directly: building a string per position cost an allocation per char.
+    let starts_with = |i: usize, scheme: &str| scheme.chars().enumerate().all(|(k, c)| chars.get(i + k) == Some(&c));
     while i < chars.len() {
-        let rest: String = chars[i..chars.len().min(i + 8)].iter().collect();
-        let Some(scheme) = SCHEMES.iter().find(|s| rest.starts_with(**s)) else {
+        let Some(scheme) = (chars[i] == 'h' || chars[i] == 'f').then(|| SCHEMES.iter().find(|s| starts_with(i, s))).flatten() else {
             i += 1;
             continue;
         };
@@ -163,6 +164,11 @@ pub fn local_urls<L: EventListener>(term: &Term<L>, max_rows: usize) -> Vec<Loca
         text.extend((0..grid.columns()).map(|c| &row[Column(c)]).filter(|c| !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).map(|c| c.c));
         // A soft-wrapped row continues on the next one.
         if row[last_col].flags.contains(Flags::WRAPLINE) && line < bottom.0 {
+            continue;
+        }
+        // Most lines hold no URL at all: skip them cheaply.
+        if !text.contains("://") {
+            text.clear();
             continue;
         }
         let chars: Vec<char> = text.chars().collect();

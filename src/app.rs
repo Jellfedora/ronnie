@@ -156,6 +156,8 @@ pub struct App {
     /// Modification time of config.json when last read or written, to notice outside edits.
     config_mtime: Option<std::time::SystemTime>,
     last_sync: f64,
+    /// App time of the last user input, to stop the periodic sync once idle.
+    last_input: f64,
     window: Option<WindowState>,
     settings_dialog: bool,
     settings_tab: SettingsTab,
@@ -334,6 +336,8 @@ struct HistorySearch {
     query: String,
     /// The pane's commands, most recent first.
     entries: Vec<String>,
+    /// The same, lowercased once for filtering.
+    lower: Vec<String>,
     /// Index in the filtered list.
     selected: usize,
     /// Just opened: take the keyboard focus.
@@ -352,11 +356,9 @@ impl HistorySearch {
         let words: Vec<String> = self.query.split_whitespace().map(str::to_lowercase).collect();
         self.entries
             .iter()
-            .filter(|e| {
-                let e = e.to_lowercase();
-                words.iter().all(|w| e.contains(w))
-            })
-            .map(String::as_str)
+            .zip(&self.lower)
+            .filter(|(_, lower)| words.iter().all(|w| lower.contains(w)))
+            .map(|(e, _)| e.as_str())
             .take(200)
             .collect()
     }
@@ -552,6 +554,7 @@ impl App {
             config_writable: true,
             config_mtime: config::config_path().and_then(|p| config::modified(&p)),
             last_sync: 0.0,
+            last_input: 0.0,
             window: None,
             settings_dialog: false,
             settings_tab: SettingsTab::General,
@@ -629,6 +632,7 @@ impl App {
             }
         }
         app.active = session.active.min(app.tabs.len().saturating_sub(1));
+        watch_config(&cc.egui_ctx);
         app.saved_session = session;
         if app.tabs.is_empty() {
             app.new_tab(&cc.egui_ctx);
@@ -857,7 +861,8 @@ impl App {
         let Some(tab) = self.tabs.get_mut(index) else { return };
         let local = tab.ssh.is_none();
         let entries = if local { tab.history_path(pane).map(|p| crate::shell::read_history(&p)).unwrap_or_default() } else { Vec::new() };
-        self.history_search = Some(HistorySearch { tab: index, pane, query: String::new(), entries, selected: 0, fresh: true, text: text || !local, local, status: (0, 0) });
+        let lower = entries.iter().map(|e| e.to_lowercase()).collect();
+        self.history_search = Some(HistorySearch { tab: index, pane, query: String::new(), entries, lower, selected: 0, fresh: true, text: text || !local, local, status: (0, 0) });
     }
 
     fn close_search(&mut self) {
@@ -3647,6 +3652,24 @@ fn paint_connecting(ui: &Ui, pane: Rect, theme: &Theme, t: &Strings, text: &str)
     painter.text(center + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, t.connecting_hint, FontId::proportional(13.0), theme.text_muted);
 }
 
+/// Wakes the (otherwise idle) UI when config.json is edited in another program, so that the change is
+/// picked up: a stat every two seconds, in the background.
+fn watch_config(ctx: &egui::Context) {
+    let ctx = ctx.clone();
+    let _ = std::thread::Builder::new().name("config-watch".into()).spawn(move || {
+        let path = config::config_path();
+        let mut seen = path.as_deref().and_then(config::modified);
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let now = path.as_deref().and_then(config::modified);
+            if now != seen {
+                seen = now;
+                ctx.request_repaint();
+            }
+        }
+    });
+}
+
 /// A texture from embedded PNG bytes.
 fn load_png(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
     let png = eframe::icon_data::from_png_bytes(bytes).unwrap_or_default();
@@ -3654,13 +3677,16 @@ fn load_png(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandl
     ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 
-/// Breathing green halo around a tab's dot while a program runs in it.
+/// Green halo around a tab's dot while a program runs in it. It breathes slowly while the window is
+/// focused, and holds still otherwise (animating an unseen badge would keep the app redrawing).
 fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
-    let phase = (ui.input(|i| i.time) * std::f64::consts::TAU / 2.0).sin() as f32 * 0.5 + 0.5;
+    let focused = ui.input(|i| i.focused);
+    let phase = if focused { (ui.input(|i| i.time) * std::f64::consts::TAU / 2.0).sin() as f32 * 0.5 + 0.5 } else { 0.6 };
     painter.circle_filled(dot, 7.5, theme.ansi[2].gamma_multiply(0.10 + 0.18 * phase));
     painter.circle_stroke(dot, 6.5, Stroke::new(1.2, theme.ansi[2].gamma_multiply(0.45 + 0.5 * phase)));
-    // A slow breath: a few frames per second are enough, and keep the CPU quiet.
-    ui.ctx().request_repaint_after(Duration::from_millis(100));
+    if focused {
+        ui.ctx().request_repaint_after(Duration::from_millis(250));
+    }
 }
 
 /// Text in the logo's metal font: drop shadow, dark outline, `color` fill with a lighter top edge.
@@ -4048,9 +4074,10 @@ impl eframe::App for App {
             ui.ctx().request_repaint_after(Duration::from_secs_f64(UPDATE_INTERVAL));
         }
         // Background tabs must keep answering their programs (cursor position reports, etc).
-        for tab in &mut self.tabs {
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
             for term in tab.panes.values_mut() {
                 term.process_events(ui.ctx(), &self.theme);
+                term.set_visible(i == self.active);
             }
         }
 
@@ -4079,7 +4106,14 @@ impl eframe::App for App {
             self.last_sync = now;
             self.sync();
         }
-        ui.ctx().request_repaint_after(Duration::from_secs_f64(SYNC_INTERVAL));
+        // Changes come with input: keep syncing shortly after it, then let an idle app sleep. Outside
+        // edits of config.json wake it up through the config watcher.
+        if ui.input(|i| !i.events.is_empty() || i.pointer.is_moving()) {
+            self.last_input = now;
+        }
+        if now - self.last_input < 3.0 * SYNC_INTERVAL {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(SYNC_INTERVAL));
+        }
 
         egui::Panel::left("sidebar")
             .exact_size(SIDEBAR_WIDTH)
@@ -4160,7 +4194,7 @@ impl eframe::App for App {
                     if resp.has_focus() {
                         tab.focused = id;
                     }
-                    let can_copy = term.selection_text().is_some();
+                    let can_copy = term.has_selection();
                     resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, &saved_commands, &mut pane_action));
                     if tab.dead.contains(&id) {
                         let (again, close) = closed_banner(ui, r, &self.theme, strings);
