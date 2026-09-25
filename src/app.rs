@@ -186,6 +186,8 @@ pub struct App {
     menu: Option<crate::menu::MenuBar>,
     /// Shortcut being recorded in the settings: the next key combination replaces it.
     shortcut_capture: Option<ShortcutAction>,
+    /// GitHub logo for the About page, loaded on first use.
+    github_icon: Option<egui::TextureHandle>,
     /// Saved commands menu open over a pane.
     commands_menu: Option<CommandsMenu>,
     /// History search open over a pane.
@@ -464,6 +466,7 @@ impl App {
             live: Vec::new(),
             history_search: None,
             commands_menu: None,
+            github_icon: None,
             shortcut_capture: None,
             #[cfg(target_os = "macos")]
             menu: None,
@@ -669,8 +672,10 @@ impl App {
                 ui.label(egui::RichText::new(t.commands_hint).size(11.0).color(theme.text_muted));
             });
         });
-        // A click elsewhere closes it (except on the pane header, where the ⚡ button toggles it).
-        let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !area.response.contains_pointer();
+        // A click elsewhere closes it (except on the pane header, where the ⚡ button toggles it). Tested
+        // on the rect: `contains_pointer` is false over the menu's own widgets.
+        let inside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| area.response.rect.contains(p));
+        let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !inside;
 
         if let Some((scope, i)) = remove {
             if let Some(list) = self.commands_mut(scope) {
@@ -2073,7 +2078,7 @@ impl App {
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                for (tab, label) in [(SettingsTab::General, t.general), (SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab), (SettingsTab::Shortcuts, t.shortcuts), (SettingsTab::ConfigFile, t.config_file), (SettingsTab::About, t.about)] {
+                for (tab, label) in [(SettingsTab::About, t.about), (SettingsTab::General, t.general), (SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab), (SettingsTab::Shortcuts, t.shortcuts), (SettingsTab::ConfigFile, t.config_file)] {
                     let text = egui::RichText::new(label).size(14.0);
                     if ui.add(egui::Button::selectable(self.settings_tab == tab, text).min_size(Vec2::new(0.0, 28.0))).clicked() {
                         self.settings_tab = tab;
@@ -2295,8 +2300,14 @@ impl App {
 
         ui.label(egui::RichText::new(t.project.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
         ui.add_space(4.0);
+        let icon = self.github_icon.get_or_insert_with(|| {
+            let png = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/github-mark.png")).unwrap_or_default();
+            let image = egui::ColorImage::from_rgba_unmultiplied([png.width as usize, png.height as usize], &png.rgba);
+            ctx.load_texture("github-mark", image, egui::TextureOptions::LINEAR)
+        });
+        let logo = egui::Image::new(&*icon).fit_to_exact_size(Vec2::splat(16.0)).tint(self.theme.text);
         ui.horizontal(|ui| {
-            let github = egui::Button::new(egui::RichText::new(format!("GitHub  ·  {}", update::REPO)).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+            let github = egui::Button::image_and_text(logo, egui::RichText::new(update::REPO).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
             if ui.add(github).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 crate::terminal::open_url(&format!("https://github.com/{}", update::REPO));
             }
