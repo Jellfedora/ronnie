@@ -188,8 +188,9 @@ pub struct App {
     menu: Option<crate::menu::MenuBar>,
     /// Shortcut being recorded in the settings: the next key combination replaces it.
     shortcut_capture: Option<ShortcutAction>,
-    /// GitHub logo for the About page, loaded on first use.
+    /// GitHub logo and sign of the horns for the About page, loaded on first use.
     github_icon: Option<egui::TextureHandle>,
+    metal_hand: Option<egui::TextureHandle>,
     /// Profile being edited.
     profile_editor: Option<ProfileEditor>,
     /// Saved commands menu open over a pane.
@@ -504,6 +505,7 @@ impl App {
             commands_menu: None,
             profile_editor: None,
             github_icon: None,
+            metal_hand: None,
             shortcut_capture: None,
             #[cfg(target_os = "macos")]
             menu: None,
@@ -2515,7 +2517,15 @@ impl App {
             let (logo, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 80.0), Sense::hover());
             paint_metal(ui.painter(), logo.center(), Align2::CENTER_CENTER, "Ronnie", 64.0, self.theme.accent, 1.0);
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(t.tagline).size(14.0).color(self.theme.text_muted));
+            // Tagline and the sign of the horns (an image: egui's emoji font lacks it).
+            let hand = self.metal_hand.get_or_insert_with(|| load_png(ctx, "metal-hand", include_bytes!("../assets/icon/metal-hand.png")));
+            let galley = ui.painter().layout_no_wrap(t.tagline.to_owned(), FontId::proportional(14.0), self.theme.text_muted);
+            let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+            let left = row.center().x - (galley.size().x + 26.0) / 2.0;
+            let text_pos = Pos2::new(left, row.center().y - galley.size().y / 2.0);
+            let hand_rect = Rect::from_center_size(Pos2::new(left + galley.size().x + 15.0, row.center().y), Vec2::splat(20.0));
+            ui.painter().galley(text_pos, galley, self.theme.text_muted);
+            egui::Image::new(&*hand).paint_at(ui, hand_rect);
             ui.add_space(22.0);
         });
         ui.separator();
@@ -2570,11 +2580,7 @@ impl App {
 
         ui.label(egui::RichText::new(t.project.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
         ui.add_space(4.0);
-        let icon = self.github_icon.get_or_insert_with(|| {
-            let png = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/github-mark.png")).unwrap_or_default();
-            let image = egui::ColorImage::from_rgba_unmultiplied([png.width as usize, png.height as usize], &png.rgba);
-            ctx.load_texture("github-mark", image, egui::TextureOptions::LINEAR)
-        });
+        let icon = self.github_icon.get_or_insert_with(|| load_png(ctx, "github-mark", include_bytes!("../assets/icon/github-mark.png")));
         let logo = egui::Image::new(&*icon).fit_to_exact_size(Vec2::splat(16.0)).tint(self.theme.text);
         ui.horizontal(|ui| {
             let github = egui::Button::image_and_text(logo, egui::RichText::new(update::REPO).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
@@ -3457,6 +3463,13 @@ fn paint_connecting(ui: &Ui, pane: Rect, theme: &Theme, t: &Strings, text: &str)
     let center = pane.center() - Vec2::new(0.0, 20.0);
     painter.text(center, Align2::CENTER_CENTER, format!("{text}{dots}"), FontId::proportional(15.0), theme.text);
     painter.text(center + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, t.connecting_hint, FontId::proportional(13.0), theme.text_muted);
+}
+
+/// A texture from embedded PNG bytes.
+fn load_png(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
+    let png = eframe::icon_data::from_png_bytes(bytes).unwrap_or_default();
+    let image = egui::ColorImage::from_rgba_unmultiplied([png.width as usize, png.height as usize], &png.rgba);
+    ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 
 /// Breathing green halo around a tab's dot while a program runs in it.
