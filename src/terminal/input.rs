@@ -27,9 +27,15 @@ fn tilde_key(n: u8, m: Modifiers) -> Vec<u8> {
 /// Translates a key press into the bytes a terminal program expects.
 /// Printable text is not handled here: it arrives through `Event::Text`.
 pub fn key_to_bytes(key: Key, m: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
-    // On macOS, Cmd is reserved for application shortcuts.
+    // On macOS, Cmd is reserved for application shortcuts, except the usual line editing ones:
+    // Cmd+← / Cmd+→ start / end of line, Cmd+⌫ erases the line (as Ctrl+A, Ctrl+E, Ctrl+U).
     if m.mac_cmd {
-        return None;
+        return match key {
+            Key::ArrowLeft => Some(b"\x01".to_vec()),
+            Key::ArrowRight => Some(b"\x05".to_vec()),
+            Key::Backspace => Some(b"\x15".to_vec()),
+            _ => None,
+        };
     }
 
     let bytes = match key {

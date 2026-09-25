@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "Jellfedora/ronnie";
+pub const REPO: &str = "Jellfedora/ronnie";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Target in the release archive names; macOS gets a single universal (arm64 + x86_64) app.
 const TARGET: &str = if cfg!(target_os = "macos") { "universal-apple-darwin" } else { env!("TARGET") };

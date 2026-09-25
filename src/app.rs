@@ -181,6 +181,8 @@ pub struct App {
     update_attempted: bool,
     /// Per tab, the program running in it (if any), for the sidebar's live badge. Refreshed each frame.
     live: Vec<Option<String>>,
+    /// Shortcut being recorded in the settings: the next key combination replaces it.
+    shortcut_capture: Option<ShortcutAction>,
     /// History search open over a pane.
     history_search: Option<HistorySearch>,
     /// Close waiting for the user to confirm, because programs are running.
@@ -372,6 +374,15 @@ enum SettingsTab {
     Profiles,
     Ssh,
     ConfigFile,
+    Shortcuts,
+    About,
+}
+
+/// A shortcut that can be changed in the settings.
+#[derive(Clone, Copy, PartialEq)]
+enum ShortcutAction {
+    ClearPane,
+    OpenSettings,
 }
 
 struct ConfigEditor {
@@ -424,6 +435,7 @@ impl App {
             update_attempted: false,
             live: Vec::new(),
             history_search: None,
+            shortcut_capture: None,
             confirm_close: None,
             close_confirmed: false,
             splash: Some(f64::NAN),
@@ -918,6 +930,10 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ui: &Ui) {
+        // A shortcut is being recorded in the settings: keys are for it.
+        if self.shortcut_capture.is_some() {
+            return;
+        }
         // Cmd on macOS; Ctrl+Shift elsewhere so plain Ctrl keys stay available to the shell.
         let cmd = if cfg!(target_os = "macos") { Modifiers::MAC_CMD } else { Modifiers::CTRL | Modifiers::SHIFT };
         let pressed = |key| ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(cmd, key)));
@@ -933,10 +949,18 @@ impl App {
         if pressed(Key::T) {
             self.new_tab(ui.ctx());
         }
-        // Settings: Cmd+P (Ctrl+Shift+P), easier to read on the button than the usual Cmd+, which still works.
+        // Settings: configurable (Cmd+P by default); the usual Cmd+, works too.
+        let shortcuts = self.config.settings.shortcuts.clone();
+        let hit = |s: &config::Shortcut| s.parse().is_some_and(|k| ui.input_mut(|i| i.consume_shortcut(&k)));
         let comma = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)));
-        if pressed(Key::P) || comma {
+        if hit(&shortcuts.open_settings) || comma {
             self.settings_dialog = !self.settings_dialog;
+        }
+        // Clear the focused pane: configurable, Cmd+K by default.
+        if hit(&shortcuts.clear_pane) {
+            if let Some(term) = self.tabs.get_mut(self.active).and_then(|t| t.panes.get_mut(&t.focused)) {
+                term.clear();
+            }
         }
         // History search in the focused pane: Cmd+R (Ctrl+Shift+R).
         if pressed(Key::R) {
@@ -971,6 +995,12 @@ impl App {
             (Key::ArrowDown, Direction::Down),
         ] {
             if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(nav, key))) {
+                self.focus_neighbor(dir);
+            }
+            // macOS: Cmd+arrow too, but only toward an existing pane; otherwise the terminal gets it
+            // (start / end of line).
+            let neighbor = self.tabs.get(self.active).and_then(|t| pane::neighbor(&t.rects, t.focused, dir)).is_some();
+            if cfg!(target_os = "macos") && neighbor && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::MAC_CMD, key))) {
                 self.focus_neighbor(dir);
             }
         }
@@ -1850,7 +1880,7 @@ impl App {
         let mut picked = self.config.settings.clone();
         let mut close = false;
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
-        let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(190)).show(ctx, |ui| {
             // Same size on every tab: pages scroll inside, the window never jumps around.
             ui.set_width(SETTINGS_WIDTH);
             ui.horizontal(|ui| {
@@ -1863,7 +1893,7 @@ impl App {
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                for (tab, label) in [(SettingsTab::General, t.general), (SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab), (SettingsTab::ConfigFile, t.config_file)] {
+                for (tab, label) in [(SettingsTab::General, t.general), (SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab), (SettingsTab::Shortcuts, t.shortcuts), (SettingsTab::ConfigFile, t.config_file), (SettingsTab::About, t.about)] {
                     let text = egui::RichText::new(label).size(14.0);
                     if ui.add(egui::Button::selectable(self.settings_tab == tab, text).min_size(Vec2::new(0.0, 28.0))).clicked() {
                         self.settings_tab = tab;
@@ -1880,6 +1910,8 @@ impl App {
                 SettingsTab::ConfigFile => return self.config_editor_ui(ui, t),
                 SettingsTab::Profiles => return self.profiles_ui(ui, t),
                 SettingsTab::Ssh => return self.ssh_settings_ui(ui, t),
+                SettingsTab::About => return self.about_ui(ui, ctx, t, &mut picked),
+                SettingsTab::Shortcuts => return self.shortcuts_ui(ui, t, &mut picked),
                 SettingsTab::General => {}
             }
 
@@ -1899,52 +1931,6 @@ impl App {
                     }
                 }
             });
-            ui.add_space(18.0);
-
-            heading(ui, &t.updates.to_uppercase());
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.version.replace("{v}", update::VERSION)).size(14.0));
-                ui.add_space(12.0);
-                if ui.add_enabled(!self.updater.busy(), egui::Button::new(egui::RichText::new(t.check_now).size(13.0))).clicked() {
-                    self.update_dismissed = false;
-                    self.updater.check(ctx);
-                }
-                let muted_color = self.theme.text_muted;
-                let muted = move |s: &str| egui::RichText::new(s.to_owned()).size(13.0).color(muted_color);
-                match self.updater.state() {
-                    update::State::Checking => {
-                        ui.spinner();
-                        ui.label(muted(t.checking));
-                    }
-                    update::State::UpToDate => {
-                        ui.label(muted(t.up_to_date));
-                    }
-                    update::State::Available(a) => {
-                        ui.label(egui::RichText::new(t.update_available.replace("{v}", &a.version)).size(13.0).color(self.theme.accent));
-                        if ui.button(t.update_now).clicked() {
-                            self.update_attempted = true;
-                            self.update_dismissed = false;
-                            self.updater.install(ctx, a.clone());
-                        }
-                        ui.hyperlink_to(t.release_notes, &a.url);
-                    }
-                    update::State::Installing(v) => {
-                        ui.spinner();
-                        ui.label(muted(&t.installing.replace("{v}", &v)));
-                    }
-                    update::State::Installed(v) => {
-                        ui.label(muted(&t.update_installed.replace("{v}", &v)));
-                        if ui.button(t.restart).clicked() {
-                            self.request_close(CloseRequest::Restart);
-                        }
-                    }
-                    update::State::Failed(e) => {
-                        ui.label(egui::RichText::new(t.update_failed).size(13.0).color(self.theme.ansi[1])).on_hover_text(e);
-                    }
-                    update::State::Idle => {}
-                }
-            });
-            ui.checkbox(&mut picked.auto_update, egui::RichText::new(t.auto_update).size(14.0));
             ui.add_space(18.0);
 
             heading(ui, &t.display.to_uppercase());
@@ -1971,8 +1957,12 @@ impl App {
             });
             });
         });
+        if self.settings_tab != SettingsTab::Shortcuts {
+            self.shortcut_capture = None;
+        }
         if close || modal.should_close() {
             self.settings_dialog = false;
+            self.shortcut_capture = None;
             self.editor = None;
             self.profile_names.clear();
             self.profile_error = None;
@@ -1984,6 +1974,157 @@ impl App {
             self.apply_config(config);
             self.save_config();
         }
+    }
+
+    /// "Shortcuts" settings page: the changeable ones (click, then type the combination), then the others.
+    fn shortcuts_ui(&mut self, ui: &mut Ui, t: &Strings, picked: &mut config::Settings) {
+        let muted = self.theme.text_muted;
+        // Recording: the next key pressed with a modifier becomes the shortcut; Escape cancels.
+        if let Some(action) = self.shortcut_capture {
+            let typed = ui.input_mut(|i| {
+                let found = i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                    _ => None,
+                });
+                if found.is_some() {
+                    i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                }
+                found
+            });
+            match typed {
+                Some((Key::Escape, _)) => self.shortcut_capture = None,
+                Some((key, m)) if m.command || m.ctrl || m.alt || m.mac_cmd => {
+                    let shortcut = config::Shortcut::typed(m, key);
+                    match action {
+                        ShortcutAction::ClearPane => picked.shortcuts.clear_pane = shortcut,
+                        ShortcutAction::OpenSettings => picked.shortcuts.open_settings = shortcut,
+                    }
+                    self.shortcut_capture = None;
+                }
+                _ => {}
+            }
+        }
+
+        let defaults = config::Shortcuts::default();
+        let rows = [
+            (ShortcutAction::ClearPane, t.shortcut_clear_pane, picked.shortcuts.clear_pane.clone(), defaults.clear_pane.clone()),
+            (ShortcutAction::OpenSettings, t.shortcut_open_settings, picked.shortcuts.open_settings.clone(), defaults.open_settings.clone()),
+        ];
+        egui::Grid::new("shortcuts-grid").num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
+            for (action, label, current, default) in rows {
+                ui.label(egui::RichText::new(label).size(14.0));
+                let recording = self.shortcut_capture == Some(action);
+                let text = if recording { t.shortcut_press.to_owned() } else { current.label() };
+                let color = if recording { self.theme.accent } else { self.theme.text };
+                let button = egui::Button::new(egui::RichText::new(text).size(13.5).monospace().color(color)).corner_radius(6.0).min_size(Vec2::new(150.0, 28.0));
+                if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.shortcut_capture = if recording { None } else { Some(action) };
+                }
+                if current != default && ui.button(t.shortcut_reset).clicked() {
+                    match action {
+                        ShortcutAction::ClearPane => picked.shortcuts.clear_pane = default,
+                        ShortcutAction::OpenSettings => picked.shortcuts.open_settings = default,
+                    }
+                }
+                ui.end_row();
+            }
+        });
+
+        ui.add_space(22.0);
+        ui.label(egui::RichText::new(t.shortcut_fixed.to_uppercase()).size(12.0).strong().color(muted));
+        ui.add_space(6.0);
+        let mac = cfg!(target_os = "macos");
+        let fixed = [
+            (t.shortcut_new_tab, if mac { "⌘ T" } else { "Ctrl+Shift+T" }),
+            (t.shortcut_close_pane, if mac { "⌘ W" } else { "Ctrl+Shift+W" }),
+            (t.shortcut_split_right, if mac { "⌘ D" } else { "Ctrl+Shift+D" }),
+            (t.shortcut_split_down, if mac { "⇧⌘ D" } else { "Ctrl+Shift+E" }),
+            (t.history_search, if mac { "⌘ R" } else { "Ctrl+Shift+R" }),
+            (t.shortcut_reopen, if mac { "⇧⌘ T" } else { "Ctrl+Shift+Alt+T" }),
+            (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
+            (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
+        ];
+        egui::Grid::new("fixed-shortcuts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            for (label, keys) in fixed {
+                ui.label(egui::RichText::new(label).size(13.5).color(muted));
+                ui.label(egui::RichText::new(keys).size(13.5).monospace());
+                ui.end_row();
+            }
+        });
+    }
+
+    /// "Informations" settings page: logo, version and updates, link to the project.
+    fn about_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, t: &Strings, picked: &mut config::Settings) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            let (logo, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 80.0), Sense::hover());
+            paint_metal(ui.painter(), logo.center(), Align2::CENTER_CENTER, "Ronnie", 64.0, self.theme.accent, 1.0);
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(t.tagline).size(14.0).color(self.theme.text_muted));
+            ui.add_space(22.0);
+        });
+        ui.separator();
+        ui.add_space(14.0);
+        ui.label(egui::RichText::new(t.updates.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(t.version.replace("{v}", update::VERSION)).size(14.0));
+            ui.add_space(12.0);
+            if ui.add_enabled(!self.updater.busy(), egui::Button::new(egui::RichText::new(t.check_now).size(13.0))).clicked() {
+                self.update_dismissed = false;
+                self.updater.check(ctx);
+            }
+            let muted_color = self.theme.text_muted;
+            let muted = move |s: &str| egui::RichText::new(s.to_owned()).size(13.0).color(muted_color);
+            match self.updater.state() {
+                update::State::Checking => {
+                    ui.spinner();
+                    ui.label(muted(t.checking));
+                }
+                update::State::UpToDate => {
+                    ui.label(muted(t.up_to_date));
+                }
+                update::State::Available(a) => {
+                    ui.label(egui::RichText::new(t.update_available.replace("{v}", &a.version)).size(13.0).color(self.theme.accent));
+                    if ui.button(t.update_now).clicked() {
+                        self.update_attempted = true;
+                        self.update_dismissed = false;
+                        self.updater.install(ctx, a.clone());
+                    }
+                    ui.hyperlink_to(t.release_notes, &a.url);
+                }
+                update::State::Installing(v) => {
+                    ui.spinner();
+                    ui.label(muted(&t.installing.replace("{v}", &v)));
+                }
+                update::State::Installed(v) => {
+                    ui.label(muted(&t.update_installed.replace("{v}", &v)));
+                    if ui.button(t.restart).clicked() {
+                        self.request_close(CloseRequest::Restart);
+                    }
+                }
+                update::State::Failed(e) => {
+                    ui.label(egui::RichText::new(t.update_failed).size(13.0).color(self.theme.ansi[1])).on_hover_text(e);
+                }
+                update::State::Idle => {}
+            }
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut picked.auto_update, egui::RichText::new(t.auto_update).size(14.0));
+        ui.add_space(22.0);
+
+        ui.label(egui::RichText::new(t.project.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let github = egui::Button::new(egui::RichText::new(format!("GitHub  ·  {}", update::REPO)).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+            if ui.add(github).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                crate::terminal::open_url(&format!("https://github.com/{}", update::REPO));
+            }
+            let releases = egui::Button::new(egui::RichText::new(t.all_releases).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+            if ui.add(releases).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                crate::terminal::open_url(&format!("https://github.com/{}/releases", update::REPO));
+            }
+        });
     }
 
     /// The config file, editable as JSON. Saving validates it first: a mistake is reported, never written.
@@ -2351,8 +2492,8 @@ impl App {
         ui.painter().rect_stroke(button, 6.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(if hot { 0.8 } else { 0.35 })), egui::StrokeKind::Inside);
         paint_gear(ui.painter(), Pos2::new(button.min.x + 16.0, button.center().y), self.theme.accent);
         ui.painter().text(Pos2::new(button.min.x + 32.0, button.center().y), Align2::LEFT_CENTER, t.settings, FontId::proportional(13.0), self.theme.text);
-        let shortcut = if cfg!(target_os = "macos") { "⌘ P" } else { "Ctrl+Shift+P" };
-        ui.painter().text(Pos2::new(button.max.x - 10.0, button.center().y), Align2::RIGHT_CENTER, shortcut, FontId::proportional(11.5), self.theme.text_muted);
+        let shortcut = self.config.settings.shortcuts.open_settings.label();
+        ui.painter().text(Pos2::new(button.max.x - 10.0, button.center().y), Align2::RIGHT_CENTER, &shortcut, FontId::proportional(11.5), self.theme.text_muted);
         if settings.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.settings_dialog = true;
         }

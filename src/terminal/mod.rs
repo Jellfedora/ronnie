@@ -292,6 +292,24 @@ impl Terminal {
         self.paste(text, mode);
     }
 
+    /// Clears the screen and the scrollback (Cmd+K). An idle shell is asked to redraw its prompt;
+    /// a running program is left alone.
+    pub fn clear(&mut self) {
+        use alacritty_terminal::vte::ansi::{ClearMode, Handler};
+        let idle = self.foreground().is_none();
+        {
+            let mut term = self.term.lock();
+            term.grid_mut().clear_history();
+            if !idle {
+                term.clear_screen(ClearMode::All);
+            }
+        }
+        if idle {
+            // Ctrl+L: the shell clears the screen and prints its prompt again.
+            self.write(b"\x0c");
+        }
+    }
+
     pub fn request_focus(&self, ui: &Ui) {
         ui.memory_mut(|m| m.request_focus(self.id));
     }

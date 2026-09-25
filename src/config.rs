@@ -285,6 +285,93 @@ pub struct Settings {
     /// Look for a new release on GitHub at startup and every few hours.
     #[serde(default = "default_true")]
     pub auto_update: bool,
+    #[serde(default)]
+    pub shortcuts: Shortcuts,
+}
+
+/// Shortcuts the user can change (Settings > Shortcuts).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct Shortcuts {
+    /// Clears the focused pane's screen and scrollback.
+    pub clear_pane: Shortcut,
+    pub open_settings: Shortcut,
+}
+
+impl Default for Shortcuts {
+    fn default() -> Self {
+        Self { clear_pane: Shortcut::command('K'), open_settings: Shortcut::command('P') }
+    }
+}
+
+/// A keyboard shortcut, stored as text: "Cmd+K", "Ctrl+Shift+K", "Alt+F2"...
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(transparent)]
+pub struct Shortcut(pub String);
+
+impl Shortcut {
+    /// `key` with the app's usual modifier: Cmd on macOS, Ctrl+Shift elsewhere (plain Ctrl keys belong
+    /// to the shell).
+    pub fn command(key: char) -> Self {
+        Self(if cfg!(target_os = "macos") { format!("Cmd+{key}") } else { format!("Ctrl+Shift+{key}") })
+    }
+
+    /// The shortcut `modifiers` + `key` just typed.
+    pub fn typed(modifiers: egui::Modifiers, key: egui::Key) -> Self {
+        let mut parts = Vec::new();
+        if modifiers.mac_cmd {
+            parts.push("Cmd");
+        }
+        if modifiers.ctrl {
+            parts.push("Ctrl");
+        }
+        if modifiers.alt {
+            parts.push("Alt");
+        }
+        if modifiers.shift {
+            parts.push("Shift");
+        }
+        parts.push(key.name());
+        Self(parts.join("+"))
+    }
+
+    pub fn parse(&self) -> Option<egui::KeyboardShortcut> {
+        let mut modifiers = egui::Modifiers::NONE;
+        let mut parts: Vec<&str> = self.0.split('+').map(str::trim).collect();
+        // "+" itself as the key: "Cmd++".
+        if self.0.ends_with("++") {
+            parts.truncate(parts.len().saturating_sub(2));
+            parts.push("+");
+        }
+        let key = egui::Key::from_name(parts.pop()?)?;
+        for part in parts {
+            match part.to_ascii_lowercase().as_str() {
+                "cmd" | "command" | "super" => modifiers.mac_cmd = true,
+                "ctrl" | "control" => modifiers.ctrl = true,
+                "alt" | "option" => modifiers.alt = true,
+                "shift" => modifiers.shift = true,
+                _ => return None,
+            }
+        }
+        modifiers.command = if cfg!(target_os = "macos") { modifiers.mac_cmd } else { modifiers.ctrl };
+        Some(egui::KeyboardShortcut::new(modifiers, key))
+    }
+
+    /// As shown in the interface: "⌘ K" on macOS, "Ctrl+Shift+K" elsewhere.
+    pub fn label(&self) -> String {
+        if !cfg!(target_os = "macos") {
+            return self.0.clone();
+        }
+        let Some(shortcut) = self.parse() else { return self.0.clone() };
+        let m = shortcut.modifiers;
+        let mut out = String::new();
+        for (on, symbol) in [(m.ctrl, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.mac_cmd, "⌘")] {
+            if on {
+                out.push_str(symbol);
+            }
+        }
+        format!("{out} {}", shortcut.logical_key.symbol_or_name())
+    }
 }
 
 fn default_true() -> bool {
@@ -297,7 +384,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default() }
     }
 }
 
@@ -366,6 +453,17 @@ pub(crate) mod hex_color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_shortcuts() {
+        let k = Shortcut("Cmd+Shift+K".into()).parse().unwrap();
+        assert!(k.modifiers.mac_cmd && k.modifiers.shift && !k.modifiers.ctrl);
+        assert_eq!(k.logical_key, egui::Key::K);
+        let typed = Shortcut::typed(egui::Modifiers { ctrl: true, alt: true, ..Default::default() }, egui::Key::F2);
+        assert_eq!(typed.0, "Ctrl+Alt+F2");
+        assert_eq!(typed.parse().unwrap().logical_key, egui::Key::F2);
+        assert!(Shortcut("Hyper+K".into()).parse().is_none());
+    }
 
     #[test]
     fn profile_round_trip() {
