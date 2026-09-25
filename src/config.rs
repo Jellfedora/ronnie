@@ -373,6 +373,9 @@ pub struct Settings {
     pub auto_update: bool,
     #[serde(default)]
     pub shortcuts: Shortcuts,
+    /// Programs may write to the clipboard (OSC 52: vim, tmux, remote hosts...).
+    #[serde(default = "default_true")]
+    pub clipboard_from_programs: bool,
 }
 
 /// Shortcuts the user can change (Settings > Shortcuts).
@@ -487,7 +490,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true }
     }
 }
 

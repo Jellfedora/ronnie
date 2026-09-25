@@ -205,6 +205,10 @@ pub struct App {
     read_only: bool,
     /// config.json or session.json couldn't be read at startup: the session isn't saved this run.
     session_frozen: bool,
+    /// Last error written to the log, to write each one once.
+    logged_error: Option<String>,
+    /// Multi-line paste waiting for confirmation: pane and text.
+    paste_confirm: Option<(PaneId, String)>,
     /// A clicked link waiting for "Open this link?" confirmation.
     link_confirm: Option<String>,
     /// "Reset everything?" dialog shown.
@@ -578,6 +582,8 @@ impl App {
             session_frozen: false,
             confirm_reset: false,
             link_confirm: None,
+            paste_confirm: None,
+            logged_error: None,
             history_search: None,
             commands_menu: None,
             profile_editor: None,
@@ -1342,8 +1348,33 @@ impl App {
                 self.closed.remove(0);
             }
         }
-        if self.rename.as_ref().is_some_and(|r| r.tab == index) {
+        // Whatever points at a tab by its index follows the shift, or is dropped with the closed tab:
+        // otherwise a pending rename, popup or "close anyway?" would act on its neighbour.
+        let shift = |i: &mut usize| -> bool {
+            match (*i).cmp(&index) {
+                std::cmp::Ordering::Equal => false,
+                std::cmp::Ordering::Greater => {
+                    *i -= 1;
+                    true
+                }
+                std::cmp::Ordering::Less => true,
+            }
+        };
+        if self.rename.as_mut().is_some_and(|r| !shift(&mut r.tab)) {
             self.rename = None;
+        }
+        if self.history_search.as_mut().is_some_and(|s| !shift(&mut s.tab)) {
+            self.history_search = None;
+        }
+        if self.commands_menu.as_mut().is_some_and(|m| !shift(&mut m.tab)) {
+            self.commands_menu = None;
+        }
+        let pending = self.confirm_close.as_mut().map(|c| match &mut c.request {
+            CloseRequest::Pane(i, _) | CloseRequest::Tab(i) => shift(i),
+            CloseRequest::Window | CloseRequest::Restart => true,
+        });
+        if pending == Some(false) {
+            self.confirm_close = None;
         }
         if self.active > index || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
@@ -2517,6 +2548,7 @@ impl App {
 
             heading(ui, &t.display.to_uppercase());
             ui.checkbox(&mut picked.show_cwd, egui::RichText::new(t.show_cwd).size(14.0));
+            ui.checkbox(&mut picked.clipboard_from_programs, egui::RichText::new(t.clipboard_from_programs).size(14.0));
             ui.add_space(18.0);
 
             heading(ui, &t.theme.to_uppercase());
@@ -3005,6 +3037,59 @@ impl App {
                 self.ctx.send_viewport_cmd(ViewportCommand::Close);
             }
             CloseRequest::Restart => self.restart(),
+        }
+    }
+
+    /// "Paste N lines?" when the program would run each pasted line at once (no bracketed paste).
+    fn paste_confirm_window(&mut self, ctx: &egui::Context) {
+        if self.paste_confirm.is_none() {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                self.paste_confirm = tab.panes.iter_mut().find_map(|(id, term)| Some((*id, term.take_pending_paste()?)));
+            }
+        }
+        let Some((pane, text)) = self.paste_confirm.clone() else { return };
+        let t = self.t();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut answer = None;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("confirm-paste")).frame(frame).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(egui::RichText::new(t.paste_title.replace("{n}", &lines.len().to_string())).size(17.0).strong());
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(t.paste_body).size(13.5).color(self.theme.text_muted));
+            ui.add_space(6.0);
+            Frame::new().fill(self.theme.bg).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                for line in lines.iter().take(8) {
+                    ui.add(egui::Label::new(egui::RichText::new(*line).monospace().size(12.5)).truncate());
+                }
+                if lines.len() > 8 {
+                    ui.label(egui::RichText::new(format!("…  +{}", lines.len() - 8)).size(12.5).color(self.theme.text_muted));
+                }
+            });
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(egui::RichText::new(t.paste_confirm).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                    answer = Some(true);
+                }
+                let cancel = ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0)));
+                cancel.request_focus();
+                if cancel.clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            answer = Some(false);
+        }
+        if let Some(paste) = answer {
+            if paste {
+                if let Some(term) = self.tabs.get_mut(self.active).and_then(|t| t.panes.get_mut(&pane)) {
+                    term.paste_confirmed(&text);
+                }
+            }
+            self.paste_confirm = None;
+            self.focus_terminal = true;
         }
     }
 
@@ -4076,6 +4161,7 @@ impl eframe::App for App {
         // Background tabs must keep answering their programs (cursor position reports, etc).
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             for term in tab.panes.values_mut() {
+                term.set_allow_clipboard(self.config.settings.clipboard_from_programs);
                 term.process_events(ui.ctx(), &self.theme);
                 term.set_visible(i == self.active);
             }
@@ -4099,6 +4185,13 @@ impl eframe::App for App {
             }
         }
         self.handle_shortcuts(ui);
+        // Errors shown to the user also go to ronnie.log, to diagnose them later.
+        if self.error != self.logged_error {
+            if let Some(e) = &self.error {
+                crate::log::error(e);
+            }
+            self.logged_error = self.error.clone();
+        }
 
         self.track_window(ui.ctx());
         let now = ui.input(|i| i.time);
@@ -4336,6 +4429,7 @@ impl eframe::App for App {
         self.confirm_close_window(ui.ctx());
         self.confirm_reset_window(ui.ctx());
         self.link_confirm_window(ui.ctx());
+        self.paste_confirm_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash {

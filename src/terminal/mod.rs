@@ -140,6 +140,10 @@ pub struct Terminal {
     hover_link: Option<links::Link>,
     /// A clicked link that needs the user's confirmation before opening (see `links::is_safe`).
     link_request: Option<String>,
+    /// Multi-line paste waiting for confirmation (the program doesn't use bracketed paste).
+    pending_paste: Option<String>,
+    /// Programs may set the clipboard (OSC 52), e.g. vim or tmux over SSH.
+    allow_clipboard: bool,
     /// Text search in the output (Cmd+F), highlighted on screen.
     find: Option<Find>,
     /// Where the grid was drawn last frame, to place things next to the cursor.
@@ -221,6 +225,8 @@ impl Terminal {
             hover_link: None,
             find: None,
             link_request: None,
+            pending_paste: None,
+            allow_clipboard: true,
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
         }
@@ -337,6 +343,10 @@ impl Terminal {
     /// Whether text is selected (cheap, unlike building the selected text).
     pub fn has_selection(&self) -> bool {
         self.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty())
+    }
+
+    pub fn set_allow_clipboard(&mut self, allow: bool) {
+        self.allow_clipboard = allow;
     }
 
     pub fn set_visible(&self, visible: bool) {
@@ -462,12 +472,13 @@ impl Terminal {
     }
 
     pub fn process_events(&mut self, ctx: &egui::Context, theme: &Theme) {
+        let allow_clipboard = self.allow_clipboard;
         while let Ok(event) = self.events.try_recv() {
             match event {
                 TermEvent::Title(t) => self.title = Some(t),
                 TermEvent::ResetTitle => self.title = None,
                 TermEvent::PtyWrite(s) => self.write(s.as_bytes()),
-                TermEvent::ClipboardStore(_, text) => ctx.copy_text(text),
+                TermEvent::ClipboardStore(_, text) if allow_clipboard => ctx.copy_text(text),
                 TermEvent::ColorRequest(index, fmt) => {
                     let color = match index {
                         256 => Color::Named(NamedColor::Foreground),
@@ -637,9 +648,22 @@ impl Terminal {
         if mode.contains(TermMode::BRACKETED_PASTE) {
             let clean = text.replace('\x1b', "");
             self.write_user(format!("\x1b[200~{clean}\x1b[201~").as_bytes());
+        } else if text.trim_end_matches(['\r', '\n']).contains(['\r', '\n']) {
+            // Without bracketed paste, each line would run as it arrives: ask first (see App).
+            self.pending_paste = Some(text.to_owned());
         } else {
             self.write_user(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
         }
+    }
+
+    /// Multi-line text waiting for "Paste N lines?" confirmation, taken once.
+    pub fn take_pending_paste(&mut self) -> Option<String> {
+        self.pending_paste.take()
+    }
+
+    /// Pastes confirmed multi-line text, each line typed as if Enter followed it.
+    pub fn paste_confirmed(&mut self, text: &str) {
+        self.write_user(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
     }
 
     /// Links are clickable unless the program handles the mouse itself; Cmd (Ctrl) makes them clickable anyway.
