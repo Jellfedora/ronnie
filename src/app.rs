@@ -2032,11 +2032,18 @@ impl App {
                 continue;
             }
             if tab.ssh.is_some() {
-                busy.push(format!("ssh  ·  {}", tab.title()));
+                busy.push(format!("{}  ·  ssh", tab.title()));
             } else if let Some(program) = term.foreground() {
-                busy.push(format!("{program}  ·  {}", tab.title()));
+                // The folder tells apart several panes running the same program.
+                let dir = term.cwd().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
+                busy.push(match dir {
+                    Some(dir) => format!("{}  ·  {program}  ({dir})", tab.title()),
+                    None => format!("{}  ·  {program}", tab.title()),
+                });
             }
         }
+        // Panes are in a map: give the list a stable order.
+        busy.sort();
         busy
     }
 
@@ -2596,10 +2603,10 @@ fn paint_logo(painter: &egui::Painter, rect: Rect) {
 /// Startup splash, `t` seconds in: the letters of "Ronnie" drop in one by one, an accent line and the
 /// version appear, then everything fades out. Returns false once it is over.
 fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) -> bool {
-    const LETTERS: f32 = 0.09; // delay between two letters
-    const DROP: f32 = 0.42; // duration of a letter's fall
-    const FADE_START: f32 = 1.55;
-    const END: f32 = 2.0;
+    const LETTERS: f32 = 0.13; // delay between two letters
+    const DROP: f32 = 0.55; // duration of a letter's fall
+    const FADE_START: f32 = 2.4;
+    const END: f32 = 3.0;
     if t >= END {
         return false;
     }
@@ -2613,7 +2620,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     let size = (screen.width() / 7.0).clamp(56.0, 110.0);
     let center = screen.center() - Vec2::new(0.0, size * 0.25);
     // Soft glow behind the name, swelling once the letters have landed.
-    let landed = ((t - 0.6) / 0.5).clamp(0.0, 1.0);
+    let landed = ((t - 0.9) / 0.6).clamp(0.0, 1.0);
     for k in 0..12 {
         let r = size * (0.6 + k as f32 * 0.22) * (0.8 + 0.2 * landed);
         painter.circle_filled(center, r, LOGO_COLOR.gamma_multiply(0.012 * landed * fade));
@@ -2632,12 +2639,12 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     }
 
     // Accent line growing from the middle, then the version under it.
-    let line = ((t - 0.75) / 0.35).clamp(0.0, 1.0);
+    let line = ((t - 1.1) / 0.45).clamp(0.0, 1.0);
     if line > 0.0 {
         let half = size * 1.6 * (1.0 - (1.0 - line).powi(3));
         let y = center.y + size * 0.62;
         painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, LOGO_COLOR.gamma_multiply(fade)));
-        let version = ((t - 0.95) / 0.3).clamp(0.0, 1.0) * fade;
+        let version = ((t - 1.4) / 0.4).clamp(0.0, 1.0) * fade;
         painter.text(Pos2::new(center.x, y + 22.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
     }
     true
