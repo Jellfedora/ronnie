@@ -1,0 +1,376 @@
+//! What is saved to disk: the config (settings and profiles, one JSON file the user can edit or export)
+//! and the session (open and recently closed tabs, window), which is state rather than config.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as _, Result};
+use egui::Color32;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::i18n::Lang;
+use crate::pane::Axis;
+
+/// How many closed tabs are remembered.
+pub const MAX_CLOSED: usize = 15;
+
+/// A tab's split layout, with what each pane runs.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Layout {
+    Pane {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
+    },
+    Split {
+        axis: Axis,
+        ratio: f32,
+        a: Box<Layout>,
+        b: Box<Layout>,
+    },
+}
+
+impl Layout {
+    /// Number of panes.
+    pub fn panes(&self) -> usize {
+        match self {
+            Layout::Pane { .. } => 1,
+            Layout::Split { a, b, .. } => a.panes() + b.panes(),
+        }
+    }
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout::Pane { cwd: None }
+    }
+}
+
+/// Everything needed to rebuild a tab.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct TabState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "hex_color")]
+    pub color: Option<Color32>,
+    #[serde(default)]
+    pub layout: Layout,
+    /// Index of the focused pane, in layout order.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub focused: usize,
+}
+
+fn is_zero(v: &usize) -> bool {
+    *v == 0
+}
+
+/// A saved tab that can be opened again at any time.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Profile {
+    pub id: Uuid,
+    #[serde(flatten)]
+    pub tab: TabState,
+}
+
+impl Profile {
+    pub fn name<'a>(&'a self, untitled: &'a str) -> &'a str {
+        self.tab.name.as_deref().unwrap_or(untitled)
+    }
+}
+
+/// Everything the user configures, stored in `config.json`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Config {
+    #[serde(flatten)]
+    pub settings: Settings,
+    /// Saved tabs: name, color, split layout and each pane's directory.
+    #[serde(default)]
+    pub profiles: Vec<Profile>,
+    /// SSH connections. Passwords are in the OS keychain, not here.
+    #[serde(default)]
+    pub ssh: Vec<crate::ssh::SshHost>,
+    /// Sidebar arrangement of profiles and SSH hosts: first those outside any group, then the groups.
+    #[serde(default)]
+    pub ungrouped: Vec<Uuid>,
+    #[serde(default)]
+    pub groups: Vec<Group>,
+}
+
+/// A named, collapsible set of profiles and SSH hosts in the sidebar.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Group {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
+    /// Profile and SSH host ids, in display order.
+    #[serde(default)]
+    pub items: Vec<Uuid>,
+}
+
+impl Group {
+    pub fn new(name: &str) -> Self {
+        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new() }
+    }
+}
+
+impl Config {
+    /// Keeps the sidebar arrangement consistent with the existing profiles and hosts: unknown or
+    /// duplicate ids are dropped, new items are placed (in the group named by an imported host, if any).
+    pub fn normalize(&mut self) {
+        let known: Vec<Uuid> = self.profiles.iter().map(|p| p.id).chain(self.ssh.iter().map(|h| h.id)).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut keep = |id: &Uuid| known.contains(id) && seen.insert(*id);
+        self.ungrouped.retain(&mut keep);
+        for group in &mut self.groups {
+            group.items.retain(&mut keep);
+        }
+        for host in &mut self.ssh {
+            let Some(name) = host.group.take() else {
+                continue;
+            };
+            if seen.contains(&host.id) {
+                continue;
+            }
+            let index = match self.groups.iter().position(|g| g.name == name) {
+                Some(i) => i,
+                None => {
+                    self.groups.push(Group::new(&name));
+                    self.groups.len() - 1
+                }
+            };
+            self.groups[index].items.push(host.id);
+            seen.insert(host.id);
+        }
+        for id in known {
+            if seen.insert(id) {
+                self.ungrouped.push(id);
+            }
+        }
+    }
+
+    /// Removes an item from wherever it is in the sidebar.
+    pub fn unplace(&mut self, id: Uuid) {
+        self.ungrouped.retain(|i| *i != id);
+        for group in &mut self.groups {
+            group.items.retain(|i| *i != id);
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("config serializes")
+    }
+
+    /// Parses the config; the error names the line and column of the mistake.
+    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(text)
+    }
+}
+
+pub fn config_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("config.json"))
+}
+
+/// Loads `config.json`, or builds it from the files used by earlier versions.
+pub fn load_config() -> Result<Config> {
+    let path = config_path();
+    if path.as_ref().is_some_and(|p| p.exists()) {
+        let mut config: Config = load(path)?;
+        config.normalize();
+        return Ok(config);
+    }
+    #[derive(Deserialize, Default)]
+    struct LegacyProfiles {
+        #[serde(default)]
+        profiles: Vec<Profile>,
+    }
+    let dir = config_dir();
+    let profiles = load::<LegacyProfiles>(dir.as_ref().map(|d| d.join("profiles.json")))?.profiles;
+    let settings = load::<Settings>(dir.as_ref().map(|d| d.join("settings.json")))?;
+    let mut config = Config { settings, profiles, ..Default::default() };
+    config.normalize();
+    Ok(config)
+}
+
+/// Last modification time, to notice edits made in another editor.
+pub fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Opens a folder in the system file manager.
+pub fn open_folder(path: &Path) {
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(windows)]
+    let program = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    let _ = std::process::Command::new(program).arg(path).spawn();
+}
+
+/// Shows the file in the system file manager.
+pub fn reveal(path: &Path) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct SessionTab {
+    /// Profile this tab stays in sync with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Uuid>,
+    /// SSH host this tab is connected to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<Uuid>,
+    #[serde(flatten)]
+    pub tab: TabState,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Session {
+    #[serde(default)]
+    pub tabs: Vec<SessionTab>,
+    #[serde(default)]
+    pub active: usize,
+    /// Most recently closed last.
+    #[serde(default)]
+    pub closed: Vec<SessionTab>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
+}
+
+/// Window geometry in points. Position and size are those of the normal (not maximized) window.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct WindowState {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+    #[serde(default)]
+    pub fullscreen: bool,
+}
+
+/// User preferences.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Settings {
+    #[serde(default)]
+    pub language: Lang,
+    /// Id of a built-in theme (see `theme::PRESETS`).
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Show each local pane's working directory in a strip above it.
+    #[serde(default = "default_true")]
+    pub show_cwd: bool,
+    /// Look for a new release on GitHub at startup and every few hours.
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_theme() -> String {
+    crate::theme::DEFAULT_THEME.to_owned()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true }
+    }
+}
+
+fn config_dir() -> Option<PathBuf> {
+    // RONNIE_CONFIG_DIR runs an instance with separate profiles and session (handy for testing).
+    if let Some(dir) = std::env::var_os("RONNIE_CONFIG_DIR") {
+        return Some(dir.into());
+    }
+    let dir = directories::ProjectDirs::from("", "", "ronnie")?.config_dir().to_path_buf();
+    // The app used to be called bipbip: carry its profiles and session over.
+    if !dir.exists() {
+        if let Some(old) = directories::ProjectDirs::from("", "", "bipbip").map(|d| d.config_dir().to_path_buf()).filter(|d| d.is_dir()) {
+            let _ = std::fs::rename(old, &dir);
+        }
+    }
+    Some(dir)
+}
+
+pub fn session_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("session.json"))
+}
+
+/// Reads a JSON file; a missing file gives the default value.
+pub fn load<T: for<'de> Deserialize<'de> + Default>(path: Option<PathBuf>) -> Result<T> {
+    let Some(path) = path else { return Ok(T::default()) };
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("lecture de {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(e).with_context(|| format!("lecture de {}", path.display())),
+    }
+}
+
+/// Writes JSON atomically (temp file + rename) so a crash never leaves a truncated file.
+pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    fs::rename(&tmp, path).with_context(|| format!("écriture de {}", path.display()))
+}
+
+/// Colors are stored as "#rrggbb".
+pub(crate) mod hex_color {
+    use egui::Color32;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(color: &Option<Color32>, s: S) -> Result<S::Ok, S::Error> {
+        match color {
+            Some(c) => s.serialize_str(&format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Color32>, D::Error> {
+        let Some(s) = Option::<String>::deserialize(d)? else { return Ok(None) };
+        let hex = s.trim_start_matches('#');
+        let v = u32::from_str_radix(hex, 16).map_err(serde::de::Error::custom)?;
+        if hex.len() != 6 {
+            return Err(serde::de::Error::custom(format!("couleur invalide : {s}")));
+        }
+        Ok(Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_round_trip() {
+        let p = Profile {
+            id: Uuid::new_v4(),
+            tab: TabState {
+                name: Some("Projet".into()),
+                color: Some(Color32::from_rgb(0xf7, 0x76, 0x8e)),
+                layout: Layout::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 0.3,
+                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()) }),
+                    b: Box::new(Layout::Pane { cwd: None }),
+                },
+                focused: 1,
+            },
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"color\":\"#f7768e\""), "{json}");
+        assert_eq!(serde_json::from_str::<Profile>(&json).unwrap(), p);
+    }
+}

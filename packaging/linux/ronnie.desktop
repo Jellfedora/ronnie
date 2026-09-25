@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ronnie
+Comment=Terminal rapide avec onglets, splits et profils SSH
+Exec=ronnie
+Icon=ronnie
+Terminal=false
+Categories=System;TerminalEmulator;
