@@ -85,6 +85,9 @@ pub struct Profile {
     pub id: Uuid,
     #[serde(flatten)]
     pub tab: TabState,
+    /// Commands saved for this profile, written at the prompt on demand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 impl Profile {
@@ -109,6 +112,9 @@ pub struct Config {
     pub ungrouped: Vec<Uuid>,
     #[serde(default)]
     pub groups: Vec<Group>,
+    /// Commands saved for every terminal (the ⚡ menu), written at the prompt on demand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 /// A named, collapsible set of profiles and SSH hosts in the sidebar.

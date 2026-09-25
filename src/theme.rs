@@ -3,6 +3,7 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use egui::Color32;
 
 /// Palette used both for terminal colors and for the surrounding UI.
+#[derive(Clone)]
 pub struct Theme {
     pub fg: Color32,
     pub bg: Color32,

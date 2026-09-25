@@ -47,6 +47,9 @@ pub struct SshHost {
     /// Came from ~/.ssh/config (they can be removed all at once).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub imported: bool,
+    /// Commands saved for this host, written at the prompt on demand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 impl SshHost {
@@ -64,6 +67,7 @@ impl SshHost {
             options: Vec::new(),
             password_saved: false,
             imported: false,
+            commands: Vec::new(),
         }
     }
 

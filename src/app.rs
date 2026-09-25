@@ -186,6 +186,8 @@ pub struct App {
     menu: Option<crate::menu::MenuBar>,
     /// Shortcut being recorded in the settings: the next key combination replaces it.
     shortcut_capture: Option<ShortcutAction>,
+    /// Saved commands menu open over a pane.
+    commands_menu: Option<CommandsMenu>,
     /// History search open over a pane.
     history_search: Option<HistorySearch>,
     /// Close waiting for the user to confirm, because programs are running.
@@ -274,6 +276,29 @@ fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config)
             }
             (TabAction::DropGroup(id, None), Mark::Line(bottom))
         }
+    }
+}
+
+/// Where a saved command lives.
+#[derive(Clone, Copy, PartialEq)]
+enum CommandScope {
+    General,
+    Profile(Uuid),
+    Host(Uuid),
+}
+
+/// The ⚡ menu of a pane: saved commands to write at its prompt, and adding / removing them.
+struct CommandsMenu {
+    tab: usize,
+    pane: PaneId,
+    new_command: String,
+    /// Add to the tab's profile or host rather than to the general commands.
+    for_tab: bool,
+}
+
+impl CommandsMenu {
+    fn new(tab: usize, pane: PaneId) -> Self {
+        Self { tab, pane, new_command: String::new(), for_tab: true }
     }
 }
 
@@ -438,6 +463,7 @@ impl App {
             update_attempted: false,
             live: Vec::new(),
             history_search: None,
+            commands_menu: None,
             shortcut_capture: None,
             #[cfg(target_os = "macos")]
             menu: None,
@@ -530,6 +556,150 @@ impl App {
                 a: Box::new(self.build(a, cwds, histories)),
                 b: Box::new(self.build(b, cwds, histories)),
             },
+        }
+    }
+
+    /// Scope of tab `index`'s own commands: its profile or SSH host, if any.
+    fn tab_scope(&self, index: usize) -> Option<(CommandScope, String)> {
+        let tab = self.tabs.get(index)?;
+        if let Some(host) = tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)) {
+            return Some((CommandScope::Host(host.id), host.name.clone()));
+        }
+        let profile = tab.profile.and_then(|id| self.config.profiles.iter().find(|p| p.id == id))?;
+        Some((CommandScope::Profile(profile.id), profile.name(self.t().untitled).to_owned()))
+    }
+
+    fn commands_mut(&mut self, scope: CommandScope) -> Option<&mut Vec<String>> {
+        match scope {
+            CommandScope::General => Some(&mut self.config.commands),
+            CommandScope::Profile(id) => self.config.profiles.iter_mut().find(|p| p.id == id).map(|p| &mut p.commands),
+            CommandScope::Host(id) => self.config.ssh.iter_mut().find(|h| h.id == id).map(|h| &mut h.commands),
+        }
+    }
+
+    fn commands_of(&self, scope: CommandScope) -> Vec<String> {
+        match scope {
+            CommandScope::General => self.config.commands.clone(),
+            CommandScope::Profile(id) => self.config.profiles.iter().find(|p| p.id == id).map(|p| p.commands.clone()).unwrap_or_default(),
+            CommandScope::Host(id) => self.config.ssh.iter().find(|h| h.id == id).map(|h| h.commands.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// Commands offered in tab `index`: its own first, then the general ones.
+    fn saved_commands(&self, index: usize) -> Vec<String> {
+        let mut all = self.tab_scope(index).map(|(scope, _)| self.commands_of(scope)).unwrap_or_default();
+        for c in &self.config.commands {
+            if !all.contains(c) {
+                all.push(c.clone());
+            }
+        }
+        all
+    }
+
+    /// The ⚡ menu, under the pane's header on the right: click a command to write it at the prompt
+    /// (it isn't run); ✕ removes it; the field at the bottom adds one.
+    fn commands_menu_ui(&mut self, ctx: &egui::Context) {
+        let Some(menu) = &self.commands_menu else { return };
+        let (index, pane) = (menu.tab, menu.pane);
+        let Some(pane_rect) = self.tabs.get(index).filter(|_| index == self.active).and_then(|t| t.rects.iter().find(|(id, _)| *id == pane)).map(|(_, r)| *r) else {
+            self.commands_menu = None;
+            return;
+        };
+        let t = self.t();
+        let tab_scope = self.tab_scope(index);
+        let sections: Vec<(CommandScope, String, Vec<String>)> = tab_scope
+            .iter()
+            .map(|(scope, name)| (*scope, name.clone(), self.commands_of(*scope)))
+            .chain(std::iter::once((CommandScope::General, t.commands_general.to_owned(), self.config.commands.clone())))
+            .collect();
+        let width = 360.0_f32.min(pane_rect.width() - 16.0);
+        let pos = Pos2::new(pane_rect.max.x - width - 8.0, pane_rect.min.y + PANE_HEADER_H + 6.0);
+        let theme = self.theme.clone();
+
+        let mut insert = None;
+        let mut remove = None;
+        let mut add = None;
+        let escape = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        let menu = self.commands_menu.as_mut().unwrap();
+        let area = egui::Area::new(egui::Id::new("commands-menu")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+            Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
+                ui.set_width(width - 20.0);
+                egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for (scope, name, commands) in &sections {
+                        ui.label(egui::RichText::new(name.to_uppercase()).size(11.0).strong().color(theme.text_muted));
+                        if commands.is_empty() {
+                            ui.label(egui::RichText::new(t.commands_empty).size(12.5).color(theme.text_muted.gamma_multiply(0.7)));
+                        }
+                        for (i, command) in commands.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let x = ui.add(egui::Button::new(egui::RichText::new("✕").size(11.0).color(theme.text_muted)).frame(false));
+                                if x.clicked() {
+                                    remove = Some((*scope, i));
+                                }
+                                let label = egui::RichText::new(command.replace('\n', " ⏎ ")).monospace().size(12.5).color(theme.text);
+                                let row = ui.add(egui::Button::new(label).frame(false).truncate().min_size(Vec2::new(ui.available_width(), 22.0)));
+                                if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    insert = Some(command.clone());
+                                }
+                            });
+                        }
+                        ui.add_space(6.0);
+                    }
+                });
+                ui.separator();
+                let edit = ui.add(egui::TextEdit::singleline(&mut menu.new_command).hint_text(t.commands_new).font(FontId::monospace(12.5)).desired_width(f32::INFINITY));
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.horizontal(|ui| {
+                    if let Some((_, name)) = &tab_scope {
+                        ui.selectable_value(&mut menu.for_tab, true, egui::RichText::new(name).size(12.5));
+                        ui.selectable_value(&mut menu.for_tab, false, egui::RichText::new(t.commands_general).size(12.5));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = egui::Button::new(egui::RichText::new(t.commands_add).size(12.5).color(theme.bg)).fill(theme.accent).corner_radius(5.0);
+                        if (ui.add_enabled(!menu.new_command.trim().is_empty(), button).clicked() || enter) && !menu.new_command.trim().is_empty() {
+                            let scope = match (&tab_scope, menu.for_tab) {
+                                (Some((scope, _)), true) => *scope,
+                                _ => CommandScope::General,
+                            };
+                            add = Some((scope, menu.new_command.trim().to_owned()));
+                            menu.new_command.clear();
+                        }
+                    });
+                });
+                ui.label(egui::RichText::new(t.commands_hint).size(11.0).color(theme.text_muted));
+            });
+        });
+        // A click elsewhere closes it (except on the pane header, where the ⚡ button toggles it).
+        let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !area.response.contains_pointer();
+
+        if let Some((scope, i)) = remove {
+            if let Some(list) = self.commands_mut(scope) {
+                if i < list.len() {
+                    list.remove(i);
+                }
+            }
+        }
+        if let Some((scope, command)) = add {
+            if let Some(list) = self.commands_mut(scope) {
+                if !list.contains(&command) {
+                    list.push(command);
+                }
+            }
+        }
+        if let Some(command) = insert {
+            if let Some(term) = self.tabs.get_mut(index).and_then(|t| t.panes.get_mut(&pane)) {
+                term.paste_text(&command);
+            }
+            self.commands_menu = None;
+            self.focus_terminal = true;
+        } else if escape {
+            self.commands_menu = None;
+            self.focus_terminal = true;
+        } else if clicked_outside && remove.is_none() {
+            let over_header = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.y < pane_rect.min.y + PANE_HEADER_H && pane_rect.contains(p));
+            if !over_header {
+                self.commands_menu = None;
+            }
         }
     }
 
@@ -713,7 +883,7 @@ impl App {
         let id = Uuid::new_v4();
         tab.profile = Some(id);
         let state = tab.state();
-        self.config.profiles.push(Profile { id, tab: state });
+        self.config.profiles.push(Profile { id, tab: state, commands: Vec::new() });
     }
 
     /// Opens a profile, or switches to its tab if it is already open (a profile is open at most once).
@@ -3002,6 +3172,16 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     true
 }
 
+/// What was clicked in a pane's header strip.
+#[derive(Default)]
+struct HeaderClicks {
+    /// The strip itself: focus the pane.
+    focus: bool,
+    reconnect: bool,
+    search: bool,
+    commands: bool,
+}
+
 /// What the strip above a pane shows.
 enum Header<'a> {
     /// A local pane: its working directory (when known and shown), and the local servers announced by
@@ -3012,9 +3192,8 @@ enum Header<'a> {
 }
 
 /// Strip above a pane: its working directory (home as `~`, leading folders elided to fit) or its SSH
-/// host with a reconnect button. Returns (strip clicked, to focus the pane; reconnect clicked; history
-/// search clicked).
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings) -> (bool, bool, bool) {
+/// host with a reconnect button, plus the saved commands (⚡) and, for local panes, history search.
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click());
@@ -3022,15 +3201,22 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     let color = if focused { theme.text } else { theme.text_muted };
     let mut max_w = rect.width() - 20.0;
 
-    let (mut reconnect, mut search) = (false, false);
-    // History search button, then the local servers (newest on the right): a click opens them in the browser.
+    let mut clicks = HeaderClicks::default();
+    let icon = |ui: &mut Ui, right: f32, text: &str, tip: String| {
+        let at = Rect::from_min_size(Pos2::new(right - 22.0, rect.min.y + 2.0), Vec2::new(22.0, rect.height() - 4.0));
+        let button = egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false);
+        ui.put(at, button).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    };
+    let mut right = rect.max.x - 4.0;
+    // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls) = header {
-        let at = Rect::from_min_size(Pos2::new(rect.max.x - 26.0, rect.min.y + 2.0), Vec2::new(22.0, rect.height() - 4.0));
         let shortcut = if cfg!(target_os = "macos") { "⌘ R" } else { "Ctrl+Shift+R" };
-        let button = egui::Button::new(egui::RichText::new("🔍").size(11.0)).frame(false);
-        search = ui.put(at, button).on_hover_text(format!("{}  ({shortcut})", t.history_search)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-        max_w -= 30.0;
-        let mut right = at.min.x - 6.0;
+        clicks.search = icon(ui, right, "🔍", format!("{}  ({shortcut})", t.history_search));
+        right -= 26.0;
+        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
+        right -= 26.0;
+        max_w -= 56.0;
+        right -= 4.0;
         for url in urls.iter().rev() {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
             let button = egui::Button::new(text).fill(theme.ansi[2]).corner_radius(4.0);
@@ -3050,14 +3236,18 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
         let text = egui::RichText::new(format!("↻  {}", t.reconnect)).size(12.0);
         let button = egui::Button::new(text).corner_radius(4.0).min_size(Vec2::new(0.0, rect.height() - 4.0));
         let w = 120.0_f32.min(rect.width() / 2.0);
-        let at = Rect::from_min_max(Pos2::new(rect.max.x - w - 4.0, rect.min.y + 2.0), Pos2::new(rect.max.x - 4.0, rect.max.y - 2.0));
-        reconnect = ui.put(at, button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-        max_w -= w + 8.0;
+        let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 2.0), Pos2::new(right, rect.max.y - 2.0));
+        clicks.reconnect = ui.put(at, button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        clicks.commands = icon(ui, at.min.x - 4.0, "⚡", t.commands.to_owned());
+        max_w -= w + 34.0;
     }
 
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
-        Header::Local(None, _) => return (resp.clicked(), false, search),
+        Header::Local(None, _) => {
+            clicks.focus = resp.clicked();
+            return clicks;
+        }
         Header::Local(Some(cwd), _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
@@ -3085,7 +3275,8 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
         Some(tip) => resp.on_hover_text(tip),
         None => resp,
     };
-    (resp.clicked(), reconnect, search)
+    clicks.focus = resp.clicked();
+    clicks
 }
 
 /// Bar at the bottom of an SSH pane whose connection ended. Returns (reconnect, close) clicks.
@@ -3221,10 +3412,14 @@ enum PaneAction {
     Close(PaneId),
     Reveal(PaneId),
     Reconnect(PaneId),
+    /// Write a saved command at the prompt, without running it.
+    Insert(PaneId, String),
+    /// Open the saved commands menu.
+    Commands(PaneId),
 }
 
 /// Right-click menu of a terminal pane.
-fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, action: &mut Option<PaneAction>) {
+fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, commands: &[String], action: &mut Option<PaneAction>) {
     ui.set_min_width(180.0);
     let shortcut = |mac: &str, other: &str| if cfg!(target_os = "macos") { mac.to_owned() } else { other.to_owned() };
     let mut item = |ui: &mut Ui, enabled: bool, label: &str, hint: String, a: PaneAction| {
@@ -3249,7 +3444,30 @@ fn pane_menu(ui: &mut Ui, t: &Strings, id: PaneId, can_copy: bool, local: bool, 
         item(ui, true, t.reconnect, String::new(), PaneAction::Reconnect(id));
     }
     ui.separator();
+    let mut picked = None;
+    ui.menu_button(format!("⚡  {}", t.commands), |ui| {
+        ui.set_min_width(220.0);
+        if commands.is_empty() {
+            ui.label(egui::RichText::new(t.commands_empty).color(ui.visuals().weak_text_color()));
+        }
+        for command in commands {
+            let label = egui::RichText::new(command.replace('\n', " ⏎ ")).monospace();
+            if ui.add(egui::Button::new(label).truncate()).clicked() {
+                picked = Some(PaneAction::Insert(id, command.clone()));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.button(t.commands_manage).clicked() {
+            picked = Some(PaneAction::Commands(id));
+            ui.close();
+        }
+    });
+    ui.separator();
     item(ui, true, t.close_pane, shortcut("⌘W", "Ctrl+Shift+W"), PaneAction::Close(id));
+    if picked.is_some() {
+        *action = picked;
+    }
 }
 
 impl eframe::App for App {
@@ -3314,6 +3532,7 @@ impl eframe::App for App {
                 self.start_pending(ui.ctx(), self.active);
                 // SSH host whose saved password can answer prompts in this tab (sudo...).
                 let password_host = self.tabs.get(self.active).and_then(|t| t.ssh).filter(|id| self.config.ssh.iter().any(|h| h.id == *id && h.password_saved));
+                let saved_commands = self.saved_commands(self.active);
                 let Some(tab) = self.tabs.get_mut(self.active) else {
                     self.empty_state(ui, rect);
                     return;
@@ -3338,6 +3557,7 @@ impl eframe::App for App {
                 let mut reconnect: Option<Vec<PaneId>> = None;
                 let mut close_dead = None;
                 let mut open_search = None;
+                let mut open_commands = None;
                 // Checked before the panes handle keys, so Cmd+Enter doesn't reach the terminal.
                 let prompt = password_host.filter(|_| tab.panes.get(&tab.focused).is_some_and(Terminal::awaits_password));
                 let mut fill_password = prompt.is_some()
@@ -3351,14 +3571,17 @@ impl eframe::App for App {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(&ssh_label) };
-                        let (clicked, again, search) = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings);
-                        if search {
+                        let clicks = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings);
+                        if clicks.search {
                             open_search = Some(id);
                         }
-                        if clicked {
+                        if clicks.commands {
+                            open_commands = Some(id);
+                        }
+                        if clicks.focus {
                             term.request_focus(ui);
                         }
-                        if again {
+                        if clicks.reconnect {
                             reconnect = Some(vec![id]);
                         }
                         body
@@ -3373,7 +3596,7 @@ impl eframe::App for App {
                         tab.focused = id;
                     }
                     let can_copy = term.selection_text().is_some();
-                    resp.context_menu(|ui| pane_menu(ui, strings, id, can_copy, local, &mut pane_action));
+                    resp.context_menu(|ui| pane_menu(ui, strings, id, can_copy, local, &saved_commands, &mut pane_action));
                     if tab.dead.contains(&id) {
                         let (again, close) = closed_banner(ui, r, &self.theme, strings);
                         if again {
@@ -3454,6 +3677,13 @@ impl eframe::App for App {
                     }
                     Some(PaneAction::Close(id)) => self.request_close(CloseRequest::Pane(self.active, id)),
                     Some(PaneAction::Reconnect(id)) => reconnect = Some(vec![id]),
+                    Some(PaneAction::Insert(id, command)) => {
+                        if let Some(term) = tab.panes.get_mut(&id) {
+                            term.paste_text(&command);
+                        }
+                        self.focus_terminal = true;
+                    }
+                    Some(PaneAction::Commands(id)) => open_commands = Some(id),
                     Some(PaneAction::Reveal(id)) => {
                         if let Some(dir) = tab.panes.get(&id).and_then(Terminal::cwd) {
                             config::open_folder(&dir);
@@ -3466,6 +3696,9 @@ impl eframe::App for App {
                 }
                 if let Some(id) = open_search {
                     self.open_history_search(self.active, id);
+                }
+                if let Some(id) = open_commands {
+                    self.commands_menu = if self.commands_menu.as_ref().is_some_and(|m| m.pane == id) { None } else { Some(CommandsMenu::new(self.active, id)) };
                 }
                 if let Some(panes) = reconnect {
                     self.reconnect(ui.ctx(), self.active, &panes);
@@ -3497,6 +3730,7 @@ impl eframe::App for App {
             }
         }
         self.history_search_ui(ui.ctx());
+        self.commands_menu_ui(ui.ctx());
         self.confirm_close_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
