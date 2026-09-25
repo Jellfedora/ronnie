@@ -569,10 +569,15 @@ pub fn lock_instance() -> Result<Option<fs::File>, ()> {
     let Some(dir) = config_dir() else { return Ok(None) };
     let _ = create_private_dir(&dir);
     let Ok(file) = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("instance.lock")) else { return Ok(None) };
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(fs::TryLockError::WouldBlock) => Err(()),
-        Err(_) => Ok(None),
+    // An instance that just relaunched this one (update, reset) may still be quitting: wait for it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2500);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(fs::TryLockError::WouldBlock) => return Err(()),
+            Err(_) => return Ok(None),
+        }
     }
 }
 

@@ -2907,6 +2907,10 @@ impl App {
     /// Saves everything, starts the updated app and closes this one.
     fn restart(&mut self) {
         self.sync();
+        // Hand the config over to the new instance: nothing is written after this, and the lock is freed
+        // so that it doesn't start read-only.
+        self.read_only = true;
+        self._instance_lock = None;
         match self.updater.relaunch() {
             Ok(()) => {
                 self.close_confirmed = true;
@@ -3073,6 +3077,7 @@ impl App {
             return;
         }
         crate::log::info("configuration reset (moved to a backup directory)");
+        self._instance_lock = None;
         match self.updater.relaunch() {
             Ok(()) => {
                 self.close_confirmed = true;
