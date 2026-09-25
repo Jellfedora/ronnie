@@ -486,6 +486,7 @@ mod tests {
                 },
                 focused: 1,
             },
+            commands: vec!["npm run dev".into()],
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("\"color\":\"#f7768e\""), "{json}");
