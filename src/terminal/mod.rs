@@ -6,7 +6,7 @@ mod render;
 
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -35,6 +35,14 @@ const PADDING: f32 = 8.0;
 const CWD_TTL: Duration = Duration::from_millis(500);
 /// How often the foreground program and the local server URLs are looked up again.
 const ACTIVITY_TTL: Duration = Duration::from_secs(1);
+/// Scrollback of terminals created from now on (Settings > General), in lines.
+static SCROLLBACK: AtomicUsize = AtomicUsize::new(10_000);
+
+/// Sets the scrollback of new terminals; existing ones are updated with `set_scrollback`.
+pub fn set_default_scrollback(lines: usize) {
+    SCROLLBACK.store(lines, Ordering::Relaxed);
+}
+
 /// Most occurrences kept by the text search.
 const FIND_LIMIT: usize = 5000;
 /// While output streams in, the text search is redone at most this often.
@@ -164,7 +172,8 @@ impl Terminal {
     fn start(ctx: &egui::Context, backend: Box<dyn Backend>, mut reader: Box<dyn Read + Send>, size: GridSize) -> Self {
         let (tx, events) = mpsc::channel();
         let listener = Listener { tx, ctx: ctx.clone() };
-        let term = Arc::new(FairMutex::new(Term::new(TermConfig::default(), &size, listener)));
+        let config = TermConfig { scrolling_history: SCROLLBACK.load(Ordering::Relaxed), ..TermConfig::default() };
+        let term = Arc::new(FairMutex::new(Term::new(config, &size, listener)));
         let exited = Arc::new(AtomicBool::new(false));
         let received = Arc::new(AtomicBool::new(false));
         let output_seq = Arc::new(AtomicU64::new(0));
@@ -343,6 +352,11 @@ impl Terminal {
     /// Whether text is selected (cheap, unlike building the selected text).
     pub fn has_selection(&self) -> bool {
         self.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty())
+    }
+
+    /// Keeps up to `lines` lines above the screen.
+    pub fn set_scrollback(&self, lines: usize) {
+        self.term.lock().set_options(TermConfig { scrolling_history: lines, ..TermConfig::default() });
     }
 
     pub fn set_allow_clipboard(&mut self, allow: bool) {

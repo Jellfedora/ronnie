@@ -611,6 +611,8 @@ impl App {
                 let exists = config::config_path().is_some_and(|p| p.exists());
                 app.saved_config = if exists { c.clone() } else { Config::default() };
                 app.config = c;
+                app.fonts.size = app.config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
+                crate::terminal::set_default_scrollback(app.config.settings.scrollback);
             }
             Err(e) => {
                 app.config_writable = false;
@@ -1254,6 +1256,14 @@ impl App {
             self.theme = Preset::find(&config.settings.theme).theme();
             self.ctx.set_visuals(self.theme.visuals());
         }
+        self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
+        if config.settings.scrollback != self.config.settings.scrollback {
+            let lines = config.settings.scrollback.clamp(*config::SCROLLBACK_LINES.start(), *config::SCROLLBACK_LINES.end());
+            crate::terminal::set_default_scrollback(lines);
+            for term in self.tabs.iter().flat_map(|t| t.panes.values()) {
+                term.set_scrollback(lines);
+            }
+        }
         let exists = |id: Uuid| config.profiles.iter().any(|p| p.id == id);
         for tab in &mut self.tabs {
             if let Some(p) = tab.profile.and_then(|id| config.profiles.iter().find(|p| p.id == id)) {
@@ -1464,6 +1474,15 @@ impl App {
             && !self.tabs.is_empty()
         {
             self.select((self.active + self.tabs.len() - 1) % self.tabs.len());
+        }
+        // Text size: Cmd + / Cmd - / Cmd 0 (Ctrl elsewhere).
+        let zoom = [(Key::Plus, 1.0), (Key::Equals, 1.0), (Key::Minus, -1.0), (Key::Num0, 0.0)];
+        for (key, step) in zoom {
+            if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))) {
+                let size = if step == 0.0 { 14.0 } else { self.config.settings.font_size + step };
+                self.config.settings.font_size = size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
+                self.fonts.size = self.config.settings.font_size;
+            }
         }
         let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
         for (i, key) in digits.into_iter().enumerate() {
@@ -2366,7 +2385,7 @@ impl App {
                 ui.end_row();
 
                 // Menu headings are in capitals; here it's a field label like the others.
-                label(ui, &format!("{}{}", &t.color[..1], t.color[1..].to_lowercase()));
+                label(ui, &capitalized(t.color));
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for color in TAB_COLORS {
@@ -2549,6 +2568,15 @@ impl App {
             heading(ui, &t.display.to_uppercase());
             ui.checkbox(&mut picked.show_cwd, egui::RichText::new(t.show_cwd).size(14.0));
             ui.checkbox(&mut picked.clipboard_from_programs, egui::RichText::new(t.clipboard_from_programs).size(14.0));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.font_size).size(14.0));
+                ui.add(egui::Slider::new(&mut picked.font_size, config::FONT_SIZES).step_by(1.0).suffix(" pt"));
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.scrollback).size(14.0));
+                ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
+            });
             ui.add_space(18.0);
 
             heading(ui, &t.theme.to_uppercase());
@@ -2667,6 +2695,7 @@ impl App {
                 (t.paste, if mac { "⌘ V" } else { "Ctrl+Shift+V" }),
                 (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
                 (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
+                (t.shortcut_zoom, if mac { "⌘ +   ⌘ −   ⌘ 0" } else { "Ctrl++   Ctrl+−   Ctrl+0" }),
             ];
             egui::Grid::new("fixed-shortcuts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
                 for (label, keys) in fixed {
@@ -3753,6 +3782,12 @@ fn watch_config(ctx: &egui::Context) {
             }
         }
     });
+}
+
+/// "COULEUR" → "Couleur" (by chars: slicing bytes would panic on a first letter such as "É").
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars.as_str().to_lowercase().chars()).collect()).unwrap_or_default()
 }
 
 /// A texture from embedded PNG bytes.

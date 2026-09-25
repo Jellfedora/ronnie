@@ -376,6 +376,23 @@ pub struct Settings {
     /// Programs may write to the clipboard (OSC 52: vim, tmux, remote hosts...).
     #[serde(default = "default_true")]
     pub clipboard_from_programs: bool,
+    /// Terminal text size, in points (Cmd +/- changes it).
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    /// Lines kept above the screen in each terminal.
+    #[serde(default = "default_scrollback")]
+    pub scrollback: usize,
+}
+
+pub const FONT_SIZES: std::ops::RangeInclusive<f32> = 9.0..=32.0;
+pub const SCROLLBACK_LINES: std::ops::RangeInclusive<usize> = 1_000..=100_000;
+
+fn default_font_size() -> f32 {
+    14.0
+}
+
+fn default_scrollback() -> usize {
+    10_000
 }
 
 /// Shortcuts the user can change (Settings > Shortcuts).
@@ -490,7 +507,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback() }
     }
 }
 
