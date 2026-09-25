@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::config::{self, Config, Layout, Profile, Session, SessionTab, TabState, WindowState};
 use crate::i18n::{Lang, Strings};
 use crate::pane::{self, Direction, Node, PaneId};
-use crate::terminal::{FontSet, Terminal};
+use crate::terminal::{FontSet, LocalUrl, Terminal};
 use crate::ssh::{self, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
@@ -172,6 +172,8 @@ pub struct App {
     update_dismissed: bool,
     /// The user asked for an install: its failure is worth showing in the sidebar.
     update_attempted: bool,
+    /// Per tab, the program running in it (if any), for the sidebar's live badge. Refreshed each frame.
+    live: Vec<Option<String>>,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -382,6 +384,7 @@ impl App {
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
+            live: Vec::new(),
             confirm_close: None,
             close_confirmed: false,
             splash: Some(f64::NAN),
@@ -1042,6 +1045,10 @@ impl App {
             paint_active_bar(painter, rect, self.theme.accent);
         }
         let dot = Pos2::new(rect.min.x + 14.0, rect.center().y);
+        let live = item.open.and_then(|i| self.live.get(i).cloned().flatten());
+        if live.is_some() {
+            paint_live(ui, painter, dot, &self.theme);
+        }
         match item.color {
             Some(color) => painter.circle_filled(dot, 4.0, color),
             None => painter.circle_stroke(dot, 3.5, Stroke::new(1.0, self.theme.text_muted.gamma_multiply(0.6))),
@@ -1120,7 +1127,10 @@ impl App {
             }
         }
 
-        let resp = resp.on_hover_text(&item.hint);
+        let resp = match &live {
+            Some(program) => resp.on_hover_text(format!("{}\n▶ {program}", item.hint)),
+            None => resp.on_hover_text(&item.hint),
+        };
         if resp.double_clicked() {
             *action = Some(if item.ssh { TabAction::EditHost(id) } else { TabAction::StartItemRename(id) });
         } else if resp.clicked() {
@@ -2128,6 +2138,8 @@ impl App {
 
     fn sidebar(&mut self, ui: &mut Ui) {
         let t = self.t();
+        let ctx = ui.ctx().clone();
+        self.live = self.tabs.iter_mut().map(|tab| tab.panes.values_mut().find_map(|term| term.live_program(&ctx).map(str::to_owned))).collect();
         // New profiles and hosts show up outside groups; deleted ones disappear.
         self.config.normalize();
         let bar = ui.max_rect();
@@ -2247,6 +2259,10 @@ impl App {
                 paint_active_bar(&painter, rect, self.theme.accent);
             }
             let dot = Pos2::new(rect.min.x + 14.0, rect.center().y);
+            let live = self.live.get(i).cloned().flatten();
+            if live.is_some() {
+                paint_live(ui, &painter, dot, &self.theme);
+            }
             match tab.color {
                 Some(color) => painter.circle_filled(dot, 4.0, color),
                 None => painter.circle_stroke(dot, 3.5, Stroke::new(1.0, self.theme.text_muted.gamma_multiply(0.6))),
@@ -2340,6 +2356,10 @@ impl App {
             if resp.drag_stopped() {
                 self.tab_grab = None;
             }
+            let resp = match &live {
+                Some(program) => resp.on_hover_text(format!("▶ {program}")),
+                None => resp,
+            };
             resp.context_menu(|ui| self.tab_menu(ui, i, &mut action));
         }
 
@@ -2580,6 +2600,15 @@ fn paint_connecting(ui: &Ui, pane: Rect, theme: &Theme, t: &Strings, text: &str)
 /// The logo's color whatever the theme: Dracula's pink, as in the app icon.
 const LOGO_COLOR: Color32 = Color32::from_rgb(0xff, 0x79, 0xc6);
 
+/// Breathing green halo around a tab's dot while a program runs in it.
+fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
+    let phase = (ui.input(|i| i.time) * std::f64::consts::TAU / 2.0).sin() as f32 * 0.5 + 0.5;
+    painter.circle_filled(dot, 7.5, theme.ansi[2].gamma_multiply(0.10 + 0.18 * phase));
+    painter.circle_stroke(dot, 6.5, Stroke::new(1.2, theme.ansi[2].gamma_multiply(0.45 + 0.5 * phase)));
+    // A slow breath: a few frames per second are enough, and keep the CPU quiet.
+    ui.ctx().request_repaint_after(Duration::from_millis(100));
+}
+
 /// Text in the logo's metal font: drop shadow, dark outline, pink fill with a lighter top edge.
 /// `alpha` fades it all (0 to 1).
 fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, size: f32, alpha: f32) {
@@ -2652,8 +2681,9 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
 
 /// What the strip above a pane shows.
 enum Header<'a> {
-    /// A local pane: its working directory, when known.
-    Cwd(Option<&'a Path>),
+    /// A local pane: its working directory (when known and shown), and the local servers announced by
+    /// its program.
+    Local(Option<&'a Path>, &'a [LocalUrl]),
     /// An SSH pane: the host, with a reconnect button.
     Ssh(&'a str),
 }
@@ -2669,6 +2699,24 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     let mut max_w = rect.width() - 20.0;
 
     let mut reconnect = false;
+    // Local servers, right-aligned, newest on the right: a click opens them in the browser.
+    if let Header::Local(_, urls) = header {
+        let mut right = rect.max.x - 4.0;
+        for url in urls.iter().rev() {
+            let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
+            let button = egui::Button::new(text).fill(theme.ansi[2]).corner_radius(4.0);
+            let w = 16.0 + 7.5 * (3 + url.port.to_string().len()) as f32;
+            if right - w < rect.min.x + rect.width() / 3.0 {
+                break;
+            }
+            let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
+            if ui.put(at, button).on_hover_text(&url.url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                crate::terminal::open_url(&url.url);
+            }
+            right -= w + 6.0;
+            max_w = right - rect.min.x - 16.0;
+        }
+    }
     if let Header::Ssh(_) = header {
         let text = egui::RichText::new(format!("↻  {}", t.reconnect)).size(12.0);
         let button = egui::Button::new(text).corner_radius(4.0).min_size(Vec2::new(0.0, rect.height() - 4.0));
@@ -2680,8 +2728,8 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
 
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
-        Header::Cwd(None) => return (resp.clicked(), false),
-        Header::Cwd(Some(cwd)) => {
+        Header::Local(None, _) => return (resp.clicked(), false),
+        Header::Local(Some(cwd), _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
                 Some(rest) => ("~", rest),
@@ -2967,10 +3015,12 @@ impl eframe::App for App {
                 for &(id, r) in &rects {
                     let Some(term) = tab.panes.get_mut(&id) else { continue };
                     // Local panes show their directory (optional); SSH panes their host and a reconnect button.
-                    let body = if !local || self.config.settings.show_cwd {
+                    // The strip also appears, even with directories hidden, when the program announced a local server.
+                    let urls = if local { term.local_urls(ui.ctx()).to_vec() } else { Vec::new() };
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
-                        let cwd = if local { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
-                        let header = if local { Header::Cwd(cwd.as_deref()) } else { Header::Ssh(&ssh_label) };
+                        let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
+                        let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(&ssh_label) };
                         let (clicked, again) = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings);
                         if clicked {
                             term.request_focus(ui);

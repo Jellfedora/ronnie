@@ -6,7 +6,7 @@ mod render;
 
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -23,6 +23,7 @@ use alacritty_terminal::Term;
 use anyhow::Result;
 use egui::{Event, EventFilter, Id, MouseWheelUnit, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
 
+pub use links::{open as open_url, LocalUrl};
 pub use render::FontSet;
 
 use crate::theme::Theme;
@@ -32,6 +33,10 @@ const PADDING: f32 = 8.0;
 
 /// How long a looked-up working directory is reused before asking the OS again.
 const CWD_TTL: Duration = Duration::from_millis(500);
+/// How often the foreground program and the local server URLs are looked up again.
+const ACTIVITY_TTL: Duration = Duration::from_secs(1);
+/// Rows of output (scrollback included) searched for local server URLs.
+const URL_SCAN_ROWS: usize = 2000;
 
 /// Where the bytes of a terminal come from and go to (local shell, SSH channel...).
 pub trait Backend: Send {
@@ -79,6 +84,16 @@ impl Dimensions for GridSize {
     }
 }
 
+/// What a terminal is busy with, refreshed at most every `ACTIVITY_TTL`.
+#[derive(Default)]
+struct Activity {
+    checked: Option<Instant>,
+    /// `output_seq` when the URLs were last searched.
+    scanned: u64,
+    program: Option<String>,
+    urls: Vec<links::LocalUrl>,
+}
+
 /// One terminal session: the emulator state plus the process/connection feeding it.
 pub struct Terminal {
     id: Id,
@@ -88,6 +103,9 @@ pub struct Terminal {
     exited: Arc<AtomicBool>,
     /// The program has written something (an ssh session still connecting hasn't).
     received: Arc<AtomicBool>,
+    /// Bumped by the reader thread on each chunk of output, to rescan only when something changed.
+    output_seq: Arc<AtomicU64>,
+    activity: Activity,
     title: Option<String>,
     size: GridSize,
     cell: Vec2,
@@ -115,11 +133,13 @@ impl Terminal {
         let term = Arc::new(FairMutex::new(Term::new(TermConfig::default(), &size, listener)));
         let exited = Arc::new(AtomicBool::new(false));
         let received = Arc::new(AtomicBool::new(false));
+        let output_seq = Arc::new(AtomicU64::new(0));
 
         {
             let term = term.clone();
             let exited = exited.clone();
             let received = received.clone();
+            let output_seq = output_seq.clone();
             let ctx = ctx.clone();
             thread::Builder::new()
                 .name("pty-reader".into())
@@ -131,6 +151,7 @@ impl Terminal {
                             Ok(0) => break,
                             Ok(n) => {
                                 received.store(true, Ordering::Relaxed);
+                                output_seq.fetch_add(1, Ordering::Relaxed);
                                 parser.advance(&mut *term.lock(), &buf[..n]);
                                 ctx.request_repaint();
                             }
@@ -151,6 +172,8 @@ impl Terminal {
             events,
             exited,
             received,
+            output_seq,
+            activity: Activity::default(),
             title: None,
             size,
             cell: Vec2::new(8.0, 16.0),
@@ -169,6 +192,43 @@ impl Terminal {
 
     pub fn cwd(&self) -> Option<PathBuf> {
         self.backend.cwd()
+    }
+
+    /// Refreshes the foreground program and the local servers it announced (dropped once it stops).
+    fn refresh_activity(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        if let Some(at) = self.activity.checked.filter(|at| now.duration_since(*at) < ACTIVITY_TTL) {
+            // Come back when it's stale, so a program starting or stopping shows up without input.
+            ctx.request_repaint_after(ACTIVITY_TTL - now.duration_since(at));
+            return;
+        }
+        self.activity.checked = Some(now);
+        self.activity.program = self.foreground();
+        if self.activity.program.is_none() {
+            self.activity.urls.clear();
+            return;
+        }
+        let seq = self.output_seq.load(Ordering::Relaxed);
+        if seq != self.activity.scanned {
+            self.activity.scanned = seq;
+            for url in links::local_urls(&self.term.lock(), URL_SCAN_ROWS) {
+                if !self.activity.urls.iter().any(|u| u.port == url.port) {
+                    self.activity.urls.push(url);
+                }
+            }
+        }
+    }
+
+    /// Foreground program (cached), for the live badge.
+    pub fn live_program(&mut self, ctx: &egui::Context) -> Option<&str> {
+        self.refresh_activity(ctx);
+        self.activity.program.as_deref()
+    }
+
+    /// Local servers announced by the running program, oldest first (cached).
+    pub fn local_urls(&mut self, ctx: &egui::Context) -> &[links::LocalUrl] {
+        self.refresh_activity(ctx);
+        &self.activity.urls
     }
 
     /// Program running in the foreground instead of the shell (`npm`, `vim`...), if any.

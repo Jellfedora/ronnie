@@ -96,6 +96,57 @@ fn ends_url(c: char) -> bool {
     c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '"' | '`' | '{' | '}' | '|' | '\\' | '^')
 }
 
+/// A server on this machine announced in the output (`http://localhost:3002/`...).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalUrl {
+    pub port: u16,
+    pub url: String,
+}
+
+/// Local server URLs in the last `max_rows` rows of the grid (scrollback included), oldest first.
+pub fn local_urls<L: EventListener>(term: &Term<L>, max_rows: usize) -> Vec<LocalUrl> {
+    let grid = term.grid();
+    let last_col = Column(grid.columns() - 1);
+    let bottom = grid.bottommost_line();
+    let top = grid.topmost_line().max(bottom - max_rows as i32);
+    let mut found = Vec::new();
+    let mut text = String::new();
+    for line in top.0..=bottom.0 {
+        let row = &grid[Line(line)];
+        text.extend((0..grid.columns()).map(|c| &row[Column(c)]).filter(|c| !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).map(|c| c.c));
+        // A soft-wrapped row continues on the next one.
+        if row[last_col].flags.contains(Flags::WRAPLINE) && line < bottom.0 {
+            continue;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        for (from, to) in find_urls(&text) {
+            let url: String = chars[from..to].iter().collect();
+            if let Some(local) = as_local(&url) {
+                found.retain(|u: &LocalUrl| u.port != local.port);
+                found.push(local);
+            }
+        }
+        text.clear();
+    }
+    found
+}
+
+/// `url` if it points to this machine with an explicit port; `0.0.0.0` becomes `localhost`.
+fn as_local(url: &str) -> Option<LocalUrl> {
+    let (scheme, rest) = url.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let authority = rest.split('/').next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    if !matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]" | "[::]") {
+        return None;
+    }
+    let url = if matches!(host, "0.0.0.0" | "[::]") { url.replacen(host, "localhost", 1) } else { url.to_owned() };
+    Some(LocalUrl { port, url })
+}
+
 /// Opens a URL with the system's default handler.
 pub fn open(url: &str) {
     #[cfg(target_os = "macos")]
@@ -113,7 +164,7 @@ pub fn open(url: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::find_urls;
+    use super::{as_local, find_urls};
 
     fn urls(text: &str) -> Vec<String> {
         let chars: Vec<char> = text.chars().collect();
@@ -127,5 +178,14 @@ mod tests {
         assert_eq!(urls("(https://example.com/x)."), ["https://example.com/x"]);
         assert_eq!(urls("https://en.wikipedia.org/wiki/Rust_(langage)"), ["https://en.wikipedia.org/wiki/Rust_(langage)"]);
         assert_eq!(urls("a http:// b"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn keeps_local_servers() {
+        assert_eq!(as_local("http://localhost:3002/").map(|u| u.port), Some(3002));
+        assert_eq!(as_local("http://0.0.0.0:8082/api-docs").unwrap().url, "http://localhost:8082/api-docs");
+        assert_eq!(as_local("http://127.0.0.1:5173").map(|u| u.port), Some(5173));
+        assert_eq!(as_local("https://example.com:8443/"), None);
+        assert_eq!(as_local("http://localhost/"), None);
     }
 }

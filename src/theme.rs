@@ -61,6 +61,22 @@ pub struct Preset {
 pub const DEFAULT_THEME: &str = "dracula";
 
 pub const PRESETS: &[Preset] = &[
+    // The house theme: deep black, blood red, old gold and bone-colored text.
+    Preset {
+        id: "ronnie",
+        name: "Ronnie",
+        bg: 0x110e0f,
+        fg: 0xe6ddd0,
+        cursor: 0xd9a93f,
+        chrome: 0x0a0809,
+        surface: 0x2b1e20,
+        accent: 0xd8323c,
+        ansi: [
+            0x1c1617, 0xd8323c, 0x8fb35a, 0xd9a93f, 0x6f8fc4, 0xb8528c, 0x5fa9a0, 0xd4cabd, //
+            0x5c4b4d, 0xff5058, 0xa9d06c, 0xf2c55c, 0x8eaae2, 0xde72ae, 0x80cfc5, 0xfff7ec,
+        ],
+        dark: true,
+    },
     Preset {
         id: "tokyo-night",
         name: "Tokyo Night",
