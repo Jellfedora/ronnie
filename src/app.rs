@@ -1252,7 +1252,7 @@ impl App {
             return;
         }
         let (mut rename, mut recolor, mut open, mut delete) = (None, None, None, None);
-        egui::ScrollArea::vertical().max_height(EDITOR_HEIGHT).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
             for p in &self.config.profiles {
                 ui.horizontal(|ui| {
                     ui.set_min_height(34.0);
@@ -1390,7 +1390,7 @@ impl App {
             return;
         }
         let (mut edit, mut delete) = (None, None);
-        egui::ScrollArea::vertical().max_height(EDITOR_HEIGHT - 150.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
             for host in &self.config.ssh {
                 ui.horizontal(|ui| {
                     ui.set_min_height(30.0);
@@ -1681,11 +1681,8 @@ impl App {
         let mut close = false;
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
         let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).show(ctx, |ui| {
-            let width = match self.settings_tab {
-                SettingsTab::General => 3.0 * THEME_CARD.x + 24.0,
-                SettingsTab::Profiles | SettingsTab::Ssh | SettingsTab::ConfigFile => EDITOR_WIDTH,
-            };
-            ui.set_width(width);
+            // Same size on every tab: pages scroll inside, the window never jumps around.
+            ui.set_width(SETTINGS_WIDTH);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(t.settings).size(18.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1705,6 +1702,10 @@ impl App {
             });
             ui.separator();
             ui.add_space(8.0);
+            let body = Vec2::new(SETTINGS_WIDTH, SETTINGS_BODY_HEIGHT.min(ctx.content_rect().height() - 200.0).max(200.0));
+            ui.allocate_ui_with_layout(body, egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_min_size(body);
+            ui.set_max_height(body.y);
             match self.settings_tab {
                 SettingsTab::ConfigFile => return self.config_editor_ui(ui, t),
                 SettingsTab::Profiles => return self.profiles_ui(ui, t),
@@ -1717,8 +1718,7 @@ impl App {
                 ui.label(egui::RichText::new(text).size(12.0).strong().color(heading_color));
                 ui.add_space(4.0);
             };
-            // Scrolls when the window is too small for the whole page.
-            let max_height = (ctx.content_rect().height() - 220.0).max(200.0);
+            let max_height = ui.available_height();
             egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(max_height).show(ui, |ui| {
             heading(ui, &t.language.to_uppercase());
             ui.horizontal(|ui| {
@@ -1799,6 +1799,7 @@ impl App {
                 ui.add_space(6.0);
             }
             });
+            });
         });
         if close || modal.should_close() {
             self.settings_dialog = false;
@@ -1848,7 +1849,7 @@ impl App {
 
         let frame = Frame::new().fill(self.theme.bg).corner_radius(6.0).inner_margin(8.0).stroke(Stroke::new(1.0, self.theme.tab_hover));
         frame.show(ui, |ui| {
-            egui::ScrollArea::vertical().max_height(EDITOR_HEIGHT).auto_shrink(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(ui.available_height() - 50.0).auto_shrink(false).show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut editor.text)
                         .font(egui::FontId::new(13.0, egui::FontFamily::Name("mono".into())))
@@ -2180,7 +2181,7 @@ impl App {
         ui.painter().rect_stroke(button, 6.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(if hot { 0.8 } else { 0.35 })), egui::StrokeKind::Inside);
         paint_gear(ui.painter(), Pos2::new(button.min.x + 16.0, button.center().y), self.theme.accent);
         ui.painter().text(Pos2::new(button.min.x + 32.0, button.center().y), Align2::LEFT_CENTER, t.settings, FontId::proportional(13.0), self.theme.text);
-        let shortcut = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+Shift+P" };
+        let shortcut = if cfg!(target_os = "macos") { "⌘ P" } else { "Ctrl+Shift+P" };
         ui.painter().text(Pos2::new(button.max.x - 10.0, button.center().y), Align2::RIGHT_CENTER, shortcut, FontId::proportional(11.5), self.theme.text_muted);
         if settings.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.settings_dialog = true;
@@ -2546,7 +2547,9 @@ impl App {
 
 const THEME_CARD: Vec2 = Vec2::new(230.0, 84.0);
 const EDITOR_WIDTH: f32 = 720.0;
-const EDITOR_HEIGHT: f32 = 440.0;
+const SETTINGS_WIDTH: f32 = EDITOR_WIDTH;
+/// Height of the settings pages (below the tabs), shrunk on small windows.
+const SETTINGS_BODY_HEIGHT: f32 = 540.0;
 
 /// A clickable preview of a theme: its sidebar, a sample terminal line and its palette.
 fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, _highlight: Color32) -> egui::Response {
