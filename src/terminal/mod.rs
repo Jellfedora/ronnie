@@ -41,6 +41,11 @@ pub trait Backend: Send {
     fn cwd(&self) -> Option<PathBuf> {
         None
     }
+    /// Name of the program in the foreground when it isn't the one started (the shell): something
+    /// that closing the terminal would interrupt.
+    fn foreground(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -164,6 +169,11 @@ impl Terminal {
 
     pub fn cwd(&self) -> Option<PathBuf> {
         self.backend.cwd()
+    }
+
+    /// Program running in the foreground instead of the shell (`npm`, `vim`...), if any.
+    pub fn foreground(&self) -> Option<String> {
+        if self.has_exited() { None } else { self.backend.foreground() }
     }
 
     /// Working directory for display, looked up at most every `CWD_TTL`. Schedules a repaint when the

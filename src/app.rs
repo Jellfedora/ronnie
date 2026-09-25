@@ -172,6 +172,10 @@ pub struct App {
     update_dismissed: bool,
     /// The user asked for an install: its failure is worth showing in the sidebar.
     update_attempted: bool,
+    /// Close waiting for the user to confirm, because programs are running.
+    confirm_close: Option<ConfirmClose>,
+    /// The window may close without asking again (confirmed, or restarting).
+    close_confirmed: bool,
     /// App time when the startup splash began; None once it is over.
     splash: Option<f64>,
     ctx: egui::Context,
@@ -255,6 +259,22 @@ fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config)
             (TabAction::DropGroup(id, None), Mark::Line(bottom))
         }
     }
+}
+
+/// Something the user asked to close, which may interrupt running programs.
+#[derive(Clone, Copy)]
+enum CloseRequest {
+    Pane(usize, PaneId),
+    Tab(usize),
+    Window,
+    /// Close to start the updated app.
+    Restart,
+}
+
+/// A close waiting for confirmation, with what it would interrupt.
+struct ConfirmClose {
+    request: CloseRequest,
+    busy: Vec<String>,
 }
 
 struct ItemRename {
@@ -362,6 +382,8 @@ impl App {
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
+            confirm_close: None,
+            close_confirmed: false,
             splash: Some(f64::NAN),
             ctx: cc.egui_ctx.clone(),
         };
@@ -749,7 +771,7 @@ impl App {
         }
         if pressed(Key::W) {
             if let Some(focused) = self.tabs.get(self.active).map(|t| t.focused) {
-                self.close_pane(self.active, focused);
+                self.request_close(CloseRequest::Pane(self.active, focused));
             }
         }
         // Split right / down: Cmd+D / Cmd+Shift+D on macOS, Ctrl+Shift+D / Ctrl+Shift+E elsewhere.
@@ -1731,7 +1753,7 @@ impl App {
                     update::State::Installed(v) => {
                         ui.label(muted(&t.update_installed.replace("{v}", &v)));
                         if ui.button(t.restart).clicked() {
-                            self.restart(ctx);
+                            self.request_close(CloseRequest::Restart);
                         }
                     }
                     update::State::Failed(e) => {
@@ -1969,7 +1991,7 @@ impl App {
             }
             update::State::Installed(_) => {
                 if primary(ui, left_rect, t.restart) {
-                    self.restart(ui.ctx());
+                    self.request_close(CloseRequest::Restart);
                 }
                 if secondary(ui, right_rect, t.later) {
                     self.update_dismissed = true;
@@ -1989,11 +2011,111 @@ impl App {
     }
 
     /// Saves everything, starts the updated app and closes this one.
-    fn restart(&mut self, ctx: &egui::Context) {
+    fn restart(&mut self) {
         self.sync();
         match self.updater.relaunch() {
-            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Ok(()) => {
+                self.close_confirmed = true;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
             Err(e) => self.error = Some(format!("{} : {e:#}", self.t().update_failed)),
+        }
+    }
+
+    /// What closing these panes of tab `index` (all of them if None) would interrupt: programs running
+    /// instead of the shell, and open SSH connections.
+    fn busy(&self, index: usize, panes: Option<&[PaneId]>) -> Vec<String> {
+        let Some(tab) = self.tabs.get(index) else { return Vec::new() };
+        let mut busy = Vec::new();
+        for (id, term) in &tab.panes {
+            if panes.is_some_and(|p| !p.contains(id)) || tab.dead.contains(id) || term.has_exited() {
+                continue;
+            }
+            if tab.ssh.is_some() {
+                busy.push(format!("ssh  ·  {}", tab.title()));
+            } else if let Some(program) = term.foreground() {
+                busy.push(format!("{program}  ·  {}", tab.title()));
+            }
+        }
+        busy
+    }
+
+    fn busy_for(&self, request: CloseRequest) -> Vec<String> {
+        match request {
+            CloseRequest::Pane(index, id) => self.busy(index, Some(&[id])),
+            CloseRequest::Tab(index) => self.busy(index, None),
+            CloseRequest::Window | CloseRequest::Restart => (0..self.tabs.len()).flat_map(|i| self.busy(i, None)).collect(),
+        }
+    }
+
+    /// Closes right away, or asks first when that would interrupt running programs.
+    fn request_close(&mut self, request: CloseRequest) {
+        let busy = self.busy_for(request);
+        if busy.is_empty() {
+            self.do_close(request);
+        } else {
+            self.confirm_close = Some(ConfirmClose { request, busy });
+        }
+    }
+
+    fn do_close(&mut self, request: CloseRequest) {
+        match request {
+            CloseRequest::Pane(index, id) => self.close_pane(index, id),
+            CloseRequest::Tab(index) => self.close_tab(index),
+            CloseRequest::Window => {
+                self.close_confirmed = true;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            CloseRequest::Restart => self.restart(),
+        }
+    }
+
+    /// "Close anyway?" dialog listing the programs that would be stopped.
+    fn confirm_close_window(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = &self.confirm_close else { return };
+        let t = self.t();
+        let mut answer = None;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("confirm-close")).frame(frame).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(egui::RichText::new(t.close_anyway_title).size(17.0).strong());
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(t.close_anyway_body).size(13.5).color(self.theme.text_muted));
+            ui.add_space(6.0);
+            for item in confirm.busy.iter().take(8) {
+                ui.label(egui::RichText::new(format!("•  {item}")).size(13.0).monospace());
+            }
+            if confirm.busy.len() > 8 {
+                ui.label(egui::RichText::new(format!("…  +{}", confirm.busy.len() - 8)).size(13.0).color(self.theme.text_muted));
+            }
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let close = egui::Button::new(egui::RichText::new(t.close).size(13.5).color(Color32::WHITE)).fill(self.theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0));
+                if ui.add(close).clicked() {
+                    answer = Some(true);
+                }
+                let cancel = ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0)));
+                // Cancel is the default: Enter or Escape keep everything running.
+                cancel.request_focus();
+                if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                    answer = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            answer = Some(false);
+        }
+        match answer {
+            Some(true) => {
+                let request = confirm.request;
+                self.confirm_close = None;
+                self.do_close(request);
+            }
+            Some(false) => {
+                self.confirm_close = None;
+                self.focus_terminal = true;
+            }
+            None => {}
         }
     }
 
@@ -2025,7 +2147,7 @@ impl App {
         // Everything below the traffic lights scrolls when there are many tabs.
         let footer_top = bar.max.y - FOOTER_H;
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + SIDEBAR_TOP), Vec2::new(bar.width() - 1.0, LOGO_H));
-        paint_logo(ui.painter(), logo_rect, &self.theme);
+        paint_logo(ui.painter(), logo_rect);
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
 
@@ -2230,7 +2352,7 @@ impl App {
 
         match action {
             Some(TabAction::Select(i)) => self.select(i),
-            Some(TabAction::Close(i)) => self.close_tab(i),
+            Some(TabAction::Close(i)) => self.request_close(CloseRequest::Tab(i)),
             Some(TabAction::New) => self.new_tab(ui.ctx()),
             Some(TabAction::Split(i, side)) => self.split(ui.ctx(), i, side),
             Some(TabAction::DeleteProfile(id)) => self.delete_profile(id),
@@ -2448,9 +2570,12 @@ fn paint_connecting(ui: &Ui, pane: Rect, theme: &Theme, t: &Strings, text: &str)
     painter.text(center + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, t.connecting_hint, FontId::proportional(13.0), theme.text_muted);
 }
 
-/// Text in the logo's metal font: drop shadow, dark outline, accent fill with a lighter top edge.
+/// The logo's color whatever the theme: Dracula's pink, as in the app icon.
+const LOGO_COLOR: Color32 = Color32::from_rgb(0xff, 0x79, 0xc6);
+
+/// Text in the logo's metal font: drop shadow, dark outline, pink fill with a lighter top edge.
 /// `alpha` fades it all (0 to 1).
-fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, size: f32, theme: &Theme, alpha: f32) {
+fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, size: f32, alpha: f32) {
     let font = FontId::new(size, egui::FontFamily::Name("metal".into()));
     let s = size / 32.0;
     let draw = |offset: Vec2, color: Color32| {
@@ -2460,12 +2585,12 @@ fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, siz
     for (dx, dy) in [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)] {
         draw(Vec2::new(dx, dy) * 1.2 * s, Color32::from_black_alpha(200));
     }
-    draw(Vec2::new(0.0, -0.8 * s), theme.accent.lerp_to_gamma(Color32::WHITE, 0.55));
-    draw(Vec2::ZERO, theme.accent);
+    draw(Vec2::new(0.0, -0.8 * s), LOGO_COLOR.lerp_to_gamma(Color32::WHITE, 0.55));
+    draw(Vec2::ZERO, LOGO_COLOR);
 }
 
-fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
-    paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme, 1.0);
+fn paint_logo(painter: &egui::Painter, rect: Rect) {
+    paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, 1.0);
 }
 
 /// Startup splash, `t` seconds in: the letters of "Ronnie" drop in one by one, an accent line and the
@@ -2491,7 +2616,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     let landed = ((t - 0.6) / 0.5).clamp(0.0, 1.0);
     for k in 0..12 {
         let r = size * (0.6 + k as f32 * 0.22) * (0.8 + 0.2 * landed);
-        painter.circle_filled(center, r, theme.accent.gamma_multiply(0.012 * landed * fade));
+        painter.circle_filled(center, r, LOGO_COLOR.gamma_multiply(0.012 * landed * fade));
     }
 
     let font = FontId::new(size, egui::FontFamily::Name("metal".into()));
@@ -2501,7 +2626,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
         let p = ((t - i as f32 * LETTERS) / DROP).clamp(0.0, 1.0);
         if p > 0.0 {
             let y = center.y - (1.0 - ease_out_back(p)) * size * 0.9;
-            paint_metal(painter, Pos2::new(x, y), Align2::LEFT_CENTER, &c.to_string(), size, theme, p.min(1.0) * fade);
+            paint_metal(painter, Pos2::new(x, y), Align2::LEFT_CENTER, &c.to_string(), size, p.min(1.0) * fade);
         }
         x += widths[i];
     }
@@ -2511,7 +2636,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     if line > 0.0 {
         let half = size * 1.6 * (1.0 - (1.0 - line).powi(3));
         let y = center.y + size * 0.62;
-        painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, theme.accent.gamma_multiply(fade)));
+        painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, LOGO_COLOR.gamma_multiply(fade)));
         let version = ((t - 0.95) / 0.3).clamp(0.0, 1.0) * fade;
         painter.text(Pos2::new(center.x, y + 22.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
     }
@@ -2937,7 +3062,7 @@ impl eframe::App for App {
                         tab.focused = id;
                         self.split(ui.ctx(), self.active, side);
                     }
-                    Some(PaneAction::Close(id)) => self.close_pane(self.active, id),
+                    Some(PaneAction::Close(id)) => self.request_close(CloseRequest::Pane(self.active, id)),
                     Some(PaneAction::Reconnect(id)) => reconnect = Some(vec![id]),
                     Some(PaneAction::Reveal(id)) => {
                         if let Some(dir) = tab.panes.get(&id).and_then(Terminal::cwd) {
@@ -2956,6 +3081,16 @@ impl eframe::App for App {
 
         self.settings_window(ui.ctx());
         self.host_editor_window(ui.ctx());
+
+        // Closing the window (red button, Cmd+Q...) asks first when programs are still running.
+        if ui.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
+            let busy = self.busy_for(CloseRequest::Window);
+            if !busy.is_empty() {
+                ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
+                self.confirm_close = Some(ConfirmClose { request: CloseRequest::Window, busy });
+            }
+        }
+        self.confirm_close_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash {

@@ -76,6 +76,30 @@ impl Backend for LocalPty {
         #[cfg(not(unix))]
         None
     }
+
+    fn foreground(&self) -> Option<String> {
+        #[cfg(unix)]
+        {
+            let leader = self.master.process_group_leader()?;
+            let shell = self.child.process_id()? as libc::pid_t;
+            (leader != shell).then(|| process_name(leader).unwrap_or_else(|| leader.to_string()))
+        }
+        #[cfg(not(unix))]
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: libc::pid_t) -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is writable for its whole length.
+    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_name(pid: libc::pid_t) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
 }
 
 #[cfg(target_os = "macos")]
@@ -108,6 +132,25 @@ impl Drop for LocalPty {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn sees_foreground_program() {
+        use super::super::Backend;
+        let (mut pty, mut reader) = super::LocalPty::spawn(80, 24, None, None).unwrap();
+        // Drain the output so the shell never blocks on a full pipe.
+        std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(pty.foreground(), None, "idle shell");
+        pty.write(b"sleep 30\n");
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        assert_eq!(pty.foreground().as_deref(), Some("sleep"));
+    }
+
+    #[test]
+    fn names_own_process() {
+        let name = super::process_name(std::process::id() as libc::pid_t).unwrap();
+        assert!(name.starts_with("ronnie"), "{name}");
+    }
+
     #[test]
     fn reads_own_cwd() {
         let pid = std::process::id() as libc::pid_t;

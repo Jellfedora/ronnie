@@ -58,7 +58,7 @@ pub struct Preset {
     pub dark: bool,
 }
 
-pub const DEFAULT_THEME: &str = "tokyo-night";
+pub const DEFAULT_THEME: &str = "dracula";
 
 pub const PRESETS: &[Preset] = &[
     Preset {
