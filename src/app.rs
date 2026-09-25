@@ -194,6 +194,10 @@ pub struct App {
     commands_menu: Option<CommandsMenu>,
     /// History search open over a pane.
     history_search: Option<HistorySearch>,
+    /// Lock on the config directory, held while running (see `config::lock_instance`).
+    _instance_lock: Option<std::fs::File>,
+    /// Another Ronnie runs on the same config: this one writes nothing.
+    read_only: bool,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -489,6 +493,8 @@ impl App {
             update_dismissed: false,
             update_attempted: false,
             live: Vec::new(),
+            _instance_lock: None,
+            read_only: false,
             history_search: None,
             commands_menu: None,
             profile_editor: None,
@@ -502,6 +508,13 @@ impl App {
             ctx: cc.egui_ctx.clone(),
         };
 
+        match config::lock_instance() {
+            Ok(lock) => app._instance_lock = lock,
+            Err(()) => {
+                app.read_only = true;
+                app.error = Some(app.t().already_running.to_owned());
+            }
+        }
         match config {
             Ok(c) => {
                 // A config migrated from older files is written out as config.json on the first sync.
@@ -532,7 +545,11 @@ impl App {
         if app.tabs.is_empty() {
             app.new_tab(&cc.egui_ctx);
         }
-        app.forget_unused_histories();
+        if app.read_only {
+            app.config_writable = false;
+        } else {
+            app.forget_unused_histories();
+        }
         #[cfg(target_os = "macos")]
         {
             app.menu = crate::menu::MenuBar::install(&cc.egui_ctx, app.t(), &app.config.settings.shortcuts.open_settings);
@@ -866,8 +883,8 @@ impl App {
                         let selected = i == search.selected;
                         let one_line = command.replace('\n', " ⏎ ");
                         let text = egui::RichText::new(one_line).monospace().size(12.5).color(if selected { theme.text } else { theme.text_muted });
-                        // Left-aligned: a full-width button would center the command.
-                        let row = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(egui::Button::selectable(selected, text).truncate())).inner;
+                        // Left-aligned in a row of its own height (a full-width button would center the command).
+                        let row = ui.horizontal(|ui| ui.add(egui::Button::selectable(selected, text).truncate())).inner;
                         if selected && (up || down) {
                             row.scroll_to_me(None);
                         }
@@ -996,7 +1013,7 @@ impl App {
         let id = Uuid::new_v4();
         tab.profile = Some(id);
         let state = tab.state();
-        self.config.profiles.push(Profile { id, tab: state, commands: Vec::new() });
+        self.config.profiles.push(Profile { id, tab: state, commands: Vec::new(), extra: Default::default() });
     }
 
     /// Opens a profile, or switches to its tab if it is already open (a profile is open at most once).
@@ -1057,6 +1074,9 @@ impl App {
         }
         let session = Session { tabs, active: self.active, closed: self.closed.clone(), window: self.window };
 
+        if self.read_only {
+            return;
+        }
         if session != self.saved_session {
             if let Some(path) = config::session_path() {
                 match config::save(&path, &session) {
@@ -2615,7 +2635,7 @@ impl App {
         });
         if let Some(config) = apply {
             self.apply_config(config);
-            self.config_writable = true;
+            self.config_writable = !self.read_only;
             self.save_config();
             // Show the file as written (normalized formatting, defaults filled in).
             self.editor = Some(ConfigEditor::new(self.config.to_json()));

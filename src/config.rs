@@ -115,6 +115,10 @@ pub struct Profile {
     /// Commands saved for this profile, written at the prompt on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
+    /// version never erases them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Profile {
@@ -142,6 +146,10 @@ pub struct Config {
     /// Commands saved for every terminal (the ⚡ menu), written at the prompt on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
+    /// version never erases them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A named, collapsible set of profiles and SSH hosts in the sidebar.
@@ -157,11 +165,15 @@ pub struct Group {
     /// A group of local profiles (in the LOCAL section) rather than of SSH hosts.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local: bool,
+    /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
+    /// version never erases them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Group {
     pub fn new(name: &str, local: bool) -> Self {
-        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local }
+        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local, extra: Default::default() }
     }
 }
 
@@ -192,6 +204,18 @@ impl Config {
             };
             self.groups[index].items.push(host.id);
             seen.insert(host.id);
+        }
+        // Profiles live in local groups and hosts in SSH groups (groups made before the LOCAL / SSH split
+        // may mix them): a group of profiles only becomes local, misplaced items leave their group.
+        let is_profile = |id: &Uuid| self.profiles.iter().any(|p| p.id == *id);
+        for group in &mut self.groups {
+            if !group.local && !group.items.is_empty() && group.items.iter().all(is_profile) {
+                group.local = true;
+            }
+            let local = group.local;
+            let (keep, misplaced): (Vec<Uuid>, Vec<Uuid>) = group.items.iter().partition(|id| is_profile(id) == local);
+            group.items = keep;
+            self.ungrouped.extend(misplaced);
         }
         for id in known {
             if seen.insert(id) {
@@ -439,6 +463,20 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Locks the config directory for this instance. Returns the lock to keep while running, or None when
+/// another Ronnie already holds it: two instances writing the same files would undo each other's
+/// changes. When the lock can't be checked at all, the instance behaves as the only one.
+pub fn lock_instance() -> Result<Option<fs::File>, ()> {
+    let Some(dir) = config_dir() else { return Ok(None) };
+    let _ = fs::create_dir_all(&dir);
+    let Ok(file) = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("instance.lock")) else { return Ok(None) };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Err(()),
+        Err(_) => Ok(None),
+    }
+}
+
 pub fn session_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("session.json"))
 }
@@ -491,6 +529,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sorts_profiles_into_local_groups() {
+        let (p, h) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut config = Config::default();
+        config.profiles.push(Profile { id: p, tab: TabState::default(), commands: Vec::new(), extra: Default::default() });
+        let mut host = crate::ssh::SshHost::new();
+        host.id = h;
+        config.ssh.push(host);
+        let mut only_profiles = Group::new("Caplaser", false);
+        only_profiles.items.push(p);
+        let mut ssh_group = Group::new("Serveurs", false);
+        ssh_group.items.push(h);
+        config.groups = vec![only_profiles, ssh_group];
+        config.normalize();
+        assert!(config.groups[0].local && config.groups[0].items == [p]);
+        assert!(!config.groups[1].local && config.groups[1].items == [h]);
+    }
+
+    #[test]
+    fn keeps_unknown_fields() {
+        let json = r#"{"theme":"ronnie","future":1,"profiles":[{"id":"11111111-1111-4111-8111-111111111111","name":"A","layout":{"type":"pane"},"later":true}]}"#;
+        let config = Config::from_json(json).unwrap();
+        assert_eq!(config.settings.theme, "ronnie");
+        assert!(!config.extra.contains_key("theme"), "known settings are not duplicated");
+        let out = config.to_json();
+        assert!(out.contains("\"future\": 1") && out.contains("\"later\": true"), "{out}");
+        assert_eq!(out.matches("\"theme\"").count(), 1, "{out}");
+    }
+
+    #[test]
     fn parses_shortcuts() {
         let k = Shortcut("Cmd+Shift+K".into()).parse().unwrap();
         assert!(k.modifiers.mac_cmd && k.modifiers.shift && !k.modifiers.ctrl);
@@ -517,6 +584,7 @@ mod tests {
                 focused: 1,
             },
             commands: vec!["npm run dev".into()],
+            extra: Default::default(),
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("\"color\":\"#f7768e\""), "{json}");

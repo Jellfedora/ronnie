@@ -50,6 +50,10 @@ pub struct SshHost {
     /// Commands saved for this host, written at the prompt on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
+    /// version never erases them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl SshHost {
@@ -68,6 +72,7 @@ impl SshHost {
             password_saved: false,
             imported: false,
             commands: Vec::new(),
+            extra: Default::default(),
         }
     }
 
