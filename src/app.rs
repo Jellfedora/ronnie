@@ -836,7 +836,7 @@ impl App {
                 if search.text {
                     ui.horizontal(|ui| {
                         let (current, total) = search.status;
-                        let status = if search.query.is_empty() { String::new() } else if total == 0 { t.history_empty.to_owned() } else { format!("{current} / {total}") };
+                        let status = if search.query.is_empty() { String::new() } else if total == 0 { t.search_none.to_owned() } else { format!("{current} / {total}") };
                         ui.label(egui::RichText::new(status).size(12.5).color(theme.text_muted));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add_enabled(total > 0, egui::Button::new("↓")).on_hover_text("⇧↩").clicked() {
