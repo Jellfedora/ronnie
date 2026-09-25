@@ -6,15 +6,29 @@ ZDOTDIR=$RONNIE_USER_ZDOTDIR
 
 # This terminal's own history, kept across restarts. A new terminal starts from the usual history.
 if [[ -n $RONNIE_HISTFILE ]]; then
+  typeset -g RONNIE_GLOBAL_HISTFILE=${HISTFILE:-$ZDOTDIR/.zsh_history}
   if [[ ! -e $RONNIE_HISTFILE ]]; then
-    mkdir -p ${RONNIE_HISTFILE:h}
-    [[ -r ${HISTFILE:-$ZDOTDIR/.zsh_history} ]] && cp ${HISTFILE:-$ZDOTDIR/.zsh_history} $RONNIE_HISTFILE
+    mkdir -m 700 -p ${RONNIE_HISTFILE:h}
+    if [[ -r $RONNIE_GLOBAL_HISTFILE ]]; then cp $RONNIE_GLOBAL_HISTFILE $RONNIE_HISTFILE; else : >| $RONNIE_HISTFILE; fi
+    # Commands can hold secrets: readable by the user only.
+    chmod 600 $RONNIE_HISTFILE
   fi
   HISTFILE=$RONNIE_HISTFILE
   (( SAVEHIST >= 1000 )) || SAVEHIST=10000
   (( HISTSIZE >= SAVEHIST )) || HISTSIZE=$SAVEHIST
   # Written as commands run: nothing lost if the terminal is closed abruptly.
   setopt INC_APPEND_HISTORY
+  # Commands typed here also go to the usual history, for other terminals and tools (fzf's Ctrl-R...).
+  zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null
+  _ronnie_global_history() {
+    local line=${1%%$'\n'}
+    [[ -z ${line//[[:space:]]/} || $RONNIE_GLOBAL_HISTFILE == $HISTFILE ]] && return 0
+    line=${line//$'\n'/\\$'\n'}
+    [[ -o extended_history ]] && line=": ${EPOCHSECONDS:-0}:0;$line"
+    print -r -- $line >> $RONNIE_GLOBAL_HISTFILE
+    return 0
+  }
+  autoload -Uz add-zsh-hook && add-zsh-hook zshaddhistory _ronnie_global_history
 fi
 # .zlogin comes next for login shells.
 [[ -o login ]] && ZDOTDIR=$RONNIE_ZDOTDIR

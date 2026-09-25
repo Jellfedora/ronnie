@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod i18n;
+mod log;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pane;
@@ -120,7 +121,17 @@ fn tune_macos_window(cc: &eframe::CreationContext<'_>, bg: egui::Color32) {
 fn main() -> eframe::Result {
     // Started by ssh to type a saved password: answer and exit before any window opens.
     ssh::run_askpass();
-    let session = config::load::<config::Session>(config::session_path()).unwrap_or_default();
+    if std::env::args().skip(1).any(|a| a == "--version" || a == "-V") {
+        println!("ronnie {}{}", update::VERSION, if config::OFFICIAL { "" } else { " (dev)" });
+        return Ok(());
+    }
+    if std::env::args().skip(1).any(|a| a == "--help" || a == "-h") {
+        println!("Ronnie {} — Terminal Power Métal\n\nUsage: ronnie [--version | --help]\n\nEnvironment:\n  RONNIE_CONFIG_DIR   use another config directory\n  RONNIE_UPDATE_CHECK look for updates even in a dev build", update::VERSION);
+        return Ok(());
+    }
+    log::install_panic_hook();
+    log::info(&format!("start {}{}", update::VERSION, if config::OFFICIAL { "" } else { " dev" }));
+    let (session, session_error) = config::load_session();
     let config = config::load_config();
     let theme = theme::Preset::find(config.as_ref().map_or(theme::DEFAULT_THEME, |c| &c.settings.theme)).theme();
     let mut viewport = egui::ViewportBuilder::default()
@@ -152,7 +163,7 @@ fn main() -> eframe::Result {
             tune_macos_window(cc, theme.chrome_bg);
             install_fonts(&cc.egui_ctx);
             cc.egui_ctx.set_visuals(theme.visuals());
-            Ok(Box::new(app::App::new(cc, session, config, theme)))
+            Ok(Box::new(app::App::new(cc, session, session_error, config, theme)))
         }),
     )
 }

@@ -236,9 +236,34 @@ impl Config {
         serde_json::to_string_pretty(self).expect("config serializes")
     }
 
-    /// Parses the config; the error names the line and column of the mistake.
+    /// Parses the config; the error names the line and column of the mistake. Entries this version
+    /// can't read (a profile, host or group written by a newer version, say) don't make the whole file
+    /// fail: they are kept aside under "unreadable_<list>" and written back as they were. An unknown
+    /// language falls back to the default one.
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(text)
+        let mut value: serde_json::Value = serde_json::from_str(text)?;
+        if let Some(map) = value.as_object_mut() {
+            if map.get("language").is_some_and(|l| serde_json::from_value::<Lang>(l.clone()).is_err()) {
+                map.remove("language");
+            }
+            set_aside::<Profile>(map, "profiles");
+            set_aside::<crate::ssh::SshHost>(map, "ssh");
+            set_aside::<Group>(map, "groups");
+        }
+        serde_json::from_value(value)
+    }
+}
+
+/// Moves the entries of the array `key` that don't parse as `T` to "unreadable_<key>".
+fn set_aside<T: for<'de> Deserialize<'de>>(map: &mut serde_json::Map<String, serde_json::Value>, key: &str) {
+    let Some(serde_json::Value::Array(items)) = map.get_mut(key) else { return };
+    let (good, bad): (Vec<_>, Vec<_>) = std::mem::take(items).into_iter().partition(|v| serde_json::from_value::<T>(v.clone()).is_ok());
+    *items = good;
+    if !bad.is_empty() {
+        let aside = map.entry(format!("unreadable_{key}")).or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let serde_json::Value::Array(list) = aside {
+            list.extend(bad);
+        }
     }
 }
 
@@ -249,8 +274,9 @@ pub fn config_path() -> Option<PathBuf> {
 /// Loads `config.json`, or builds it from the files used by earlier versions.
 pub fn load_config() -> Result<Config> {
     let path = config_path();
-    if path.as_ref().is_some_and(|p| p.exists()) {
-        let mut config: Config = load(path)?;
+    if let Some(path) = path.as_ref().filter(|p| p.exists()) {
+        let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut config = Config::from_json(&text).with_context(|| format!("reading {}", path.display()))?;
         config.normalize();
         return Ok(config);
     }
@@ -490,17 +516,21 @@ pub fn config_dir() -> Option<PathBuf> {
     .clone()
 }
 
-/// Deletes everything Ronnie stores in its config directory (the instance lock excepted).
-pub fn erase_all() -> std::io::Result<()> {
-    let Some(dir) = config_dir() else { return Ok(()) };
+/// Empties Ronnie's config directory (the instance lock excepted). Nothing is deleted: the files move
+/// to a sibling "<dir>-backup-<time>" directory, returned, in case the reset was a mistake.
+pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
+    let Some(dir) = config_dir() else { return Ok(None) };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let name = format!("{}-backup-{stamp}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "ronnie".into()));
+    let backup = dir.with_file_name(name);
+    create_private_dir(&backup)?;
     for entry in fs::read_dir(&dir)?.flatten() {
         if entry.file_name() == "instance.lock" {
             continue;
         }
-        let path = entry.path();
-        if path.is_dir() { fs::remove_dir_all(&path)? } else { fs::remove_file(&path)? }
+        fs::rename(entry.path(), backup.join(entry.file_name()))?;
     }
-    Ok(())
+    Ok(Some(backup))
 }
 
 /// Copies `from` into `to` (files and subdirectories), skipping the instance lock.
@@ -537,7 +567,7 @@ fn official_dir() -> Option<PathBuf> {
 /// changes. When the lock can't be checked at all, the instance behaves as the only one.
 pub fn lock_instance() -> Result<Option<fs::File>, ()> {
     let Some(dir) = config_dir() else { return Ok(None) };
-    let _ = fs::create_dir_all(&dir);
+    let _ = create_private_dir(&dir);
     let Ok(file) = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("instance.lock")) else { return Ok(None) };
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
@@ -560,14 +590,69 @@ pub fn load<T: for<'de> Deserialize<'de> + Default>(path: Option<PathBuf>) -> Re
     }
 }
 
-/// Writes JSON atomically (temp file + rename) so a crash never leaves a truncated file.
+/// Writes JSON atomically (temp file flushed to disk, then renamed), readable by the user only: a crash
+/// or a power cut never leaves a truncated file, and other accounts can't read hosts or commands.
 pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    use std::io::Write as _;
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-    fs::rename(&tmp, path).with_context(|| format!("écriture de {}", path.display()))
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
+    // The rename itself survives a power cut once the directory is flushed too.
+    #[cfg(unix)]
+    if let Some(dir) = path.parent().and_then(|d| fs::File::open(d).ok()) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Saves the config, first keeping the previous file as config.json.bak (at most once a day, so the
+/// backup is a known good state rather than the last few seconds).
+pub fn save_config_file(path: &Path, config: &Config) -> Result<()> {
+    let backup = path.with_extension("json.bak");
+    let stale = modified(&backup).is_none_or(|t| t.elapsed().is_ok_and(|age| age.as_secs() > 24 * 3600));
+    if stale && path.exists() {
+        let _ = fs::copy(path, &backup);
+    }
+    save(path, config)
+}
+
+/// Creates `dir` (and its parents) accessible by the user only.
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Reads session.json. A file that can't be read is kept aside as session.json.bad-<time> (rather than
+/// overwritten by the next save) and the reason returned, to be shown.
+pub fn load_session() -> (Session, Option<String>) {
+    let Some(path) = session_path() else { return (Session::default(), None) };
+    match load::<Session>(Some(path.clone())) {
+        Ok(session) => (session, None),
+        Err(e) => {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let aside = path.with_extension(format!("json.bad-{stamp}"));
+            let _ = fs::rename(&path, &aside);
+            (Session::default(), Some(format!("{e:#} → {}", aside.display())))
+        }
+    }
 }
 
 /// Colors are stored as "#rrggbb".
@@ -624,11 +709,22 @@ mod tests {
         }
         // SAFETY: no other test reads RONNIE_CONFIG_DIR.
         unsafe { std::env::set_var("RONNIE_CONFIG_DIR", &dir) };
-        erase_all().unwrap();
+        let backup = erase_all().unwrap().unwrap();
         unsafe { std::env::remove_var("RONNIE_CONFIG_DIR") };
         let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, ["instance.lock"]);
+        assert!(backup.join("config.json").exists() && backup.join("history/abc").exists(), "moved aside, not deleted");
         fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&backup).unwrap();
+    }
+
+    #[test]
+    fn sets_aside_unreadable_entries() {
+        let json = r#"{"language":"klingon","profiles":[{"id":"11111111-1111-4111-8111-111111111111","name":"A","layout":{"type":"pane"}},{"id":"nope","layout":{"type":"hexagon"}}]}"#;
+        let config = Config::from_json(json).unwrap();
+        assert_eq!(config.settings.language, Lang::default());
+        assert_eq!(config.profiles.len(), 1);
+        assert!(config.to_json().contains("\"unreadable_profiles\""), "the bad entry is kept");
     }
 
     #[test]

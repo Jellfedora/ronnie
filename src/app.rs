@@ -201,6 +201,8 @@ pub struct App {
     _instance_lock: Option<std::fs::File>,
     /// Another Ronnie runs on the same config: this one writes nothing.
     read_only: bool,
+    /// config.json or session.json couldn't be read at startup: the session isn't saved this run.
+    session_frozen: bool,
     /// A clicked link waiting for "Open this link?" confirmation.
     link_confirm: Option<String>,
     /// "Reset everything?" dialog shown.
@@ -528,7 +530,7 @@ impl ConfigEditor {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, session: Session, config: anyhow::Result<Config>, theme: Theme) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, session: Session, session_error: Option<String>, config: anyhow::Result<Config>, theme: Theme) -> Self {
         let mut app = Self {
             tabs: Vec::new(),
             active: 0,
@@ -565,6 +567,7 @@ impl App {
             live: Vec::new(),
             _instance_lock: None,
             read_only: false,
+            session_frozen: false,
             confirm_reset: false,
             link_confirm: None,
             history_search: None,
@@ -597,8 +600,15 @@ impl App {
             }
             Err(e) => {
                 app.config_writable = false;
+                // Profiles are unknown this run: the restored tabs lost their links to them, so the
+                // session isn't saved and no history is cleaned up until a restart with a valid file.
+                app.session_frozen = true;
                 app.error = Some(format!("{} : {e:#}", app.t().config_not_loaded));
             }
+        }
+        if let Some(e) = session_error {
+            app.session_frozen = true;
+            app.error = Some(format!("{} : {e}", app.t().session_not_loaded));
         }
         let known = |c: &&SessionTab| c.profile.is_some_and(|id| app.config.profiles.iter().any(|p| p.id == id));
         app.closed = session.closed.iter().filter(known).cloned().collect();
@@ -620,7 +630,7 @@ impl App {
         }
         if app.read_only {
             app.config_writable = false;
-        } else {
+        } else if !app.session_frozen {
             app.forget_unused_histories();
         }
         #[cfg(target_os = "macos")]
@@ -1152,7 +1162,7 @@ impl App {
         if self.read_only {
             return;
         }
-        if session != self.saved_session {
+        if session != self.saved_session && !self.session_frozen {
             if let Some(path) = config::session_path() {
                 match config::save(&path, &session) {
                     Ok(()) => self.saved_session = session,
@@ -1169,12 +1179,16 @@ impl App {
             return;
         }
         let Some(path) = config::config_path() else { return };
-        match config::save(&path, &self.config) {
+        match config::save_config_file(&path, &self.config) {
             Ok(()) => {
                 self.saved_config = self.config.clone();
                 self.config_mtime = config::modified(&path);
             }
-            Err(e) => self.error = Some(format!("{} : {e:#}", self.t().config_save_failed)),
+            Err(e) => {
+                self.error = Some(format!("{} : {e:#}", self.t().config_save_failed));
+                // Not again every second: the next outside edit of the file retries.
+                self.config_writable = false;
+            }
         }
     }
 
@@ -1188,8 +1202,9 @@ impl App {
         self.config_mtime = mtime;
         let result = std::fs::read_to_string(&path).map_err(anyhow::Error::from).and_then(|text| Ok(Config::from_json(&text)?));
         match result {
-            Ok(config) => {
-                self.config_writable = true;
+            Ok(mut config) => {
+                config.normalize();
+                self.config_writable = !self.read_only;
                 self.saved_config = config.clone();
                 self.apply_config(config);
             }
@@ -3016,6 +3031,8 @@ impl App {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(dir.display().to_string()).size(11.5).monospace().color(self.theme.text_muted));
             }
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(t.reset_backup).size(12.5).color(self.theme.text_muted));
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let erase = egui::Button::new(egui::RichText::new(t.reset_confirm).size(13.5).color(Color32::WHITE)).fill(self.theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0));
@@ -3055,6 +3072,7 @@ impl App {
             self.error = Some(format!("{e:#}"));
             return;
         }
+        crate::log::info("configuration reset (moved to a backup directory)");
         match self.updater.relaunch() {
             Ok(()) => {
                 self.close_confirmed = true;
