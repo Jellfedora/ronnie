@@ -17,6 +17,7 @@ use crate::ssh::{self, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
+mod files;
 mod popups;
 mod settings;
 mod sidebar;
@@ -66,12 +67,16 @@ pub struct Tab {
     /// Panes whose shell starts the first time the tab is shown: restoring many tabs at once
     /// would otherwise start all their shells together and saturate the CPU.
     pending: Vec<PaneId>,
+    /// SSH tabs: the file manager (created when first shown), and whether it is shown instead of the
+    /// terminals.
+    files: Option<Box<files::FileManager>>,
+    show_files: bool,
 }
 
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), dead: Default::default(), pending: Vec::new() }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -220,6 +225,12 @@ pub struct App {
     /// Hands saved SSH passwords to the ssh processes of this window's panes (Unix).
     #[cfg(unix)]
     askpass: crate::askpass::Server,
+    /// Questions from ssh processes without a terminal (SFTP): password, new host key.
+    #[cfg(unix)]
+    ssh_prompts: std::sync::mpsc::Receiver<crate::askpass::Prompt>,
+    /// The one being answered, and what is typed.
+    #[cfg(unix)]
+    ssh_prompt: Option<(crate::askpass::Prompt, String)>,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -471,10 +482,11 @@ enum ShortcutAction {
     ReopenTab,
     ClearPane,
     OpenSettings,
+    ToggleFiles,
 }
 
 impl ShortcutAction {
-    const ALL: [ShortcutAction; 9] = [
+    const ALL: [ShortcutAction; 10] = [
         Self::NewTab,
         Self::ClosePane,
         Self::SplitRight,
@@ -484,6 +496,7 @@ impl ShortcutAction {
         Self::ReopenTab,
         Self::ClearPane,
         Self::OpenSettings,
+        Self::ToggleFiles,
     ];
 
     fn label(self, t: &Strings) -> &'static str {
@@ -497,6 +510,7 @@ impl ShortcutAction {
             Self::ReopenTab => t.shortcut_reopen,
             Self::ClearPane => t.shortcut_clear_pane,
             Self::OpenSettings => t.shortcut_open_settings,
+            Self::ToggleFiles => t.shortcut_toggle_files,
         }
     }
 
@@ -511,6 +525,7 @@ impl ShortcutAction {
             Self::ReopenTab => &s.reopen_tab,
             Self::ClearPane => &s.clear_pane,
             Self::OpenSettings => &s.open_settings,
+            Self::ToggleFiles => &s.toggle_files,
         }
     }
 
@@ -525,6 +540,7 @@ impl ShortcutAction {
             Self::ReopenTab => &mut s.reopen_tab,
             Self::ClearPane => &mut s.clear_pane,
             Self::OpenSettings => &mut s.open_settings,
+            Self::ToggleFiles => &mut s.toggle_files,
         }
     }
 }
@@ -582,6 +598,10 @@ impl App {
             _instance_lock: None,
             #[cfg(unix)]
             askpass: crate::askpass::Server::start(),
+            #[cfg(unix)]
+            ssh_prompts: std::sync::mpsc::channel().1,
+            #[cfg(unix)]
+            ssh_prompt: None,
             read_only: false,
             session_frozen: false,
             confirm_reset: false,
@@ -645,6 +665,12 @@ impl App {
         }
         app.active = session.active.min(app.tabs.len().saturating_sub(1));
         watch_config(&cc.egui_ctx);
+        #[cfg(unix)]
+        {
+            let (prompts, receiver) = std::sync::mpsc::channel();
+            app.askpass.set_prompter(prompts, &cc.egui_ctx);
+            app.ssh_prompts = receiver;
+        }
         app.saved_session = session;
         if app.tabs.is_empty() {
             app.new_tab(&cc.egui_ctx);
@@ -1120,6 +1146,11 @@ impl App {
                     }
                 }
                 ShortcutAction::OpenSettings => self.settings_dialog = !self.settings_dialog,
+                ShortcutAction::ToggleFiles => {
+                    if let Some(show) = self.tabs.get(self.active).filter(|t| t.ssh.is_some()).map(|t| !t.show_files) {
+                        self.toggle_files(self.active, show);
+                    }
+                }
             }
         }
         // Move between panes: Cmd+Alt+arrows (Ctrl+Alt+arrows outside macOS).
@@ -1347,6 +1378,7 @@ struct HeaderClicks {
     reconnect: bool,
     search: bool,
     commands: bool,
+    files: bool,
 }
 
 /// What the strip above a pane shows.
@@ -1405,7 +1437,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
         let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 2.0), Pos2::new(right, rect.max.y - 2.0));
         clicks.reconnect = ui.put(at, button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         clicks.commands = icon(ui, at.min.x - 4.0, "⚡", t.commands.to_owned());
-        max_w -= w + 34.0;
+        // The server's files, FileZilla style.
+        let files = egui::Button::new(egui::RichText::new(format!("📁  {}", t.files_button)).size(12.0)).corner_radius(4.0).min_size(Vec2::new(0.0, rect.height() - 4.0));
+        let fw = 90.0_f32.min(rect.width() / 4.0);
+        let files_at = Rect::from_min_max(Pos2::new(at.min.x - 30.0 - fw, rect.min.y + 2.0), Pos2::new(at.min.x - 30.0, rect.max.y - 2.0));
+        clicks.files = ui.put(files_at, files).on_hover_text(format!("{} ({})", t.files_open, shortcuts.toggle_files.label())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        max_w -= w + 34.0 + fw + 4.0;
     }
 
     let (text, tooltip) = match header {
@@ -1563,6 +1600,8 @@ enum TabAction {
     NewGroupWith(Uuid),
     /// Opens the profile editor.
     EditProfile(Uuid),
+    /// Opens an SSH host's tab on its file manager.
+    OpenFiles(Uuid),
     DeleteGroup(Uuid),
     /// Move an item into a group (None: outside groups), before another item or at the end.
     DropItem(Uuid, Option<Uuid>, Option<Uuid>),
@@ -1677,6 +1716,7 @@ impl eframe::App for App {
             }
         }
         self.handle_shortcuts(ui);
+        self.poll_files();
         // Errors shown to the user also go to ronnie.log, to diagnose them later.
         if self.error != self.logged_error {
             if let Some(e) = &self.error {
@@ -1713,6 +1753,11 @@ impl eframe::App for App {
                     ui.colored_label(Color32::from_rgb(0xf7, 0x76, 0x8e), err);
                 }
                 let rect = ui.available_rect_before_wrap();
+                // An SSH tab showing its file manager.
+                if self.tabs.get(self.active).is_some_and(|t| t.show_files) {
+                    self.files_view(ui, rect);
+                    return;
+                }
                 self.start_pending(ui.ctx(), self.active);
                 // SSH host whose saved password can answer prompts in this tab (sudo...).
                 let password_host = self.tabs.get(self.active).and_then(|t| t.ssh).filter(|id| self.config.ssh.iter().any(|h| h.id == *id && h.password_saved));
@@ -1742,6 +1787,7 @@ impl eframe::App for App {
                 let mut close_dead = None;
                 let mut open_search = None;
                 let mut open_commands = None;
+                let mut open_files = false;
                 // Checked before the panes handle keys, so Cmd+Enter doesn't reach the terminal.
                 let prompt = password_host.filter(|_| tab.panes.get(&tab.focused).is_some_and(Terminal::awaits_password));
                 let mut fill_password = prompt.is_some()
@@ -1761,6 +1807,9 @@ impl eframe::App for App {
                         }
                         if clicks.commands {
                             open_commands = Some(id);
+                        }
+                        if clicks.files {
+                            open_files = true;
                         }
                         if clicks.focus {
                             term.request_focus(ui);
@@ -1881,6 +1930,9 @@ impl eframe::App for App {
                 if let Some(id) = open_search {
                     self.open_search(self.active, id, true);
                 }
+                if open_files {
+                    self.toggle_files(self.active, true);
+                }
                 if let Some(id) = open_commands {
                     // One popup at a time: the ⚡ menu replaces the search.
                     self.close_search();
@@ -1922,6 +1974,7 @@ impl eframe::App for App {
         self.confirm_reset_window(ui.ctx());
         self.link_confirm_window(ui.ctx());
         self.paste_confirm_window(ui.ctx());
+        self.ssh_prompt_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash {

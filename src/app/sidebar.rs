@@ -341,6 +341,9 @@ impl App {
             menu_item(ui, t.edit, TabAction::EditProfile(id), action);
             menu_item(ui, t.rename, TabAction::StartItemRename(id), action);
         }
+        if item.ssh {
+            menu_item(ui, &format!("📁  {}", t.files_open), TabAction::OpenFiles(id), action);
+        }
         if let (Some(i), true) = (item.open, item.ssh) {
             menu_item(ui, t.reconnect, TabAction::Reconnect(i), action);
         }
@@ -784,6 +787,10 @@ impl App {
                 }
             }
             Some(TabAction::DeleteHost(id)) => self.delete_host(id),
+            Some(TabAction::OpenFiles(id)) => {
+                self.open_ssh(id);
+                self.toggle_files(self.active, true);
+            }
             Some(TabAction::OpenItem(id)) => {
                 if self.config.profiles.iter().any(|p| p.id == id) {
                     self.open_profile(id);

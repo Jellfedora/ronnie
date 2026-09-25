@@ -56,6 +56,11 @@ pub struct SshHost {
     /// Commands saved for this host, written at the prompt on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// Folders the file manager was last in: on this computer, and on the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sftp_local: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sftp_remote: Option<String>,
     /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
     /// version never erases them.
     #[serde(flatten)]
@@ -78,6 +83,8 @@ impl SshHost {
             password_saved: false,
             imported: false,
             commands: Vec::new(),
+            sftp_local: None,
+            sftp_remote: None,
             extra: Default::default(),
         }
     }

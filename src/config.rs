@@ -411,6 +411,8 @@ pub struct Shortcuts {
     /// Clears the focused pane's screen and scrollback.
     pub clear_pane: Shortcut,
     pub open_settings: Shortcut,
+    /// Switches an SSH tab between its terminal and its file manager.
+    pub toggle_files: Shortcut,
 }
 
 impl Default for Shortcuts {
@@ -426,6 +428,7 @@ impl Default for Shortcuts {
             reopen_tab: Shortcut(if mac { "Cmd+Shift+T" } else { "Ctrl+Alt+Shift+T" }.into()),
             clear_pane: Shortcut::command('K'),
             open_settings: Shortcut::command('P'),
+            toggle_files: Shortcut::command('E'),
         }
     }
 }
