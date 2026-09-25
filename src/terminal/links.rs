@@ -10,6 +10,8 @@ pub struct Link {
     pub url: String,
     /// Grid cells covered by the link, for underlining.
     pub cells: Vec<Point>,
+    /// An OSC 8 hyperlink: the program chose its target, which the visible text may not show.
+    pub osc8: bool,
 }
 
 const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
@@ -52,11 +54,11 @@ pub fn link_at<L: EventListener>(term: &Term<L>, point: Point) -> Option<Link> {
     let cell_at = |p: &Point| &grid[p.line][p.column];
     if let Some(link) = cell_at(&cells[hovered]).hyperlink() {
         let covered = cells.iter().copied().filter(|p| cell_at(p).hyperlink().as_ref() == Some(&link)).collect();
-        return Some(Link { url: link.uri().to_owned(), cells: covered });
+        return Some(Link { url: link.uri().to_owned(), cells: covered, osc8: true });
     }
 
     let (from, to) = find_urls(&text).into_iter().find(|(from, to)| (*from..*to).contains(&hovered))?;
-    Some(Link { url: text.chars().skip(from).take(to - from).collect(), cells: cells[from..to].to_vec() })
+    Some(Link { url: text.chars().skip(from).take(to - from).collect(), cells: cells[from..to].to_vec(), osc8: false })
 }
 
 /// URL spans in `text`, as char index ranges.
@@ -192,24 +194,38 @@ fn as_local(url: &str) -> Option<LocalUrl> {
     Some(LocalUrl { port, url })
 }
 
-/// Opens a URL with the system's default handler.
+/// Whether `url` can be opened on a click without asking: a web address. Anything else (file://,
+/// app URL schemes, paths) could launch a program, so it is confirmed first.
+pub fn is_safe(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://")) && !url.chars().any(char::is_control)
+}
+
+/// Opens a URL with the system's default handler. Never through a shell: on Windows `cmd /C start`
+/// would run whatever follows a `&` in the URL.
 pub fn open(url: &str) {
+    // An argument starting with "-" would be read as an option by `open` / `xdg-open`.
+    if url.starts_with('-') || url.chars().any(char::is_control) {
+        return;
+    }
     #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("open");
+    let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = std::process::Command::new("xdg-open");
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     #[cfg(windows)]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
-    };
-    let _ = cmd.arg(url).spawn();
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+        let wide = |s: &str| std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+        let (operation, target) = (wide("open"), wide(url));
+        // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call.
+        unsafe { ShellExecuteW(std::ptr::null_mut(), operation.as_ptr(), target.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{as_local, find_urls};
+    use super::{as_local, find_urls, is_safe};
 
     fn urls(text: &str) -> Vec<String> {
         let chars: Vec<char> = text.chars().collect();
@@ -223,6 +239,16 @@ mod tests {
         assert_eq!(urls("(https://example.com/x)."), ["https://example.com/x"]);
         assert_eq!(urls("https://en.wikipedia.org/wiki/Rust_(langage)"), ["https://en.wikipedia.org/wiki/Rust_(langage)"]);
         assert_eq!(urls("a http:// b"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn only_web_links_open_directly() {
+        assert!(is_safe("https://example.com/a?b=1&c=2"));
+        assert!(is_safe("HTTP://localhost:3000/"));
+        assert!(!is_safe("file:///Users/me/Downloads/Evil.app"));
+        assert!(!is_safe("vscode://file/etc/passwd"));
+        assert!(!is_safe("/tmp/x.command"));
+        assert!(!is_safe("https://x.io/\nrm"));
     }
 
     #[test]

@@ -201,6 +201,8 @@ pub struct App {
     _instance_lock: Option<std::fs::File>,
     /// Another Ronnie runs on the same config: this one writes nothing.
     read_only: bool,
+    /// A clicked link waiting for "Open this link?" confirmation.
+    link_confirm: Option<String>,
     /// "Reset everything?" dialog shown.
     confirm_reset: bool,
     /// Close waiting for the user to confirm, because programs are running.
@@ -564,6 +566,7 @@ impl App {
             _instance_lock: None,
             read_only: false,
             confirm_reset: false,
+            link_confirm: None,
             history_search: None,
             commands_menu: None,
             profile_editor: None,
@@ -2953,6 +2956,49 @@ impl App {
         }
     }
 
+    /// "Open this link?" for links that aren't web addresses, showing the exact target.
+    fn link_confirm_window(&mut self, ctx: &egui::Context) {
+        // Links clicked in any pane of the visible tab.
+        if self.link_confirm.is_none() {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                self.link_confirm = tab.panes.values_mut().find_map(Terminal::take_link_request);
+            }
+        }
+        let Some(url) = self.link_confirm.clone() else { return };
+        let t = self.t();
+        let mut answer = None;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("confirm-link")).frame(frame).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.label(egui::RichText::new(t.open_link_title).size(17.0).strong());
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(t.open_link_body).size(13.5).color(self.theme.text_muted));
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(egui::RichText::new(&url).monospace().size(12.5)).wrap());
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(egui::RichText::new(t.open_link).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                    answer = Some(true);
+                }
+                let cancel = ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0)));
+                cancel.request_focus();
+                if cancel.clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            answer = Some(false);
+        }
+        if let Some(open) = answer {
+            if open {
+                crate::terminal::open_url(&url);
+            }
+            self.link_confirm = None;
+            self.focus_terminal = true;
+        }
+    }
+
     /// "Reset everything?" dialog: erases the whole configuration, then restarts.
     fn confirm_reset_window(&mut self, ctx: &egui::Context) {
         if !self.confirm_reset {
@@ -4204,6 +4250,7 @@ impl eframe::App for App {
         self.commands_menu_ui(ui.ctx());
         self.confirm_close_window(ui.ctx());
         self.confirm_reset_window(ui.ctx());
+        self.link_confirm_window(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash {

@@ -2546,6 +2546,7 @@ dependencies = [
  "tar",
  "ureq",
  "uuid",
+ "windows-sys 0.61.2",
  "winresource",
  "zip",
 ]

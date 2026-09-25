@@ -125,6 +125,8 @@ pub struct Terminal {
     mouse_down: bool,
     /// Link under the pointer, underlined and opened on click.
     hover_link: Option<links::Link>,
+    /// A clicked link that needs the user's confirmation before opening (see `links::is_safe`).
+    link_request: Option<String>,
     /// Text search in the output (Cmd+F), highlighted on screen.
     find: Option<Find>,
     /// Where the grid was drawn last frame, to place things next to the cursor.
@@ -196,6 +198,7 @@ impl Terminal {
             mouse_down: false,
             hover_link: None,
             find: None,
+            link_request: None,
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
         }
@@ -305,6 +308,11 @@ impl Terminal {
     pub fn paste_text(&mut self, text: &str) {
         let mode = *self.term.lock().mode();
         self.paste(text, mode);
+    }
+
+    /// A clicked link waiting for confirmation, taken once.
+    pub fn take_link_request(&mut self) -> Option<String> {
+        self.link_request.take()
     }
 
     /// Searches `query` in the output and shows the most recent occurrence. Returns (current, total).
@@ -487,6 +495,11 @@ impl Terminal {
         }
         self.hover_link = self.link_under_pointer(ui, &response, grid_rect.min);
         self.handle_mouse(ui, &response, grid_rect.min);
+        // An OSC 8 link's visible text may hide its target: show the real one.
+        let response = match self.hover_link.as_ref().filter(|l| l.osc8) {
+            Some(link) => response.on_hover_text(&link.url),
+            None => response,
+        };
 
         if response.hovered() {
             let icon = if self.hover_link.is_some() { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Text };
@@ -597,7 +610,12 @@ impl Terminal {
     fn handle_mouse(&mut self, ui: &Ui, response: &Response, grid_origin: Pos2) {
         if response.clicked_by(PointerButton::Primary) {
             if let Some(link) = &self.hover_link {
-                links::open(&link.url);
+                // Web links open right away; anything else waits for the user's confirmation.
+                if links::is_safe(&link.url) {
+                    links::open(&link.url);
+                } else {
+                    self.link_request = Some(link.url.clone());
+                }
                 return;
             }
         }
