@@ -769,7 +769,9 @@ impl App {
         if pressed(Key::T) {
             self.new_tab(ui.ctx());
         }
-        if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma))) {
+        // Settings: Cmd+P (Ctrl+Shift+P), easier to read on the button than the usual Cmd+, which still works.
+        let comma = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)));
+        if pressed(Key::P) || comma {
             self.settings_dialog = !self.settings_dialog;
         }
         if pressed(Key::W) {
@@ -2178,7 +2180,7 @@ impl App {
         ui.painter().rect_stroke(button, 6.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(if hot { 0.8 } else { 0.35 })), egui::StrokeKind::Inside);
         paint_gear(ui.painter(), Pos2::new(button.min.x + 16.0, button.center().y), self.theme.accent);
         ui.painter().text(Pos2::new(button.min.x + 32.0, button.center().y), Align2::LEFT_CENTER, t.settings, FontId::proportional(13.0), self.theme.text);
-        let shortcut = if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," };
+        let shortcut = if cfg!(target_os = "macos") { "⌘P" } else { "Ctrl+Shift+P" };
         ui.painter().text(Pos2::new(button.max.x - 10.0, button.center().y), Align2::RIGHT_CENTER, shortcut, FontId::proportional(11.5), self.theme.text_muted);
         if settings.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.settings_dialog = true;
