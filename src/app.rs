@@ -754,6 +754,8 @@ impl App {
     /// Opens the search box over a pane, on the displayed text (`text`) or on the commands typed there
     /// (local panes only). The same shortcut again closes it; the other one switches mode.
     fn open_search(&mut self, index: usize, pane: PaneId, text: bool) {
+        // One popup at a time: the search replaces the ⚡ menu.
+        self.commands_menu = None;
         if let Some(search) = self.history_search.as_mut().filter(|s| s.tab == index && s.pane == pane) {
             if search.text == text {
                 self.close_search();
@@ -3976,6 +3978,8 @@ impl eframe::App for App {
                     self.open_search(self.active, id, true);
                 }
                 if let Some(id) = open_commands {
+                    // One popup at a time: the ⚡ menu replaces the search.
+                    self.close_search();
                     self.commands_menu = if self.commands_menu.as_ref().is_some_and(|m| m.pane == id) { None } else { Some(CommandsMenu::new(self.active, id)) };
                 }
                 if let Some(panes) = reconnect {
