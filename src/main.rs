@@ -9,6 +9,7 @@ mod log;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pane;
+mod sftp;
 mod shell;
 mod ssh;
 mod terminal;
