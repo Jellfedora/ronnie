@@ -2168,7 +2168,7 @@ impl App {
         // Everything below the traffic lights scrolls when there are many tabs.
         let footer_top = bar.max.y - FOOTER_H;
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + SIDEBAR_TOP), Vec2::new(bar.width() - 1.0, LOGO_H));
-        paint_logo(ui.painter(), logo_rect);
+        paint_logo(ui.painter(), logo_rect, &self.theme);
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
 
@@ -2599,9 +2599,6 @@ fn paint_connecting(ui: &Ui, pane: Rect, theme: &Theme, t: &Strings, text: &str)
     painter.text(center + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, t.connecting_hint, FontId::proportional(13.0), theme.text_muted);
 }
 
-/// The logo's color whatever the theme: Dracula's pink, as in the app icon.
-const LOGO_COLOR: Color32 = Color32::from_rgb(0xff, 0x79, 0xc6);
-
 /// Breathing green halo around a tab's dot while a program runs in it.
 fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
     let phase = (ui.input(|i| i.time) * std::f64::consts::TAU / 2.0).sin() as f32 * 0.5 + 0.5;
@@ -2611,24 +2608,25 @@ fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
     ui.ctx().request_repaint_after(Duration::from_millis(100));
 }
 
-/// Text in the logo's metal font: drop shadow, dark outline, pink fill with a lighter top edge.
+/// Text in the logo's metal font: drop shadow, dark outline, `color` fill with a lighter top edge.
 /// `alpha` fades it all (0 to 1).
-fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, size: f32, alpha: f32) {
+fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, size: f32, color: Color32, alpha: f32) {
     let font = FontId::new(size, egui::FontFamily::Name("metal".into()));
     let s = size / 32.0;
-    let draw = |offset: Vec2, color: Color32| {
-        painter.text(at + offset, align, text, font.clone(), color.gamma_multiply(alpha));
+    let draw = |offset: Vec2, c: Color32| {
+        painter.text(at + offset, align, text, font.clone(), c.gamma_multiply(alpha));
     };
     draw(Vec2::new(0.0, 3.0 * s), Color32::from_black_alpha(140));
     for (dx, dy) in [(-1.0, -1.0), (0.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 0.0), (-1.0, 1.0), (0.0, 1.0), (1.0, 1.0)] {
         draw(Vec2::new(dx, dy) * 1.2 * s, Color32::from_black_alpha(200));
     }
-    draw(Vec2::new(0.0, -0.8 * s), LOGO_COLOR.lerp_to_gamma(Color32::WHITE, 0.55));
-    draw(Vec2::ZERO, LOGO_COLOR);
+    draw(Vec2::new(0.0, -0.8 * s), color.lerp_to_gamma(Color32::WHITE, 0.55));
+    draw(Vec2::ZERO, color);
 }
 
-fn paint_logo(painter: &egui::Painter, rect: Rect) {
-    paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, 1.0);
+/// The sidebar logo, in the theme's accent color.
+fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
+    paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
 /// Startup splash, `t` seconds in: the letters of "Ronnie" drop in one by one, an accent line and the
@@ -2654,7 +2652,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     let landed = ((t - 0.9) / 0.6).clamp(0.0, 1.0);
     for k in 0..12 {
         let r = size * (0.6 + k as f32 * 0.22) * (0.8 + 0.2 * landed);
-        painter.circle_filled(center, r, LOGO_COLOR.gamma_multiply(0.012 * landed * fade));
+        painter.circle_filled(center, r, theme.accent.gamma_multiply(0.012 * landed * fade));
     }
 
     let font = FontId::new(size, egui::FontFamily::Name("metal".into()));
@@ -2664,7 +2662,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
         let p = ((t - i as f32 * LETTERS) / DROP).clamp(0.0, 1.0);
         if p > 0.0 {
             let y = center.y - (1.0 - ease_out_back(p)) * size * 0.9;
-            paint_metal(painter, Pos2::new(x, y), Align2::LEFT_CENTER, &c.to_string(), size, p.min(1.0) * fade);
+            paint_metal(painter, Pos2::new(x, y), Align2::LEFT_CENTER, &c.to_string(), size, theme.accent, p.min(1.0) * fade);
         }
         x += widths[i];
     }
@@ -2674,7 +2672,7 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
     if line > 0.0 {
         let half = size * 1.6 * (1.0 - (1.0 - line).powi(3));
         let y = center.y + size * 0.62;
-        painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, LOGO_COLOR.gamma_multiply(fade)));
+        painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, theme.accent.gamma_multiply(fade)));
         let version = ((t - 1.4) / 0.4).clamp(0.0, 1.0) * fade;
         painter.text(Pos2::new(center.x, y + 22.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
     }
