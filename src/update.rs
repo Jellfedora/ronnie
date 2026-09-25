@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -111,7 +112,7 @@ impl Updater {
 
     /// Starts the (updated) app again; the caller then closes this instance.
     pub fn relaunch(&self) -> Result<()> {
-        let exe = self.exe.as_deref().context("chemin de l'exécutable inconnu")?;
+        let exe = self.exe.as_deref().context("unknown executable path")?;
         #[cfg(target_os = "macos")]
         if let Some(bundle) = app_bundle(exe) {
             Command::new("open").arg("-n").arg(bundle).spawn()?;
@@ -123,12 +124,20 @@ impl Updater {
 }
 
 /// The latest release, if it is newer than this build and has an archive for this platform.
+/// An HTTP client that gives up on a stalled connection instead of waiting forever.
+fn agent(total: Duration) -> ureq::Agent {
+    ureq::config::Config::builder().timeout_connect(Some(Duration::from_secs(15))).timeout_global(Some(total)).build().new_agent()
+}
+
+/// The latest release, if it is newer than this build. A release without an archive for this platform
+/// is an error (reported) rather than "up to date".
 fn latest() -> Result<Option<Available>> {
-    let release: Release = ureq::get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
+    let release: Release = agent(Duration::from_secs(30))
+        .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION")))
         .call()
-        .context("GitHub injoignable")?
+        .context("GitHub unreachable")?
         .body_mut()
         .read_json()?;
     let version = release.tag_name.trim_start_matches('v').to_owned();
@@ -136,33 +145,43 @@ fn latest() -> Result<Option<Available>> {
         return Ok(None);
     }
     let name = format!("ronnie-{TARGET}.{ARCHIVE_EXT}");
-    let asset = release.assets.into_iter().find(|a| a.name == name);
-    Ok(asset.map(|asset| Available { version, url: release.html_url, asset }))
+    let asset = release.assets.into_iter().find(|a| a.name == name).with_context(|| format!("version {version} has no {name} archive"))?;
+    Ok(Some(Available { version, url: release.html_url, asset }))
 }
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = v.split(['.', '-', '+']).map(str::parse::<u64>);
-    Some((parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?))
+/// (major, minor, patch, is a pre-release such as "1.2.0-beta").
+fn parse_version(v: &str) -> Option<(u64, u64, u64, bool)> {
+    let (core, pre) = match v.split_once(['-', '+']) {
+        Some((core, rest)) => (core, v.as_bytes()[core.len()] == b'-' && !rest.is_empty()),
+        None => (v, false),
+    };
+    let mut parts = core.split('.').map(str::parse::<u64>);
+    Some((parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?, pre))
 }
 
 fn is_newer(candidate: &str, current: &str) -> bool {
-    matches!((parse_version(candidate), parse_version(current)), (Some(a), Some(b)) if a > b)
+    match (parse_version(candidate), parse_version(current)) {
+        // Same numbers: the final release is newer than its pre-releases.
+        (Some((a, b, c, pa)), Some((x, y, z, px))) => (a, b, c) > (x, y, z) || ((a, b, c) == (x, y, z) && px && !pa),
+        _ => false,
+    }
 }
 
 fn download(asset: &Asset) -> Result<Vec<u8>> {
-    let bytes = ureq::get(&asset.browser_download_url)
+    // Without GitHub's digest the archive can't be checked: don't install it.
+    let expected = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).context("the release publishes no SHA-256 digest for its archive")?;
+    let bytes = agent(Duration::from_secs(600))
+        .get(&asset.browser_download_url)
         .header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION")))
         .call()
-        .context("téléchargement impossible")?
+        .context("download failed")?
         .body_mut()
         .with_config()
         .limit(MAX_DOWNLOAD)
         .read_to_vec()?;
-    if let Some(expected) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
-        let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-        if !actual.eq_ignore_ascii_case(expected) {
-            bail!("l'archive téléchargée est corrompue (empreinte SHA-256 différente)");
-        }
+    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if !actual.eq_ignore_ascii_case(expected) {
+        bail!("the downloaded archive is corrupted (SHA-256 mismatch)");
     }
     Ok(bytes)
 }
@@ -173,12 +192,12 @@ fn install(exe: &Path, asset: &Asset) -> Result<()> {
     if let Some(bundle) = app_bundle(exe) {
         return replace_bundle(&bundle, &archive);
     }
-    let staging = tempdir(exe.parent().context("dossier de l'exécutable inconnu")?)?;
+    let staging = tempdir(exe.parent().context("unknown executable directory")?)?;
     let result = (|| {
         extract(&archive, &staging)?;
         let name = if cfg!(windows) { "ronnie.exe" } else { "ronnie" };
         let new = find(&staging, name).with_context(|| format!("{name} absent de l'archive"))?;
-        self_replace::self_replace(&new).context("remplacement de l'exécutable impossible")
+        self_replace::self_replace(&new).context("could not replace the executable")
     })();
     let _ = std::fs::remove_dir_all(&staging);
     result
@@ -188,7 +207,7 @@ fn install(exe: &Path, asset: &Asset) -> Result<()> {
 fn tempdir(near: &Path) -> Result<PathBuf> {
     let dir = near.join(format!(".ronnie-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir(&dir).with_context(|| format!("impossible d'écrire dans {}", near.display()))?;
+    std::fs::create_dir(&dir).with_context(|| format!("cannot write in {}", near.display()))?;
     Ok(dir)
 }
 
@@ -229,16 +248,16 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
 /// Swaps the whole bundle (executable, Info.plist, icon), rolling back if the new one can't be moved in.
 #[cfg(target_os = "macos")]
 fn replace_bundle(bundle: &Path, archive: &[u8]) -> Result<()> {
-    let parent = bundle.parent().context("dossier de l'application inconnu")?;
+    let parent = bundle.parent().context("unknown application directory")?;
     let staging = tempdir(parent)?;
     let result = (|| {
         extract(archive, &staging)?;
-        let new = find(&staging, "Ronnie.app").context("Ronnie.app absent de l'archive")?;
+        let new = find(&staging, "Ronnie.app").context("Ronnie.app missing from the archive")?;
         let old = staging.join("previous.app");
         std::fs::rename(bundle, &old).with_context(|| format!("impossible de remplacer {}", bundle.display()))?;
         if let Err(e) = std::fs::rename(&new, bundle) {
             let _ = std::fs::rename(&old, bundle);
-            return Err(e).context("installation de la nouvelle version impossible");
+            return Err(e).context("could not install the new version");
         }
         Ok(())
     })();
@@ -257,6 +276,9 @@ mod tests {
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.1.0", "0.2.0"));
         assert!(!is_newer("garbage", "0.1.0"));
+        assert!(is_newer("0.2.0", "0.2.0-beta.1"), "final after its pre-release");
+        assert!(!is_newer("0.2.0-beta.1", "0.2.0"));
+        assert!(is_newer("0.2.1", "0.2.0+build5"));
     }
 
     #[test]

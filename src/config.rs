@@ -589,9 +589,9 @@ pub fn session_path() -> Option<PathBuf> {
 pub fn load<T: for<'de> Deserialize<'de> + Default>(path: Option<PathBuf>) -> Result<T> {
     let Some(path) = path else { return Ok(T::default()) };
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("lecture de {}", path.display())),
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("reading {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
-        Err(e) => Err(e).with_context(|| format!("lecture de {}", path.display())),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 
@@ -677,7 +677,7 @@ pub(crate) mod hex_color {
         let hex = s.trim_start_matches('#');
         let v = u32::from_str_radix(hex, 16).map_err(serde::de::Error::custom)?;
         if hex.len() != 6 {
-            return Err(serde::de::Error::custom(format!("couleur invalide : {s}")));
+            return Err(serde::de::Error::custom(format!("invalid color: {s}")));
         }
         Ok(Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)))
     }

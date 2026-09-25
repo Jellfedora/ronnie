@@ -20,7 +20,7 @@ impl LocalPty {
     pub fn spawn(cols: u16, rows: u16, cwd: Option<&Path>, launch: Option<&Launch>, history: Option<&Path>) -> Result<(Self, Box<dyn Read + Send>)> {
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .context("ouverture du PTY")?;
+            .context("opening the PTY")?;
 
         let mut cmd = match launch {
             Some(l) => {
@@ -47,7 +47,7 @@ impl LocalPty {
             cmd.cwd(dir);
         }
 
-        let child = pair.slave.spawn_command(cmd).context("lancement du shell")?;
+        let child = pair.slave.spawn_command(cmd).context("starting the shell")?;
         // The slave must be closed on our side, otherwise we never get EOF when the shell exits.
         drop(pair.slave);
 
