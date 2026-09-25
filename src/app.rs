@@ -188,6 +188,8 @@ pub struct App {
     shortcut_capture: Option<ShortcutAction>,
     /// GitHub logo for the About page, loaded on first use.
     github_icon: Option<egui::TextureHandle>,
+    /// Profile being edited.
+    profile_editor: Option<ProfileEditor>,
     /// Saved commands menu open over a pane.
     commands_menu: Option<CommandsMenu>,
     /// History search open over a pane.
@@ -252,6 +254,8 @@ fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config)
     let group_id = |gi: usize| config.groups[gi].id;
     match drag.what {
         Dragged::Item(id) => {
+            // Only the groups shown in this section count (local and SSH groups are listed apart).
+            let mut previous_group = None;
             for &(row, rect) in rects {
                 match row {
                     Row::Item(_, other) if other == id => {}
@@ -260,13 +264,16 @@ fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config)
                         return (TabAction::DropItem(id, g.map(group_id), Some(other)), Mark::Line(rect.min.y - 1.0));
                     }
                     // Above a group title: at the end of whatever comes before it.
-                    Row::Group(gi) if p.y < rect.min.y => {
-                        return (TabAction::DropItem(id, gi.checked_sub(1).map(group_id), None), Mark::Line(rect.min.y - 1.0));
+                    Row::Group(_) if p.y < rect.min.y => {
+                        return (TabAction::DropItem(id, previous_group.map(group_id), None), Mark::Line(rect.min.y - 1.0));
                     }
                     _ => {}
                 }
+                if let Row::Group(gi) = row {
+                    previous_group = Some(gi);
+                }
             }
-            (TabAction::DropItem(id, config.groups.last().map(|g| g.id), None), Mark::Line(bottom))
+            (TabAction::DropItem(id, previous_group.map(group_id), None), Mark::Line(bottom))
         }
         Dragged::Group(id) => {
             for &(row, rect) in rects {
@@ -355,6 +362,18 @@ struct ItemRename {
     error: Option<&'static str>,
     /// Just opened: take focus and select everything.
     fresh: bool,
+}
+
+/// "Edit profile" dialog: name, color, each pane's folder and the saved commands.
+struct ProfileEditor {
+    id: Uuid,
+    name: String,
+    color: Option<Color32>,
+    /// Folder of each pane, as typed.
+    cwds: Vec<String>,
+    commands: Vec<String>,
+    new_command: String,
+    error: Option<&'static str>,
 }
 
 struct HostEditor {
@@ -466,6 +485,7 @@ impl App {
             live: Vec::new(),
             history_search: None,
             commands_menu: None,
+            profile_editor: None,
             github_icon: None,
             shortcut_capture: None,
             #[cfg(target_os = "macos")]
@@ -1265,14 +1285,16 @@ impl App {
         })
     }
 
-    /// Sidebar section with the SSH hosts, in user-defined, collapsible groups.
-    fn profiles_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) {
+    /// Profiles (`local`, listed under the LOCAL terminals) or SSH hosts (with their own header), in
+    /// user-defined, collapsible groups.
+    fn profiles_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>, local: bool) {
         let t = self.t();
         let painter = ui.painter().clone();
         // The dragged row is painted above the others.
         let drag_painter = painter.clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, ui.id().with("item-drag")));
 
-        // Header: title, import icon and a "+" menu.
+        // SSH header: title and a "+" menu.
+        if !local {
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
         painter.text(
             Pos2::new(header.min.x + 6.0, header.center().y),
@@ -1285,11 +1307,12 @@ impl App {
         let plus = icon_button(ui, &painter, plus_rect, "profiles-plus", &self.theme, paint_plus);
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
             menu_item(ui, t.new_host, TabAction::NewHost, action);
-            menu_item(ui, t.new_group, TabAction::NewGroup, action);
+            menu_item(ui, t.new_group, TabAction::NewGroup(false), action);
         });
         *y += SECTION_HEADER_H;
+        }
 
-        if self.config.ssh.is_empty() && self.config.groups.is_empty() {
+        if !local && self.config.ssh.is_empty() && !self.config.groups.iter().any(|g| !g.local) {
             let hint = painter.layout(t.no_profiles.to_owned(), FontId::proportional(12.0), self.theme.text_muted.gamma_multiply(0.7), row_w - 12.0);
             let h = hint.size().y;
             painter.galley(Pos2::new(left + 6.0, *y + 4.0), hint, self.theme.text_muted);
@@ -1297,12 +1320,12 @@ impl App {
             return;
         }
 
-        let is_host = |id: &&Uuid| self.config.ssh.iter().any(|h| h.id == **id);
-        let mut rows: Vec<Row> = self.config.ungrouped.iter().filter(is_host).map(|id| Row::Item(None, *id)).collect();
-        for (gi, g) in self.config.groups.iter().enumerate() {
+        let of_kind = |id: &&Uuid| if local { self.config.profiles.iter().any(|p| p.id == **id) } else { self.config.ssh.iter().any(|h| h.id == **id) };
+        let mut rows: Vec<Row> = self.config.ungrouped.iter().filter(of_kind).map(|id| Row::Item(None, *id)).collect();
+        for (gi, g) in self.config.groups.iter().enumerate().filter(|(_, g)| g.local == local) {
             rows.push(Row::Group(gi));
             if !g.collapsed {
-                rows.extend(g.items.iter().filter(is_host).map(|id| Row::Item(Some(gi), *id)));
+                rows.extend(g.items.iter().filter(of_kind).map(|id| Row::Item(Some(gi), *id)));
             }
         }
         let (pointer, pointer_down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
@@ -1348,7 +1371,7 @@ impl App {
     fn group_row(&mut self, ui: &mut Ui, painter: &egui::Painter, gi: usize, slot: Rect, rect: Rect, dragged: bool, action: &mut Option<TabAction>) {
         let t = self.t();
         let group = &self.config.groups[gi];
-        let (gid, collapsed) = (group.id, group.collapsed);
+        let (gid, collapsed, group_local) = (group.id, group.collapsed, group.local);
         let resp = ui.interact(slot, ui.id().with(("group", gid)), Sense::click_and_drag());
         if resp.drag_started() {
             if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
@@ -1384,7 +1407,7 @@ impl App {
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
         let galley = painter.layout_job(job);
         painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
-        let count = group.items.iter().filter(|id| self.config.ssh.iter().any(|h| h.id == **id)).count();
+        let count = group.items.iter().filter(|id| if group_local { self.config.profiles.iter().any(|p| p.id == **id) } else { self.config.ssh.iter().any(|h| h.id == **id) }).count();
         if collapsed || hovered {
             painter.text(
                 Pos2::new(rect.max.x - 10.0, rect.center().y),
@@ -1402,7 +1425,7 @@ impl App {
         resp.context_menu(|ui| {
             ui.set_min_width(170.0);
             menu_item(ui, t.rename, TabAction::StartGroupRename(gid), action);
-            menu_item(ui, t.new_group, TabAction::NewGroup, action);
+            menu_item(ui, t.new_group, TabAction::NewGroup(group_local), action);
             ui.separator();
             menu_item(ui, t.delete_group, TabAction::DeleteGroup(gid), action);
         });
@@ -1411,8 +1434,7 @@ impl App {
     fn item_row(&mut self, ui: &mut Ui, painter: &egui::Painter, id: Uuid, slot: Rect, rect: Rect, dragged: bool, action: &mut Option<TabAction>) {
         let t = self.t();
         let Some(item) = self.item(id) else { return };
-        let sense = if item.ssh { Sense::click_and_drag() } else { Sense::click() };
-        let resp = ui.interact(slot, ui.id().with(("item", id)), sense);
+        let resp = ui.interact(slot, ui.id().with(("item", id)), Sense::click_and_drag());
         if resp.drag_started() {
             if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
                 self.item_drag = Some(ItemDrag { what: Dragged::Item(id), grab: p.y - slot.min.y });
@@ -1539,23 +1561,21 @@ impl App {
         if item.ssh {
             menu_item(ui, t.edit, TabAction::EditHost(id), action);
         } else {
+            menu_item(ui, t.edit, TabAction::EditProfile(id), action);
             menu_item(ui, t.rename, TabAction::StartItemRename(id), action);
         }
-        if let Some(i) = item.open {
-            if item.ssh {
-                menu_item(ui, t.reconnect, TabAction::Reconnect(i), action);
-            }
-            menu_item(ui, t.split_right, TabAction::Split(i, Direction::Right), action);
-            menu_item(ui, t.split_down, TabAction::Split(i, Direction::Down), action);
+        if let (Some(i), true) = (item.open, item.ssh) {
+            menu_item(ui, t.reconnect, TabAction::Reconnect(i), action);
         }
-        if item.ssh {
+        {
             ui.menu_button(t.move_to, |ui| {
                 let current = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
                 if ui.add_enabled(current.is_some(), egui::Button::new(t.no_group)).clicked() {
                     *action = Some(TabAction::DropItem(id, None, None));
                     ui.close();
                 }
-                for g in &self.config.groups {
+                // Profiles go into local groups, hosts into SSH groups.
+                for g in self.config.groups.iter().filter(|g| g.local != item.ssh) {
                     if ui.add_enabled(current != Some(g.id), egui::Button::new(&g.name)).clicked() {
                         *action = Some(TabAction::DropItem(id, Some(g.id), None));
                         ui.close();
@@ -1827,6 +1847,126 @@ impl App {
     }
 
     /// Dialog to create or edit an SSH host.
+    fn profile_editor_window(&mut self, ctx: &egui::Context) {
+        let Some(editor) = &mut self.profile_editor else { return };
+        let t = self.config.settings.language.strings();
+        let theme = self.theme.clone();
+        let mut result: Option<bool> = None; // Some(true) = save, Some(false) = cancel
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("profile-editor")).frame(frame).backdrop_color(Color32::from_black_alpha(170)).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.label(egui::RichText::new(t.edit_profile).size(18.0).strong());
+            ui.add_space(14.0);
+            let label = |ui: &mut Ui, text: &str| ui.label(egui::RichText::new(text).size(12.0).strong().color(theme.text_muted));
+
+            label(ui, &t.host_name.to_uppercase());
+            let name = ui.add(egui::TextEdit::singleline(&mut editor.name).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
+            if name.changed() {
+                editor.error = None;
+            }
+            if let Some(err) = editor.error {
+                ui.label(egui::RichText::new(err).size(12.5).color(theme.ansi[1]));
+            }
+            ui.add_space(12.0);
+
+            label(ui, t.color);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for color in TAB_COLORS {
+                    let (r, s) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                    ui.painter().circle_filled(r.center(), 8.0, color);
+                    if editor.color == Some(color) || s.hovered() {
+                        ui.painter().circle_stroke(r.center(), 9.5, Stroke::new(1.5, theme.text));
+                    }
+                    if s.clicked() {
+                        editor.color = Some(color);
+                    }
+                }
+                if editor.color.is_some() && ui.small_button(t.remove_color).clicked() {
+                    editor.color = None;
+                }
+            });
+            ui.add_space(12.0);
+
+            label(ui, &t.profile_panes.to_uppercase());
+            egui::Grid::new("profile-panes").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                for (i, cwd) in editor.cwds.iter_mut().enumerate() {
+                    ui.label(egui::RichText::new(t.pane_n.replace("{n}", &(i + 1).to_string())).size(13.0).color(theme.text_muted));
+                    ui.add(egui::TextEdit::singleline(cwd).hint_text("~").font(FontId::monospace(12.5)).desired_width(370.0).margin(Vec2::new(6.0, 4.0)));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(12.0);
+
+            label(ui, &t.commands.to_uppercase());
+            let mut remove = None;
+            for (i, command) in editor.commands.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(command).font(FontId::monospace(12.5)).desired_width(420.0).margin(Vec2::new(6.0, 4.0)));
+                    if ui.add(egui::Button::new(egui::RichText::new("✕").color(theme.text_muted)).frame(false)).clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                editor.commands.remove(i);
+            }
+            ui.horizontal(|ui| {
+                let field = ui.add(egui::TextEdit::singleline(&mut editor.new_command).hint_text(t.commands_new).font(FontId::monospace(12.5)).desired_width(360.0).margin(Vec2::new(6.0, 4.0)));
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                if (ui.button(t.commands_add).clicked() || enter) && !editor.new_command.trim().is_empty() {
+                    editor.commands.push(editor.new_command.trim().to_owned());
+                    editor.new_command.clear();
+                }
+            });
+
+            ui.add_space(18.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let save = egui::Button::new(egui::RichText::new(t.save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0));
+                if ui.add(save).clicked() {
+                    result = Some(true);
+                }
+                if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                    result = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            result = Some(false);
+        }
+        match result {
+            Some(true) => self.save_profile_editor(),
+            Some(false) => self.profile_editor = None,
+            None => {}
+        }
+    }
+
+    /// Applies the profile editor: to the profile, and to its tab when open.
+    fn save_profile_editor(&mut self) {
+        let Some(editor) = self.profile_editor.take() else { return };
+        if let Err(err) = self.rename_profile(editor.id, &editor.name) {
+            self.profile_editor = Some(ProfileEditor { error: Some(err), ..editor });
+            return;
+        }
+        self.set_profile_color(editor.id, editor.color);
+        let cwds: Vec<Option<PathBuf>> = editor.cwds.iter().map(|c| c.trim()).map(|c| (!c.is_empty()).then(|| ssh::expand_home(Path::new(c)))).collect();
+        if let Some(p) = self.config.profiles.iter_mut().find(|p| p.id == editor.id) {
+            p.tab.layout.set_cwds(&mut cwds.clone().into_iter());
+            p.commands = editor.commands.iter().map(|c| c.trim().to_owned()).filter(|c| !c.is_empty()).collect();
+        }
+        // An open tab would write its own directories back into the profile: update them too (they apply
+        // to shells started from now on).
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.profile == Some(editor.id)) {
+            for (leaf, cwd) in tab.layout.leaves().into_iter().zip(cwds) {
+                match cwd {
+                    Some(cwd) => tab.cwds.insert(leaf, cwd),
+                    None => tab.cwds.remove(&leaf),
+                };
+            }
+        }
+        self.focus_terminal = true;
+    }
+
     fn host_editor_window(&mut self, ctx: &egui::Context) {
         let Some(editor) = &mut self.host_editor else { return };
         let t = self.config.settings.language.strings();
@@ -2868,16 +3008,11 @@ impl App {
             resp.context_menu(|ui| self.tab_menu(ui, i, &mut action));
         }
 
-        // Local profiles sit with the terminals; the SSH section below only lists hosts.
-        let painter = base_painter.clone();
-        for id in self.config.profiles.iter().map(|p| p.id).collect::<Vec<_>>() {
-            let slot = Rect::from_min_size(Pos2::new(left, y), Vec2::new(row_w, ROW_H));
-            y += ROW_H + ROW_GAP;
-            self.item_row(ui, &painter, id, slot, slot, false, &mut action);
-        }
+        // Local profiles sit with the terminals, in their own groups; the SSH section below lists hosts.
+        self.profiles_section(ui, left, row_w, &mut y, &mut action, true);
 
         y += SECTION_GAP;
-        self.profiles_section(ui, left, row_w, &mut y, &mut action);
+        self.profiles_section(ui, left, row_w, &mut y, &mut action, false);
 
         // Content height, so the scroll area knows how far it can go.
         ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
@@ -2942,13 +3077,30 @@ impl App {
                 }
                 self.group_rename = None;
             }
-            Some(TabAction::NewGroup) => {
-                let group = config::Group::new(t.new_group_name);
+            Some(TabAction::NewGroup(local)) => {
+                let group = config::Group::new(t.new_group_name, local);
                 self.group_rename = Some((group.id, group.name.clone(), true));
                 self.config.groups.push(group);
             }
+            Some(TabAction::EditProfile(id)) => {
+                // An open profile tab has the latest layout: save it first.
+                self.sync();
+                if let Some(p) = self.config.profiles.iter().find(|p| p.id == id) {
+                    let cwds = p.tab.layout.cwds().into_iter().map(|c| c.map(|c| c.display().to_string()).unwrap_or_default()).collect();
+                    self.profile_editor = Some(ProfileEditor {
+                        id,
+                        name: p.tab.name.clone().unwrap_or_default(),
+                        color: p.tab.color,
+                        cwds,
+                        commands: p.commands.clone(),
+                        new_command: String::new(),
+                        error: None,
+                    });
+                }
+            }
             Some(TabAction::NewGroupWith(item)) => {
-                let mut group = config::Group::new(t.new_group_name);
+                let local = self.config.profiles.iter().any(|p| p.id == item);
+                let mut group = config::Group::new(t.new_group_name, local);
                 self.config.unplace(item);
                 group.items.push(item);
                 self.group_rename = Some((group.id, group.name.clone(), true));
@@ -3405,9 +3557,12 @@ enum TabAction {
     ToggleGroup(Uuid),
     StartGroupRename(Uuid),
     RenameGroup(Uuid, String),
-    NewGroup,
+    /// New group of local profiles (true) or of SSH hosts.
+    NewGroup(bool),
     /// New group holding this item.
     NewGroupWith(Uuid),
+    /// Opens the profile editor.
+    EditProfile(Uuid),
     DeleteGroup(Uuid),
     /// Move an item into a group (None: outside groups), before another item or at the end.
     DropItem(Uuid, Option<Uuid>, Option<Uuid>),
@@ -3719,6 +3874,7 @@ impl eframe::App for App {
 
         self.settings_window(ui.ctx());
         self.host_editor_window(ui.ctx());
+        self.profile_editor_window(ui.ctx());
 
         // macOS menu bar.
         #[cfg(target_os = "macos")]

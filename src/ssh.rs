@@ -132,7 +132,7 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
-fn expand_home(path: &Path) -> PathBuf {
+pub fn expand_home(path: &Path) -> PathBuf {
     match (path.strip_prefix("~"), directories::BaseDirs::new()) {
         (Ok(rest), Some(dirs)) => dirs.home_dir().join(rest),
         _ => path.to_path_buf(),

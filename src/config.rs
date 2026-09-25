@@ -43,6 +43,33 @@ impl Layout {
         }
     }
 
+    /// Directories of its panes, in order.
+    pub fn cwds(&self) -> Vec<Option<PathBuf>> {
+        match self {
+            Layout::Pane { cwd, .. } => vec![cwd.clone()],
+            Layout::Split { a, b, .. } => {
+                let mut all = a.cwds();
+                all.extend(b.cwds());
+                all
+            }
+        }
+    }
+
+    /// Sets the directories of its panes, in order (as returned by `cwds`).
+    pub fn set_cwds(&mut self, cwds: &mut impl Iterator<Item = Option<PathBuf>>) {
+        match self {
+            Layout::Pane { cwd, .. } => {
+                if let Some(new) = cwds.next() {
+                    *cwd = new;
+                }
+            }
+            Layout::Split { a, b, .. } => {
+                a.set_cwds(cwds);
+                b.set_cwds(cwds);
+            }
+        }
+    }
+
     /// History ids of its panes.
     pub fn histories(&self, out: &mut Vec<Uuid>) {
         match self {
@@ -124,14 +151,17 @@ pub struct Group {
     pub name: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
-    /// Profile and SSH host ids, in display order.
+    /// Profile or SSH host ids, in display order.
     #[serde(default)]
     pub items: Vec<Uuid>,
+    /// A group of local profiles (in the LOCAL section) rather than of SSH hosts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
 }
 
 impl Group {
-    pub fn new(name: &str) -> Self {
-        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new() }
+    pub fn new(name: &str, local: bool) -> Self {
+        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local }
     }
 }
 
@@ -156,7 +186,7 @@ impl Config {
             let index = match self.groups.iter().position(|g| g.name == name) {
                 Some(i) => i,
                 None => {
-                    self.groups.push(Group::new(&name));
+                    self.groups.push(Group::new(&name, false));
                     self.groups.len() - 1
                 }
             };
