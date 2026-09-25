@@ -181,6 +181,9 @@ pub struct App {
     update_attempted: bool,
     /// Per tab, the program running in it (if any), for the sidebar's live badge. Refreshed each frame.
     live: Vec<Option<String>>,
+    /// macOS menu bar (settings, reload, quit).
+    #[cfg(target_os = "macos")]
+    menu: Option<crate::menu::MenuBar>,
     /// Shortcut being recorded in the settings: the next key combination replaces it.
     shortcut_capture: Option<ShortcutAction>,
     /// History search open over a pane.
@@ -436,6 +439,8 @@ impl App {
             live: Vec::new(),
             history_search: None,
             shortcut_capture: None,
+            #[cfg(target_os = "macos")]
+            menu: None,
             confirm_close: None,
             close_confirmed: false,
             splash: Some(f64::NAN),
@@ -473,6 +478,10 @@ impl App {
             app.new_tab(&cc.egui_ctx);
         }
         app.forget_unused_histories();
+        #[cfg(target_os = "macos")]
+        {
+            app.menu = crate::menu::MenuBar::install(&cc.egui_ctx, app.t(), &app.config.settings.shortcuts.open_settings);
+        }
         app
     }
 
@@ -3465,6 +3474,19 @@ impl eframe::App for App {
 
         self.settings_window(ui.ctx());
         self.host_editor_window(ui.ctx());
+
+        // macOS menu bar.
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.menu {
+            menu.sync(self.config.settings.language.strings(), &self.config.settings.shortcuts.open_settings);
+            for action in menu.actions() {
+                match action {
+                    crate::menu::MenuAction::Settings => self.settings_dialog = true,
+                    crate::menu::MenuAction::Reload => self.request_close(CloseRequest::Restart),
+                    crate::menu::MenuAction::Quit => self.request_close(CloseRequest::Window),
+                }
+            }
+        }
 
         // Closing the window (red button, Cmd+Q...) asks first when programs are still running.
         if ui.input(|i| i.viewport().close_requested()) && !self.close_confirmed {

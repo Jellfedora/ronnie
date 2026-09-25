@@ -3,6 +3,8 @@
 mod app;
 mod config;
 mod i18n;
+#[cfg(target_os = "macos")]
+mod menu;
 mod pane;
 mod shell;
 mod ssh;
