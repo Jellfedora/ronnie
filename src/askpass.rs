@@ -28,6 +28,19 @@ struct State {
     allowed: HashMap<u32, Uuid>,
     /// Those that already got it once.
     answered: HashSet<u32>,
+    /// Those without a terminal (SFTP): their other prompts are asked in the window.
+    interactive: HashSet<u32>,
+    /// Where those questions go (the window), and how to wake it up.
+    prompter: Option<(std::sync::mpsc::Sender<Prompt>, egui::Context)>,
+}
+
+/// A question from ssh (password, new host key...) for the user, in the window.
+pub struct Prompt {
+    pub text: String,
+    /// Typed text should be hidden (a password, not a yes/no).
+    pub secret: bool,
+    /// The answer, or None if the user cancelled.
+    pub reply: std::sync::mpsc::Sender<Option<String>>,
 }
 
 /// The window's side: listens for helpers and knows which ssh processes it started.
@@ -37,6 +50,18 @@ pub struct Server {
 }
 
 impl Server {
+    /// Questions from ssh processes without a terminal go to `prompts`; `ctx` is woken up for them.
+    pub fn set_prompter(&self, prompts: std::sync::mpsc::Sender<Prompt>, ctx: &egui::Context) {
+        self.state.lock().unwrap().prompter = Some((prompts, ctx.clone()));
+    }
+
+    /// `ssh_pid` (SFTP, no terminal) may get the saved password of `host`, and its other prompts are
+    /// asked in the window.
+    pub fn allow_interactive(&self, ssh_pid: u32, host: Uuid) {
+        self.allow(ssh_pid, host);
+        self.state.lock().unwrap().interactive.insert(ssh_pid);
+    }
+
     /// Starts listening in the background. Without a socket, helpers ask on the terminal.
     pub fn start() -> Self {
         let server = Self::default();
@@ -50,8 +75,10 @@ impl Server {
         let _ = SOCKET.set(path);
         let state = server.state.clone();
         let _ = thread::Builder::new().name("askpass".into()).spawn(move || {
+            // One thread per request: a question waiting for the user mustn't hold the others.
             for stream in listener.incoming().flatten() {
-                let _ = answer(stream, &state);
+                let state = state.clone();
+                let _ = thread::Builder::new().name("askpass-request".into()).spawn(move || answer(stream, &state));
             }
         });
         server
@@ -92,20 +119,32 @@ fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
     let helper = peer_pid(&stream);
     let mut prompt = String::new();
     BufReader::new((&stream).take(4096)).read_line(&mut prompt)?;
+    let prompt = prompt.trim_end_matches(['\r', '\n']).to_owned();
     let ssh = helper.and_then(parent_pid);
-    let host = ssh.and_then(|ssh| {
+    let (host, interactive, prompter) = {
         let mut state = state.lock().unwrap();
-        let host = *state.allowed.get(&ssh)?;
+        let Some(ssh) = ssh.filter(|ssh| state.allowed.contains_key(ssh)) else {
+            drop(state);
+            return (&stream).write_all(b"NO\n");
+        };
         // One automatic try per connection, and only for a password prompt.
         let lower = prompt.to_lowercase();
-        if !lower.contains("password") || lower.contains("passphrase") || !state.answered.insert(ssh) {
-            return None;
-        }
-        Some(host)
+        let first_password = lower.contains("password") && !lower.contains("passphrase") && state.answered.insert(ssh);
+        let host = first_password.then(|| state.allowed[&ssh]);
+        (host, state.interactive.contains(&ssh), state.prompter.clone())
+    };
+    let answer = host.and_then(crate::ssh::load_password).or_else(|| {
+        // No terminal to ask on: ask in the window, and wait for the user.
+        let (prompts, ctx) = prompter.filter(|_| interactive)?;
+        let (reply, answer) = std::sync::mpsc::channel();
+        let secret = !prompt.to_lowercase().contains("yes/no");
+        prompts.send(Prompt { text: prompt.clone(), secret, reply }).ok()?;
+        ctx.request_repaint();
+        answer.recv_timeout(std::time::Duration::from_secs(300)).ok().flatten()
     });
     let mut out = &stream;
-    match host.and_then(crate::ssh::load_password) {
-        Some(password) => write!(out, "OK\n{password}\n"),
+    match answer {
+        Some(answer) => write!(out, "OK\n{answer}\n"),
         None => out.write_all(b"NO\n"),
     }
 }

@@ -145,6 +145,30 @@ impl SshHost {
     }
 }
 
+impl SshHost {
+    /// ssh running the SFTP subsystem (for the file manager): the terminal's options, no terminal, and
+    /// every prompt (password, new host key) answered through the askpass helper, i.e. by the window.
+    pub fn sftp_command(&self) -> Launch {
+        let mut launch = self.command();
+        // The terminal command ends with "--", host.
+        launch.args.truncate(launch.args.len().saturating_sub(2));
+        launch.args.extend(["-T".to_owned(), "-s".to_owned(), "--".to_owned(), self.host.clone(), "sftp".to_owned()]);
+        if let Ok(exe) = std::env::current_exe() {
+            launch.env.retain(|(k, _)| !k.starts_with("SSH_ASKPASS") && !k.starts_with("RONNIE_ASKPASS"));
+            launch.env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
+            launch.env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
+            launch.env.push((ASKPASS_ENV.to_owned(), self.id.to_string()));
+            #[cfg(unix)]
+            if let Some(socket) = crate::askpass::socket_path() {
+                launch.env.push((ASKPASS_SOCKET_ENV.to_owned(), socket.display().to_string()));
+            }
+            #[cfg(windows)]
+            launch.env.push((ASKPASS_NONCE_ENV.to_owned(), Uuid::new_v4().to_string()));
+        }
+        launch
+    }
+}
+
 /// A program to run in a pane instead of the user's shell.
 #[derive(Clone, Debug)]
 pub struct Launch {
@@ -412,5 +436,13 @@ Host db
         assert!(args.starts_with("-p 2222 -l deploy -i "), "{args}");
         assert!(args.ends_with("-o IdentitiesOnly=yes -o ConnectTimeout=10 -- 10.0.0.1"), "{args}");
         assert!(launch.env.is_empty());
+    }
+
+    #[test]
+    fn builds_sftp_command() {
+        let host = parse_ssh_config(CONFIG).remove(0);
+        let args = host.sftp_command().args.join(" ");
+        assert!(args.ends_with("-T -s -- 10.0.0.1 sftp"), "{args}");
+        assert_eq!(args.matches(" -- ").count(), 1);
     }
 }

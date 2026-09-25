@@ -148,11 +148,18 @@ mod tests {
         let (mut pty, mut reader) = super::LocalPty::spawn(80, 24, None, None, None).unwrap();
         // Drain the output so the shell never blocks on a full pipe.
         std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        assert_eq!(pty.foreground(), None, "idle shell");
+        // Polls instead of fixed pauses: a loaded machine (CI) may take a while to start things.
+        let wait_for = |pty: &super::LocalPty, want: Option<&str>| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while pty.foreground().as_deref() != want && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            pty.foreground()
+        };
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(wait_for(&pty, None), None, "idle shell");
         pty.write(b"sleep 30\n");
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-        assert_eq!(pty.foreground().as_deref(), Some("sleep"));
+        assert_eq!(wait_for(&pty, Some("sleep")).as_deref(), Some("sleep"));
     }
 
     #[test]
