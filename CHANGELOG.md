@@ -2,6 +2,12 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [À venir]
+
+### Nouveautés
+
+- **Gestionnaire de fichiers façon FileZilla** pour chaque serveur SSH (bouton 📁 Fichiers dans l'en-tête, ⌘ E, ou clic droit sur l'hôte > Fichiers (SFTP)) : cet ordinateur à gauche, le serveur à droite. Transferts par double-clic ou glisser-déposer (y compris sur un dossier), dossiers entiers, file d'attente avec progression, vitesse et annulation, remplacer / ignorer les fichiers existants. Renommer, supprimer, nouveau dossier, **permissions** (grille rwx, valeur octale, récursif). Utilise la configuration ssh habituelle (clés, agent, rebond, mots de passe enregistrés) ; un mot de passe ou une nouvelle empreinte d'hôte sont demandés dans une fenêtre. Les dossiers sont mémorisés par serveur.
+
 ## [0.2.1] - 2026-09-25
 
 Version de fiabilité et de sécurité, issue d'un audit complet.
