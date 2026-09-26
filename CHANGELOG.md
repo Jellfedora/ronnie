@@ -10,6 +10,15 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - Une ligne de transfert par fichier ou dossier sélectionné, chacune avec sa progression et son annulation.
 - **⌘ + / ⌘ − / ⌘ 0 agrandissent toute l'interface** (barre latérale, paramètres, fichiers, terminal), de 60 à 200 %, mémorisé ; la taille du texte du terminal reste réglable à part.
 
+### Sécurité et fiabilité du gestionnaire de fichiers
+
+- Un serveur malveillant ne peut pas écrire en dehors du dossier de téléchargement (noms suspects comme `../../.zshrc` refusés, comme le fait OpenSSH).
+- Les opérations récursives ne suivent jamais les liens symboliques ; les téléchargements passent par un fichier temporaire (jamais de fichier tronqué) et s'arrêtent si le serveur envoie plus que prévu.
+- Une coupure réseau ou une session fermée est détectée (« Déconnecté », avec la raison, et bouton Reconnecter).
+- Le temps de taper un mot de passe ou de lire une empreinte ne fait plus échouer la connexion ; la fenêtre indique quel serveur demande.
+- Annulation immédiate, y compris d'un transfert en attente ; les fichiers ignorés sont signalés.
+- Listes de milliers de fichiers fluides (seules les lignes visibles sont dessinées) ; envois jusqu'à 4× plus rapides vers un serveur lointain.
+
 ## [0.2.1] - 2026-09-25
 
 Version de fiabilité et de sécurité, issue d'un audit complet.
