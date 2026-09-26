@@ -30,12 +30,18 @@ struct State {
     answered: HashSet<u32>,
     /// Those without a terminal (SFTP): their other prompts are asked in the window.
     interactive: HashSet<u32>,
+    /// Those whose question the user cancelled: not asked again (ssh retries a few times).
+    refused: HashSet<u32>,
+    /// Host names, to show which server asks.
+    names: HashMap<Uuid, String>,
     /// Where those questions go (the window), and how to wake it up.
     prompter: Option<(std::sync::mpsc::Sender<Prompt>, egui::Context)>,
 }
 
 /// A question from ssh (password, new host key...) for the user, in the window.
 pub struct Prompt {
+    /// The server asking (the text itself comes from the server and could pretend anything).
+    pub host: String,
     pub text: String,
     /// Typed text should be hidden (a password, not a yes/no).
     pub secret: bool,
@@ -57,9 +63,12 @@ impl Server {
 
     /// `ssh_pid` (SFTP, no terminal) may get the saved password of `host`, and its other prompts are
     /// asked in the window.
-    pub fn allow_interactive(&self, ssh_pid: u32, host: Uuid) {
+    pub fn allow_interactive(&self, ssh_pid: u32, host: Uuid, name: &str) {
         self.allow(ssh_pid, host);
-        self.state.lock().unwrap().interactive.insert(ssh_pid);
+        let mut state = self.state.lock().unwrap();
+        state.interactive.insert(ssh_pid);
+        state.refused.remove(&ssh_pid);
+        state.names.insert(host, name.to_owned());
     }
 
     /// Starts listening in the background. Without a socket, helpers ask on the terminal.
@@ -117,6 +126,11 @@ fn pick_path() -> Option<PathBuf> {
 /// One helper request: a prompt line in, "OK\n<password>\n" or "NO\n" out.
 fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
     let helper = peer_pid(&stream);
+    // Who asks is checked before reading anything, and an idle connection doesn't hold a thread.
+    if helper.and_then(parent_pid).is_none_or(|ssh| !state.lock().unwrap().allowed.contains_key(&ssh)) {
+        return (&stream).write_all(b"NO\n");
+    }
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     let mut prompt = String::new();
     BufReader::new((&stream).take(4096)).read_line(&mut prompt)?;
     let prompt = prompt.trim_end_matches(['\r', '\n']).to_owned();
@@ -130,17 +144,26 @@ fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
         // One automatic try per connection, and only for a password prompt.
         let lower = prompt.to_lowercase();
         let first_password = lower.contains("password") && !lower.contains("passphrase") && state.answered.insert(ssh);
-        let host = first_password.then(|| state.allowed[&ssh]);
-        (host, state.interactive.contains(&ssh), state.prompter.clone())
+        let id = state.allowed[&ssh];
+        let host = first_password.then_some(id);
+        let name = state.names.get(&id).cloned().unwrap_or_default();
+        let interactive = state.interactive.contains(&ssh) && !state.refused.contains(&ssh);
+        (host, interactive, state.prompter.clone().map(|p| (p, name, ssh)))
     };
     let answer = host.and_then(crate::ssh::load_password).or_else(|| {
         // No terminal to ask on: ask in the window, and wait for the user.
-        let (prompts, ctx) = prompter.filter(|_| interactive)?;
+        let ((prompts, ctx), name, ssh) = prompter.filter(|_| interactive)?;
         let (reply, answer) = std::sync::mpsc::channel();
         let secret = !prompt.to_lowercase().contains("yes/no");
-        prompts.send(Prompt { text: prompt.clone(), secret, reply }).ok()?;
+        // Shown as plain text: no control or text-direction characters, and not endless.
+        let text: String = prompt.chars().filter(|c| !c.is_control() && !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')).take(500).collect();
+        prompts.send(Prompt { host: name, text, secret, reply }).ok()?;
         ctx.request_repaint();
-        answer.recv_timeout(std::time::Duration::from_secs(300)).ok().flatten()
+        let answer = answer.recv_timeout(std::time::Duration::from_secs(300)).ok().flatten();
+        if answer.is_none() {
+            state.lock().unwrap().refused.insert(ssh);
+        }
+        answer
     });
     let mut out = &stream;
     match answer {

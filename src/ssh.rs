@@ -12,6 +12,8 @@ use crate::config::hex_color;
 
 /// Set on ssh's environment so that ronnie, started by ssh as askpass helper, knows which host it answers for.
 const ASKPASS_ENV: &str = "RONNIE_ASKPASS";
+/// Set for ssh without terminal (SFTP): the helper never asks on a terminal.
+const ASKPASS_NO_TTY_ENV: &str = "RONNIE_ASKPASS_NO_TTY";
 /// Where the window listens for the askpass helper (Unix).
 #[cfg(unix)]
 const ASKPASS_SOCKET_ENV: &str = "RONNIE_ASKPASS_SOCKET";
@@ -159,12 +161,20 @@ impl SshHost {
         let mut launch = self.command();
         // The terminal command ends with "--", host.
         launch.args.truncate(launch.args.len().saturating_sub(2));
+        // No remote command or port forwards (the terminal session has them), and keep-alives so that a
+        // dropped network ends ssh within a minute (the file manager then shows "disconnected").
+        for option in ["RemoteCommand=none", "RequestTTY=no", "ClearAllForwardings=yes", "ServerAliveInterval=15", "ServerAliveCountMax=3"] {
+            launch.args.extend(["-o".to_owned(), option.to_owned()]);
+        }
         launch.args.extend(["-T".to_owned(), "-s".to_owned(), "--".to_owned(), self.host.clone(), "sftp".to_owned()]);
         if let Ok(exe) = std::env::current_exe() {
             launch.env.retain(|(k, _)| !k.starts_with("SSH_ASKPASS") && !k.starts_with("RONNIE_ASKPASS"));
             launch.env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
             launch.env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
             launch.env.push((ASKPASS_ENV.to_owned(), self.id.to_string()));
+            // Only the window answers: no terminal to fall back to (or a wrong one, if Ronnie was
+            // started from a terminal).
+            launch.env.push((ASKPASS_NO_TTY_ENV.to_owned(), "1".to_owned()));
             #[cfg(unix)]
             if let Some(socket) = crate::askpass::socket_path() {
                 launch.env.push((ASKPASS_SOCKET_ENV.to_owned(), socket.display().to_string()));
@@ -277,7 +287,8 @@ pub fn run_askpass() -> bool {
     #[cfg(not(unix))]
     let saved = saved_answer(&id, &prompt);
     let _ = &id;
-    let answer = saved.or_else(|| ask_on_terminal(&prompt));
+    let terminal = std::env::var_os(ASKPASS_NO_TTY_ENV).is_none();
+    let answer = saved.or_else(|| terminal.then(|| ask_on_terminal(&prompt)).flatten());
     match answer {
         Some(answer) => {
             println!("{answer}");

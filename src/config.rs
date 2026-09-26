@@ -666,6 +666,14 @@ pub fn save_config_file(path: &Path, config: &Config) -> Result<()> {
 /// Creates `dir` (and its parents) accessible by the user only.
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     if dir.is_dir() {
+        // Also tightens folders made by older versions (or copies) with default permissions.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
+        }
         return Ok(());
     }
     fs::create_dir_all(dir)?;

@@ -22,7 +22,11 @@ fn write(level: &str, message: &str) {
     if fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG) {
         let _ = fs::rename(&path, path.with_extension("log.old"));
     }
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    if let Ok(mut file) = options.open(&path) {
         let _ = writeln!(file, "{} {level} {message}", now());
     }
 }
@@ -41,7 +45,13 @@ pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
         let report = format!("Ronnie {} crashed: {info}\n\n{}", crate::update::VERSION, std::backtrace::Backtrace::force_capture());
         if let Some(dir) = crate::config::config_dir() {
-            let _ = fs::write(dir.join(format!("crash-{}.log", now())), &report);
+            let mut options = fs::OpenOptions::new();
+            options.create(true).write(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            if let Ok(mut file) = options.open(dir.join(format!("crash-{}.log", now()))) {
+                let _ = file.write_all(report.as_bytes());
+            }
         }
         error(&report);
         default(info);

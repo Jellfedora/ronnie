@@ -355,7 +355,9 @@ impl App {
     pub(super) fn busy(&self, index: usize, panes: Option<&[PaneId]>) -> Vec<String> {
         let Some(tab) = self.tabs.get(index) else { return Vec::new() };
         let mut busy = Vec::new();
-        if panes.is_none() && tab.files.as_ref().is_some_and(|f| f.busy()) {
+        // Transfers stop with the tab: closing it, or its last panes.
+        let whole_tab = panes.is_none_or(|p| tab.layout.leaves().iter().all(|l| p.contains(l)));
+        if whole_tab && tab.files.as_ref().is_some_and(|f| f.busy()) {
             busy.push(format!("{}  ·  {}", tab.title(), self.t().files_transfers.to_lowercase()));
         }
         for (id, term) in &tab.panes {

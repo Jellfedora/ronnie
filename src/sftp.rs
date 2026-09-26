@@ -41,7 +41,6 @@ pub enum Request {
     Chmod { paths: Vec<String>, mode: u32, recursive: bool },
     Download { id: u64, remote: Vec<String>, local_dir: PathBuf, overwrite: bool },
     Upload { id: u64, local: Vec<PathBuf>, remote_dir: String, overwrite: bool },
-    Cancel(u64),
 }
 
 #[derive(Debug)]
@@ -49,11 +48,14 @@ pub enum Event {
     /// The session is ready; `home` is the remote home directory.
     Connected { home: String },
     Listing { path: String, entries: Vec<Entry> },
+    /// A folder couldn't be listed (the panel goes back to where it was).
+    ListFailed { path: String, error: String },
     /// A change (mkdir, rename, remove, chmod) is done: the listing may be out of date.
     Changed,
     Error(String),
     Progress { id: u64, done: u64, total: u64, current: String },
-    Finished { id: u64, result: Result<(), String> },
+    /// Done: how many files were skipped because they already existed, or why it failed.
+    Finished { id: u64, result: Result<u64, String> },
     /// The connection is over (with ssh's last words, if any).
     Closed(String),
 }
@@ -63,12 +65,23 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("sftp").enable_all().build().expect("tokio runtime"))
 }
 
-/// A running SFTP session.
+type Cancels = Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>;
+
+/// A running SFTP session. Dropping it ends the session and stops ssh.
 pub struct Connection {
     requests: tmpsc::UnboundedSender<Request>,
     events: Receiver<Event>,
     /// ssh's process id: the askpass helper answers it (see askpass.rs).
     pub pid: Option<u32>,
+    /// Cancel flags of the transfers, set from the UI directly (not queued behind other requests).
+    cancels: Cancels,
+    stop: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.stop.notify_one();
+    }
 }
 
 impl Connection {
@@ -78,6 +91,9 @@ impl Connection {
         let _guard = runtime().enter();
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args).envs(env.iter().cloned()).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        // Release builds have no console: don't let ssh open one.
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
         let mut child = cmd.spawn().with_context(|| format!("starting {program}"))?;
         let pid = child.id();
         let stdin = child.stdin.take().context("no stdin")?;
@@ -87,51 +103,90 @@ impl Connection {
         let (requests, mut incoming) = tmpsc::unbounded_channel();
         let (tx, events) = mpsc::channel();
         let emit = Emitter { tx, ctx: ctx.clone() };
-        // ssh's error output, for the "connection closed" message.
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let cancels: Cancels = Arc::default();
+
+        // ssh's error output (its last few KB), for the "disconnected" message.
         let last_words = Arc::new(Mutex::new(String::new()));
-        {
+        let stderr_done = {
             let last_words = last_words.clone();
             runtime().spawn(async move {
                 let mut stderr = stderr;
-                let mut buf = Vec::new();
-                let _ = stderr.read_to_end(&mut buf).await;
-                *last_words.lock().unwrap() = String::from_utf8_lossy(&buf).trim().to_owned();
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut words = last_words.lock().unwrap();
+                    words.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if words.len() > 4096 {
+                        let cut = words.len() - 4096;
+                        let cut = (cut..words.len()).find(|&i| words.is_char_boundary(i)).unwrap_or(0);
+                        words.drain(..cut);
+                    }
+                }
+            })
+        };
+        // Watches ssh: when it ends (network drop, server closing, auth refused), the file manager is told
+        // why; when the connection is dropped (tab closed), ssh is stopped.
+        {
+            let (emit, stop, last_words) = (emit.clone(), stop.clone(), last_words.clone());
+            runtime().spawn(async move {
+                tokio::select! {
+                    _ = child.wait() => {
+                        let _ = tokio::time::timeout(Duration::from_millis(500), stderr_done).await;
+                        let words = last_words.lock().unwrap().trim().to_owned();
+                        emit.send(Event::Closed(if words.is_empty() { "ssh ended".into() } else { words }));
+                    }
+                    _ = stop.notified() => {
+                        let _ = child.kill().await;
+                    }
+                }
             });
         }
+
+        let session_cancels = cancels.clone();
+        let session_stop = stop.clone();
         runtime().spawn(async move {
-            // 64 writes in flight (2 MB) instead of 16: uploads to a distant server would otherwise be
-            // capped by the round trips, where OpenSSH's sftp keeps about as much in flight.
-            let config = russh_sftp::client::Config { max_concurrent_writes: 64, ..Default::default() };
+            // The handshake may wait for the user (password, new host key in a window): give it minutes,
+            // then 30 s per request. 64 writes in flight (2 MB) instead of 16: uploads to a distant server
+            // would otherwise be capped by the round trips (OpenSSH's sftp keeps about as much in flight).
+            let config = russh_sftp::client::Config { max_concurrent_writes: 64, request_timeout_secs: 300, ..Default::default() };
             let sftp = match SftpSession::new_with_config(tokio::io::join(stdout, stdin), config).await {
                 Ok(sftp) => Arc::new(sftp),
                 Err(e) => {
-                    let _ = child.wait().await;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    let words = last_words.lock().unwrap().clone();
-                    emit.send(Event::Closed(if words.is_empty() { e.to_string() } else { words }));
+                    // ssh still running (a prompt left unanswered...): stop it; its exit reports why.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    if last_words.lock().unwrap().trim().is_empty() {
+                        emit.send(Event::Closed(e.to_string()));
+                    }
+                    session_stop.notify_one();
                     return;
                 }
             };
+            sftp.set_timeout(30);
             let home = sftp.canonicalize(".").await.unwrap_or_else(|_| "/".into());
             emit.send(Event::Connected { home });
 
             // Transfers run one after the other in their own task, so that browsing stays responsive.
-            let cancels: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>> = Arc::default();
             let (jobs, mut queue) = tmpsc::unbounded_channel::<Request>();
             {
-                let (sftp, emit, cancels) = (sftp.clone(), emit.clone(), cancels.clone());
+                let (sftp, emit, cancels) = (sftp.clone(), emit.clone(), session_cancels.clone());
                 tokio::spawn(async move {
                     while let Some(job) = queue.recv().await {
-                        let (id, result) = match job {
-                            Request::Download { id, remote, local_dir, overwrite } => {
-                                let cancel = cancels.lock().unwrap().get(&id).cloned().unwrap_or_default();
-                                (id, download(&sftp, &remote, &local_dir, overwrite, id, &emit, &cancel).await)
-                            }
-                            Request::Upload { id, local, remote_dir, overwrite } => {
-                                let cancel = cancels.lock().unwrap().get(&id).cloned().unwrap_or_default();
-                                (id, upload(&sftp, &local, &remote_dir, overwrite, id, &emit, &cancel).await)
-                            }
+                        let id = match &job {
+                            Request::Download { id, .. } | Request::Upload { id, .. } => *id,
                             _ => continue,
+                        };
+                        let cancel = cancels.lock().unwrap().get(&id).cloned().unwrap_or_default();
+                        let result = if cancel.load(Ordering::Relaxed) {
+                            Err(anyhow::anyhow!("cancelled"))
+                        } else {
+                            match job {
+                                Request::Download { remote, local_dir, overwrite, .. } => download(&sftp, &remote, &local_dir, overwrite, id, &emit, &cancel).await,
+                                Request::Upload { local, remote_dir, overwrite, .. } => upload(&sftp, &local, &remote_dir, overwrite, id, &emit, &cancel).await,
+                                _ => unreachable!(),
+                            }
                         };
                         cancels.lock().unwrap().remove(&id);
                         emit.send(Event::Finished { id, result: result.map_err(|e| format!("{e:#}")) });
@@ -145,23 +200,21 @@ impl Connection {
 
             while let Some(request) = incoming.recv().await {
                 let result = match request {
-                    Request::List(path) => list(&sftp, &path).await.map(|entries| emit.send(Event::Listing { path, entries })),
+                    Request::List(path) => match list(&sftp, &path).await {
+                        Ok(entries) => {
+                            emit.send(Event::Listing { path, entries });
+                            Ok(())
+                        }
+                        Err(e) => {
+                            emit.send(Event::ListFailed { path, error: format!("{e:#}") });
+                            Ok(())
+                        }
+                    },
                     Request::Mkdir(path) => sftp.create_dir(path).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Rename(from, to) => sftp.rename(from, to).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Remove(paths) => remove(&sftp, &paths).await.map(|_| emit.send(Event::Changed)),
                     Request::Chmod { paths, mode, recursive } => chmod(&sftp, &paths, mode, recursive).await.map(|_| emit.send(Event::Changed)),
-                    Request::Cancel(id) => {
-                        if let Some(flag) = cancels.lock().unwrap().get(&id) {
-                            flag.store(true, Ordering::Relaxed);
-                        }
-                        Ok(())
-                    }
                     job @ (Request::Download { .. } | Request::Upload { .. }) => {
-                        let id = match &job {
-                            Request::Download { id, .. } | Request::Upload { id, .. } => *id,
-                            _ => unreachable!(),
-                        };
-                        cancels.lock().unwrap().insert(id, Arc::default());
                         let _ = jobs.send(job);
                         Ok(())
                     }
@@ -173,12 +226,22 @@ impl Connection {
             let _ = sftp.close().await;
         });
 
-        // Tell the file manager when ssh exits (network drop, server closed the session...).
-        Ok(Self { requests, events, pid })
+        Ok(Self { requests, events, pid, cancels, stop })
     }
 
     pub fn send(&self, request: Request) {
+        // A transfer's cancel flag exists from the start, so that cancelling it works even while queued.
+        if let Request::Download { id, .. } | Request::Upload { id, .. } = &request {
+            self.cancels.lock().unwrap().insert(*id, Arc::default());
+        }
         let _ = self.requests.send(request);
+    }
+
+    /// Cancels a transfer, running or queued, right away.
+    pub fn cancel(&self, id: u64) {
+        if let Some(flag) = self.cancels.lock().unwrap().get(&id) {
+            flag.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Events received since the last call.
@@ -259,8 +322,12 @@ async fn list(sftp: &SftpSession, path: &str) -> Result<Vec<Entry>> {
 /// Every path under `root` (itself included), directories before their contents. Never follows a
 /// symbolic link (checked with lstat, whatever the listing claims), refuses suspect names, and stops
 /// on trees too deep or too big.
-async fn walk(sftp: &SftpSession, root: &str) -> Result<Vec<(String, FileAttributes)>> {
-    let attrs = sftp.symlink_metadata(root).await.with_context(|| format!("reading {root}"))?;
+async fn walk(sftp: &SftpSession, root: &str, follow_root: bool) -> Result<Vec<(String, FileAttributes)>> {
+    let mut attrs = sftp.symlink_metadata(root).await.with_context(|| format!("reading {root}"))?;
+    // A link chosen by the user (not one met inside a folder) is followed for transfers.
+    if follow_root && attrs.is_symlink() {
+        attrs = sftp.metadata(root).await.with_context(|| format!("reading {root}"))?;
+    }
     let mut out = vec![(root.to_owned(), attrs.clone())];
     let mut stack = if attrs.is_dir() && !attrs.is_symlink() { vec![(root.to_owned(), 0)] } else { Vec::new() };
     let mut visited = std::collections::HashSet::new();
@@ -293,7 +360,7 @@ async fn walk(sftp: &SftpSession, root: &str) -> Result<Vec<(String, FileAttribu
 
 async fn remove(sftp: &SftpSession, paths: &[String]) -> Result<()> {
     for root in paths {
-        let mut all = walk(sftp, root).await?;
+        let mut all = walk(sftp, root, false).await?;
         // Contents before their directory.
         all.reverse();
         for (path, attrs) in all {
@@ -306,7 +373,7 @@ async fn remove(sftp: &SftpSession, paths: &[String]) -> Result<()> {
 async fn chmod(sftp: &SftpSession, paths: &[String], mode: u32, recursive: bool) -> Result<()> {
     for root in paths {
         // Recursively, links are skipped: chmod follows them, and they may point anywhere (~/.ssh...).
-        let targets = if recursive { walk(sftp, root).await?.into_iter().filter(|(_, a)| !a.is_symlink()).map(|(p, _)| p).collect() } else { vec![root.clone()] };
+        let targets = if recursive { walk(sftp, root, false).await?.into_iter().filter(|(_, a)| !a.is_symlink()).map(|(p, _)| p).collect() } else { vec![root.clone()] };
         for path in targets {
             let attrs = FileAttributes { permissions: Some(mode & 0o7777), ..FileAttributes::empty() };
             sftp.set_metadata(path.clone(), attrs).await.with_context(|| format!("changing the permissions of {path}"))?;
@@ -336,12 +403,13 @@ impl Progress<'_> {
 
 const CHUNK: usize = 256 * 1024;
 
-async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overwrite: bool, id: u64, emit: &Emitter, cancel: &AtomicBool) -> Result<()> {
+/// Returns how many files were skipped (they existed and `overwrite` is off).
+async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overwrite: bool, id: u64, emit: &Emitter, cancel: &AtomicBool) -> Result<u64> {
     // Everything to copy, first: the total size gives a real progress bar.
     let mut plan = Vec::new();
     for root in remote {
         let base = parent(root);
-        for (path, attrs) in walk(sftp, root).await? {
+        for (path, attrs) in walk(sftp, root, true).await? {
             let relative = path.strip_prefix(&base).unwrap_or(&path).trim_start_matches('/').to_owned();
             let local = local_dir.join(&relative);
             // Second line of defence: the local path stays inside the chosen folder.
@@ -353,7 +421,9 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
     let total = plan.iter().filter(|(_, _, a)| !a.is_dir()).map(|(_, _, a)| a.size.unwrap_or(0)).sum();
     let mut progress = Progress { id, emit, total, done: 0, last: Instant::now() };
     let mut buf = vec![0u8; CHUNK];
+    let mut skipped = 0;
     for (remote, local, attrs) in plan {
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
         if attrs.is_dir() {
             tokio::fs::create_dir_all(&local).await.with_context(|| format!("creating {}", local.display()))?;
             continue;
@@ -368,6 +438,7 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
         }
         if !overwrite && existing.is_some() {
             progress.add(attrs.size.unwrap_or(0), &remote);
+            skipped += 1;
             continue;
         }
         // Written aside, then moved into place: an error or a cancel never leaves a truncated file.
@@ -406,16 +477,18 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
         }
     }
     emit.send(Event::Progress { id, done: total, total, current: String::new() });
-    Ok(())
+    Ok(skipped)
 }
 
-async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwrite: bool, id: u64, emit: &Emitter, cancel: &AtomicBool) -> Result<()> {
+/// Returns how many files were skipped (they existed and `overwrite` is off).
+async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwrite: bool, id: u64, emit: &Emitter, cancel: &AtomicBool) -> Result<u64> {
     let mut plan: Vec<(PathBuf, String, bool, u64)> = Vec::new();
     for root in local {
         let base = root.parent().unwrap_or(Path::new("/"));
         let mut stack = vec![root.clone()];
         while let Some(path) = stack.pop() {
-            let meta = std::fs::symlink_metadata(&path).with_context(|| format!("reading {}", path.display()))?;
+            // A link chosen by the user is followed; links met inside folders are not.
+            let meta = if path == *root { std::fs::metadata(&path) } else { std::fs::symlink_metadata(&path) }.with_context(|| format!("reading {}", path.display()))?;
             let relative = path.strip_prefix(base).unwrap_or(&path).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
             let target = join(remote_dir, &relative);
             if meta.is_dir() {
@@ -431,7 +504,9 @@ async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwri
     let total = plan.iter().map(|(_, _, _, size)| size).sum();
     let mut progress = Progress { id, emit, total, done: 0, last: Instant::now() };
     let mut buf = vec![0u8; CHUNK];
+    let mut skipped = 0;
     for (local, remote, is_dir, size) in plan {
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
         if is_dir {
             // Already there is fine.
             if sftp.metadata(remote.clone()).await.is_err() {
@@ -441,24 +516,31 @@ async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwri
         }
         if !overwrite && sftp.metadata(remote.clone()).await.is_ok() {
             progress.add(size, &remote);
+            skipped += 1;
             continue;
         }
         let mut src = tokio::fs::File::open(&local).await.with_context(|| format!("opening {}", local.display()))?;
         let mut dst = sftp.create(remote.clone()).await.with_context(|| format!("creating {remote}"))?;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                drop(dst);
-                let _ = sftp.remove_file(remote.clone()).await;
-                anyhow::bail!("cancelled");
+        let copied: Result<()> = async {
+            loop {
+                anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
+                let n = src.read(&mut buf).await.with_context(|| format!("reading {}", local.display()))?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n]).await.with_context(|| format!("writing {remote}"))?;
+                progress.add(n as u64, &remote);
             }
-            let n = src.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            dst.write_all(&buf[..n]).await.with_context(|| format!("writing {remote}"))?;
-            progress.add(n as u64, &remote);
+            dst.shutdown().await.with_context(|| format!("writing {remote}"))?;
+            Ok(())
         }
-        dst.shutdown().await.with_context(|| format!("writing {remote}"))?;
+        .await;
+        // No truncated file left on the server (a later try would skip it as "existing").
+        if let Err(e) = copied {
+            drop(dst);
+            let _ = sftp.remove_file(remote.clone()).await;
+            return Err(e);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -469,16 +551,21 @@ async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwri
         }
     }
     emit.send(Event::Progress { id, done: total, total, current: String::new() });
-    Ok(())
+    Ok(skipped)
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    /// The macOS sftp-server speaks SFTP over stdio: a real server without ssh or network.
+    /// OpenSSH's sftp-server speaks SFTP over stdio: a real server without ssh or network (macOS has
+    /// it; on Linux it comes with the OpenSSH server).
+    fn server() -> Option<&'static str> {
+        ["/usr/libexec/sftp-server", "/usr/lib/openssh/sftp-server", "/usr/lib/ssh/sftp-server", "/usr/libexec/openssh/sftp-server"].into_iter().find(|p| std::path::Path::new(p).exists())
+    }
+
     fn connect() -> Connection {
-        Connection::open(&egui::Context::default(), "/usr/libexec/sftp-server", &[], &[]).unwrap()
+        Connection::open(&egui::Context::default(), server().expect("sftp-server"), &[], &[]).unwrap()
     }
 
     fn wait(conn: &Connection, mut pred: impl FnMut(&Event) -> bool) -> Event {
@@ -499,6 +586,9 @@ mod tests {
 
     #[test]
     fn lists_transfers_and_changes_permissions() {
+        if server().is_none() {
+            return;
+        }
         let base = std::env::temp_dir().join(format!("ronnie-sftp-{}", std::process::id()));
         let (local, remote) = (base.join("local"), base.join("remote"));
         std::fs::create_dir_all(local.join("dir/sub")).unwrap();
@@ -542,6 +632,44 @@ mod tests {
         wait(&conn, |e| matches!(e, Event::Changed));
         assert!(std::fs::read_dir(&remote).unwrap().next().is_none(), "deleted recursively");
 
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn notices_a_dead_session() {
+        if server().is_none() {
+            return;
+        }
+        let conn = connect();
+        wait(&conn, |e| matches!(e, Event::Connected { .. }));
+        // The server goes away after connecting (network drop, server closing): it must be noticed.
+        unsafe { libc::kill(conn.pid.unwrap() as libc::pid_t, libc::SIGKILL) };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if conn.poll().iter().any(|e| matches!(e, Event::Closed(_))) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the dead session was not noticed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn cancels_a_queued_transfer() {
+        if server().is_none() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("ronnie-sftp-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("remote")).unwrap();
+        std::fs::write(base.join("f.bin"), vec![1u8; 4_000_000]).unwrap();
+        let remote = base.join("remote").canonicalize().unwrap().display().to_string();
+        let conn = connect();
+        wait(&conn, |e| matches!(e, Event::Connected { .. }));
+        conn.send(Request::Upload { id: 1, local: vec![base.join("f.bin")], remote_dir: remote.clone(), overwrite: true });
+        conn.send(Request::Upload { id: 2, local: vec![base.join("f.bin")], remote_dir: join(&remote, "nope"), overwrite: true });
+        conn.cancel(2);
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 2, .. })) else { unreachable!() };
+        assert_eq!(result.unwrap_err(), "cancelled");
         std::fs::remove_dir_all(&base).unwrap();
     }
 

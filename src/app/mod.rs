@@ -1126,6 +1126,10 @@ impl App {
             fired.push(ShortcutAction::OpenSettings);
         }
         let focused = self.tabs.get(self.active).map(|t| t.focused);
+        // The file manager hides the terminals: their actions would act on panes the user can't see.
+        let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files);
+        let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane);
+        fired.retain(|a| !(files_shown && pane_action(*a)));
         for action in fired {
             match action {
                 ShortcutAction::NewTab => self.new_tab(ui.ctx()),

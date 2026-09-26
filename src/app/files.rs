@@ -100,7 +100,8 @@ impl Panel {
 enum TransferState {
     Queued,
     Running,
-    Done,
+    /// Done; how many files were skipped because they already existed.
+    Done(u64),
     Failed(String),
 }
 
@@ -151,6 +152,8 @@ pub(super) struct FileManager {
     show_hidden: bool,
     /// The panel the keyboard acts on (last clicked).
     active: Side,
+    /// The remote home directory, known once connected.
+    home: Option<String>,
 }
 
 impl FileManager {
@@ -170,6 +173,7 @@ impl FileManager {
             error: None,
             show_hidden: false,
             active: Side::Remote,
+            home: None,
         };
         fm.read_local();
         fm
@@ -182,7 +186,7 @@ impl FileManager {
             Ok(conn) => {
                 #[cfg(unix)]
                 if let Some(pid) = conn.pid {
-                    askpass.allow_interactive(pid, host.id);
+                    askpass.allow_interactive(pid, host.id, &host.name);
                 }
                 self.conn = Some(conn);
                 self.status = Status::Connecting;
@@ -234,9 +238,23 @@ impl FileManager {
                 Event::Connected { home } => {
                     self.status = Status::Ready;
                     if self.remote.path.is_empty() {
-                        self.remote.path = home;
+                        self.remote.path = home.clone();
                     }
+                    self.home = Some(home);
                     self.list_remote();
+                }
+                Event::ListFailed { path, error } => {
+                    if path == self.remote.path {
+                        self.remote.loading = false;
+                        // Back to where we were; the first listing (a remembered folder that is gone)
+                        // falls back to the home directory.
+                        let back = if self.remote.path_text.is_empty() || self.remote.path_text == path { self.home.clone() } else { Some(self.remote.path_text.clone()) };
+                        if let Some(back) = back.filter(|b| *b != path) {
+                            self.remote.path = back;
+                            self.list_remote();
+                        }
+                    }
+                    self.error = Some(error);
                 }
                 Event::Listing { path, entries } => {
                     if path == self.remote.path {
@@ -246,14 +264,7 @@ impl FileManager {
                     }
                 }
                 Event::Changed => self.list_remote(),
-                Event::Error(e) => {
-                    self.remote.loading = false;
-                    // A folder that can't be listed: stay where we were.
-                    if self.remote.path != self.remote.path_text && !self.remote.path_text.is_empty() {
-                        self.remote.path = self.remote.path_text.clone();
-                    }
-                    self.error = Some(e);
-                }
+                Event::Error(e) => self.error = Some(e),
                 Event::Progress { id, done, total, current } => {
                     if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
                         // The speed counts from the actual start, not from the time it was queued.
@@ -266,7 +277,7 @@ impl FileManager {
                 Event::Finished { id, result } => {
                     if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
                         t.state = match result {
-                            Ok(()) => TransferState::Done,
+                            Ok(skipped) => TransferState::Done(skipped),
                             Err(e) => TransferState::Failed(e),
                         };
                     }
@@ -707,10 +718,8 @@ impl FileManager {
                 Side::Local => directories::BaseDirs::new().map(|d| d.home_dir().display().to_string()),
                 Side::Remote => None,
             };
-            match home {
-                Some(home) => self.open_dir(side, home),
-                // The remote home is what "." resolves to.
-                None => self.open_dir(side, ".".into()),
+            if let Some(home) = home.or_else(|| self.home.clone()) {
+                self.open_dir(side, home);
             }
         }
         if out.refresh {
@@ -733,7 +742,8 @@ impl FileManager {
 
     /// Delete / F2 / Enter / Cmd+A on the active panel, when no text field has the keyboard.
     fn keyboard(&mut self, ui: &Ui) {
-        if ui.ctx().egui_wants_keyboard_input() || self.dialog.is_some() {
+        // Not while typing, nor through a window opened over the file manager (settings, questions...).
+        if ui.ctx().egui_wants_keyboard_input() || self.dialog.is_some() || ui.ctx().memory(|m| m.top_modal_layer().is_some()) {
             return;
         }
         let side = self.active;
@@ -776,17 +786,18 @@ impl FileManager {
                     ui.add(egui::Label::new(egui::RichText::new(format!("⚠ {e}")).size(12.0).color(theme.ansi[1])).truncate());
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let finished = self.transfers.iter().any(|t| matches!(t.state, TransferState::Done | TransferState::Failed(_)));
+                    let finished = self.transfers.iter().any(|t| matches!(t.state, TransferState::Done(_) | TransferState::Failed(_)));
                     if ui.add_enabled(finished || self.error.is_some(), egui::Button::new(egui::RichText::new(t.files_clear).size(12.0))).clicked() {
                         clear = true;
                     }
                 });
             });
-            egui::ScrollArea::vertical().id_salt("files-queue").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
-                if self.transfers.is_empty() {
-                    ui.label(egui::RichText::new(t.files_no_transfer).size(12.0).color(theme.text_muted));
-                }
-                for tr in &self.transfers {
+            if self.transfers.is_empty() {
+                ui.label(egui::RichText::new(t.files_no_transfer).size(12.0).color(theme.text_muted));
+            }
+            // Only the lines on screen are laid out (hundreds of files can be queued).
+            egui::ScrollArea::vertical().id_salt("files-queue").auto_shrink(false).stick_to_bottom(true).show_rows(ui, 22.0, self.transfers.len(), |ui, range| {
+                for tr in &self.transfers[range] {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(if tr.upload { "↑" } else { "↓" }).size(14.0).color(theme.accent));
                         ui.add_sized(Vec2::new(200.0, 18.0), egui::Label::new(egui::RichText::new(&tr.label).size(12.5)).truncate());
@@ -795,17 +806,18 @@ impl FileManager {
                         let text = match &tr.state {
                             TransferState::Queued => t.files_queued.to_owned(),
                             TransferState::Running => format!("{} / {}  ·  {}/s", format_size(tr.done, t), format_size(tr.total, t), format_size((tr.done as f64 / secs) as u64, t)),
-                            TransferState::Done => format!("✔  {}", format_size(tr.total, t)),
+                            TransferState::Done(0) => format!("✔  {}", format_size(tr.total, t)),
+                            TransferState::Done(skipped) => format!("✔  {}  ·  {}", format_size(tr.total, t), t.files_skipped.replace("{n}", &skipped.to_string())),
                             TransferState::Failed(e) if e == "cancelled" => t.files_cancelled.to_owned(),
                             TransferState::Failed(e) => format!("✖  {e}"),
                         };
                         let color = match tr.state {
                             TransferState::Failed(_) => theme.ansi[1],
-                            TransferState::Done => theme.ansi[2],
+                            TransferState::Done(_) => theme.ansi[2],
                             _ => theme.accent,
                         };
                         let bar_w = (ui.available_width() - 40.0).max(80.0);
-                        let bar = egui::ProgressBar::new(if tr.state == TransferState::Done { 1.0 } else { fraction }).text(egui::RichText::new(text).size(11.5)).fill(color.gamma_multiply(0.6)).desired_width(bar_w);
+                        let bar = egui::ProgressBar::new(if matches!(tr.state, TransferState::Done(_)) { 1.0 } else { fraction }).text(egui::RichText::new(text).size(11.5)).fill(color.gamma_multiply(0.6)).desired_width(bar_w);
                         ui.add(bar).on_hover_text(&tr.current);
                         if matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
                             cancel = Some(tr.id);
@@ -815,7 +827,13 @@ impl FileManager {
             });
         });
         if let Some(id) = cancel {
-            self.send(Request::Cancel(id));
+            if let Some(conn) = &self.conn {
+                conn.cancel(id);
+            }
+            // A queued one is cancelled at once (a running one stops within a moment).
+            if let Some(tr) = self.transfers.iter_mut().find(|t| t.id == id && t.state == TransferState::Queued) {
+                tr.state = TransferState::Failed("cancelled".into());
+            }
         }
         if clear {
             self.transfers.retain(|t| matches!(t.state, TransferState::Queued | TransferState::Running));
@@ -953,13 +971,18 @@ impl FileManager {
             (_, Outcome::Cancel) => {}
             (Dialog::Rename { side, from, text, .. }, _) => {
                 let to = text.trim();
-                if !to.is_empty() && to != from && !to.contains('/') {
-                    self.rename(side, &from, to);
+                if to != from && valid_new_name(to) {
+                    // Never silently replace another file.
+                    if self.panel(side).entries.iter().any(|e| e.name == to) {
+                        self.error = Some(t.files_exists.replace("{name}", to));
+                    } else {
+                        self.rename(side, &from, to);
+                    }
                 }
             }
             (Dialog::Mkdir { side, text, .. }, _) => {
                 let name = text.trim();
-                if !name.is_empty() && !name.contains('/') {
+                if valid_new_name(name) {
                     self.mkdir(side, name);
                 }
             }
@@ -1054,7 +1077,7 @@ impl App {
             let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
             let modal = egui::Modal::new(egui::Id::new("ssh-prompt")).frame(frame).show(ctx, |ui| {
                 ui.set_width(460.0);
-                ui.label(egui::RichText::new(format!("🔑  {}", t.ssh_prompt_title)).size(16.0).strong());
+                ui.label(egui::RichText::new(t.ssh_prompt_title.replace("{host}", &prompt.host)).size(16.0).strong());
                 ui.add_space(8.0);
                 ui.add(egui::Label::new(egui::RichText::new(&prompt.text).monospace().size(12.5)).wrap());
                 ui.add_space(10.0);
@@ -1224,6 +1247,11 @@ fn mode_string(mode: u32, is_dir: bool) -> String {
 /// The octal value, on 4 digits when setuid / setgid / sticky are set (so they are never hidden).
 fn octal_string(mode: u32) -> String {
     if mode & 0o7000 != 0 { format!("{:04o}", mode & 0o7777) } else { format!("{:03o}", mode & 0o777) }
+}
+
+/// A name typed for a new file or folder: a plain name, never a path.
+fn valid_new_name(name: &str) -> bool {
+    sftp::valid_name(name) && !(cfg!(windows) && name.ends_with(['.', ' ']))
 }
 
 /// A name as shown: control characters and text-direction overrides (which could disguise

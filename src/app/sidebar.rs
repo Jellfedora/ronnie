@@ -558,7 +558,9 @@ impl App {
 
         // Everything below the traffic lights scrolls when there are many tabs.
         let footer_top = bar.max.y - FOOTER_H;
-        let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + SIDEBAR_TOP), Vec2::new(bar.width() - 1.0, LOGO_H));
+        // macOS: the traffic lights don't scale with the interface zoom, so the space kept for them doesn't either.
+        let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
+        let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
         // Dev builds say so, next to the logo: they don't share the installed app's profiles.
         if !config::OFFICIAL {
