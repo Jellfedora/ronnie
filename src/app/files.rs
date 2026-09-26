@@ -235,6 +235,10 @@ impl FileManager {
                 }
                 Event::Progress { id, done, total, current } => {
                     if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                        // The speed counts from the actual start, not from the time it was queued.
+                        if t.state == TransferState::Queued {
+                            t.started = Instant::now();
+                        }
                         (t.done, t.total, t.current, t.state) = (done, total, current, TransferState::Running);
                     }
                 }
@@ -322,20 +326,19 @@ impl FileManager {
         }
     }
 
+    /// One transfer (and one line in the queue) per item: they run one after the other.
     fn start_transfer(&mut self, from: Side, names: Vec<String>, target: String, overwrite: bool) {
-        let id = self.next_id;
-        self.next_id += 1;
-        let label = match names.len() {
-            1 => names[0].clone(),
-            n => format!("{}  +{}", names[0], n - 1),
-        };
-        let paths: Vec<String> = names.iter().map(|n| self.path_of(from, n)).collect();
-        let request = match from {
-            Side::Local => Request::Upload { id, local: paths.into_iter().map(Into::into).collect(), remote_dir: target, overwrite },
-            Side::Remote => Request::Download { id, remote: paths, local_dir: target.into(), overwrite },
-        };
-        self.send(request);
-        self.transfers.push(Transfer { id, upload: from == Side::Local, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+        for name in names {
+            let id = self.next_id;
+            self.next_id += 1;
+            let path = self.path_of(from, &name);
+            let request = match from {
+                Side::Local => Request::Upload { id, local: vec![path.into()], remote_dir: target.clone(), overwrite },
+                Side::Remote => Request::Download { id, remote: vec![path], local_dir: target.clone().into(), overwrite },
+            };
+            self.send(request);
+            self.transfers.push(Transfer { id, upload: from == Side::Local, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+        }
     }
 
     fn mkdir(&mut self, side: Side, name: &str) {
