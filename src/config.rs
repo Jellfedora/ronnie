@@ -135,7 +135,7 @@ pub struct Config {
     /// Saved tabs: name, color, split layout and each pane's directory.
     #[serde(default)]
     pub profiles: Vec<Profile>,
-    /// SSH connections. Passwords are in the OS keychain, not here.
+    /// SSH connections. Passwords are in passwords.json, encrypted (see `ssh`).
     #[serde(default)]
     pub ssh: Vec<crate::ssh::SshHost>,
     /// Sidebar arrangement of profiles and SSH hosts: first those outside any group, then the groups.

@@ -29,6 +29,52 @@ impl App {
         Ok(())
     }
 
+    /// "Name (copy)", or "Name (copy 2)"... the first one not taken.
+    fn copy_name(&self, name: &str, taken: impl Fn(&str) -> bool) -> String {
+        let suffix = self.t().copy_suffix;
+        (1..)
+            .map(|n| if n == 1 { format!("{name} ({suffix})") } else { format!("{name} ({suffix} {n})") })
+            .find(|candidate| !taken(candidate))
+            .expect("some name is free")
+    }
+
+    /// A profile is copied right after itself; a host opens in the editor as a new host (with the same
+    /// saved password), to change its address or user before saving.
+    pub(super) fn duplicate_item(&mut self, id: Uuid) {
+        let group = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
+        if let Some(host) = self.config.ssh.iter().find(|h| h.id == id) {
+            let mut copy = host.clone();
+            copy.id = Uuid::new_v4();
+            copy.imported = false;
+            copy.name = self.copy_name(&host.name, |n| self.config.ssh.iter().any(|h| h.name == n));
+            let password = host.uses_saved_password().then(|| ssh::load_password(id)).flatten();
+            copy.password_saved = false;
+            let mut editor = HostEditor::new(copy, true, group);
+            if let Some(password) = password {
+                editor.password = password;
+                editor.password_changed = true;
+            }
+            self.host_editor = Some(editor);
+            return;
+        }
+        // An open profile tab has the latest layout: save it first.
+        self.sync();
+        let Some(profile) = self.config.profiles.iter().find(|p| p.id == id) else { return };
+        let mut copy = profile.clone();
+        copy.id = Uuid::new_v4();
+        let name = profile.name(self.t().untitled).to_owned();
+        copy.tab.name = Some(self.copy_name(&name, |n| self.config.profiles.iter().any(|p| p.tab.name.as_deref() == Some(n))));
+        let new_id = copy.id;
+        let index = self.config.profiles.iter().position(|p| p.id == id).map_or(self.config.profiles.len(), |i| i + 1);
+        self.config.profiles.insert(index, copy);
+        let list = match group.and_then(|g| self.config.groups.iter_mut().find(|x| x.id == g)) {
+            Some(g) => &mut g.items,
+            None => &mut self.config.ungrouped,
+        };
+        let at = list.iter().position(|i| *i == id).map_or(list.len(), |i| i + 1);
+        list.insert(at, new_id);
+    }
+
     pub(super) fn set_profile_color(&mut self, id: Uuid, color: Option<Color32>) {
         if let Some(p) = self.config.profiles.iter_mut().find(|p| p.id == id) {
             p.tab.color = color;
@@ -427,67 +473,127 @@ impl App {
                 d.user = Some(user.trim().to_owned()).filter(|u| !u.is_empty());
                 ui.end_row();
 
-                label(ui, t.key);
+                label(ui, t.auth);
                 ui.vertical(|ui| {
-                    let current = match &d.identity_file {
-                        None => t.key_default.to_owned(),
-                        Some(k) if editor.keys.contains(k) => ssh::display_path(k),
-                        Some(_) => t.key_other.to_owned(),
+                    let name = |auth: SshAuth| match auth {
+                        SshAuth::Auto => t.auth_auto,
+                        SshAuth::Password => t.auth_password,
+                        SshAuth::Ask => t.auth_ask,
+                        SshAuth::Interactive => t.auth_interactive,
+                        SshAuth::Key => t.auth_key,
                     };
-                    egui::ComboBox::from_id_salt("host-key").selected_text(current).width(field_w).show_ui(ui, |ui| {
-                        if ui.selectable_label(d.identity_file.is_none(), t.key_default).clicked() {
-                            d.identity_file = None;
-                        }
-                        for key in &editor.keys {
-                            if ui.selectable_label(d.identity_file.as_ref() == Some(key), ssh::display_path(key)).clicked() {
-                                d.identity_file = Some(key.clone());
+                    let current = d.auth_method();
+                    egui::ComboBox::from_id_salt("host-auth").selected_text(name(current)).width(field_w).show_ui(ui, |ui| {
+                        for auth in SshAuth::ALL {
+                            if ui.selectable_label(current == auth, name(auth)).clicked() {
+                                d.auth = Some(auth);
                             }
                         }
-                        let custom = d.identity_file.as_ref().is_some_and(|k| !editor.keys.contains(k));
-                        if ui.selectable_label(custom, t.key_other).clicked() {
-                            d.identity_file = Some(PathBuf::from(editor.custom_key.trim()));
-                        }
                     });
-                    if d.identity_file.as_ref().is_some_and(|k| !editor.keys.contains(k)) {
-                        if ui.add(egui::TextEdit::singleline(&mut editor.custom_key).hint_text("~/.ssh/ma_cle").desired_width(field_w).margin(Vec2::new(6.0, 5.0))).changed() {
-                            d.identity_file = Some(PathBuf::from(editor.custom_key.trim()));
-                        }
+                    let hint = match current {
+                        SshAuth::Auto => Some(t.auth_auto_hint),
+                        SshAuth::Ask => Some(t.auth_ask_hint),
+                        SshAuth::Interactive => Some(t.auth_interactive_hint),
+                        SshAuth::Password | SshAuth::Key => None,
+                    };
+                    if let Some(hint) = hint {
+                        ui.add_sized([field_w, 0.0], egui::Label::new(egui::RichText::new(hint).size(12.0).color(theme.text_muted)).wrap());
                     }
                 });
                 ui.end_row();
 
-                label(ui, t.password);
-                ui.vertical(|ui| {
-                    let hint = if d.password_saved && !editor.password_changed { "••••••••" } else { t.optional };
-                    ui.horizontal(|ui| {
-                        let field = egui::TextEdit::singleline(&mut editor.password)
-                            .password(!editor.reveal)
-                            .hint_text(hint)
-                            .desired_width(field_w - 80.0)
-                            .margin(Vec2::new(6.0, 5.0));
-                        if ui.add(field).changed() {
-                            editor.password_changed = true;
-                        }
-                        let toggle = if editor.reveal { t.hide_password } else { t.show_password };
-                        if ui.add(egui::Button::new(toggle).min_size(Vec2::new(72.0, 24.0))).clicked() {
-                            editor.reveal = !editor.reveal;
-                            // Show the saved password so it can be checked or corrected.
-                            if editor.reveal && d.password_saved && !editor.password_changed && editor.password.is_empty() {
-                                editor.password = ssh::load_password(d.id).unwrap_or_default();
-                            }
-                        }
-                    });
-                    if d.password_saved && !editor.password_changed {
+                if d.auth_method() == SshAuth::Key {
+                    label(ui, t.key);
+                    ui.vertical(|ui| {
+                        let current = match &d.identity_file {
+                            None => t.key_none.to_owned(),
+                            Some(k) if editor.keys.contains(k) => ssh::display_path(k),
+                            Some(_) => t.key_other.to_owned(),
+                        };
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(t.password_saved).size(12.0).color(theme.text_muted));
-                            if ui.small_button(t.forget_password).clicked() {
-                                editor.password.clear();
-                                editor.password_changed = true;
+                            egui::ComboBox::from_id_salt("host-key").selected_text(current).width(field_w - 88.0).show_ui(ui, |ui| {
+                                for key in &editor.keys {
+                                    if ui.selectable_label(d.identity_file.as_ref() == Some(key), ssh::display_path(key)).clicked() {
+                                        d.identity_file = Some(key.clone());
+                                    }
+                                }
+                                let custom = d.identity_file.as_ref().is_some_and(|k| !editor.keys.contains(k));
+                                if ui.selectable_label(custom, t.key_other).clicked() {
+                                    d.identity_file = Some(PathBuf::from(editor.custom_key.trim()));
+                                }
+                            });
+                            if ui.add(egui::Button::new(t.key_browse).min_size(Vec2::new(80.0, 24.0))).clicked() {
+                                let start = d.identity_file.as_ref().map(|k| ssh::expand_home(k)).and_then(|k| k.parent().map(Path::to_path_buf));
+                                let dir = start.filter(|p| p.is_dir()).or_else(ssh::ssh_dir).filter(|p| p.is_dir());
+                                let mut dialog = rfd::FileDialog::new().set_title(t.key);
+                                if let Some(dir) = dir {
+                                    dialog = dialog.set_directory(dir);
+                                }
+                                if let Some(path) = dialog.pick_file() {
+                                    if !editor.keys.contains(&path) {
+                                        editor.custom_key = ssh::display_path(&path);
+                                    }
+                                    d.identity_file = Some(path);
+                                }
                             }
                         });
-                    }
-                });
-                ui.end_row();
+                        if d.identity_file.as_ref().is_some_and(|k| !editor.keys.contains(k)) {
+                            if ui.add(egui::TextEdit::singleline(&mut editor.custom_key).hint_text(ssh::example_key_path(t.key_example)).desired_width(field_w).margin(Vec2::new(6.0, 5.0))).changed() {
+                                d.identity_file = Some(PathBuf::from(editor.custom_key.trim()));
+                            }
+                        }
+                        // Read once per chosen file, not at every frame.
+                        if editor.putty_check.as_ref().map(|(path, _)| path) != d.identity_file.as_ref() {
+                            editor.putty_check = d.identity_file.clone().map(|path| {
+                                let putty = ssh::is_putty_key(&path);
+                                (path, putty)
+                            });
+                        }
+                        if editor.putty_check.as_ref().is_some_and(|(_, putty)| *putty) {
+                            ui.add_sized([field_w, 0.0], egui::Label::new(egui::RichText::new(t.putty_key).size(12.0).color(theme.ansi[3])).wrap());
+                        }
+                    });
+                    ui.end_row();
+
+                }
+
+                // Required for the "saved password" method; optional with a key (servers asking for both).
+                let password_mode = d.auth_method() == SshAuth::Password;
+                if password_mode || d.auth_method() == SshAuth::Key {
+                    label(ui, t.password);
+                    ui.vertical(|ui| {
+                        let hint = if d.password_saved && !editor.password_changed { "••••••••" } else if password_mode { "" } else { t.optional };
+                        ui.horizontal(|ui| {
+                            let field = egui::TextEdit::singleline(&mut editor.password)
+                                .password(!editor.reveal)
+                                .hint_text(hint)
+                                .desired_width(field_w - 80.0)
+                                .margin(Vec2::new(6.0, 5.0));
+                            if ui.add(field).changed() {
+                                editor.password_changed = true;
+                            }
+                            let toggle = if editor.reveal { t.hide_password } else { t.show_password };
+                            if ui.add(egui::Button::new(toggle).min_size(Vec2::new(72.0, 24.0))).clicked() {
+                                editor.reveal = !editor.reveal;
+                                // Show the saved password so it can be checked or corrected.
+                                if editor.reveal && d.password_saved && !editor.password_changed && editor.password.is_empty() {
+                                    editor.password = ssh::load_password(d.id).unwrap_or_default();
+                                }
+                            }
+                        });
+                        if d.password_saved && !editor.password_changed && !password_mode {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(t.password_saved).size(12.0).color(theme.text_muted));
+                                if ui.small_button(t.forget_password).clicked() {
+                                    editor.password.clear();
+                                    editor.password_changed = true;
+                                }
+                            });
+                        }
+                    });
+                    ui.end_row();
+
+                }
 
                 label(ui, t.jump);
                 let mut jump = d.jump.clone().unwrap_or_default();
@@ -559,7 +665,7 @@ impl App {
         }
     }
 
-    /// Validates and stores the host being edited, with its password in the keychain.
+    /// Validates and stores the host being edited, with its saved password.
     pub(super) fn save_host(&mut self) {
         let t = self.t();
         let Some(editor) = &mut self.host_editor else { return };
@@ -591,6 +697,23 @@ impl App {
         }
         if host.identity_file.as_ref().is_some_and(|k| k.as_os_str().is_empty()) {
             host.identity_file = None;
+        }
+        let auth = host.auth_method();
+        if auth == SshAuth::Key && host.identity_file.is_none() {
+            editor.error = Some(t.key_required.to_owned());
+            return;
+        }
+        if auth != SshAuth::Key {
+            host.identity_file = None;
+        }
+        if auth == SshAuth::Password && editor.password.is_empty() && (editor.password_changed || !host.password_saved) {
+            editor.error = Some(t.password_required.to_owned());
+            return;
+        }
+        // Only the "saved password" and key methods keep one.
+        if !matches!(auth, SshAuth::Password | SshAuth::Key) && host.password_saved {
+            editor.password.clear();
+            editor.password_changed = true;
         }
         if editor.password_changed {
             if editor.password.is_empty() {

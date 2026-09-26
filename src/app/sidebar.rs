@@ -341,6 +341,7 @@ impl App {
             menu_item(ui, t.edit, TabAction::EditProfile(id), action);
             menu_item(ui, t.rename, TabAction::StartItemRename(id), action);
         }
+        menu_item(ui, t.duplicate, TabAction::Duplicate(id), action);
         if item.ssh {
             menu_item(ui, &format!("📁  {}", t.files_open), TabAction::OpenFiles(id), action);
         }
@@ -868,6 +869,7 @@ impl App {
                 self.group_rename = Some((group.id, group.name.clone(), true));
                 self.config.groups.push(group);
             }
+            Some(TabAction::Duplicate(id)) => self.duplicate_item(id),
             Some(TabAction::DeleteGroup(id)) => {
                 // Its items stay, outside groups.
                 if let Some(index) = self.config.groups.iter().position(|g| g.id == id) {

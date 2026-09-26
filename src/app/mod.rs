@@ -13,7 +13,7 @@ use crate::config::{self, Config, Layout, Profile, Session, SessionTab, TabState
 use crate::i18n::{Lang, Strings};
 use crate::pane::{self, Direction, Node, PaneId};
 use crate::terminal::{FontSet, LocalUrl, Terminal};
-use crate::ssh::{self, SshHost};
+use crate::ssh::{self, SshAuth, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
@@ -425,10 +425,12 @@ struct HostEditor {
     /// Typed path when the key is not one of those found in ~/.ssh.
     custom_key: String,
     keys: Vec<PathBuf>,
+    /// The chosen key file, and whether it is a PuTTY key (checked when the choice changes).
+    putty_check: Option<(PathBuf, bool)>,
     password: String,
     /// The password field was edited: save (or forget, if emptied) it on save.
     password_changed: bool,
-    /// Password shown in clear (the saved one is loaded from the keychain for that).
+    /// Password shown in clear (the saved one is loaded for that).
     reveal: bool,
     /// Sidebar group to put the host in (None: outside groups).
     group: Option<Uuid>,
@@ -437,7 +439,8 @@ struct HostEditor {
 }
 
 impl HostEditor {
-    fn new(draft: SshHost, is_new: bool, group: Option<Uuid>) -> Self {
+    fn new(mut draft: SshHost, is_new: bool, group: Option<Uuid>) -> Self {
+        draft.auth = Some(draft.auth_method());
         let keys = ssh::find_keys();
         let custom_key = draft
             .identity_file
@@ -450,6 +453,7 @@ impl HostEditor {
             draft,
             custom_key,
             keys,
+            putty_check: None,
             password: String::new(),
             password_changed: false,
             reveal: false,
@@ -635,6 +639,13 @@ impl App {
                 let exists = config::config_path().is_some_and(|p| p.exists());
                 app.saved_config = if exists { c.clone() } else { Config::default() };
                 app.config = c;
+                // Passwords saved in the system keychain by earlier versions aren't read any more: to be
+                // typed again, rather than offered by a "type password" button that can't work.
+                if let Some(saved) = ssh::saved_password_ids() {
+                    for host in app.config.ssh.iter_mut().filter(|h| h.password_saved && !saved.contains(&h.id)) {
+                        host.password_saved = false;
+                    }
+                }
                 app.fonts.size = app.config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
                 crate::terminal::set_default_scrollback(app.config.settings.scrollback);
                 cc.egui_ctx.set_zoom_factor(app.config.settings.ui_zoom.clamp(*config::UI_ZOOMS.start(), *config::UI_ZOOMS.end()));
@@ -1401,7 +1412,8 @@ enum Header<'a> {
 }
 
 /// Strip above a pane: its working directory (home as `~`, leading folders elided to fit) or its SSH
-/// host with a reconnect button, plus the saved commands (⚡) and, for local panes, history search.
+/// host with reconnect (↻) and file manager (📁) icons, plus the saved commands (⚡) and, for local panes,
+/// history search.
 fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
@@ -1441,18 +1453,13 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
         }
     }
     if let Header::Ssh(_) = header {
-        let text = egui::RichText::new(format!("↻  {}", t.reconnect)).size(12.0);
-        let button = egui::Button::new(text).corner_radius(4.0).min_size(Vec2::new(0.0, rect.height() - 4.0));
-        let w = 120.0_f32.min(rect.width() / 2.0);
-        let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 2.0), Pos2::new(right, rect.max.y - 2.0));
-        clicks.reconnect = ui.put(at, button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-        clicks.commands = icon(ui, at.min.x - 4.0, "⚡", t.commands.to_owned());
+        clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned());
+        right -= 26.0;
+        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
+        right -= 26.0;
         // The server's files, FileZilla style.
-        let files = egui::Button::new(egui::RichText::new(format!("📁  {}", t.files_button)).size(12.0)).corner_radius(4.0).min_size(Vec2::new(0.0, rect.height() - 4.0));
-        let fw = 90.0_f32.min(rect.width() / 4.0);
-        let files_at = Rect::from_min_max(Pos2::new(at.min.x - 30.0 - fw, rect.min.y + 2.0), Pos2::new(at.min.x - 30.0, rect.max.y - 2.0));
-        clicks.files = ui.put(files_at, files).on_hover_text(format!("{} ({})", t.files_open, shortcuts.toggle_files.label())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-        max_w -= w + 34.0 + fw + 4.0;
+        clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
+        max_w -= 82.0;
     }
 
     let (text, tooltip) = match header {
@@ -1619,6 +1626,8 @@ enum TabAction {
     DropGroup(Uuid, Option<Uuid>),
     /// Restart every session of an SSH tab.
     Reconnect(usize),
+    /// Copy a profile (right after it), or open the host editor on a copy of a host.
+    Duplicate(Uuid),
 }
 
 enum PaneAction {
@@ -1771,7 +1780,7 @@ impl eframe::App for App {
                 }
                 self.start_pending(ui.ctx(), self.active);
                 // SSH host whose saved password can answer prompts in this tab (sudo...).
-                let password_host = self.tabs.get(self.active).and_then(|t| t.ssh).filter(|id| self.config.ssh.iter().any(|h| h.id == *id && h.password_saved));
+                let password_host = self.tabs.get(self.active).and_then(|t| t.ssh).filter(|id| self.config.ssh.iter().any(|h| h.id == *id && h.uses_saved_password()));
                 let saved_commands = self.saved_commands(self.active);
                 let Some(tab) = self.tabs.get_mut(self.active) else {
                     self.empty_state(ui, rect);

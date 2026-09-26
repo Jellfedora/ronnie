@@ -1,10 +1,10 @@
 //! Typing saved SSH passwords, safely. ssh runs Ronnie as its SSH_ASKPASS helper; that helper doesn't
-//! read the keychain itself (any program could run it and get the passwords): it asks the Ronnie window
+//! read the saved passwords itself (any program could run it and get the passwords): it asks the Ronnie window
 //! over a private local socket. The window answers only when the asking process is the child of an ssh
 //! it started itself in one of its panes — so a jump host's ssh (a grandchild) doesn't get the target's
 //! password — and only once per connection: after a wrong password, ssh asks again and the user types.
 //!
-//! Unix only; on Windows the helper falls back to the keychain (see `ssh::run_askpass`).
+//! Unix only; on Windows the helper reads the saved password itself (see `ssh::run_askpass`).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -30,6 +30,8 @@ struct State {
     answered: HashSet<u32>,
     /// Those without a terminal (SFTP): their other prompts are asked in the window.
     interactive: HashSet<u32>,
+    /// Those whose host doesn't use its saved password (asked each time, or a key).
+    unsaved: HashSet<u32>,
     /// Those whose question the user cancelled: not asked again (ssh retries a few times).
     refused: HashSet<u32>,
     /// Host names, to show which server asks.
@@ -61,11 +63,16 @@ impl Server {
         self.state.lock().unwrap().prompter = Some((prompts, ctx.clone()));
     }
 
-    /// `ssh_pid` (SFTP, no terminal) may get the saved password of `host`, and its other prompts are
-    /// asked in the window.
-    pub fn allow_interactive(&self, ssh_pid: u32, host: Uuid, name: &str) {
+    /// `ssh_pid` (SFTP, no terminal) may get the saved password of `host` if `saved` (the host logs
+    /// in with it), and its other prompts are asked in the window.
+    pub fn allow_interactive(&self, ssh_pid: u32, host: Uuid, name: &str, saved: bool) {
         self.allow(ssh_pid, host);
         let mut state = self.state.lock().unwrap();
+        if saved {
+            state.unsaved.remove(&ssh_pid);
+        } else {
+            state.unsaved.insert(ssh_pid);
+        }
         state.interactive.insert(ssh_pid);
         state.refused.remove(&ssh_pid);
         state.names.insert(host, name.to_owned());
@@ -100,6 +107,7 @@ impl Server {
         if state.allowed.insert(ssh_pid, host) != Some(host) {
             state.answered.remove(&ssh_pid);
         }
+        state.unsaved.remove(&ssh_pid);
     }
 }
 
@@ -148,7 +156,7 @@ fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
         let lower = prompt.to_lowercase();
         let first_password = lower.contains("password") && !lower.contains("passphrase") && state.answered.insert(ssh);
         let id = state.allowed[&ssh];
-        let host = first_password.then_some(id);
+        let host = (first_password && !state.unsaved.contains(&ssh)).then_some(id);
         let name = state.names.get(&id).cloned().unwrap_or_default();
         let interactive = state.interactive.contains(&ssh) && !state.refused.contains(&ssh);
         (host, interactive, state.prompter.clone().map(|p| (p, name, ssh)))

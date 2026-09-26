@@ -2,6 +2,20 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.4.0] - 2026-09-26
+
+### Nouveautés
+
+- **Choix de la méthode de connexion** par hôte, comme dans FileZilla : automatique (agent SSH), mot de passe enregistré, demander le mot de passe, interactif (code, double authentification) ou fichier de clé.
+- Bouton **Parcourir…** pour choisir la clé privée dans le Finder ou l'Explorateur, et exemple de chemin adapté au système.
+- Avertissement pour les clés PuTTY (.ppk), que ssh ne sait pas lire, avec la façon de les convertir.
+- **Dupliquer** un profil ou un hôte SSH (clic droit). Un hôte copié s'ouvre dans l'éditeur, avec le même mot de passe enregistré, pour changer son adresse avant de l'enregistrer.
+- En-tête des panneaux SSH : icônes seules (↻ reconnecter, ⚡ commandes, 📁 fichiers), le détail au survol.
+
+### Changements
+
+- **Mots de passe enregistrés sans le trousseau du système** : plus de demande d'accès à chaque connexion ou mise à jour. Ils sont chiffrés dans `passwords.json`, avec une clé rangée dans un autre fichier. Ceux enregistrés dans le trousseau par les versions précédentes sont à retaper une fois.
+
 ## [0.3.0] - 2026-09-26
 
 ### Nouveautés

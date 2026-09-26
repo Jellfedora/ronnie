@@ -186,7 +186,7 @@ impl FileManager {
             Ok(conn) => {
                 #[cfg(unix)]
                 if let Some(pid) = conn.pid {
-                    askpass.allow_interactive(pid, host.id, &host.name);
+                    askpass.allow_interactive(pid, host.id, &host.name, host.uses_saved_password());
                 }
                 self.conn = Some(conn);
                 self.status = Status::Connecting;

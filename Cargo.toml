@@ -9,13 +9,14 @@ repository = "https://github.com/Jellfedora/ronnie"
 alacritty_terminal = "0.26"
 anyhow = "1.0.104"
 arboard = "3.6"
+chacha20poly1305 = "0.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 directories = "6"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 egui = "0.36"
 flate2 = "1.1.10"
-keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 portable-pty = "0.9"
+rfd = "0.17"
 russh-sftp = "3"
 self-replace = "1.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
