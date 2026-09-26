@@ -126,13 +126,16 @@ fn pick_path() -> Option<PathBuf> {
 /// One helper request: a prompt line in, "OK\n<password>\n" or "NO\n" out.
 fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
     let helper = peer_pid(&stream);
-    // Who asks is checked before reading anything, and an idle connection doesn't hold a thread.
+    // An idle connection doesn't hold a thread for long.
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut prompt = String::new();
+    // Read even when the answer will be no: closing with unread data would reset the connection
+    // (the helper would see an error instead of the answer).
+    BufReader::new((&stream).take(4096)).read_line(&mut prompt)?;
+    // Who asks is checked before anything else is looked up or shown.
     if helper.and_then(parent_pid).is_none_or(|ssh| !state.lock().unwrap().allowed.contains_key(&ssh)) {
         return (&stream).write_all(b"NO\n");
     }
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-    let mut prompt = String::new();
-    BufReader::new((&stream).take(4096)).read_line(&mut prompt)?;
     let prompt = prompt.trim_end_matches(['\r', '\n']).to_owned();
     let ssh = helper.and_then(parent_pid);
     let (host, interactive, prompter) = {
