@@ -637,6 +637,7 @@ impl App {
                 app.config = c;
                 app.fonts.size = app.config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
                 crate::terminal::set_default_scrollback(app.config.settings.scrollback);
+                cc.egui_ctx.set_zoom_factor(app.config.settings.ui_zoom.clamp(*config::UI_ZOOMS.start(), *config::UI_ZOOMS.end()));
             }
             Err(e) => {
                 app.config_writable = false;
@@ -665,6 +666,8 @@ impl App {
         }
         app.active = session.active.min(app.tabs.len().saturating_sub(1));
         watch_config(&cc.egui_ctx);
+        // Ronnie handles Cmd +/- itself (the zoom is saved in the settings).
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         #[cfg(unix)]
         {
             let (prompts, receiver) = std::sync::mpsc::channel();
@@ -956,6 +959,9 @@ impl App {
             self.ctx.set_visuals(self.theme.visuals());
         }
         self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
+        if config.settings.ui_zoom != self.config.settings.ui_zoom {
+            self.ctx.set_zoom_factor(config.settings.ui_zoom.clamp(*config::UI_ZOOMS.start(), *config::UI_ZOOMS.end()));
+        }
         if config.settings.scrollback != self.config.settings.scrollback {
             let lines = config.settings.scrollback.clamp(*config::SCROLLBACK_LINES.start(), *config::SCROLLBACK_LINES.end());
             crate::terminal::set_default_scrollback(lines);
@@ -1179,13 +1185,13 @@ impl App {
         {
             self.select((self.active + self.tabs.len() - 1) % self.tabs.len());
         }
-        // Text size: Cmd + / Cmd - / Cmd 0 (Ctrl elsewhere).
-        let zoom = [(Key::Plus, 1.0), (Key::Equals, 1.0), (Key::Minus, -1.0), (Key::Num0, 0.0)];
+        // Size of the whole interface: Cmd + / Cmd - / Cmd 0 (Ctrl elsewhere), by steps of 10 %.
+        let zoom = [(Key::Plus, 0.1), (Key::Equals, 0.1), (Key::Minus, -0.1), (Key::Num0, 0.0)];
         for (key, step) in zoom {
             if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))) {
-                let size = if step == 0.0 { 14.0 } else { self.config.settings.font_size + step };
-                self.config.settings.font_size = size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
-                self.fonts.size = self.config.settings.font_size;
+                let zoom = if step == 0.0 { 1.0 } else { ((self.config.settings.ui_zoom + step) * 10.0).round() / 10.0 };
+                self.config.settings.ui_zoom = zoom.clamp(*config::UI_ZOOMS.start(), *config::UI_ZOOMS.end());
+                ui.ctx().set_zoom_factor(self.config.settings.ui_zoom);
             }
         }
         let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];

@@ -382,6 +382,15 @@ pub struct Settings {
     /// Lines kept above the screen in each terminal.
     #[serde(default = "default_scrollback")]
     pub scrollback: usize,
+    /// Size of the whole interface, terminal included (Cmd +/- changes it): 1.0 is 100 %.
+    #[serde(default = "default_zoom")]
+    pub ui_zoom: f32,
+}
+
+pub const UI_ZOOMS: std::ops::RangeInclusive<f32> = 0.6..=2.0;
+
+fn default_zoom() -> f32 {
+    1.0
 }
 
 pub const FONT_SIZES: std::ops::RangeInclusive<f32> = 9.0..=32.0;
@@ -510,7 +519,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom() }
     }
 }
 

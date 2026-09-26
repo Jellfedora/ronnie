@@ -691,6 +691,13 @@ impl App {
             ui.checkbox(&mut picked.clipboard_from_programs, egui::RichText::new(t.clipboard_from_programs).size(14.0));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.ui_zoom).size(14.0));
+                let mut percent = (picked.ui_zoom * 100.0).round();
+                if ui.add(egui::Slider::new(&mut percent, 60.0..=200.0).step_by(10.0).suffix(" %")).changed() {
+                    picked.ui_zoom = percent / 100.0;
+                }
+            });
+            ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(t.font_size).size(14.0));
                 ui.add(egui::Slider::new(&mut picked.font_size, config::FONT_SIZES).step_by(1.0).suffix(" pt"));
             });
