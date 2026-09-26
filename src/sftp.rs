@@ -219,11 +219,23 @@ fn entry(name: String, attrs: &FileAttributes) -> Entry {
     }
 }
 
+/// Whether a name sent by the server is a plain file name. A hostile server could send "../../.zshenv"
+/// or "a/b" to make a download write outside the chosen folder (OpenSSH's sftp refuses them too).
+pub fn valid_name(name: &str) -> bool {
+    let forbidden: &[char] = if cfg!(windows) { &['/', '\\', '\0', ':', '*', '?', '"', '<', '>', '|'] } else { &['/', '\0'] };
+    !name.is_empty() && name != "." && name != ".." && !name.contains(forbidden)
+}
+
+/// Limits on a recursive walk, against endless or huge trees (a hostile server can claim anything).
+const MAX_DEPTH: usize = 64;
+const MAX_ENTRIES: usize = 1_000_000;
+
 async fn list(sftp: &SftpSession, path: &str) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for item in sftp.read_dir(path).await.with_context(|| format!("listing {path}"))? {
         let name = item.file_name();
-        if name == "." || name == ".." {
+        // Suspect names aren't shown: every action on them would act on another path.
+        if !valid_name(&name) {
             continue;
         }
         let mut e = entry(name, &item.metadata());
@@ -238,23 +250,36 @@ async fn list(sftp: &SftpSession, path: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Every path under `root` (itself included), directories before their contents.
+/// Every path under `root` (itself included), directories before their contents. Never follows a
+/// symbolic link (checked with lstat, whatever the listing claims), refuses suspect names, and stops
+/// on trees too deep or too big.
 async fn walk(sftp: &SftpSession, root: &str) -> Result<Vec<(String, FileAttributes)>> {
     let attrs = sftp.symlink_metadata(root).await.with_context(|| format!("reading {root}"))?;
     let mut out = vec![(root.to_owned(), attrs.clone())];
-    let mut stack = if attrs.is_dir() { vec![root.to_owned()] } else { Vec::new() };
-    while let Some(dir) = stack.pop() {
-        for item in sftp.read_dir(dir.clone()).await? {
+    let mut stack = if attrs.is_dir() && !attrs.is_symlink() { vec![(root.to_owned(), 0)] } else { Vec::new() };
+    let mut visited = std::collections::HashSet::new();
+    while let Some((dir, depth)) = stack.pop() {
+        if !visited.insert(dir.clone()) {
+            continue;
+        }
+        for item in sftp.read_dir(dir.clone()).await.with_context(|| format!("listing {dir}"))? {
             let name = item.file_name();
             if name == "." || name == ".." {
                 continue;
             }
+            anyhow::ensure!(valid_name(&name), "the server sent a suspect file name in {dir}: {name:?}");
             let path = join(&dir, &name);
-            let attrs = item.metadata();
+            let mut attrs = item.metadata();
             if attrs.is_dir() {
-                stack.push(path.clone());
+                // Some servers report the target's type for links: ask for the entry itself.
+                attrs = sftp.symlink_metadata(path.clone()).await.unwrap_or(attrs);
+                if attrs.is_dir() && !attrs.is_symlink() {
+                    anyhow::ensure!(depth < MAX_DEPTH, "{path}: too deep (more than {MAX_DEPTH} levels)");
+                    stack.push((path.clone(), depth + 1));
+                }
             }
             out.push((path, attrs));
+            anyhow::ensure!(out.len() <= MAX_ENTRIES, "{root}: more than {MAX_ENTRIES} items");
         }
     }
     Ok(out)
@@ -274,7 +299,8 @@ async fn remove(sftp: &SftpSession, paths: &[String]) -> Result<()> {
 
 async fn chmod(sftp: &SftpSession, paths: &[String], mode: u32, recursive: bool) -> Result<()> {
     for root in paths {
-        let targets = if recursive { walk(sftp, root).await?.into_iter().map(|(p, _)| p).collect() } else { vec![root.clone()] };
+        // Recursively, links are skipped: chmod follows them, and they may point anywhere (~/.ssh...).
+        let targets = if recursive { walk(sftp, root).await?.into_iter().filter(|(_, a)| !a.is_symlink()).map(|(p, _)| p).collect() } else { vec![root.clone()] };
         for path in targets {
             let attrs = FileAttributes { permissions: Some(mode & 0o7777), ..FileAttributes::empty() };
             sftp.set_metadata(path.clone(), attrs).await.with_context(|| format!("changing the permissions of {path}"))?;
@@ -311,7 +337,11 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
         let base = parent(root);
         for (path, attrs) in walk(sftp, root).await? {
             let relative = path.strip_prefix(&base).unwrap_or(&path).trim_start_matches('/').to_owned();
-            plan.push((path, local_dir.join(relative), attrs));
+            let local = local_dir.join(&relative);
+            // Second line of defence: the local path stays inside the chosen folder.
+            let plain = std::path::Path::new(&relative).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+            anyhow::ensure!(plain && local.starts_with(local_dir), "refusing to write outside {}: {relative:?}", local_dir.display());
+            plan.push((path, local, attrs));
         }
     }
     let total = plan.iter().filter(|(_, _, a)| !a.is_dir()).map(|(_, _, a)| a.size.unwrap_or(0)).sum();
@@ -325,26 +355,44 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
         if attrs.is_symlink() {
             continue;
         }
-        if !overwrite && local.exists() {
+        // symlink_metadata: an existing link in the folder is never written through.
+        let existing = std::fs::symlink_metadata(&local).ok();
+        if existing.as_ref().is_some_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{} is a symbolic link: not replaced", local.display());
+        }
+        if !overwrite && existing.is_some() {
             progress.add(attrs.size.unwrap_or(0), &remote);
             continue;
         }
+        // Written aside, then moved into place: an error or a cancel never leaves a truncated file.
+        let part = local.with_file_name(format!(".{}.ronnie-part", local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        let expected = attrs.size.unwrap_or(u64::MAX);
         let mut src = sftp.open(remote.clone()).await.with_context(|| format!("opening {remote}"))?;
-        let mut dst = tokio::fs::File::create(&local).await.with_context(|| format!("creating {}", local.display()))?;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                drop(dst);
-                let _ = tokio::fs::remove_file(&local).await;
-                anyhow::bail!("cancelled");
+        let mut dst = tokio::fs::File::create(&part).await.with_context(|| format!("creating {}", part.display()))?;
+        let mut received = 0u64;
+        let copied: Result<()> = async {
+            loop {
+                anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
+                let n = src.read(&mut buf).await.with_context(|| format!("reading {remote}"))?;
+                if n == 0 {
+                    break;
+                }
+                received += n as u64;
+                // A server sending more than it announced could fill the disk.
+                anyhow::ensure!(received <= expected.saturating_add(1 << 20), "{remote}: the server sends more data than announced");
+                dst.write_all(&buf[..n]).await?;
+                progress.add(n as u64, &remote);
             }
-            let n = src.read(&mut buf).await.with_context(|| format!("reading {remote}"))?;
-            if n == 0 {
-                break;
-            }
-            dst.write_all(&buf[..n]).await?;
-            progress.add(n as u64, &remote);
+            dst.flush().await?;
+            Ok(())
         }
-        dst.flush().await?;
+        .await;
+        drop(dst);
+        if let Err(e) = copied {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(e);
+        }
+        tokio::fs::rename(&part, &local).await.with_context(|| format!("writing {}", local.display()))?;
         #[cfg(unix)]
         if let Some(mode) = attrs.permissions {
             use std::os::unix::fs::PermissionsExt;
@@ -489,6 +537,16 @@ mod tests {
         assert!(std::fs::read_dir(&remote).unwrap().next().is_none(), "deleted recursively");
 
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn refuses_suspect_names() {
+        for bad in ["", ".", "..", "../../.zshenv", "a/b", "x\0y"] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+        for good in ["index.html", ".env", "..hidden", "a b", "été.txt"] {
+            assert!(valid_name(good), "{good:?}");
+        }
     }
 
     #[test]
