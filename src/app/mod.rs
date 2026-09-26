@@ -1700,7 +1700,8 @@ impl eframe::App for App {
             for term in tab.panes.values_mut() {
                 term.set_allow_clipboard(self.config.settings.clipboard_from_programs);
                 term.process_events(ui.ctx(), &self.theme);
-                term.set_visible(i == self.active);
+                // Panes behind the file manager aren't on screen either.
+                term.set_visible(i == self.active && !tab.show_files);
             }
         }
 

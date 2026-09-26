@@ -41,27 +41,52 @@ struct Panel {
     anchor: Option<String>,
     sort: (SortBy, bool),
     loading: bool,
+    /// Indexes of `entries` in display order, and what it was computed for: rebuilt only when the
+    /// entries, the sort or the hidden files setting change (big folders would re-sort every frame).
+    order: Vec<usize>,
+    order_for: Option<(u64, SortBy, bool, bool)>,
+    /// Bumped whenever `entries` is replaced.
+    generation: u64,
 }
 
 impl Panel {
     fn new(path: String) -> Self {
-        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, sort: (SortBy::Name, true), loading: false }
+        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0 }
     }
 
-    /// Entries to show, sorted (directories first), hidden files filtered.
-    fn visible(&self, show_hidden: bool) -> Vec<&Entry> {
-        let mut rows: Vec<&Entry> = self.entries.iter().filter(|e| show_hidden || !e.name.starts_with('.')).collect();
+    fn set_entries(&mut self, entries: Vec<Entry>) {
+        self.entries = entries;
+        self.generation += 1;
+        let names: HashSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
+        self.selected.retain(|n| names.contains(n.as_str()));
+    }
+
+    /// Display order: directories first, then the chosen column; hidden files filtered.
+    fn ensure_order(&mut self, show_hidden: bool) {
+        let key = (self.generation, self.sort.0, self.sort.1, show_hidden);
+        if self.order_for == Some(key) {
+            return;
+        }
+        let lower: Vec<String> = self.entries.iter().map(|e| e.name.to_lowercase()).collect();
+        let mut order: Vec<usize> = (0..self.entries.len()).filter(|&i| show_hidden || !self.entries[i].name.starts_with('.')).collect();
         let (by, asc) = self.sort;
-        rows.sort_by(|a, b| {
-            let order = match by {
-                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                SortBy::Size => a.size.cmp(&b.size),
-                SortBy::Modified => a.mtime.cmp(&b.mtime),
-                SortBy::Mode => a.mode.cmp(&b.mode),
+        order.sort_by(|&a, &b| {
+            let (x, y) = (&self.entries[a], &self.entries[b]);
+            let o = match by {
+                SortBy::Name => lower[a].cmp(&lower[b]),
+                SortBy::Size => x.size.cmp(&y.size),
+                SortBy::Modified => x.mtime.cmp(&y.mtime),
+                SortBy::Mode => x.mode.cmp(&y.mode),
             };
-            b.is_dir.cmp(&a.is_dir).then(if asc { order } else { order.reverse() })
+            y.is_dir.cmp(&x.is_dir).then(if asc { o } else { o.reverse() })
         });
-        rows
+        self.order = order;
+        self.order_for = Some(key);
+    }
+
+    /// Names in display order.
+    fn ordered_names(&self) -> Vec<String> {
+        self.order.iter().map(|&i| self.entries[i].name.clone()).collect()
     }
 
     fn selection(&self) -> Vec<String> {
@@ -194,10 +219,8 @@ impl FileManager {
         let path = std::path::PathBuf::from(&self.local.path);
         match std::fs::read_dir(&path) {
             Ok(dir) => {
-                self.local.entries = dir.flatten().filter_map(|e| local_entry(&e)).collect();
+                self.local.set_entries(dir.flatten().filter_map(|e| local_entry(&e)).collect());
                 self.local.path_text = self.local.path.clone();
-                let names: HashSet<String> = self.local.entries.iter().map(|e| e.name.clone()).collect();
-                self.local.selected.retain(|n| names.contains(n));
             }
             Err(e) => self.error = Some(format!("{} : {e}", path.display())),
         }
@@ -217,11 +240,9 @@ impl FileManager {
                 }
                 Event::Listing { path, entries } => {
                     if path == self.remote.path {
-                        self.remote.entries = entries;
+                        self.remote.set_entries(entries);
                         self.remote.loading = false;
                         self.remote.path_text = path;
-                        let names: HashSet<String> = self.remote.entries.iter().map(|e| e.name.clone()).collect();
-                        self.remote.selected.retain(|n| names.contains(n));
                     }
                 }
                 Event::Changed => self.list_remote(),
@@ -249,7 +270,10 @@ impl FileManager {
                             Err(e) => TransferState::Failed(e),
                         };
                     }
-                    self.read_local();
+                    // Once the queue is done (not after each of its items).
+                    if !self.busy() {
+                        self.read_local();
+                    }
                 }
                 Event::Closed(reason) => {
                     self.status = Status::Closed(reason);
@@ -493,26 +517,41 @@ impl FileManager {
             }
         }
 
-        // Rows.
+        // Rows: only those on screen are laid out (folders can hold tens of thousands of entries).
         let list = Rect::from_min_max(Pos2::new(inner.min.x, header.max.y + 2.0), inner.max);
-        let rows: Vec<Entry> = panel.visible(show_hidden).into_iter().cloned().collect();
-        let loading = panel.loading;
-        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
+        panel.ensure_order(show_hidden);
+        let (count, loading) = (panel.order.len(), panel.loading);
         let drag_payload = egui::DragAndDrop::payload::<FilesDrag>(ui.ctx());
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let released = ui.input(|i| i.pointer.any_released());
         let mut drop_into: Option<String> = None;
-        egui::ScrollArea::vertical().id_salt(("files-list", side as u8)).auto_shrink(false).show(&mut list_ui, |ui| {
-            if side == Side::Remote && !connected {
-                ui.label(egui::RichText::new(t.files_not_connected).size(12.5).color(theme.text_muted));
-                return;
+        // Empty space (under the rows): a click clears the selection, a right-click offers a new folder.
+        let background = ui.interact(list, ui.id().with(("files-bg", side as u8)), Sense::click());
+        if background.clicked() {
+            panel.selected.clear();
+            out.focus = true;
+        }
+        background.context_menu(|ui| {
+            if ui.button(t.files_new_folder).clicked() {
+                out.dialog = Some(Dialog::Mkdir { side, text: String::new(), fresh: true });
+                ui.close();
             }
-            if rows.is_empty() {
-                ui.label(egui::RichText::new(if loading { t.files_loading } else { t.files_empty }).size(12.5).color(theme.text_muted));
+            if ui.button(t.files_refresh).clicked() {
+                out.refresh = true;
+                ui.close();
             }
+        });
+        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
+        if side == Side::Remote && !connected {
+            list_ui.label(egui::RichText::new(t.files_not_connected).size(12.5).color(theme.text_muted));
+        } else if count == 0 {
+            list_ui.label(egui::RichText::new(if loading { t.files_loading } else { t.files_empty }).size(12.5).color(theme.text_muted));
+        }
+        let visible = !(side == Side::Remote && !connected);
+        egui::ScrollArea::vertical().id_salt(("files-list", side as u8)).auto_shrink(false).show_rows(&mut list_ui, 22.0, if visible { count } else { 0 }, |ui, range| {
             let panel = self.panel(side);
-            let names: Vec<String> = rows.iter().map(|e| e.name.clone()).collect();
-            for entry in &rows {
+            for position in range {
+                let entry = panel.entries[panel.order[position]].clone();
                 let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click_and_drag());
                 let selected = panel.selected.contains(&entry.name);
                 // A folder of the other panel under a drag: drop into it.
@@ -532,9 +571,8 @@ impl FileManager {
                 ui.painter().rect_filled(row, 3.0, fill);
                 let y = row.center().y;
                 paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(row.min.x + 13.0, y), Vec2::splat(15.0)), entry.is_dir, entry.is_link, theme);
-                let name_rect = Rect::from_min_size(row.min, Vec2::new(cols.name - 6.0, row.height()));
-                let mut job = egui::text::LayoutJob::simple_singleline(entry.name.clone(), FontId::proportional(13.0), theme.text);
-                job.wrap = egui::text::TextWrapping::truncate_at_width(name_rect.width() - 30.0);
+                let mut job = egui::text::LayoutJob::simple_singleline(display_name(&entry.name), FontId::proportional(13.0), theme.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(cols.name - 36.0);
                 let galley = ui.painter().layout_job(job);
                 ui.painter().galley(Pos2::new(row.min.x + 26.0, y - galley.size().y / 2.0), galley, theme.text);
                 let muted = FontId::proportional(12.0);
@@ -555,9 +593,9 @@ impl FileManager {
                     out.focus = true;
                     let (cmd, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
                     if shift {
+                        let names = panel.ordered_names();
                         let anchor = panel.anchor.as_ref().and_then(|a| names.iter().position(|n| n == a)).unwrap_or(0);
-                        let here = names.iter().position(|n| *n == entry.name).unwrap_or(0);
-                        let (a, b) = (anchor.min(here), anchor.max(here));
+                        let (a, b) = (anchor.min(position), anchor.max(position));
                         panel.selected = names[a..=b].iter().cloned().collect();
                     } else if cmd && resp.clicked() {
                         if !panel.selected.remove(&entry.name) {
@@ -570,7 +608,7 @@ impl FileManager {
                     }
                 }
                 let resp = match &entry.owner {
-                    Some(owner) if side == Side::Remote => resp.on_hover_text(format!("{}  ·  {owner}", entry.name)),
+                    Some(owner) if side == Side::Remote => resp.on_hover_text(format!("{}  ·  {owner}", display_name(&entry.name))),
                     _ => resp,
                 };
                 if resp.double_clicked() {
@@ -586,9 +624,10 @@ impl FileManager {
                 if resp.drag_started() {
                     egui::DragAndDrop::set_payload(ui.ctx(), FilesDrag { from: side, names: panel.selection() });
                 }
-                let selection = panel.selection();
                 resp.context_menu(|ui| {
                     ui.set_min_width(200.0);
+                    // Built only while the menu is open.
+                    let selection = panel.selection();
                     let other = if side == Side::Local { t.files_upload } else { t.files_download };
                     if ui.add_enabled(connected, egui::Button::new(other)).clicked() {
                         out.transfer = Some(selection.clone());
@@ -608,8 +647,8 @@ impl FileManager {
                     }
                     if side == Side::Remote && ui.button(t.files_permissions).clicked() {
                         let mode = entry.mode.unwrap_or(0o644);
-                        let any_dir = rows.iter().any(|e| e.is_dir && selection.contains(&e.name));
-                        out.dialog = Some(Dialog::Chmod { names: selection.clone(), mode, octal: format!("{mode:03o}"), recursive: false, any_dir });
+                        let any_dir = panel.entries.iter().any(|e| e.is_dir && selection.contains(&e.name));
+                        out.dialog = Some(Dialog::Chmod { names: selection.clone(), mode, octal: octal_string(mode), recursive: false, any_dir });
                         ui.close();
                     }
                     if ui.button(t.files_new_folder).clicked() {
@@ -634,22 +673,6 @@ impl FileManager {
                     }
                 });
             }
-            // Empty space: clears the selection; right-click for a new folder.
-            let rest = ui.allocate_response(Vec2::new(ui.available_width(), ui.available_height().max(40.0)), Sense::click());
-            if rest.clicked() {
-                self.panel(side).selected.clear();
-                out.focus = true;
-            }
-            rest.context_menu(|ui| {
-                if ui.button(t.files_new_folder).clicked() {
-                    out.dialog = Some(Dialog::Mkdir { side, text: String::new(), fresh: true });
-                    ui.close();
-                }
-                if ui.button(t.files_refresh).clicked() {
-                    out.refresh = true;
-                    ui.close();
-                }
-            });
         });
 
         // Drop from the other panel: into the folder under the pointer, or this panel's folder.
@@ -735,7 +758,8 @@ impl FileManager {
         if all {
             let show_hidden = self.show_hidden;
             let panel = self.panel(side);
-            panel.selected = panel.visible(show_hidden).into_iter().map(|e| e.name.clone()).collect();
+            panel.ensure_order(show_hidden);
+            panel.selected = panel.ordered_names().into_iter().collect();
         }
     }
 
@@ -859,7 +883,7 @@ impl FileManager {
                                 let mut on = *mode & flag != 0;
                                 if ui.checkbox(&mut on, "").changed() {
                                     *mode = if on { *mode | flag } else { *mode & !flag };
-                                    *octal = format!("{:03o}", *mode & 0o777);
+                                    *octal = octal_string(*mode);
                                 }
                             }
                             ui.end_row();
@@ -1178,17 +1202,34 @@ fn format_time(mtime: Option<i64>) -> String {
     mtime.and_then(|s| chrono::Local.timestamp_opt(s, 0).single()).map(|d| d.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default()
 }
 
-/// "drwxr-xr-x" style.
+/// "drwxr-xr-x" style, with setuid / setgid / sticky shown as s / S / t / T like `ls`.
 fn mode_string(mode: u32, is_dir: bool) -> String {
     let mut s = String::with_capacity(10);
     s.push(if is_dir { 'd' } else { '-' });
-    for shift in [6, 3, 0] {
+    for (shift, special, mark) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
         let bits = (mode >> shift) & 7;
         s.push(if bits & 4 != 0 { 'r' } else { '-' });
         s.push(if bits & 2 != 0 { 'w' } else { '-' });
-        s.push(if bits & 1 != 0 { 'x' } else { '-' });
+        let exec = bits & 1 != 0;
+        s.push(match (mode & special != 0, exec) {
+            (true, true) => mark,
+            (true, false) => mark.to_ascii_uppercase(),
+            (false, true) => 'x',
+            (false, false) => '-',
+        });
     }
     s
+}
+
+/// The octal value, on 4 digits when setuid / setgid / sticky are set (so they are never hidden).
+fn octal_string(mode: u32) -> String {
+    if mode & 0o7000 != 0 { format!("{:04o}", mode & 0o7777) } else { format!("{:03o}", mode & 0o777) }
+}
+
+/// A name as shown: control characters and text-direction overrides (which could disguise
+/// "fichier.txt" as something else) are replaced.
+fn display_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}') { '�' } else { c }).collect()
 }
 
 #[cfg(test)]
@@ -1199,6 +1240,11 @@ mod tests {
     fn formats_modes_and_sizes() {
         assert_eq!(mode_string(0o755, true), "drwxr-xr-x");
         assert_eq!(mode_string(0o640, false), "-rw-r-----");
+        assert_eq!(mode_string(0o4755, false), "-rwsr-xr-x");
+        assert_eq!(mode_string(0o1777, true), "drwxrwxrwt");
+        assert_eq!(octal_string(0o4755), "4755");
+        assert_eq!(octal_string(0o644), "644");
+        assert_eq!(display_name("a\u{202E}txt.exe"), "a�txt.exe");
         let fr = crate::i18n::Lang::Fr.strings();
         assert_eq!(format_size(512, fr), "512 o");
         assert_eq!(format_size(1536, fr), "1,5 Ko");

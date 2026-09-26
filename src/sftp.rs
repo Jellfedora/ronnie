@@ -99,7 +99,10 @@ impl Connection {
             });
         }
         runtime().spawn(async move {
-            let sftp = match SftpSession::new(tokio::io::join(stdout, stdin)).await {
+            // 64 writes in flight (2 MB) instead of 16: uploads to a distant server would otherwise be
+            // capped by the round trips, where OpenSSH's sftp keeps about as much in flight.
+            let config = russh_sftp::client::Config { max_concurrent_writes: 64, ..Default::default() };
+            let sftp = match SftpSession::new_with_config(tokio::io::join(stdout, stdin), config).await {
                 Ok(sftp) => Arc::new(sftp),
                 Err(e) => {
                     let _ = child.wait().await;
@@ -132,7 +135,10 @@ impl Connection {
                         };
                         cancels.lock().unwrap().remove(&id);
                         emit.send(Event::Finished { id, result: result.map_err(|e| format!("{e:#}")) });
-                        emit.send(Event::Changed);
+                        // Listings are refreshed once the queue is done, not after each of its items.
+                        if queue.is_empty() {
+                            emit.send(Event::Changed);
+                        }
                     }
                 });
             }
