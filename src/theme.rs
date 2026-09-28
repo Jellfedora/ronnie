@@ -12,7 +12,6 @@ pub struct Theme {
     pub ansi: [Color32; 16],
 
     pub chrome_bg: Color32,
-    pub tab_bg: Color32,
     pub tab_hover: Color32,
     pub tab_active: Color32,
     pub text_muted: Color32,
@@ -270,7 +269,6 @@ impl Preset {
             selection: Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), if self.dark { 80 } else { 70 }),
             ansi: self.ansi.map(hex),
             chrome_bg: chrome,
-            tab_bg: chrome,
             tab_hover: mix(chrome, surface, 0.6),
             tab_active: surface,
             text_muted: mix(fg, chrome, 0.42),

@@ -73,13 +73,7 @@ impl App {
         // SSH header: title and a "+" menu.
         if !local {
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        painter.text(
-            Pos2::new(header.min.x + 6.0, header.center().y),
-            Align2::LEFT_CENTER,
-            t.profiles,
-            FontId::proportional(11.0),
-            self.theme.text_muted.gamma_multiply(0.8),
-        );
+        paint_section_title(&painter, header, t.profiles, true, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
         let plus = icon_button(ui, &painter, plus_rect, "profiles-plus", &self.theme, paint_plus);
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
@@ -157,7 +151,7 @@ impl App {
         }
         let hovered = resp.contains_pointer() || dragged;
         if hovered {
-            painter.rect_filled(rect, 6.0, self.theme.tab_hover);
+            painter.rect_filled(rect, 7.0, self.theme.tab_hover.gamma_multiply(0.7));
         }
         let color = if hovered { self.theme.text } else { self.theme.text_muted };
         paint_chevron(painter, Pos2::new(rect.min.x + 12.0, rect.center().y), !collapsed, color);
@@ -185,14 +179,12 @@ impl App {
         let galley = painter.layout_job(job);
         painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
         let count = group.items.iter().filter(|id| if group_local { self.config.profiles.iter().any(|p| p.id == **id) } else { self.config.ssh.iter().any(|h| h.id == **id) }).count();
-        if collapsed || hovered {
-            painter.text(
-                Pos2::new(rect.max.x - 10.0, rect.center().y),
-                Align2::RIGHT_CENTER,
-                count.to_string(),
-                FontId::proportional(11.0),
-                self.theme.text_muted.gamma_multiply(0.8),
-            );
+        // How many items, in a small pill.
+        {
+            let galley = painter.layout_no_wrap(count.to_string(), FontId::proportional(10.5), self.theme.text_muted);
+            let pill = Rect::from_center_size(Pos2::new(rect.max.x - 8.0 - (galley.size().x + 12.0) / 2.0, rect.center().y), Vec2::new(galley.size().x + 12.0, 16.0));
+            painter.rect_filled(pill, 8.0, self.theme.tab_hover.gamma_multiply(if hovered { 1.4 } else { 0.9 }));
+            painter.galley(pill.center() - galley.size() / 2.0, galley, self.theme.text_muted);
         }
         if resp.double_clicked() {
             *action = Some(TabAction::StartGroupRename(gid));
@@ -219,29 +211,21 @@ impl App {
         }
         let hovered = resp.contains_pointer() && self.item_drag.is_none();
         let active = item.open == Some(self.active);
-        let fill = if active || dragged {
-            self.theme.tab_active
-        } else if hovered {
-            self.theme.tab_hover
-        } else {
-            self.theme.tab_bg
-        };
-        painter.rect_filled(rect, 6.0, fill);
-        if active {
-            paint_active_bar(painter, rect, self.theme.accent);
-        }
-        let dot = Pos2::new(rect.min.x + 14.0, rect.center().y);
+        paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
+        let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
         let live = item.open.and_then(|i| self.live.get(i).cloned().flatten());
         if live.is_some() {
             paint_live(ui, painter, dot, &self.theme);
         }
-        match item.color {
-            Some(color) => painter.circle_filled(dot, 4.0, color),
-            None => painter.circle_stroke(dot, 3.5, Stroke::new(1.0, self.theme.text_muted.gamma_multiply(0.6))),
-        };
+        paint_badge(painter, dot, &item.name, item.color, item.ssh, item.open.is_some(), active, &self.theme);
 
         let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
         let show_close = item.open.is_some() && (active || hovered);
+        // A long command ended in its tab while it wasn't shown: ✓ or ✗ where the ✕ goes.
+        let done = item.open.and_then(|i| self.tabs.get(i)).and_then(|tab| tab.done.as_ref()).map(|d| (d.ok, d.summary.clone()));
+        if let Some((ok, _)) = done.as_ref().filter(|_| !show_close) {
+            paint_done(painter, close_rect.center(), *ok, &self.theme);
+        }
         let edit_rect = if show_close { close_rect.translate(Vec2::new(-20.0, 0.0)) } else { close_rect };
         let show_edit = hovered && item.ssh;
         let text_right = if show_edit {
@@ -251,7 +235,7 @@ impl App {
         } else {
             rect.max.x - 34.0
         };
-        let text_rect = Rect::from_min_max(Pos2::new(rect.min.x + 28.0, rect.min.y), Pos2::new(text_right, rect.max.y));
+        let text_rect = Rect::from_min_max(Pos2::new(rect.min.x + 36.0, rect.min.y), Pos2::new(text_right, rect.max.y));
 
         if let Some(rename) = self.item_rename.as_mut().filter(|r| r.id == id) {
             let color = if rename.error.is_some() { self.theme.ansi[1] } else { self.theme.text };
@@ -313,10 +297,14 @@ impl App {
             }
         }
 
-        let resp = match &live {
-            Some(program) => resp.on_hover_text(format!("{}\n▶ {program}", item.hint)),
-            None => resp.on_hover_text(&item.hint),
-        };
+        let mut hint = item.hint.clone();
+        if let Some(program) = &live {
+            hint.push_str(&format!("\n▶ {program}"));
+        }
+        if let Some((_, summary)) = &done {
+            hint.push_str(&format!("\n{summary}"));
+        }
+        let resp = resp.on_hover_text(hint);
         if resp.double_clicked() {
             *action = Some(if item.ssh { TabAction::EditHost(id) } else { TabAction::StartItemRename(id) });
         } else if resp.clicked() {
@@ -328,6 +316,24 @@ impl App {
             }
         }
         resp.context_menu(|ui| self.item_menu(ui, id, &item, action));
+    }
+
+    /// The profile editor on profile `id`.
+    pub(super) fn open_profile_editor(&mut self, id: Uuid) {
+        // An open profile tab has the latest layout: save it first.
+        self.sync();
+        if let Some(p) = self.config.profiles.iter().find(|p| p.id == id) {
+            let cwds = p.tab.layout.cwds().into_iter().map(|c| c.map(|c| c.display().to_string()).unwrap_or_default()).collect();
+            self.profile_editor = Some(ProfileEditor {
+                id,
+                name: p.tab.name.clone().unwrap_or_default(),
+                color: p.tab.color,
+                cwds,
+                commands: p.commands.clone(),
+                new_command: String::new(),
+                error: None,
+            });
+        }
     }
 
     /// Right-click menu of a profile or an SSH host.
@@ -401,21 +407,15 @@ impl App {
     pub(super) fn section_header(&self, ui: &Ui, title: &str, pos: Pos2, width: f32, plus_hint: Option<&str>) -> bool {
         let rect = Rect::from_min_size(pos, Vec2::new(width, SECTION_HEADER_H));
         let painter = ui.painter();
-        painter.text(
-            Pos2::new(rect.min.x + 6.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            title,
-            FontId::proportional(11.0),
-            self.theme.text_muted.gamma_multiply(0.8),
-        );
+        paint_section_title(painter, rect, title, plus_hint.is_some(), &self.theme);
         let Some(hint) = plus_hint else { return false };
         let plus_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(20.0));
         let plus = ui.interact(plus_rect, ui.id().with(("section-plus", title)), Sense::click());
         if plus.hovered() {
-            painter.rect_filled(plus_rect, 4.0, self.theme.tab_hover);
+            painter.circle_filled(plus_rect.center(), 10.0, self.theme.accent.gamma_multiply(0.25));
         }
-        let stroke = Stroke::new(1.6, if plus.hovered() { self.theme.text } else { self.theme.text_muted });
-        let (c, d) = (plus_rect.center(), 5.5);
+        let stroke = Stroke::new(1.6, if plus.hovered() { self.theme.accent } else { self.theme.text_muted });
+        let (c, d) = (plus_rect.center(), 5.0);
         painter.line_segment([c - Vec2::new(d, 0.0), c + Vec2::new(d, 0.0)], stroke);
         painter.line_segment([c - Vec2::new(0.0, d), c + Vec2::new(0.0, d)], stroke);
         plus.on_hover_text(hint).clicked()
@@ -539,7 +539,18 @@ impl App {
         // New profiles and hosts show up outside groups; deleted ones disappear.
         self.config.normalize();
         let bar = ui.max_rect();
-        ui.painter().rect_filled(bar, 0.0, self.theme.chrome_bg);
+        // A slight gradient, darker at the bottom.
+        {
+            let (top, bottom) = (self.theme.chrome_bg, lerp_color(self.theme.chrome_bg, self.theme.bg, 0.55));
+            let mut mesh = egui::Mesh::default();
+            mesh.colored_vertex(bar.left_top(), top);
+            mesh.colored_vertex(bar.right_top(), top);
+            mesh.colored_vertex(bar.right_bottom(), bottom);
+            mesh.colored_vertex(bar.left_bottom(), bottom);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            ui.painter().add(egui::Shape::mesh(mesh));
+        }
         ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
 
         // Empty space in the sidebar drags the window (the native title bar is hidden).
@@ -580,8 +591,11 @@ impl App {
         let button = Rect::from_min_max(Pos2::new(left, footer_top + 5.0), Pos2::new(left + row_w, bar.max.y - 7.0));
         let settings = ui.interact(button, ui.id().with("settings-btn"), Sense::click());
         let hot = settings.hovered() || self.settings_dialog;
-        ui.painter().rect_filled(button, 6.0, if hot { self.theme.tab_active } else { self.theme.tab_hover.gamma_multiply(0.6) });
-        ui.painter().rect_stroke(button, 6.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(if hot { 0.8 } else { 0.35 })), egui::StrokeKind::Inside);
+        ui.painter().hline(bar.min.x + 12.0..=bar.max.x - 12.0, footer_top, Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.8)));
+        ui.painter().rect_filled(button, 8.0, if hot { self.theme.tab_active } else { Color32::TRANSPARENT });
+        if hot {
+            ui.painter().rect_stroke(button, 8.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+        }
         paint_gear(ui.painter(), Pos2::new(button.min.x + 16.0, button.center().y), self.theme.accent);
         ui.painter().text(Pos2::new(button.min.x + 32.0, button.center().y), Align2::LEFT_CENTER, t.settings, FontId::proportional(13.0), self.theme.text);
         let shortcut = self.config.settings.shortcuts.open_settings.label();
@@ -653,30 +667,17 @@ impl App {
             // would hide the ✕ as soon as the pointer reaches it.
             let row_hovered = resp.contains_pointer();
 
-            let fill = if active || dragging {
-                self.theme.tab_active
-            } else if row_hovered {
-                self.theme.tab_hover
-            } else {
-                self.theme.tab_bg
-            };
-            painter.rect_filled(rect, 6.0, fill);
-            if active {
-                paint_active_bar(&painter, rect, self.theme.accent);
-            }
-            let dot = Pos2::new(rect.min.x + 14.0, rect.center().y);
+            paint_row_bg(&painter, rect, active || dragging, row_hovered, &self.theme);
+            let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
             let live = self.live.get(i).cloned().flatten();
             if live.is_some() {
                 paint_live(ui, &painter, dot, &self.theme);
             }
-            match tab.color {
-                Some(color) => painter.circle_filled(dot, 4.0, color),
-                None => painter.circle_stroke(dot, 3.5, Stroke::new(1.0, self.theme.text_muted.gamma_multiply(0.6))),
-            };
+            paint_badge(&painter, dot, tab.title(), tab.color, false, true, active, &self.theme);
 
             let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
             let show_close = active || row_hovered;
-            let text_left = rect.min.x + 28.0;
+            let text_left = rect.min.x + 36.0;
             // A long command ended in this tab while it wasn't shown: ✓ or ✗ where the ✕ goes.
             let done = tab.done.as_ref().filter(|_| !show_close);
             if let Some(done) = done {
@@ -851,22 +852,7 @@ impl App {
                 self.group_rename = Some((group.id, group.name.clone(), true));
                 self.config.groups.push(group);
             }
-            Some(TabAction::EditProfile(id)) => {
-                // An open profile tab has the latest layout: save it first.
-                self.sync();
-                if let Some(p) = self.config.profiles.iter().find(|p| p.id == id) {
-                    let cwds = p.tab.layout.cwds().into_iter().map(|c| c.map(|c| c.display().to_string()).unwrap_or_default()).collect();
-                    self.profile_editor = Some(ProfileEditor {
-                        id,
-                        name: p.tab.name.clone().unwrap_or_default(),
-                        color: p.tab.color,
-                        cwds,
-                        commands: p.commands.clone(),
-                        new_command: String::new(),
-                        error: None,
-                    });
-                }
-            }
+            Some(TabAction::EditProfile(id)) => self.open_profile_editor(id),
             Some(TabAction::NewGroupWith(item)) => {
                 let local = self.config.profiles.iter().any(|p| p.id == item);
                 let mut group = config::Group::new(t.new_group_name, local);
@@ -984,3 +970,56 @@ fn paint_done(painter: &egui::Painter, c: Pos2, ok: bool, theme: &crate::theme::
         painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], stroke);
     }
 }
+
+/// Background of a sidebar row: nothing at rest, a light fill on hover, and for the open one a fill
+/// with a touch of the accent and a bar on its left.
+fn paint_row_bg(painter: &egui::Painter, rect: Rect, active: bool, hovered: bool, theme: &crate::theme::Theme) {
+    if active {
+        painter.rect_filled(rect, 8.0, theme.tab_active);
+        painter.rect_filled(rect, 8.0, theme.accent.gamma_multiply(0.07));
+        let bar = Rect::from_min_size(Pos2::new(rect.min.x, rect.min.y + 8.0), Vec2::new(3.0, rect.height() - 16.0));
+        painter.rect_filled(bar, 1.5, theme.accent);
+    } else if hovered {
+        painter.rect_filled(rect, 8.0, theme.tab_hover.gamma_multiply(0.75));
+    }
+}
+
+/// The badge before a name: its initial on its color (a rounded square for terminals and profiles, a
+/// circle for SSH hosts), with a small green light when it is open.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_badge(painter: &egui::Painter, c: Pos2, name: &str, color: Option<Color32>, ssh: bool, open: bool, active: bool, theme: &crate::theme::Theme) {
+    let tint = color.unwrap_or(theme.text_muted);
+    let r = Rect::from_center_size(c, Vec2::splat(20.0));
+    let fill = tint.gamma_multiply(if active { 0.32 } else if open { 0.22 } else { 0.12 });
+    if ssh {
+        painter.circle_filled(c, 10.0, fill);
+    } else {
+        painter.rect_filled(r, 6.0, fill);
+    }
+    let initial: String = name.chars().find(|ch| ch.is_alphanumeric()).map(|ch| ch.to_uppercase().collect()).unwrap_or_else(|| "·".into());
+    let text = if open || active { tint } else { tint.gamma_multiply(0.75) };
+    painter.text(c + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, initial, FontId::proportional(11.0), text);
+    if open && ssh {
+        let dot = c + Vec2::new(7.0, 7.0);
+        painter.circle_filled(dot, 3.5, theme.chrome_bg);
+        painter.circle_filled(dot, 2.5, theme.ansi[2]);
+    }
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    Color32::from(egui::lerp(egui::Rgba::from(a)..=egui::Rgba::from(b), t))
+}
+
+/// A sidebar section's title: small spaced capitals, then a thin line (up to the + button).
+fn paint_section_title(painter: &egui::Painter, rect: Rect, title: &str, plus: bool, theme: &crate::theme::Theme) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(10.5), color: theme.text_muted.gamma_multiply(0.85), extra_letter_spacing: 1.2, ..Default::default() });
+    let galley = painter.layout_job(job);
+    let text_end = rect.min.x + 6.0 + galley.size().x;
+    painter.galley(Pos2::new(rect.min.x + 6.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
+    let line_end = if plus { rect.max.x - 28.0 } else { rect.max.x - 6.0 };
+    if line_end > text_end + 10.0 {
+        painter.hline(text_end + 8.0..=line_end, rect.center().y, Stroke::new(1.0, theme.tab_hover.gamma_multiply(0.9)));
+    }
+}
+

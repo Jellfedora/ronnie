@@ -36,12 +36,12 @@ const SIDEBAR_PAD: f32 = 8.0;
 const SIDEBAR_TOP: f32 = if cfg!(target_os = "macos") { 40.0 } else { 10.0 };
 /// Band under the traffic lights holding the app name.
 const LOGO_H: f32 = 46.0;
-const SECTION_HEADER_H: f32 = 26.0;
+const SECTION_HEADER_H: f32 = 30.0;
 const SECTION_GAP: f32 = 12.0;
-const ROW_H: f32 = 30.0;
-const ROW_GAP: f32 = 2.0;
+const ROW_H: f32 = 32.0;
+const ROW_GAP: f32 = 3.0;
 /// Height of a group title in the profiles section.
-const GROUP_H: f32 = 24.0;
+const GROUP_H: f32 = 26.0;
 /// Bottom strip of the sidebar holding the settings button.
 const FOOTER_H: f32 = 40.0;
 /// How often open tabs are compared with what is on disk.
@@ -70,6 +70,8 @@ pub struct Tab {
     cwds: HashMap<PaneId, PathBuf>,
     /// Command history id of each pane (see `shell`).
     histories: HashMap<PaneId, Uuid>,
+    /// Names given to panes.
+    names: HashMap<PaneId, String>,
     /// SSH panes whose connection ended: kept on screen with their last output until reconnected or closed.
     dead: std::collections::HashSet<PaneId>,
     /// Panes whose shell starts the first time the tab is shown: restoring many tabs at once
@@ -93,7 +95,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -109,7 +111,7 @@ impl Tab {
 
     fn layout_of(&self, node: &Node) -> Layout {
         match node {
-            Node::Leaf(id) => Layout::Pane { cwd: self.cwds.get(id).cloned(), history: self.histories.get(id).copied() },
+            Node::Leaf(id) => Layout::Pane { cwd: self.cwds.get(id).cloned(), history: self.histories.get(id).copied(), name: self.names.get(id).cloned() },
             Node::Split { axis, ratio, a, b } => Layout::Split {
                 axis: *axis,
                 ratio: *ratio,
@@ -180,6 +182,9 @@ struct WindowSlot {
     window_closing: bool,
     guard_confirm: Option<(PaneId, String, guard::Danger)>,
     pane_drag: Option<PaneId>,
+    pane_rename: Option<(PaneId, String, bool)>,
+    toasts: Vec<Toast>,
+    toast_rects: Vec<Rect>,
 }
 
 pub struct App {
@@ -277,7 +282,10 @@ pub struct App {
     ssh_prompt: Option<(crate::askpass::Prompt, String)>,
     /// Path suggestions in terminals: folders listed lately, and the line and suggestion picked.
     path_cache: HashMap<PathBuf, (std::time::Instant, Vec<(String, bool)>)>,
-    path_pick: (String, usize),
+    /// The line, the suggestion picked, and whether it was picked with the arrows (then Enter takes it).
+    path_pick: (String, usize, bool),
+    /// The line whose suggestions Escape put away.
+    path_dismissed: Option<String>,
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -300,6 +308,11 @@ pub struct App {
     guard_confirm: Option<(PaneId, String, guard::Danger)>,
     /// Pane being dragged by its strip, to swap it with another.
     pane_drag: Option<PaneId>,
+    /// Pane being renamed: its id, the name typed, whether the field was just opened.
+    pane_rename: Option<(PaneId, String, bool)>,
+    /// Notices in the window's corner, and where they were drawn (for the hover).
+    toasts: Vec<Toast>,
+    toast_rects: Vec<Rect>,
 }
 
 /// Pushes a window's tabs into their profiles, and returns what the session keeps of them.
@@ -552,6 +565,7 @@ impl HostEditor {
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
     General,
+    Appearance,
     Profiles,
     Ssh,
     ConfigFile,
@@ -706,8 +720,12 @@ impl App {
             window_closing: false,
             guard_confirm: None,
             pane_drag: None,
+            pane_rename: None,
+            toasts: Vec::new(),
+            toast_rects: Vec::new(),
             path_cache: HashMap::new(),
-            path_pick: (String::new(), 0),
+            path_pick: (String::new(), 0, false),
+            path_dismissed: None,
             read_only: false,
             session_frozen: false,
             confirm_reset: false,
@@ -800,6 +818,26 @@ impl App {
         {
             app.menu = crate::menu::MenuBar::install(&cc.egui_ctx, app.t(), &app.config.settings.shortcuts.open_settings);
         }
+        // Development: open the settings on a page right away (to look at them).
+        if cfg!(debug_assertions) {
+            if std::env::var_os("RONNIE_DEMO_TOAST").is_some() {
+                app.splash = None;
+                app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now() });
+            }
+            if let Ok(page) = std::env::var("RONNIE_OPEN_SETTINGS") {
+                app.settings_dialog = true;
+                app.splash = None;
+                app.settings_tab = match page.as_str() {
+                    "appearance" => SettingsTab::Appearance,
+                    "shortcuts" => SettingsTab::Shortcuts,
+                    "profiles" => SettingsTab::Profiles,
+                    "ssh" => SettingsTab::Ssh,
+                    "config" => SettingsTab::ConfigFile,
+                    "about" => SettingsTab::About,
+                    _ => SettingsTab::General,
+                };
+            }
+        }
         app
     }
 
@@ -812,11 +850,13 @@ impl App {
     /// Shells start lazily: see `Tab::pending`.
     fn open_tab(&mut self, state: &TabState, profile: Option<Uuid>) {
         let (mut cwds, mut histories) = (HashMap::new(), HashMap::new());
-        let layout = self.build(&state.layout, &mut cwds, &mut histories);
+        let mut names = HashMap::new();
+        let layout = self.build(&state.layout, &mut cwds, &mut histories, &mut names);
         let mut tab = Tab::new(layout, HashMap::new());
         tab.pending = tab.layout.leaves();
         tab.cwds = cwds;
         tab.histories = histories;
+        tab.names = names;
         if let Some(id) = tab.layout.leaves().get(state.focused) {
             tab.focused = *id;
         }
@@ -829,9 +869,9 @@ impl App {
     }
 
     /// Turns a saved layout into a tree with fresh pane ids, collecting each pane's directory.
-    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>) -> Node {
+    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>, names: &mut HashMap<PaneId, String>) -> Node {
         match layout {
-            Layout::Pane { cwd, history } => {
+            Layout::Pane { cwd, history, name } => {
                 let id = self.next_pane;
                 self.next_pane += 1;
                 if let Some(cwd) = cwd {
@@ -840,13 +880,16 @@ impl App {
                 if let Some(history) = history {
                     histories.insert(id, *history);
                 }
+                if let Some(name) = name {
+                    names.insert(id, name.clone());
+                }
                 Node::Leaf(id)
             }
             Layout::Split { axis, ratio, a, b } => Node::Split {
                 axis: *axis,
                 ratio: ratio.clamp(0.1, 0.9),
-                a: Box::new(self.build(a, cwds, histories)),
-                b: Box::new(self.build(b, cwds, histories)),
+                a: Box::new(self.build(a, cwds, histories, names)),
+                b: Box::new(self.build(b, cwds, histories, names)),
             },
         }
     }
@@ -1157,6 +1200,9 @@ impl App {
         swap(&mut self.window_closing, &mut slot.window_closing);
         swap(&mut self.guard_confirm, &mut slot.guard_confirm);
         swap(&mut self.pane_drag, &mut slot.pane_drag);
+        swap(&mut self.pane_rename, &mut slot.pane_rename);
+        swap(&mut self.toasts, &mut slot.toasts);
+        swap(&mut self.toast_rects, &mut slot.toast_rects);
     }
 
     fn save_config(&mut self) {
@@ -1252,6 +1298,19 @@ impl App {
             if !shown {
                 tab.done = Some(Done { ok, summary: format!("{} {command}  ·  {duration}", if ok { "✓" } else { "✗" }) });
             }
+            let title = match done.code.filter(|c| *c != 0) {
+                Some(code) => t.command_failed.replace("{code}", &code.to_string()),
+                None => t.command_done.to_owned(),
+            };
+            // Ronnie in front, another tab shown: a notice in the window (which leads to the tab), the
+            // system's, or both, as chosen.
+            let body = format!("{command}\n{}  ·  {duration}", tab.title());
+            if focused && !shown && settings.notify_style.in_app() {
+                self.toasts.push(Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now() });
+            }
+            if focused && !shown && settings.notify_style.system() {
+                crate::notify::send(&title, &body);
+            }
             if !focused {
                 let title = match done.code.filter(|c| *c != 0) {
                     Some(code) => t.command_failed.replace("{code}", &code.to_string()),
@@ -1267,6 +1326,112 @@ impl App {
         if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.show_files) {
             tab.done = None;
         }
+    }
+
+    /// A sample notice, as the settings' "Test" button shows it (in the window, from the system, or both).
+    fn test_notification(&mut self) {
+        let t = self.t();
+        let body = format!("{}\n{}  ·  12 s", t.notify_test_command, self.tabs.get(self.active).map_or("Ronnie", |t| t.title()));
+        let style = self.config.settings.notify_style;
+        if style.in_app() {
+            self.toasts.push(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now() });
+        }
+        if style.system() {
+            crate::notify::send(t.command_done, &body);
+        }
+    }
+
+    /// The notices in the bottom right corner: a few seconds each (longer under the pointer); a click
+    /// goes to their tab.
+    fn toasts_ui(&mut self, ctx: &egui::Context) {
+        const LIFE: f32 = 7.0;
+        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < LIFE);
+        if self.toasts.is_empty() {
+            return;
+        }
+        // The newest four.
+        let extra = self.toasts.len().saturating_sub(4);
+        self.toasts.drain(..extra);
+        let screen = ctx.content_rect();
+        let place = self.config.settings.toast_position;
+        // On the left: next to the sidebar, not over it.
+        let (left, right) = (screen.min.x + SIDEBAR_WIDTH + 16.0, screen.max.x - 16.0);
+        let mut edge = if place.top() { screen.min.y + 16.0 } else { screen.max.y - 16.0 };
+        let mut go = None;
+        let mut hovered_any = false;
+        let t_go_to_tab = self.t().go_to_tab;
+        let mut rects = vec![Rect::NOTHING; self.toasts.len()];
+        for (k, toast) in self.toasts.iter().enumerate().rev() {
+            let width = 320.0;
+            let x = match place.side() {
+                -1 => left,
+                0 => (left + right) / 2.0,
+                _ => right,
+            };
+            let align = match (place.top(), place.side()) {
+                (true, -1) => Align2::LEFT_TOP,
+                (true, 0) => Align2::CENTER_TOP,
+                (true, _) => Align2::RIGHT_TOP,
+                (false, -1) => Align2::LEFT_BOTTOM,
+                (false, 0) => Align2::CENTER_BOTTOM,
+                (false, _) => Align2::RIGHT_BOTTOM,
+            };
+            let age = toast.at.elapsed().as_secs_f32();
+            // Fades in, then out at the end.
+            let alpha = (age / 0.25).min(1.0).min(((LIFE - age) / 0.6).clamp(0.0, 1.0));
+            // In the theme's colors: its accent, its red for a failure.
+            let accent = self.theme.accent;
+            let mark = if toast.ok { accent } else { self.theme.ansi[1] };
+            let hovered = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.toast_rects.get(k).is_some_and(|r| r.contains(p)));
+            let area = egui::Area::new(egui::Id::new(("toast", k))).order(egui::Order::Foreground).pivot(align).fixed_pos(Pos2::new(x, edge)).show(ctx, |ui| {
+                ui.set_opacity(alpha);
+                let frame = Frame::popup(ui.style()).fill(self.theme.chrome_bg).stroke(Stroke::new(1.0, accent.gamma_multiply(if hovered { 0.9 } else { 0.45 }))).corner_radius(12.0).inner_margin(egui::Margin { left: 18, right: 14, top: 12, bottom: 14 });
+                let shown = frame.show(ui, |ui| {
+                    ui.set_width(width - 32.0);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+                        ui.painter().circle_filled(r.center(), 11.0, mark.gamma_multiply(0.18));
+                        ui.painter().circle_stroke(r.center(), 11.0, Stroke::new(1.0, mark.gamma_multiply(0.5)));
+                        ui.painter().text(r.center(), Align2::CENTER_CENTER, if toast.ok { "✓" } else { "✗" }, FontId::proportional(12.5), mark);
+                        ui.add_space(2.0);
+                        ui.label(egui::RichText::new(&toast.title).size(13.5).strong().color(self.theme.text));
+                    });
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(egui::RichText::new(&toast.body).size(12.5).color(self.theme.text_muted)).wrap());
+                    if hovered {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(format!("{}  →", t_go_to_tab)).size(11.5).color(accent));
+                    }
+                });
+                // A strip of the accent on the left, and the time left at the bottom.
+                let r = shown.response.rect;
+                ui.painter().rect_filled(Rect::from_min_size(r.min + Vec2::new(6.0, 12.0), Vec2::new(3.0, r.height() - 24.0)), 1.5, mark.gamma_multiply(0.9));
+                let left_time = (1.0 - age / LIFE).clamp(0.0, 1.0);
+                let bar = Rect::from_min_size(Pos2::new(r.min.x + 14.0, r.max.y - 5.0), Vec2::new((r.width() - 28.0) * left_time, 2.0));
+                ui.painter().rect_filled(bar, 1.0, accent.gamma_multiply(0.6));
+            });
+            rects[k] = area.response.rect;
+            let resp = area.response.interact(Sense::click());
+            hovered_any |= resp.hovered();
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                go = Some((k, toast.tab));
+            }
+            // The next one stacks away from the edge.
+            let step = area.response.rect.height() + 10.0;
+            edge += if place.top() { step } else { -step };
+        }
+        // Kept while the pointer is over one.
+        if hovered_any {
+            for t in &mut self.toasts {
+                t.at = t.at.max(std::time::Instant::now() - std::time::Duration::from_secs_f32(1.0));
+            }
+        }
+        self.toast_rects = rects;
+        if let Some((k, tab)) = go {
+            self.toasts.remove(k);
+            self.select(tab);
+        }
+        ctx.request_repaint_after(Duration::from_millis(50));
     }
 
     fn spawn(&mut self, ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Uuid) -> Option<(PaneId, Terminal)> {
@@ -1534,11 +1699,12 @@ impl App {
 
 }
 
-const THEME_CARD: Vec2 = Vec2::new(230.0, 84.0);
+const THEME_CARD: Vec2 = Vec2::new(204.0, 84.0);
 const EDITOR_WIDTH: f32 = 720.0;
-const SETTINGS_WIDTH: f32 = EDITOR_WIDTH;
-/// Height of the settings pages (below the tabs), shrunk on small windows.
-const SETTINGS_BODY_HEIGHT: f32 = 540.0;
+const SETTINGS_WIDTH: f32 = 940.0;
+/// The settings' side navigation.
+const SETTINGS_NAV_WIDTH: f32 = 210.0;
+const SETTINGS_HEIGHT: f32 = 680.0;
 
 /// A clickable preview of a theme: its sidebar, a sample terminal line and its palette.
 fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, _highlight: Color32) -> egui::Response {
@@ -1565,7 +1731,8 @@ fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, _highlight: Color32)
     for (text, color) in [("~ ", theme.ansi[4]), ("$ ", theme.ansi[5]), ("ls ", theme.fg), ("src ", theme.ansi[6]), ("main.rs ", theme.ansi[2]), ("err", theme.ansi[1])] {
         job.append(text, 0.0, egui::TextFormat { font_id: mono.clone(), color, ..Default::default() });
     }
-    painter.galley(Pos2::new(x, rect.min.y + 34.0), painter.layout_job(job), theme.fg);
+    // Clipped: a narrow card cuts the end of the sample.
+    painter.with_clip_rect(rect.shrink(6.0)).galley(Pos2::new(x, rect.min.y + 34.0), painter.layout_job(job), theme.fg);
     for (k, color) in theme.ansi[1..7].iter().chain(std::iter::once(&theme.accent)).enumerate() {
         let r = Rect::from_min_size(Pos2::new(x + k as f32 * 20.0, rect.max.y - 20.0), Vec2::new(16.0, 8.0));
         painter.rect_filled(r, 2.0, *color);
@@ -1632,6 +1799,16 @@ fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
     if focused {
         ui.ctx().request_repaint_after(Duration::from_millis(250));
     }
+}
+
+/// A notice in the corner of the window (a long command ended in another tab).
+struct Toast {
+    ok: bool,
+    title: String,
+    body: String,
+    /// The tab it leads to.
+    tab: usize,
+    at: std::time::Instant,
 }
 
 /// "45 s", "2 min 14 s", "1 h 03 min".
@@ -1726,6 +1903,9 @@ struct HeaderClicks {
     files: bool,
     /// The strip is being dragged (to move the pane onto another).
     drag_started: bool,
+    close: bool,
+    /// Double click: rename the pane.
+    rename: bool,
 }
 
 /// What the strip above a pane shows.
@@ -1740,7 +1920,8 @@ enum Header<'a> {
 /// Strip above a pane: its working directory (home as `~`, leading folders elided to fit) or its SSH
 /// host with reconnect (↻) and file manager (📁) icons, plus the saved commands (⚡) and, for local panes,
 /// history search.
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+#[allow(clippy::too_many_arguments)]
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
@@ -1748,13 +1929,29 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     let color = if focused { theme.text } else { theme.text_muted };
     let mut max_w = rect.width() - 20.0;
 
-    let mut clicks = HeaderClicks { drag_started: resp.drag_started(), ..Default::default() };
+    let mut clicks = HeaderClicks { drag_started: resp.drag_started(), rename: resp.double_clicked(), ..Default::default() };
     let icon = |ui: &mut Ui, right: f32, text: &str, tip: String| {
         let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
         let button = egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0);
         ui.put(at, button).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
     };
     let mut right = rect.max.x - 4.0;
+    // Close, rightmost (it asks first when a program runs in the pane).
+    // Drawn: the font's ✕ is smaller than the other icons.
+    {
+        let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+        let resp = ui.interact(at, egui::Id::new(("pane-close", id)), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(at, 5.0, theme.tab_hover);
+        }
+        let (c, d) = (at.center(), 5.0);
+        let stroke = Stroke::new(1.6, if resp.hovered() { theme.text } else { color });
+        ui.painter().line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], stroke);
+        ui.painter().line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], stroke);
+        clicks.close = resp.on_hover_text(format!("{}  ({})", t.close_pane, shortcuts.close_pane.label())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    }
+    right -= 30.0;
+    max_w -= 30.0;
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls) = header {
         clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label()));
@@ -1793,10 +1990,11 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
 
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
-        Header::Local(None, _) => {
+        Header::Local(None, _) if name.is_none() => {
             clicks.focus = resp.clicked();
             return clicks;
         }
+        Header::Local(None, _) => (String::new(), None),
         Header::Local(Some(cwd), _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
@@ -1816,7 +2014,15 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
             (label(skip), Some(cwd.display().to_string()))
         }
     };
-    let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+    // The pane's name first, in the accent color.
+    let mut job = egui::text::LayoutJob::default();
+    if let Some(name) = name {
+        job.append(name, 0.0, egui::TextFormat { font_id: font.clone(), color: if focused { theme.accent } else { theme.accent.gamma_multiply(0.7) }, ..Default::default() });
+        if !text.is_empty() {
+            job.append("  ·  ", 0.0, egui::TextFormat { font_id: font.clone(), color: theme.text_muted, ..Default::default() });
+        }
+    }
+    job.append(&text, 0.0, egui::TextFormat { font_id: font.clone(), color, ..Default::default() });
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
     let galley = painter.layout_job(job);
     painter.galley(Pos2::new(rect.min.x + 10.0, rect.center().y - galley.size().y / 2.0), galley, color);
@@ -1904,11 +2110,6 @@ fn select_all(ui: &Ui, id: egui::Id, text: &str) {
     }
 }
 
-/// Accent mark on the left edge of the active tab.
-fn paint_active_bar(painter: &egui::Painter, row: Rect, accent: Color32) {
-    let bar = Rect::from_min_size(Pos2::new(row.min.x, row.min.y + 7.0), Vec2::new(3.0, row.height() - 14.0));
-    painter.rect_filled(bar, 1.5, accent);
-}
 
 /// A menu button that records `a` as the action and closes the menu.
 fn menu_item<A>(ui: &mut Ui, label: &str, a: A, action: &mut Option<A>) {
@@ -1970,6 +2171,7 @@ enum PaneAction {
     Close(PaneId),
     Reveal(PaneId),
     Reconnect(PaneId),
+    Rename(PaneId),
     /// The file manager (this folder, or the server's).
     Files(PaneId),
     /// Write a saved command at the prompt, without running it.
@@ -1997,6 +2199,7 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     item(ui, true, t.split_down, shortcuts.split_down.label(), PaneAction::Split(id, Direction::Down));
     item(ui, true, t.split_left, String::new(), PaneAction::Split(id, Direction::Left));
     ui.separator();
+    item(ui, true, t.rename_pane, String::new(), PaneAction::Rename(id));
     if local {
         // An SSH pane's directory is on the server.
         item(ui, true, t.open_location, String::new(), PaneAction::Reveal(id));
@@ -2151,7 +2354,7 @@ impl App {
                 };
                 // Given once the click that asked for it (in the sidebar...) is over: during that frame, egui
                 // takes the focus away from every widget the pointer isn't on, the terminal included.
-                if self.focus_terminal && self.rename.is_none() {
+                if self.focus_terminal && self.rename.is_none() && self.pane_rename.is_none() {
                     if ui.input(|i| i.pointer.any_pressed() || i.pointer.any_click() || i.pointer.any_down()) {
                         ui.ctx().request_repaint();
                     } else {
@@ -2255,24 +2458,35 @@ impl App {
                         }
                     }
                 }
+                // Escape put the list away for this line.
+                if suggest.as_ref().is_some_and(|(line, _, _)| self.path_dismissed.as_ref() == Some(line)) {
+                    suggest = None;
+                }
                 let mut take_suggestion = None;
                 if let Some((line, _, items)) = &suggest {
                     if self.path_pick.0 != *line {
-                        self.path_pick = (line.clone(), 0);
+                        self.path_pick = (line.clone(), 0, false);
                     }
-                    let pick = &mut self.path_pick.1;
+                    let (_, pick, chosen) = &mut self.path_pick;
                     *pick = (*pick).min(items.len() - 1);
+                    let mut dismiss = false;
                     ui.input_mut(|i| {
-                        if i.consume_key(Modifiers::ALT, Key::ArrowDown) {
-                            *pick = (*pick + 1) % items.len();
+                        // While the list shows, ↑ ↓ move in it (the shell's history is one Escape away).
+                        if i.consume_key(Modifiers::NONE, Key::ArrowDown) || i.consume_key(Modifiers::ALT, Key::ArrowDown) {
+                            (*pick, *chosen) = ((*pick + 1) % items.len(), true);
                         }
-                        if i.consume_key(Modifiers::ALT, Key::ArrowUp) {
-                            *pick = (*pick + items.len() - 1) % items.len();
+                        if i.consume_key(Modifiers::NONE, Key::ArrowUp) || i.consume_key(Modifiers::ALT, Key::ArrowUp) {
+                            (*pick, *chosen) = ((*pick + items.len() - 1) % items.len(), true);
                         }
-                        if i.consume_key(Modifiers::NONE, Key::ArrowRight) {
+                        // → takes the one shown; Enter only one picked with the arrows (else it runs the line).
+                        if i.consume_key(Modifiers::NONE, Key::ArrowRight) || (*chosen && i.consume_key(Modifiers::NONE, Key::Enter)) {
                             take_suggestion = Some(*pick);
                         }
+                        dismiss = i.consume_key(Modifiers::NONE, Key::Escape);
                     });
+                    if dismiss {
+                        self.path_dismissed = Some(line.clone());
+                    }
                 }
                 // Checked before the panes handle keys, so Cmd+Enter doesn't reach the terminal.
                 let prompt = password_host.filter(|_| tab.panes.get(&tab.focused).is_some_and(Terminal::awaits_password));
@@ -2290,7 +2504,38 @@ impl App {
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
-                        let clicks = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
+                        if clicks.rename {
+                            self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
+                        }
+                        // Renaming: the name is typed in the strip itself.
+                        if let Some((_, text, fresh)) = self.pane_rename.as_mut().filter(|(p, _, _)| *p == id) {
+                            let field = Rect::from_min_max(head.min + Vec2::new(6.0, 3.0), Pos2::new(head.min.x + (head.width() * 0.5).max(160.0), head.max.y - 3.0));
+                            ui.painter().rect_filled(field, 5.0, self.theme.bg);
+                            let edit = ui.put(field.shrink2(Vec2::new(6.0, 1.0)), egui::TextEdit::singleline(text).font(FontId::monospace(12.0)).frame(Frame::NONE).hint_text(strings.pane_name_hint));
+                            ui.painter().rect_stroke(field, 5.0, Stroke::new(1.0, self.theme.accent), egui::StrokeKind::Inside);
+                            if *fresh {
+                                edit.request_focus();
+                                *fresh = false;
+                            }
+                            let (enter, escape) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+                            if escape {
+                                self.pane_rename = None;
+                                self.focus_terminal = true;
+                            } else if enter || edit.lost_focus() {
+                                let name = text.trim().to_owned();
+                                if name.is_empty() {
+                                    tab.names.remove(&id);
+                                } else {
+                                    tab.names.insert(id, name);
+                                }
+                                self.pane_rename = None;
+                                self.focus_terminal = true;
+                            }
+                        }
+                        if clicks.close {
+                            pane_action = Some(PaneAction::Close(id));
+                        }
                         if clicks.drag_started && split {
                             self.pane_drag = Some(id);
                         }
@@ -2369,7 +2614,7 @@ impl App {
                     }
                 }
 
-                if let (Some((_, prefix, items)), Some(term)) = (&suggest, tab.panes.get_mut(&tab.focused)) {
+                if let (Some((_, prefix, items)), Some(term)) = (suggest.as_ref().filter(|(l, _, _)| self.path_dismissed.as_ref() != Some(l)), tab.panes.get_mut(&tab.focused)) {
                     let pos = term.cursor_pos() + Vec2::new(-(prefix.chars().count() as f32) * term.cell_size().x, term.cell_size().y + 2.0);
                     let pick = self.path_pick.1;
                     let theme = &self.theme;
@@ -2386,8 +2631,7 @@ impl App {
                                     take_suggestion = Some(i);
                                 }
                             }
-                            let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
-                            ui.label(egui::RichText::new(strings.path_suggest_hint.replace("{alt}", alt)).size(11.0).color(theme.text_muted));
+                            ui.label(egui::RichText::new(strings.path_suggest_hint).size(11.0).color(theme.text_muted));
                         });
                     });
                     if let Some(i) = take_suggestion {
@@ -2454,6 +2698,10 @@ impl App {
                     }
                     Some(PaneAction::Close(id)) => self.request_close(CloseRequest::Pane(self.active, id)),
                     Some(PaneAction::Reconnect(id)) => reconnect = Some(vec![id]),
+                    Some(PaneAction::Rename(id)) => {
+                        tab.focused = id;
+                        self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
+                    }
                     Some(PaneAction::Files(id)) => {
                         tab.focused = id;
                         open_files = true;
@@ -2531,6 +2779,8 @@ impl App {
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
         }
+
+        self.toasts_ui(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash.filter(|_| main_window) {

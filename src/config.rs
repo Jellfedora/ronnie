@@ -25,6 +25,9 @@ pub enum Layout {
         /// Identifies the pane's command history file (see `shell`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         history: Option<Uuid>,
+        /// Name given to the pane (shown in its strip).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     Split {
         axis: Axis,
@@ -84,7 +87,7 @@ impl Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout::Pane { cwd: None, history: None }
+        Layout::Pane { cwd: None, history: None, name: None }
     }
 }
 
@@ -404,6 +407,12 @@ pub struct Settings {
     pub notify_commands: bool,
     #[serde(default = "default_notify_after")]
     pub notify_after: u64,
+    /// Where the notices of the window show (a long command ended in another tab).
+    #[serde(default)]
+    pub toast_position: ToastPosition,
+    /// How to tell, Ronnie being in front (in the background, it is always the system's).
+    #[serde(default)]
+    pub notify_style: NotifyStyle,
     /// Suggest files and folders for the path being typed in local terminals.
     #[serde(default = "default_true")]
     pub path_suggestions: bool,
@@ -436,6 +445,58 @@ fn default_font_size() -> f32 {
 
 fn default_scrollback() -> usize {
     10_000
+}
+
+/// Where a notice shows while Ronnie is in front.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotifyStyle {
+    /// In the window's corner.
+    #[default]
+    InApp,
+    /// The system's notification.
+    System,
+    Both,
+}
+
+impl NotifyStyle {
+    pub fn in_app(self) -> bool {
+        matches!(self, Self::InApp | Self::Both)
+    }
+
+    pub fn system(self) -> bool {
+        matches!(self, Self::System | Self::Both)
+    }
+}
+
+/// A corner or the middle of an edge of the window.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToastPosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    BottomCenter,
+    #[default]
+    BottomRight,
+}
+
+impl ToastPosition {
+    pub const ALL: [ToastPosition; 6] = [Self::TopLeft, Self::TopCenter, Self::TopRight, Self::BottomLeft, Self::BottomCenter, Self::BottomRight];
+
+    pub fn top(self) -> bool {
+        matches!(self, Self::TopLeft | Self::TopCenter | Self::TopRight)
+    }
+
+    /// -1 left, 0 middle, 1 right.
+    pub fn side(self) -> i8 {
+        match self {
+            Self::TopLeft | Self::BottomLeft => -1,
+            Self::TopCenter | Self::BottomCenter => 0,
+            Self::TopRight | Self::BottomRight => 1,
+        }
+    }
 }
 
 /// Shortcuts the user can change (Settings > Shortcuts).
@@ -560,7 +621,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), path_suggestions: true, restore_scrollback: true, metal_guard: true }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), path_suggestions: true, restore_scrollback: true, metal_guard: true }
     }
 }
 
@@ -856,8 +917,8 @@ mod tests {
                 layout: Layout::Split {
                     axis: Axis::Horizontal,
                     ratio: 0.3,
-                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()) }),
-                    b: Box::new(Layout::Pane { cwd: None, history: None }),
+                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()), name: Some("api".into()) }),
+                    b: Box::new(Layout::Pane { cwd: None, history: None, name: None }),
                 },
                 focused: 1,
             },

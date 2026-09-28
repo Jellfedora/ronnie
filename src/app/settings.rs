@@ -106,66 +106,97 @@ impl App {
     }
 
     pub(super) fn profiles_ui(&mut self, ui: &mut Ui, t: &Strings) {
+        let theme = self.theme.clone();
         if self.config.profiles.is_empty() {
-            ui.label(egui::RichText::new(t.no_profiles).size(13.0).color(self.theme.text_muted));
+            card(ui, &theme, None, |ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(t.profiles_none).size(13.0).color(theme.text_muted));
+                ui.add_space(14.0);
+            });
             return;
         }
-        let (mut rename, mut recolor, mut open, mut delete) = (None, None, None, None);
+        let (mut rename, mut recolor, mut open, mut delete, mut edit) = (None, None, None, None, None);
         let sections = self.grouped_ids(true);
-        egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("settings-profiles").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(ui.available_width() - 12.0);
+            if let Some(err) = self.profile_error {
+                ui.label(egui::RichText::new(format!("⚠  {err}")).size(13.0).color(theme.ansi[1]));
+                ui.add_space(10.0);
+            }
             for (name, ids) in &sections {
-                if let Some(name) = name {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(name.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
+                let profiles: Vec<&Profile> = ids.iter().filter_map(|id| self.config.profiles.iter().find(|p| p.id == *id)).collect();
+                if profiles.is_empty() {
+                    continue;
                 }
-            for p in ids.iter().filter_map(|id| self.config.profiles.iter().find(|p| p.id == *id)) {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(34.0);
-                    let dot = egui::RichText::new("●").size(18.0).color(p.tab.color.unwrap_or(self.theme.text_muted));
-                    ui.menu_button(dot, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for color in TAB_COLORS {
-                                let (r, s) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                                ui.painter().circle_filled(r.center(), 7.5, color);
-                                if p.tab.color == Some(color) || s.hovered() {
-                                    ui.painter().circle_stroke(r.center(), 9.0, Stroke::new(1.5, self.theme.text));
+                let title = format!("{}  ·  {}", name.as_deref().unwrap_or(t.no_group), profiles.len());
+                card(ui, &theme, Some(&title), |ui| {
+                    for (i, p) in profiles.iter().enumerate() {
+                        if i > 0 {
+                            divider(ui, &theme);
+                        }
+                        let (rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
+                        if row.hovered() {
+                            ui.painter().rect_filled(rect.expand2(Vec2::new(10.0, -3.0)), 8.0, theme.tab_hover.gamma_multiply(0.45));
+                        }
+                        // The badge picks the color.
+                        let badge = Rect::from_center_size(Pos2::new(rect.min.x + 14.0, rect.center().y), Vec2::splat(26.0));
+                        let badge_resp = ui.interact(badge, ui.id().with(("profile-color", p.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                        super::sidebar::paint_badge(ui.painter(), badge.center(), p.name(t.untitled), p.tab.color, false, true, badge_resp.hovered(), &theme);
+                        egui::Popup::menu(&badge_resp).show(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                for color in TAB_COLORS {
+                                    let (r, s) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                                    ui.painter().circle_filled(r.center(), 7.5, color);
+                                    if p.tab.color == Some(color) || s.hovered() {
+                                        ui.painter().circle_stroke(r.center(), 9.0, Stroke::new(1.5, theme.text));
+                                    }
+                                    if s.clicked() {
+                                        recolor = Some((p.id, Some(color)));
+                                        ui.close();
+                                    }
                                 }
-                                if s.clicked() {
-                                    recolor = Some((p.id, Some(color)));
-                                    ui.close();
-                                }
+                            });
+                            if p.tab.color.is_some() && ui.button(t.remove_color).clicked() {
+                                recolor = Some((p.id, None));
+                                ui.close();
                             }
                         });
-                        if p.tab.color.is_some() && ui.button(t.remove_color).clicked() {
-                            recolor = Some((p.id, None));
-                            ui.close();
+                        // The name, edited in place; the panes below.
+                        let current = p.name(t.untitled).to_owned();
+                        let buffer = self.profile_names.entry(p.id).or_insert_with(|| current.clone());
+                        let field = Rect::from_min_size(Pos2::new(rect.min.x + 36.0, rect.min.y + 8.0), Vec2::new(260.0_f32.min(rect.width() - 330.0), 24.0));
+                        let id = ui.id().with(("profile-name", p.id));
+                        let focused = ui.memory(|m| m.has_focus(id));
+                        if focused || ui.rect_contains_pointer(field) {
+                            ui.painter().rect_filled(field.expand2(Vec2::new(4.0, 0.0)), 5.0, theme.chrome_bg);
+                            ui.painter().rect_stroke(field.expand2(Vec2::new(4.0, 0.0)), 5.0, Stroke::new(1.0, if focused { theme.accent } else { theme.tab_hover }), egui::StrokeKind::Inside);
                         }
-                    });
-                    let current = p.name(t.untitled).to_owned();
-                    let buffer = self.profile_names.entry(p.id).or_insert_with(|| current.clone());
-                    let edit = ui.add(egui::TextEdit::singleline(buffer).desired_width(250.0).margin(Vec2::new(6.0, 5.0)).font(FontId::proportional(14.0)));
-                    if edit.lost_focus() && *buffer != current {
-                        rename = Some((p.id, buffer.clone()));
-                    }
-                    let panes = p.tab.layout.panes();
-                    ui.label(egui::RichText::new(format!("{panes} {}", t.layout_panes)).size(12.0).color(self.theme.text_muted));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
+                        // In a child: the row is already laid out.
+                        let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                        let name_edit = field_ui.add(egui::TextEdit::singleline(buffer).id(id).frame(Frame::NONE).font(FontId::proportional(14.5)).text_color(theme.text).desired_width(field.width()));
+                        if name_edit.lost_focus() && *buffer != current {
+                            rename = Some((p.id, buffer.clone()));
+                        }
+                        let panes = p.tab.layout.panes();
+                        ui.painter().text(Pos2::new(rect.min.x + 36.0, rect.min.y + 42.0), Align2::LEFT_CENTER, format!("{panes} {}", if panes == 1 { t.layout_pane } else { t.layout_panes }), FontId::proportional(12.0), theme.text_muted);
+                        // Actions, on the right.
+                        let actions = Rect::from_min_max(Pos2::new(rect.max.x - 300.0, rect.min.y), rect.max);
+                        let mut ui_actions = ui.new_child(egui::UiBuilder::new().max_rect(actions).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                        if ui_actions.add(ghost_button(t.delete, theme.ansi[1])).clicked() {
                             delete = Some(p.id);
                         }
-                        if ui.button(t.open).clicked() {
+                        if ui_actions.add(ghost_button(t.edit, theme.text_muted)).clicked() {
+                            edit = Some(p.id);
+                        }
+                        let open_button = egui::Button::new(egui::RichText::new(t.open).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(72.0, 28.0));
+                        if ui_actions.add(open_button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || row.double_clicked() {
                             open = Some(p.id);
                         }
-                    });
+                    }
                 });
             }
-            }
         });
-        if let Some(err) = self.profile_error {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(err).size(13.0).color(self.theme.ansi[1]));
-        }
         if let Some((id, name)) = rename {
             match self.rename_profile(id, &name) {
                 Ok(()) => self.profile_error = None,
@@ -182,6 +213,9 @@ impl App {
         if let Some(id) = delete {
             self.delete_profile(id);
             self.profile_names.remove(&id);
+        }
+        if let Some(id) = edit {
+            self.open_profile_editor(id);
         }
         if let Some(id) = open {
             self.open_profile(id);
@@ -219,89 +253,125 @@ impl App {
 
     /// Settings page for SSH: import from ~/.ssh/config (explained first) and the list of hosts.
     pub(super) fn ssh_settings_ui(&mut self, ui: &mut Ui, t: &Strings) {
-        let muted = self.theme.text_muted;
-        let heading = |ui: &mut Ui, text: &str| {
-            ui.label(egui::RichText::new(text).size(12.0).strong().color(muted));
-            ui.add_space(4.0);
-        };
-        heading(ui, t.import_title);
-        Frame::new().fill(self.theme.bg).corner_radius(6.0).inner_margin(12.0).stroke(Stroke::new(1.0, self.theme.tab_hover)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new(t.import_explain).size(13.0));
-            ui.add_space(8.0);
-            match self.new_ssh_config_hosts() {
-                Err(_) => {
-                    ui.label(egui::RichText::new(t.no_ssh_config).size(13.0).color(muted));
-                }
-                Ok((total, new)) => {
-                    ui.horizontal(|ui| {
+        let theme = self.theme.clone();
+        let (mut edit, mut delete, mut new_host, mut import) = (None, None, false, false);
+        let sections = self.grouped_ids(false);
+        let found = self.new_ssh_config_hosts();
+        egui::ScrollArea::vertical().id_salt("settings-ssh").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(ui.available_width() - 12.0);
+            // Import from ~/.ssh/config.
+            card(ui, &theme, Some(t.import_title), |ui| {
+                match &found {
+                    Err(_) => setting_row(ui, &theme, t.no_ssh_config, Some(t.import_explain), |_| {}),
+                    Ok((total, new)) => {
                         let summary = t.import_found.replace("{total}", &total.to_string()).replace("{new}", &new.len().to_string());
-                        ui.label(egui::RichText::new(summary).size(13.0).color(muted));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        setting_row(ui, &theme, &summary, Some(t.import_explain), |ui| {
                             let label = t.import_button.replace("{new}", &new.len().to_string());
-                            let button = egui::Button::new(egui::RichText::new(label).size(14.0)).min_size(Vec2::new(0.0, 30.0));
+                            let (fill, color) = if new.is_empty() { (theme.tab_hover, theme.text_muted) } else { (theme.accent, theme.bg) };
+                            let button = egui::Button::new(egui::RichText::new(label).size(13.0).color(color)).fill(fill).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
                             if ui.add_enabled(!new.is_empty(), button).clicked() {
-                                self.import_ssh();
+                                import = true;
                             }
                         });
-                    });
+                    }
                 }
-            }
-        });
-        ui.add_space(16.0);
+            });
 
-        heading(ui, t.ssh_hosts);
-        if self.config.ssh.is_empty() {
-            ui.label(egui::RichText::new(t.no_ssh_hosts).size(13.0).color(muted));
-            return;
-        }
-        let (mut edit, mut delete) = (None, None);
-        let sections = self.grouped_ids(false);
-        egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
+            // The hosts, by group, with "New host" by the heading.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.ssh_hosts.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let button = egui::Button::new(egui::RichText::new(format!("+  {}", t.new_host)).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0));
+                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        new_host = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            if self.config.ssh.is_empty() {
+                card(ui, &theme, None, |ui| {
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(t.no_ssh_hosts).size(13.0).color(theme.text_muted));
+                    ui.add_space(14.0);
+                });
+            }
             for (name, ids) in &sections {
-                if let Some(name) = name {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(name.to_uppercase()).size(12.0).strong().color(muted));
+                let hosts: Vec<&SshHost> = ids.iter().filter_map(|id| self.config.ssh.iter().find(|h| h.id == *id)).collect();
+                if hosts.is_empty() {
+                    continue;
                 }
-            for host in ids.iter().filter_map(|id| self.config.ssh.iter().find(|h| h.id == *id)) {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(30.0);
-                    ui.label(egui::RichText::new("●").size(16.0).color(host.color.unwrap_or(muted)));
-                    ui.label(egui::RichText::new(&host.name).size(14.0));
-                    ui.label(egui::RichText::new(host.address()).size(12.0).color(muted));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
+                let title = format!("{}  ·  {}", name.as_deref().unwrap_or(t.no_group), hosts.len());
+                card(ui, &theme, Some(&title), |ui| {
+                    for (i, host) in hosts.iter().enumerate() {
+                        if i > 0 {
+                            divider(ui, &theme);
+                        }
+                        let (rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::click());
+                        if row.hovered() {
+                            ui.painter().rect_filled(rect.expand2(Vec2::new(10.0, -3.0)), 8.0, theme.tab_hover.gamma_multiply(0.45));
+                        }
+                        let open = self.tabs.iter().any(|t| t.ssh == Some(host.id));
+                        super::sidebar::paint_badge(ui.painter(), Pos2::new(rect.min.x + 14.0, rect.center().y), &host.name, host.color, true, open, false, &theme);
+                        ui.painter().text(Pos2::new(rect.min.x + 36.0, rect.min.y + 18.0), Align2::LEFT_CENTER, &host.name, FontId::proportional(14.5), theme.text);
+                        ui.painter().text(Pos2::new(rect.min.x + 36.0, rect.min.y + 38.0), Align2::LEFT_CENTER, host.address(), FontId::monospace(12.0), theme.text_muted);
+                        // How it logs in, in a pill.
+                        let auth = match host.auth_method() {
+                            SshAuth::Auto => t.auth_auto,
+                            SshAuth::Password => t.auth_password,
+                            SshAuth::Ask => t.auth_ask,
+                            SshAuth::Interactive => t.auth_interactive,
+                            SshAuth::Key => t.auth_key,
+                        };
+                        let galley = ui.painter().layout_no_wrap(auth.to_owned(), FontId::proportional(11.0), theme.text_muted);
+                        let pill = Rect::from_min_size(Pos2::new(rect.max.x - 210.0 - galley.size().x - 16.0, rect.center().y - 10.0), Vec2::new(galley.size().x + 16.0, 20.0));
+                        ui.painter().rect_filled(pill, 10.0, theme.tab_hover.gamma_multiply(0.9));
+                        ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme.text_muted);
+                        let actions = Rect::from_min_max(Pos2::new(rect.max.x - 200.0, rect.min.y), rect.max);
+                        let mut ui_actions = ui.new_child(egui::UiBuilder::new().max_rect(actions).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                        if ui_actions.add(ghost_button(t.delete, theme.ansi[1])).clicked() {
                             delete = Some(host.id);
                         }
-                        if ui.button(t.edit).clicked() {
+                        if ui_actions.add(ghost_button(t.edit, theme.text)).clicked() || row.double_clicked() {
                             edit = Some(host.id);
+                        }
+                    }
+                });
+            }
+
+            // Hosts imported from ~/.ssh/config: all removed at once.
+            let imported = self.config.ssh.iter().filter(|h| h.imported).count();
+            if imported > 0 {
+                card(ui, &theme, Some(t.reset_section), |ui| {
+                    let title = format!("{} ({imported})", t.delete_imported);
+                    let desc = if self.confirm_delete_imported { Some(t.delete_imported_confirm) } else { None };
+                    setting_row(ui, &theme, &title, desc, |ui| {
+                        if self.confirm_delete_imported {
+                            let yes = egui::Button::new(egui::RichText::new(t.confirm).size(13.0).color(theme.bg)).fill(theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                            if ui.add(yes).clicked() {
+                                let ids: Vec<Uuid> = self.config.ssh.iter().filter(|h| h.imported).map(|h| h.id).collect();
+                                for id in ids {
+                                    self.delete_host(id);
+                                }
+                                self.confirm_delete_imported = false;
+                            }
+                            if ui.add(ghost_button(t.cancel, theme.text_muted)).clicked() {
+                                self.confirm_delete_imported = false;
+                            }
+                        } else {
+                            let button = egui::Button::new(egui::RichText::new(t.delete).size(13.0).color(theme.ansi[1])).stroke(Stroke::new(1.0, theme.ansi[1].gamma_multiply(0.7))).fill(Color32::TRANSPARENT).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                            if ui.add(button).clicked() {
+                                self.confirm_delete_imported = true;
+                            }
                         }
                     });
                 });
             }
-            }
         });
-        let imported = self.config.ssh.iter().filter(|h| h.imported).count();
-        if imported > 0 {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let label = format!("{} ({imported})", t.delete_imported);
-                if self.confirm_delete_imported {
-                    ui.label(egui::RichText::new(t.delete_imported_confirm).size(13.0).color(self.theme.ansi[1]));
-                    if ui.button(egui::RichText::new(t.confirm).color(self.theme.ansi[1])).clicked() {
-                        let ids: Vec<Uuid> = self.config.ssh.iter().filter(|h| h.imported).map(|h| h.id).collect();
-                        for id in ids {
-                            self.delete_host(id);
-                        }
-                        self.confirm_delete_imported = false;
-                    }
-                    if ui.button(t.cancel).clicked() {
-                        self.confirm_delete_imported = false;
-                    }
-                } else if ui.button(egui::RichText::new(label).color(self.theme.ansi[1])).clicked() {
-                    self.confirm_delete_imported = true;
-                }
-            });
+        if import {
+            self.import_ssh();
+        }
+        if new_host {
+            self.host_editor = Some(HostEditor::new(SshHost::new(), true, None));
         }
         if let Some(id) = delete {
             self.delete_host(id);
@@ -764,135 +834,96 @@ impl App {
             return;
         }
         let t = self.t();
+        let theme = self.theme.clone();
         let mut picked = self.config.settings.clone();
         let mut close = false;
-        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let screen = ctx.content_rect();
+        let size = Vec2::new(SETTINGS_WIDTH.min(screen.width() - 60.0).max(640.0), SETTINGS_HEIGHT.min(screen.height() - 80.0).max(380.0));
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
         let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(190)).show(ctx, |ui| {
-            // Same size on every tab: pages scroll inside, the window never jumps around.
-            ui.set_width(SETTINGS_WIDTH);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.settings).size(18.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(14.0)).frame(false)).clicked() {
-                        close = true;
-                    }
+            // Same size on every page: pages scroll inside, the window never jumps around.
+            let (whole, _) = ui.allocate_exact_size(size, Sense::hover());
+            let nav = Rect::from_min_size(whole.min, Vec2::new(SETTINGS_NAV_WIDTH, whole.height()));
+            let content = Rect::from_min_max(Pos2::new(nav.max.x, whole.min.y), whole.max);
+            ui.painter().rect_filled(nav, egui::CornerRadius { nw: 14, sw: 14, ne: 0, se: 0 }, theme.bg);
+            ui.painter().vline(nav.max.x, nav.y_range(), Stroke::new(1.0, theme.tab_hover));
+
+            // Navigation.
+            ui.scope_builder(egui::UiBuilder::new().max_rect(nav.shrink2(Vec2::new(12.0, 20.0))).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(t.settings).size(17.0).strong());
                 });
-            });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                for (tab, label) in [(SettingsTab::About, t.about), (SettingsTab::General, t.general), (SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab), (SettingsTab::Shortcuts, t.shortcuts), (SettingsTab::ConfigFile, t.config_file)] {
-                    let text = egui::RichText::new(label).size(14.0);
-                    if ui.add(egui::Button::selectable(self.settings_tab == tab, text).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                ui.add_space(18.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let pages = [
+                    (SettingsTab::General, "⚙", t.general),
+                    (SettingsTab::Appearance, "🎨", t.appearance),
+                    (SettingsTab::Shortcuts, "⌨", t.shortcuts),
+                    (SettingsTab::Profiles, "▣", t.manage_profiles),
+                    (SettingsTab::Ssh, "🖧", t.ssh_tab),
+                    (SettingsTab::ConfigFile, "{ }", t.config_nav),
+                ];
+                for (tab, icon, label) in pages {
+                    if nav_item(ui, &theme, icon, label, self.settings_tab == tab) {
                         self.settings_tab = tab;
                     }
                 }
-            });
-            ui.separator();
-            ui.add_space(8.0);
-            let body = Vec2::new(SETTINGS_WIDTH, SETTINGS_BODY_HEIGHT.min(ctx.content_rect().height() - 200.0).max(200.0));
-            ui.allocate_ui_with_layout(body, egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.set_min_size(body);
-            ui.set_max_height(body.y);
-            match self.settings_tab {
-                SettingsTab::ConfigFile => return self.config_editor_ui(ui, t),
-                SettingsTab::Profiles => return self.profiles_ui(ui, t),
-                SettingsTab::Ssh => return self.ssh_settings_ui(ui, t),
-                SettingsTab::About => return self.about_ui(ui, ctx, t, &mut picked),
-                SettingsTab::Shortcuts => return self.shortcuts_ui(ui, t, &mut picked),
-                SettingsTab::General => {}
-            }
-
-            let heading_color = self.theme.text_muted;
-            let heading = move |ui: &mut Ui, text: &str| {
-                ui.label(egui::RichText::new(text).size(12.0).strong().color(heading_color));
-                ui.add_space(4.0);
-            };
-            let max_height = ui.available_height();
-            egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(max_height).show(ui, |ui| {
-            heading(ui, &t.language.to_uppercase());
-            ui.horizontal(|ui| {
-                for lang in Lang::ALL {
-                    let label = egui::RichText::new(lang.label()).size(14.0);
-                    if ui.add(egui::Button::selectable(picked.language == lang, label).min_size(Vec2::new(110.0, 30.0))).clicked() {
-                        picked.language = lang;
+                // "About" at the bottom, apart.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.add_space(4.0);
+                    if nav_item(ui, &theme, "i", t.about, self.settings_tab == SettingsTab::About) {
+                        self.settings_tab = SettingsTab::About;
                     }
-                }
-            });
-            ui.add_space(18.0);
-
-            heading(ui, &t.display.to_uppercase());
-            ui.checkbox(&mut picked.show_cwd, egui::RichText::new(t.show_cwd).size(14.0));
-            ui.checkbox(&mut picked.path_suggestions, egui::RichText::new(t.path_suggestions).size(14.0));
-            ui.checkbox(&mut picked.metal_guard, egui::RichText::new(t.metal_guard).size(14.0));
-            if ui.checkbox(&mut picked.restore_scrollback, egui::RichText::new(t.restore_scrollback).size(14.0)).changed() && !picked.restore_scrollback {
-                crate::shell::forget_scrollbacks();
-            }
-            ui.checkbox(&mut picked.clipboard_from_programs, egui::RichText::new(t.clipboard_from_programs).size(14.0));
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.ui_zoom).size(14.0));
-                // Applied once the slider is released: zooming while dragging would move the slider
-                // under the pointer, which would drag it further.
-                let id = ui.id().with("ui-zoom-drag");
-                let mut percent = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or((picked.ui_zoom * 100.0).round());
-                let resp = ui.add(egui::Slider::new(&mut percent, 60.0..=200.0).step_by(10.0).suffix(" %"));
-                if resp.dragged() {
-                    ui.data_mut(|d| d.insert_temp(id, percent));
-                } else {
-                    ui.data_mut(|d| d.remove::<f32>(id));
-                    if resp.changed() || resp.drag_stopped() {
-                        picked.ui_zoom = percent / 100.0;
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.font_size).size(14.0));
-                ui.add(egui::Slider::new(&mut picked.font_size, config::FONT_SIZES).step_by(1.0).suffix(" pt"));
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.scrollback).size(14.0));
-                ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
-            });
-            ui.add_space(6.0);
-            ui.checkbox(&mut picked.notify_commands, egui::RichText::new(t.notify_commands).size(14.0)).on_hover_text(t.notify_commands_hint);
-            ui.add_enabled_ui(picked.notify_commands, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(t.notify_after).size(14.0));
-                    ui.add(egui::Slider::new(&mut picked.notify_after, config::NOTIFY_AFTER_SECS).logarithmic(true).suffix(" s"));
                 });
             });
-            ui.add_space(18.0);
 
-            heading(ui, &t.theme.to_uppercase());
-            for (dark, label) in [(true, t.dark), (false, t.light)] {
-                ui.label(egui::RichText::new(label).size(13.0).color(self.theme.text_muted));
-                let presets: Vec<&Preset> = PRESETS.iter().filter(|p| p.dark == dark).collect();
-                for pair in presets.chunks(3) {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        for preset in pair {
-                            if theme_card(ui, preset, picked.theme == preset.id, self.theme.text).clicked() {
-                                picked.theme = preset.id.to_owned();
-                            }
-                        }
-                    });
-                    ui.add_space(8.0);
+            // The page: title, subtitle, then its content.
+            let inner = content.shrink2(Vec2::new(32.0, 24.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                let (title, subtitle) = match self.settings_tab {
+                    SettingsTab::General => (t.general, t.sub_general),
+                    SettingsTab::Appearance => (t.appearance, t.sub_appearance),
+                    SettingsTab::Shortcuts => (t.shortcuts, t.sub_shortcuts),
+                    SettingsTab::Profiles => (t.manage_profiles, t.sub_profiles),
+                    SettingsTab::Ssh => (t.ssh_tab, t.sub_ssh),
+                    SettingsTab::ConfigFile => (t.config_file, t.sub_config),
+                    SettingsTab::About => (t.about, t.sub_about),
+                };
+                // Title and subtitle, with the close button at the right.
+                let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
+                ui.painter().text(head.left_top(), Align2::LEFT_TOP, title, FontId::proportional(22.0), theme.text);
+                ui.painter().text(head.left_top() + Vec2::new(0.0, 32.0), Align2::LEFT_TOP, subtitle, FontId::proportional(13.0), theme.text_muted);
+                let x_rect = Rect::from_min_size(Pos2::new(head.max.x - 28.0, head.min.y), Vec2::splat(28.0));
+                let x = egui::Button::new(egui::RichText::new("✕").size(15.0).color(theme.text_muted)).frame_when_inactive(false).corner_radius(6.0);
+                if ui.put(x_rect, x).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    close = true;
                 }
-                ui.add_space(6.0);
-            }
-            ui.add_space(12.0);
-
-            heading(ui, &t.reset_section.to_uppercase());
-            let reset = egui::Button::new(egui::RichText::new(t.reset_button).size(13.5).color(self.theme.ansi[1]))
-                .stroke(Stroke::new(1.0, self.theme.ansi[1].gamma_multiply(0.7)))
-                .fill(Color32::TRANSPARENT)
-                .corner_radius(6.0)
-                .min_size(Vec2::new(0.0, 30.0));
-            if ui.add(reset).clicked() {
-                self.confirm_reset = true;
-            }
-            ui.add_space(8.0);
-            });
+                // The page's content, in its own area under the header.
+                let body = Rect::from_min_max(Pos2::new(inner.min.x, head.max.y + 18.0), inner.max);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                    ui.set_clip_rect(body.expand2(Vec2::new(8.0, 0.0)));
+                    let height = body.height();
+                    match self.settings_tab {
+                        SettingsTab::ConfigFile => self.config_editor_ui(ui, t),
+                        SettingsTab::Profiles => self.profiles_ui(ui, t),
+                        SettingsTab::Ssh => self.ssh_settings_ui(ui, t),
+                        SettingsTab::About => {
+                            egui::ScrollArea::vertical().id_salt("settings-about").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+                                ui.set_width(ui.available_width() - 12.0);
+                                self.about_ui(ui, ctx, t, &mut picked)
+                            });
+                        }
+                        SettingsTab::Shortcuts => self.shortcuts_ui(ui, t, &mut picked),
+                        SettingsTab::General => {
+                            egui::ScrollArea::vertical().id_salt("settings-general").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.general_page(ui, t, &theme, &mut picked));
+                        }
+                        SettingsTab::Appearance => {
+                            egui::ScrollArea::vertical().id_salt("settings-appearance").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.appearance_page(ui, t, &theme, &mut picked));
+                        }
+                    }
+                });
             });
         });
         if self.settings_tab != SettingsTab::Shortcuts {
@@ -911,6 +942,144 @@ impl App {
             config.settings = picked;
             self.apply_config(config);
             self.save_config();
+        }
+    }
+
+    /// "General" page: language, terminal, typing, notifications, reset.
+    fn general_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        ui.set_width(ui.available_width() - 12.0);
+        let mut test_clicked = false;
+        card(ui, theme, Some(t.language), |ui| {
+            setting_row(ui, theme, t.language, Some(t.language_desc), |ui| {
+                for lang in Lang::ALL.iter().rev() {
+                    let label = egui::RichText::new(lang.label()).size(13.5);
+                    if ui.add(egui::Button::selectable(picked.language == *lang, label).min_size(Vec2::new(96.0, 30.0)).corner_radius(6.0)).clicked() {
+                        picked.language = *lang;
+                    }
+                }
+            });
+        });
+        card(ui, theme, Some(t.set_terminal), |ui| {
+            setting_row(ui, theme, t.show_cwd, Some(t.show_cwd_desc), |ui| {
+                toggle(ui, theme, &mut picked.show_cwd);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.restore_scrollback, Some(t.restore_scrollback_desc), |ui| {
+                if toggle(ui, theme, &mut picked.restore_scrollback).changed() && !picked.restore_scrollback {
+                    crate::shell::forget_scrollbacks();
+                }
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.scrollback, Some(t.scrollback_desc), |ui| {
+                ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.clipboard_from_programs, Some(t.clipboard_desc), |ui| {
+                toggle(ui, theme, &mut picked.clipboard_from_programs);
+            });
+        });
+        card(ui, theme, Some(t.set_typing), |ui| {
+            setting_row(ui, theme, t.path_suggestions, Some(t.path_suggestions_desc), |ui| {
+                toggle(ui, theme, &mut picked.path_suggestions);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.metal_guard, Some(t.metal_guard_desc), |ui| {
+                toggle(ui, theme, &mut picked.metal_guard);
+            });
+        });
+        card(ui, theme, Some(t.set_notifications), |ui| {
+            setting_row(ui, theme, t.notify_commands, Some(t.notify_commands_hint), |ui| {
+                toggle(ui, theme, &mut picked.notify_commands);
+            });
+            divider(ui, theme);
+            ui.add_enabled_ui(picked.notify_commands, |ui| {
+                setting_row(ui, theme, t.notify_after, Some(t.notify_after_desc), |ui| {
+                    ui.add(egui::Slider::new(&mut picked.notify_after, config::NOTIFY_AFTER_SECS).logarithmic(true).suffix(" s"));
+                });
+                divider(ui, theme);
+                setting_row(ui, theme, t.notify_style, Some(t.notify_style_desc), |ui| {
+                    for (style, label) in [(config::NotifyStyle::Both, t.notify_both), (config::NotifyStyle::System, t.notify_system), (config::NotifyStyle::InApp, t.notify_in_app)] {
+                        if ui.add(egui::Button::selectable(picked.notify_style == style, egui::RichText::new(label).size(12.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                            picked.notify_style = style;
+                        }
+                    }
+                });
+                if picked.notify_style.in_app() {
+                    divider(ui, theme);
+                    setting_row(ui, theme, t.toast_position, Some(t.toast_position_desc), |ui| {
+                        position_picker(ui, theme, &mut picked.toast_position);
+                    });
+                }
+                divider(ui, theme);
+                setting_row(ui, theme, t.notify_test, Some(t.notify_test_desc), |ui| {
+                    let button = egui::Button::new(egui::RichText::new(format!("🔔  {}", t.notify_test_button)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        test_clicked = true;
+                    }
+                });
+            });
+        });
+        card(ui, theme, Some(t.reset_section), |ui| {
+            setting_row(ui, theme, t.reset_row, Some(t.reset_desc), |ui| {
+                let reset = egui::Button::new(egui::RichText::new(t.reset_button).size(13.5).color(theme.ansi[1]))
+                    .stroke(Stroke::new(1.0, theme.ansi[1].gamma_multiply(0.7)))
+                    .fill(Color32::TRANSPARENT)
+                    .corner_radius(6.0)
+                    .min_size(Vec2::new(0.0, 30.0));
+                if ui.add(reset).clicked() {
+                    self.confirm_reset = true;
+                }
+            });
+        });
+        // With the style picked on this page (it may have just changed).
+        if test_clicked {
+            let saved = self.config.settings.notify_style;
+            self.config.settings.notify_style = picked.notify_style;
+            self.test_notification();
+            self.config.settings.notify_style = saved;
+        }
+    }
+
+    /// "Appearance" page: interface and text size, then the themes.
+    fn appearance_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        ui.set_width(ui.available_width() - 12.0);
+        card(ui, theme, Some(t.set_interface), |ui| {
+            setting_row(ui, theme, t.ui_zoom, Some(t.ui_zoom_desc), |ui| {
+                // Applied once the slider is released: zooming while dragging would move the slider
+                // under the pointer, which would drag it further.
+                let id = ui.id().with("ui-zoom-drag");
+                let mut percent = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or((picked.ui_zoom * 100.0).round());
+                let resp = ui.add(egui::Slider::new(&mut percent, 60.0..=200.0).step_by(10.0).suffix(" %"));
+                if resp.dragged() {
+                    ui.data_mut(|d| d.insert_temp(id, percent));
+                } else {
+                    ui.data_mut(|d| d.remove::<f32>(id));
+                    if resp.changed() || resp.drag_stopped() {
+                        picked.ui_zoom = percent / 100.0;
+                    }
+                }
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.font_size, Some(t.font_size_desc), |ui| {
+                ui.add(egui::Slider::new(&mut picked.font_size, config::FONT_SIZES).step_by(1.0).suffix(" pt"));
+            });
+        });
+        for (dark, title) in [(true, t.themes_dark), (false, t.themes_light)] {
+            section_title(ui, theme, title);
+            let presets: Vec<&Preset> = PRESETS.iter().filter(|p| p.dark == dark).collect();
+            let per_row = ((ui.available_width() + 12.0) / (THEME_CARD.x + 12.0)).floor().max(1.0) as usize;
+            for row in presets.chunks(per_row) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    for preset in row {
+                        if theme_card(ui, preset, picked.theme == preset.id, theme.text).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            picked.theme = preset.id.to_owned();
+                        }
+                    }
+                });
+                ui.add_space(12.0);
+            }
+            ui.add_space(10.0);
         }
     }
 
@@ -942,37 +1111,36 @@ impl App {
 
         let defaults = config::Shortcuts::default();
         let parsed: Vec<Option<KeyboardShortcut>> = ShortcutAction::ALL.iter().map(|a| a.get(&picked.shortcuts).parse()).collect();
-        egui::ScrollArea::vertical().max_height(ui.available_height()).show(ui, |ui| {
-            egui::Grid::new("shortcuts-grid").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
+        let theme = self.theme.clone();
+        egui::ScrollArea::vertical().max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(ui.available_width() - 12.0);
+            card(ui, &theme, None, |ui| {
                 for (i, action) in ShortcutAction::ALL.into_iter().enumerate() {
+                    if i > 0 {
+                        divider(ui, &theme);
+                    }
                     let current = action.get(&picked.shortcuts).clone();
                     let default = action.get(&defaults).clone();
-                    ui.label(egui::RichText::new(action.label(t)).size(14.0));
                     let recording = self.shortcut_capture == Some(action);
                     // The same combination on two actions: only one would work.
                     let conflict = parsed[i].is_some() && parsed.iter().enumerate().any(|(j, p)| j != i && *p == parsed[i]);
-                    let text = if recording { t.shortcut_press.to_owned() } else { current.label() };
-                    let color = if recording { self.theme.accent } else if conflict { self.theme.ansi[1] } else { self.theme.text };
-                    let button = egui::Button::new(egui::RichText::new(text).size(13.5).monospace().color(color)).corner_radius(6.0).min_size(Vec2::new(150.0, 26.0));
-                    let resp = ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let resp = if conflict { resp.on_hover_text(t.shortcut_conflict) } else { resp };
-                    if resp.clicked() {
-                        self.shortcut_capture = if recording { None } else { Some(action) };
-                    }
-                    if current != default {
-                        if ui.button(t.shortcut_reset).clicked() {
-                            *action.get_mut(&mut picked.shortcuts) = default;
+                    setting_row(ui, &theme, action.label(t), conflict.then_some(t.shortcut_conflict), |ui| {
+                        let text = if recording { t.shortcut_press.to_owned() } else { current.label() };
+                        let color = if recording { theme.accent } else if conflict { theme.ansi[1] } else { theme.text };
+                        let stroke = if recording { Stroke::new(1.5, theme.accent) } else { Stroke::new(1.0, theme.tab_hover) };
+                        let button = egui::Button::new(egui::RichText::new(text).size(13.5).monospace().color(color)).stroke(stroke).corner_radius(6.0).min_size(Vec2::new(150.0, 30.0));
+                        if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.shortcut_capture = if recording { None } else { Some(action) };
                         }
-                    } else {
-                        ui.label("");
-                    }
-                    ui.end_row();
+                        if current != default {
+                            let reset = egui::Button::new(egui::RichText::new("↺").size(14.0).color(theme.text_muted)).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::splat(30.0));
+                            if ui.add(reset).on_hover_text(t.shortcut_reset).clicked() {
+                                *action.get_mut(&mut picked.shortcuts) = default;
+                            }
+                        }
+                    });
                 }
             });
-
-            ui.add_space(22.0);
-            ui.label(egui::RichText::new(t.shortcut_fixed.to_uppercase()).size(12.0).strong().color(muted));
-            ui.add_space(6.0);
             let mac = cfg!(target_os = "macos");
             let fixed = [
                 (t.copy, if mac { "⌘ C" } else { "Ctrl+Shift+C" }),
@@ -981,14 +1149,18 @@ impl App {
                 (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
                 (t.shortcut_zoom, if mac { "⌘ +   ⌘ −   ⌘ 0" } else { "Ctrl++   Ctrl+−   Ctrl+0" }),
             ];
-            egui::Grid::new("fixed-shortcuts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-                for (label, keys) in fixed {
-                    ui.label(egui::RichText::new(label).size(13.5).color(muted));
-                    ui.label(egui::RichText::new(keys).size(13.5).monospace());
-                    ui.end_row();
+            card(ui, &theme, Some(t.shortcut_fixed), |ui| {
+                for (i, (label, keys)) in fixed.into_iter().enumerate() {
+                    if i > 0 {
+                        divider(ui, &theme);
+                    }
+                    setting_row(ui, &theme, label, None, |ui| {
+                        ui.label(egui::RichText::new(keys).size(13.5).monospace().color(theme.text_muted));
+                    });
                 }
             });
         });
+        let _ = muted;
     }
 
     /// "Informations" settings page: logo, version and updates, link to the project.
@@ -1009,72 +1181,69 @@ impl App {
             egui::Image::new(&*hand).paint_at(ui, hand_rect);
             ui.add_space(22.0);
         });
-        ui.separator();
-        ui.add_space(14.0);
-        ui.label(egui::RichText::new(t.updates.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(t.version.replace("{v}", update::VERSION)).size(14.0));
-            ui.add_space(12.0);
-            if ui.add_enabled(!self.updater.busy(), egui::Button::new(egui::RichText::new(t.check_now).size(13.0))).clicked() {
-                self.update_dismissed = false;
-                self.updater.check(ctx);
-            }
-            let muted_color = self.theme.text_muted;
-            let muted = move |s: &str| egui::RichText::new(s.to_owned()).size(13.0).color(muted_color);
-            match self.updater.state() {
-                update::State::Checking => {
-                    ui.spinner();
-                    ui.label(muted(t.checking));
+        ui.add_space(8.0);
+        let theme = self.theme.clone();
+        card(ui, &theme, Some(t.updates), |ui| {
+            setting_row(ui, &theme, &t.version.replace("{v}", update::VERSION), None, |ui| {
+                if ui.add_enabled(!self.updater.busy(), egui::Button::new(egui::RichText::new(t.check_now).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    self.update_dismissed = false;
+                    self.updater.check(ctx);
                 }
-                update::State::UpToDate => {
-                    ui.label(muted(t.up_to_date));
-                }
-                update::State::Available(a) => {
-                    ui.label(egui::RichText::new(t.update_available.replace("{v}", &a.version)).size(13.0).color(self.theme.accent));
-                    if ui.button(t.update_now).clicked() {
-                        self.update_attempted = true;
-                        self.update_dismissed = false;
-                        self.updater.install(ctx, a.clone());
+                let muted = |s: &str| egui::RichText::new(s.to_owned()).size(13.0).color(theme.text_muted);
+                match self.updater.state() {
+                    update::State::Checking => {
+                        ui.label(muted(t.checking));
+                        ui.spinner();
                     }
-                    // Through Ronnie's own opener: egui's links do nothing in this build of eframe.
-                    if ui.link(t.release_notes).on_hover_text(&a.url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && a.url.starts_with("https://") {
-                        crate::terminal::open_url(&a.url);
+                    update::State::UpToDate => {
+                        ui.label(muted(t.up_to_date));
                     }
-                }
-                update::State::Installing(v) => {
-                    ui.spinner();
-                    ui.label(muted(&t.installing.replace("{v}", &v)));
-                }
-                update::State::Installed(v) => {
-                    ui.label(muted(&t.update_installed.replace("{v}", &v)));
-                    if ui.button(t.restart).clicked() {
-                        self.request_close(CloseRequest::Restart);
+                    update::State::Available(a) => {
+                        // Through Ronnie's own opener: egui's links do nothing in this build of eframe.
+                        if ui.link(t.release_notes).on_hover_text(&a.url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && a.url.starts_with("https://") {
+                            crate::terminal::open_url(&a.url);
+                        }
+                        if ui.button(t.update_now).clicked() {
+                            self.update_attempted = true;
+                            self.update_dismissed = false;
+                            self.updater.install(ctx, a.clone());
+                        }
+                        ui.label(egui::RichText::new(t.update_available.replace("{v}", &a.version)).size(13.0).color(theme.accent));
                     }
+                    update::State::Installing(v) => {
+                        ui.label(muted(&t.installing.replace("{v}", &v)));
+                        ui.spinner();
+                    }
+                    update::State::Installed(v) => {
+                        if ui.button(t.restart).clicked() {
+                            self.request_close(CloseRequest::Restart);
+                        }
+                        ui.label(muted(&t.update_installed.replace("{v}", &v)));
+                    }
+                    update::State::Failed(e) => {
+                        ui.label(egui::RichText::new(t.update_failed).size(13.0).color(theme.ansi[1])).on_hover_text(e);
+                    }
+                    update::State::Idle => {}
                 }
-                update::State::Failed(e) => {
-                    ui.label(egui::RichText::new(t.update_failed).size(13.0).color(self.theme.ansi[1])).on_hover_text(e);
-                }
-                update::State::Idle => {}
-            }
+            });
+            divider(ui, &theme);
+            setting_row(ui, &theme, t.auto_update, None, |ui| {
+                toggle(ui, &theme, &mut picked.auto_update);
+            });
         });
-        ui.add_space(4.0);
-        ui.checkbox(&mut picked.auto_update, egui::RichText::new(t.auto_update).size(14.0));
-        ui.add_space(22.0);
-
-        ui.label(egui::RichText::new(t.project.to_uppercase()).size(12.0).strong().color(self.theme.text_muted));
-        ui.add_space(4.0);
-        let icon = self.github_icon.get_or_insert_with(|| load_png(ctx, "github-mark", include_bytes!("../../assets/icon/github-mark.png")));
-        let logo = egui::Image::new(&*icon).fit_to_exact_size(Vec2::splat(16.0)).tint(self.theme.text);
-        ui.horizontal(|ui| {
-            let github = egui::Button::image_and_text(logo, egui::RichText::new(update::REPO).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-            if ui.add(github).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                crate::terminal::open_url(&format!("https://github.com/{}", update::REPO));
-            }
-            let releases = egui::Button::new(egui::RichText::new(t.all_releases).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-            if ui.add(releases).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                crate::terminal::open_url(&format!("https://github.com/{}/releases", update::REPO));
-            }
+        let icon = self.github_icon.get_or_insert_with(|| load_png(ctx, "github-mark", include_bytes!("../../assets/icon/github-mark.png"))).clone();
+        card(ui, &theme, Some(t.project), |ui| {
+            setting_row(ui, &theme, update::REPO, None, |ui| {
+                let releases = egui::Button::new(egui::RichText::new(t.all_releases).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                if ui.add(releases).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    crate::terminal::open_url(&format!("https://github.com/{}/releases", update::REPO));
+                }
+                let logo = egui::Image::new(&icon).fit_to_exact_size(Vec2::splat(16.0)).tint(theme.text);
+                let github = egui::Button::image_and_text(logo, egui::RichText::new("GitHub").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                if ui.add(github).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    crate::terminal::open_url(&format!("https://github.com/{}", update::REPO));
+                }
+            });
         });
     }
 
@@ -1151,3 +1320,123 @@ impl App {
         }
     }
 }
+
+/// A page of the settings in the side navigation. Returns whether it was clicked.
+fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+    let fill = if selected { theme.tab_active } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, 8.0, fill);
+    if selected {
+        ui.painter().rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)), 2.0, theme.accent);
+    }
+    let color = if selected { theme.text } else { theme.text_muted };
+    let icon_color = if selected { theme.accent } else { color };
+    let at = Pos2::new(rect.min.x + 22.0, rect.center().y);
+    // "About": an i in a circle (the font has no ⓘ).
+    if icon == "i" {
+        ui.painter().circle_stroke(at, 7.0, Stroke::new(1.3, icon_color));
+        ui.painter().text(at + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, "i", FontId::proportional(11.0), icon_color);
+    } else {
+        ui.painter().text(at, Align2::CENTER_CENTER, icon, FontId::proportional(14.0), icon_color);
+    }
+    // Cut with "…" if it doesn't fit.
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), FontId::proportional(14.0), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 50.0);
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(Pos2::new(rect.min.x + 42.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// A small heading over a group of settings.
+fn section_title(ui: &mut Ui, theme: &Theme, title: &str) {
+    ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
+    ui.add_space(8.0);
+}
+
+/// A group of settings in a rounded card, under its heading.
+fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut Ui)) {
+    if let Some(title) = title {
+        section_title(ui, theme, title);
+    }
+    Frame::NONE.fill(theme.bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(18, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        add(ui);
+    });
+    ui.add_space(26.0);
+}
+
+/// Thin line between two settings of a card.
+fn divider(ui: &mut Ui, theme: &Theme) {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, theme.tab_hover.gamma_multiply(0.8)));
+}
+
+/// One setting: its name and what it does on the left, its control on the right, centered on the row.
+fn setting_row(ui: &mut Ui, theme: &Theme, title: &str, desc: Option<&str>, control: impl FnOnce(&mut Ui)) {
+    let width = ui.available_width();
+    let control_w = 260.0_f32.min(width * 0.45);
+    let text_w = (width - control_w - 16.0).max(80.0);
+    let title_galley = ui.painter().layout(title.to_owned(), FontId::proportional(14.0), theme.text, text_w);
+    let desc_galley = desc.map(|d| ui.painter().layout(d.to_owned(), FontId::proportional(12.0), theme.text_muted, text_w));
+    let text_h = title_galley.size().y + desc_galley.as_ref().map_or(0.0, |g| g.size().y + 3.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, (text_h + 26.0).max(52.0)), Sense::hover());
+    let top = rect.center().y - text_h / 2.0;
+    let title_h = title_galley.size().y;
+    ui.painter().galley(Pos2::new(rect.min.x, top), title_galley, theme.text);
+    if let Some(g) = desc_galley {
+        ui.painter().galley(Pos2::new(rect.min.x, top + title_h + 3.0), g, theme.text_muted);
+    }
+    let controls = Rect::from_min_max(Pos2::new(rect.max.x - control_w, rect.min.y), rect.max);
+    // A child that leaves the row's layout alone (the row is already allocated).
+    let mut controls_ui = ui.new_child(egui::UiBuilder::new().max_rect(controls).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    controls_ui.spacing_mut().slider_width = 150.0;
+    control(&mut controls_ui);
+}
+
+/// An on / off switch. Changed when clicked.
+fn toggle(ui: &mut Ui, theme: &Theme, on: &mut bool) -> egui::Response {
+    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(40.0, 22.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let k = ui.ctx().animate_bool_responsive(resp.id, *on);
+    let off = theme.tab_hover.gamma_multiply(1.6);
+    let fill = Color32::from(egui::lerp(egui::Rgba::from(off)..=egui::Rgba::from(theme.accent), k));
+    ui.painter().rect_filled(rect, 11.0, fill);
+    let x = egui::lerp(rect.min.x + 11.0..=rect.max.x - 11.0, k);
+    ui.painter().circle_filled(Pos2::new(x, rect.center().y), 8.0, if *on { theme.bg } else { theme.text_muted });
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Where the notices show: a small window with its six places, the chosen one lit.
+fn position_picker(ui: &mut Ui, theme: &Theme, value: &mut config::ToastPosition) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(112.0, 64.0), Sense::hover());
+    ui.painter().rect_filled(rect, 7.0, theme.chrome_bg);
+    ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.0, theme.tab_hover.gamma_multiply(1.4)), egui::StrokeKind::Inside);
+    // The sidebar, as in the window.
+    ui.painter().rect_filled(Rect::from_min_size(rect.min + Vec2::new(4.0, 4.0), Vec2::new(18.0, rect.height() - 8.0)), 4.0, theme.tab_hover);
+    let inner = Rect::from_min_max(rect.min + Vec2::new(26.0, 6.0), rect.max - Vec2::new(6.0, 6.0));
+    for place in config::ToastPosition::ALL {
+        let x = match place.side() {
+            -1 => inner.min.x + 12.0,
+            0 => inner.center().x,
+            _ => inner.max.x - 12.0,
+        };
+        let y = if place.top() { inner.min.y + 7.0 } else { inner.max.y - 7.0 };
+        let spot = Rect::from_center_size(Pos2::new(x, y), Vec2::new(22.0, 12.0));
+        let resp = ui.interact(spot.expand(3.0), ui.id().with(("toast-place", place as u8)), Sense::click());
+        let selected = *value == place;
+        let fill = if selected { theme.accent } else if resp.hovered() { theme.text_muted.gamma_multiply(0.6) } else { theme.tab_hover.gamma_multiply(1.6) };
+        ui.painter().rect_filled(spot, 3.0, fill);
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            *value = place;
+        }
+    }
+}
+
+/// A quiet button: its text only, a light fill on hover.
+fn ghost_button(text: &str, color: Color32) -> egui::Button<'_> {
+    egui::Button::new(egui::RichText::new(text).size(13.0).color(color)).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))
+}
+

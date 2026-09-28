@@ -2,6 +2,22 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.8.0] - 2026-09-28
+
+### Nouveautés
+
+- **Paramètres entièrement redessinés** : navigation à gauche (Général, Apparence, Raccourcis, Profils, SSH, Configuration, Informations), un titre et une explication par page, les réglages groupés en cartes avec un nom court, une description et des interrupteurs. Nouvelle page **Apparence** (taille de l'interface et du texte, thèmes). Pages SSH et Profils revues : badges, une carte par groupe, méthode de connexion affichée, nom d'un profil modifiable sur place.
+- **Barre latérale plus soignée** : badges à l'initiale colorée (ronds pour les serveurs SSH, avec un point vert quand ils sont connectés), élément ouvert mis en valeur, en-têtes de section et nombre d'éléments par groupe.
+- **Notifications dans la fenêtre** : quand une longue commande se termine dans un autre onglet alors que Ronnie est au premier plan, un avis aux couleurs du thème s'affiche (un clic mène à l'onglet). Réglages : dans Ronnie, notification du système ou les deux ; emplacement (six positions) ; bouton pour tester.
+- **Renommer un panneau** : double-clic sur sa barre, ou clic droit > Renommer le panneau. Le nom s'affiche devant le dossier et se garde dans la session et les profils.
+- **Croix pour fermer un panneau**, dans sa barre (avec avertissement si un programme tourne).
+- Suggestions de chemins dans le terminal : **↑ ↓** pour choisir, **Entrée** pour prendre celle choisie, **Échap** pour fermer la liste.
+
+### Corrections
+
+- Le ✓ / ✗ de fin de commande s'affiche aussi sur les profils et les hôtes SSH de la barre latérale (seuls les terminaux simples l'avaient).
+- La page Profils vide n'affiche plus le message de la section SSH.
+
 ## [0.7.1] - 2026-09-28
 
 ### Nouveautés
