@@ -940,11 +940,11 @@ impl FileManager {
         }
     }
 
-    /// Moves `names` (in the panel's folder) into its subfolder `dir`; what already exists there is
-    /// asked about first (unless answered for the session).
+    /// Moves `names` (in the panel's folder) into folder `dir` (a path: a subfolder, or the one above);
+    /// what already exists there is asked about first (unless answered for the session).
     fn move_into(&mut self, side: Side, names: &[String], dir: &str) {
-        let from: Vec<String> = names.iter().filter(|n| *n != dir).map(|n| self.path_of(side, n)).collect();
-        let dir = self.path_of(side, dir);
+        let from: Vec<String> = names.iter().map(|n| self.path_of(side, n)).filter(|p| p != dir).collect();
+        let dir = dir.to_owned();
         self.panel(side).selected.clear();
         match side {
             Side::Local => {
@@ -1207,12 +1207,29 @@ impl FileManager {
             }
         }
 
+        // "..": the folder above (double-click to go there, drop items to move them there), fixed above
+        // the rows; not at the root.
+        let parent = FileManager::parent_of(side, &panel.path);
+        let has_parent = parent != panel.path && !(side == Side::Remote && !connected);
+        let up_row = Rect::from_min_size(Pos2::new(inner.min.x, header.max.y + 2.0), Vec2::new(inner.width(), if has_parent { 22.0 } else { 0.0 }));
         // Rows: only those on screen are laid out (folders can hold tens of thousands of entries).
-        let list = Rect::from_min_max(Pos2::new(inner.min.x, header.max.y + 2.0), inner.max);
+        let list = Rect::from_min_max(Pos2::new(inner.min.x, up_row.max.y), inner.max);
         panel.ensure_order(show_hidden);
         let (count, loading) = (panel.order.len(), panel.loading);
         let drag_payload = egui::DragAndDrop::payload::<FilesDrag>(ui.ctx());
         let pointer = ui.input(|i| i.pointer.interact_pos());
+        let mut drop_up = false;
+        if has_parent {
+            let resp = ui.interact(up_row, ui.id().with(("files-up", side as u8)), Sense::click());
+            drop_up = drag_payload.is_some() && pointer.is_some_and(|p| up_row.contains(p));
+            let fill = if drop_up { theme.accent.gamma_multiply(0.35) } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
+            ui.painter().rect_filled(up_row, 3.0, fill);
+            paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(up_row.min.x + 13.0, up_row.center().y), Vec2::splat(15.0)), "..", true, false, None, theme);
+            ui.painter().text(Pos2::new(up_row.min.x + 26.0, up_row.center().y), Align2::LEFT_CENTER, "..", FontId::proportional(13.0), theme.text);
+            if resp.on_hover_text(&parent).double_clicked() {
+                out.go = Some(parent.clone());
+            }
+        }
         let released = ui.input(|i| i.pointer.any_released());
         let mut drop_into: Option<String> = None;
         // Empty space (under the rows): a click clears the selection, a right-click offers a new folder.
@@ -1467,23 +1484,21 @@ impl FileManager {
             }
         });
 
-        // Dropped on a folder of the same panel: moved into it.
-        if let (Some(payload), Some(dir), true) = (drag_payload.as_ref().filter(|p| p.from == side), &drop_into, released) {
+        // Dropped on a folder of the same panel (or ".."): moved into it.
+        let into = if drop_up { Some(parent.clone()) } else { drop_into.as_ref().map(|dir| self.path_of(side, dir)) };
+        if let (Some(payload), Some(dir), true) = (drag_payload.as_ref().filter(|p| p.from == side), &into, released) {
             egui::DragAndDrop::clear_payload(ui.ctx());
             out.moved = Some((payload.names.clone(), dir.clone()));
         }
         // Drop from the other panel: into the folder under the pointer, or this panel's folder.
         let over = pointer.is_some_and(|p| rect.contains(p));
         if let Some(payload) = drag_payload.as_ref().filter(|p| p.from != side && over) {
-            if drop_into.is_none() {
+            if drop_into.is_none() && !drop_up {
                 ui.painter().rect_stroke(rect, 6.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
             }
             if released {
                 egui::DragAndDrop::clear_payload(ui.ctx());
-                let target = drop_into.map(|dir| match side {
-                    Side::Local => std::path::Path::new(&self.panel(side).path).join(dir).display().to_string(),
-                    Side::Remote => sftp::join(&self.panel(side).path, &dir),
-                });
+                let target = if drop_up { Some(parent.clone()) } else { drop_into.map(|dir| self.path_of(side, &dir)) };
                 out.dropped = Some((payload.names.clone(), target));
             }
         }
@@ -1982,7 +1997,7 @@ struct PanelOut {
     transfer: Option<Vec<String>>,
     /// Names dragged from the other panel, and the folder dropped onto (None: this panel's folder).
     dropped: Option<(Vec<String>, Option<String>)>,
-    /// Names dragged onto a folder of the same panel: moved into it.
+    /// Names dragged onto a folder of the same panel (its path): moved into it.
     moved: Option<(Vec<String>, String)>,
     /// Folders whose size to count, and the context to wake once counted.
     sizes: Option<Vec<String>>,

@@ -9,6 +9,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Mises à jour plus rapides** : sur Mac, un seul téléchargement pour Apple Silicon, deux fois plus léger que l'ancienne app universelle ; la progression s'affiche (pourcentage et Mo reçus) pendant le téléchargement.
 - Fichiers publiés : **macOS Apple Silicon**, **Linux en AppImage** et **Windows**. Les Mac Intel et l'archive Linux `.tar.gz` ne sont plus fournis (une installation Linux faite avec l'archive ne se met plus à jour d'elle-même : passer à l'AppImage).
 
+- Gestionnaire de fichiers : une ligne **« .. »** en haut de la liste mène au dossier parent (double-clic) ; on peut y **déposer** des fichiers et dossiers pour les remonter d'un niveau (ou les y transférer depuis l'autre panneau).
+
 ### Corrections
 
 - Barre latérale : le texte « Base locale détectée » ne passe plus sous le bouton Ajouter.
