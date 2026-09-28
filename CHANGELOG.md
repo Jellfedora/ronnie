@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.7.1] - 2026-09-28
+
+### Nouveautés
+
+- **Glisser-déposer des panneaux** : dans un onglet divisé, attrape la barre en haut d'un terminal et lâche-la sur un autre : ils échangent leur place, programmes en cours compris. Le panneau survolé s'illumine (⇄). La barre s'affiche désormais sur tous les panneaux d'un onglet divisé, même quand l'affichage du dossier est désactivé.
+
+### Corrections
+
+- « Gérer les commandes… » (clic droit > ⚡ Commandes) ouvre bien la liste des commandes.
+- « contenu restauré » ne s'affiche plus au-dessus d'un terminal où il n'y avait rien, et ne s'empile plus au fil des redémarrages.
+
 ## [0.7.0] - 2026-09-28
 
 ### Nouveautés

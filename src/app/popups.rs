@@ -116,7 +116,8 @@ impl App {
         // A click elsewhere closes it (except on the pane header, where the ⚡ button toggles it). Tested
         // on the rect: `contains_pointer` is false over the menu's own widgets.
         let inside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| area.response.rect.contains(p));
-        let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !inside;
+        let fresh = self.commands_menu.as_mut().is_some_and(|m| std::mem::replace(&mut m.fresh, false));
+        let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !inside && !fresh;
 
         if let Some((scope, i)) = remove {
             if let Some(list) = self.commands_mut(scope) {

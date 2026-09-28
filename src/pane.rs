@@ -67,6 +67,19 @@ impl Node {
         true
     }
 
+    /// Swaps the places of two leaves (each keeps its program; the layout stays).
+    pub fn swap(&mut self, x: PaneId, y: PaneId) {
+        match self {
+            Node::Leaf(id) if *id == x => *id = y,
+            Node::Leaf(id) if *id == y => *id = x,
+            Node::Leaf(_) => {}
+            Node::Split { a, b, .. } => {
+                a.swap(x, y);
+                b.swap(x, y);
+            }
+        }
+    }
+
     /// Pane ids in layout order (left/top first).
     pub fn leaves(&self) -> Vec<PaneId> {
         match self {
@@ -158,4 +171,19 @@ pub fn neighbor(rects: &[(PaneId, Rect)], from: PaneId, dir: Direction) -> Optio
 
 fn overlap(a: egui::Rangef, b: egui::Rangef) -> f32 {
     a.max.min(b.max) - a.min.max(b.min)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swaps_two_panes() {
+        let mut n = Node::Leaf(1);
+        n.split(1, 2, Direction::Right);
+        n.split(2, 3, Direction::Down);
+        assert_eq!(n.leaves(), [1, 2, 3]);
+        n.swap(1, 3);
+        assert_eq!(n.leaves(), [3, 2, 1]);
+    }
 }

@@ -905,6 +905,27 @@ impl Terminal {
     }
 }
 
+/// Whether saved terminal content shows anything: a character other than spaces and line breaks,
+/// outside escape sequences (color codes).
+pub fn has_text(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            // CSI: ESC [ parameters, then a final byte from @ to ~.
+            0x1b if bytes.get(i + 1) == Some(&b'[') => {
+                i += 2;
+                while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b' ' | b'\r' | b'\n' | b'\t' | 0x1b => i += 1,
+            _ => return true,
+        }
+    }
+    false
+}
+
 /// See `Terminal::dump`.
 fn dump_term<L: EventListener>(term: &Term<L>, max_lines: usize) -> Vec<u8> {
     use alacritty_terminal::term::cell::Flags;
@@ -968,7 +989,9 @@ fn dump_term<L: EventListener>(term: &Term<L>, max_lines: usize) -> Vec<u8> {
         }
     }
     out.push_str("\x1b[0m");
-    out.into_bytes()
+    let out = out.into_bytes();
+    // Only blank lines and color codes: nothing worth showing again.
+    if has_text(&out) { out } else { Vec::new() }
 }
 
 /// What follows a usual shell prompt at the start of `line`: "user@host", then anything without
@@ -997,6 +1020,19 @@ fn looks_like_password_prompt(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_screens_are_not_kept() {
+        assert!(!has_text(b"\x1b[0m"));
+        assert!(!has_text(b"\x1b[0;31m  \r\n\x1b[0m"));
+        assert!(has_text(b"\x1b[0mls\r\n"));
+        use alacritty_terminal::event::VoidListener;
+        let mut t = Term::new(TermConfig::default(), &GridSize { cols: 20, rows: 5 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        // Only the "restored" line and the prompt being typed: nothing to save.
+        parser.advance(&mut t, "\x1b[0;2m── restauré ──\x1b[0m\r\n$ ".as_bytes());
+        assert!(super::dump_term(&t, 100).is_empty());
+    }
 
     #[test]
     fn restores_what_was_shown() {

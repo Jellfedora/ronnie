@@ -179,6 +179,7 @@ struct WindowSlot {
     confirm_close: Option<ConfirmClose>,
     window_closing: bool,
     guard_confirm: Option<(PaneId, String, guard::Danger)>,
+    pane_drag: Option<PaneId>,
 }
 
 pub struct App {
@@ -297,6 +298,8 @@ pub struct App {
     window_closing: bool,
     /// A destructive command held back at Enter, waiting for "run it anyway" (see `guard`).
     guard_confirm: Option<(PaneId, String, guard::Danger)>,
+    /// Pane being dragged by its strip, to swap it with another.
+    pane_drag: Option<PaneId>,
 }
 
 /// Pushes a window's tabs into their profiles, and returns what the session keeps of them.
@@ -420,11 +423,13 @@ struct CommandsMenu {
     new_command: String,
     /// Add to the tab's profile or host rather than to the general commands.
     for_tab: bool,
+    /// Opened this frame: the click that opened it (a menu entry...) must not close it.
+    fresh: bool,
 }
 
 impl CommandsMenu {
     fn new(tab: usize, pane: PaneId) -> Self {
-        Self { tab, pane, new_command: String::new(), for_tab: true }
+        Self { tab, pane, new_command: String::new(), for_tab: true, fresh: true }
     }
 }
 
@@ -700,6 +705,7 @@ impl App {
             opened_at: None,
             window_closing: false,
             guard_confirm: None,
+            pane_drag: None,
             path_cache: HashMap::new(),
             path_pick: (String::new(), 0),
             read_only: false,
@@ -874,7 +880,7 @@ impl App {
         for id in std::mem::take(&mut tab.pending) {
             let history = tab.history_path(id);
             // What the pane showed last time, then a line saying so.
-            let restore = restore.then(|| tab.histories.get(&id).and_then(|h| crate::shell::scrollback_path(*h)).and_then(|p| std::fs::read(p).ok())).flatten().filter(|b| !b.is_empty()).map(|mut bytes| {
+            let restore = restore.then(|| tab.histories.get(&id).and_then(|h| crate::shell::scrollback_path(*h)).and_then(|p| std::fs::read(p).ok())).flatten().filter(|b| crate::terminal::has_text(b)).map(|mut bytes| {
                 bytes.extend_from_slice(format!("\x1b[0;2m── {} ──\x1b[0m\r\n", restored).as_bytes());
                 bytes
             });
@@ -1150,6 +1156,7 @@ impl App {
         swap(&mut self.confirm_close, &mut slot.confirm_close);
         swap(&mut self.window_closing, &mut slot.window_closing);
         swap(&mut self.guard_confirm, &mut slot.guard_confirm);
+        swap(&mut self.pane_drag, &mut slot.pane_drag);
     }
 
     fn save_config(&mut self) {
@@ -1717,6 +1724,8 @@ struct HeaderClicks {
     search: bool,
     commands: bool,
     files: bool,
+    /// The strip is being dragged (to move the pane onto another).
+    drag_started: bool,
 }
 
 /// What the strip above a pane shows.
@@ -1734,12 +1743,12 @@ enum Header<'a> {
 fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
-    let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click());
+    let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
     let font = FontId::monospace(12.0);
     let color = if focused { theme.text } else { theme.text_muted };
     let mut max_w = rect.width() - 20.0;
 
-    let mut clicks = HeaderClicks::default();
+    let mut clicks = HeaderClicks { drag_started: resp.drag_started(), ..Default::default() };
     let icon = |ui: &mut Ui, right: f32, text: &str, tip: String| {
         let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
         let button = egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0);
@@ -2274,13 +2283,17 @@ impl App {
                     // Local panes show their directory (optional); SSH panes their host and a reconnect button.
                     // The strip also appears, even with directories hidden, when the program announced a local server.
                     let urls = if local { term.local_urls(ui.ctx()).to_vec() } else { Vec::new() };
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() {
+                    // Split: always a strip, to drag the pane by.
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
                         let clicks = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
+                        if clicks.drag_started && split {
+                            self.pane_drag = Some(id);
+                        }
                         if clicks.search {
                             open_search = Some(id);
                         }
@@ -2330,6 +2343,31 @@ impl App {
                     }
                 }
                 tab.rects = rects;
+
+                // A pane dragged by its strip: the one under the pointer lights up, and they swap places
+                // on release.
+                if let Some(dragged) = self.pane_drag {
+                    let pointer = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
+                    let target = pointer.and_then(|p| tab.rects.iter().find(|(id, r)| *id != dragged && r.contains(p)).map(|(id, r)| (*id, *r)));
+                    let layer = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pane-drag")));
+                    if let Some((_, r)) = tab.rects.iter().find(|(id, _)| *id == dragged) {
+                        layer.rect_filled(*r, 0.0, Color32::from_black_alpha(60));
+                    }
+                    if let Some((_, r)) = target {
+                        layer.rect_filled(r.shrink(2.0), 6.0, self.theme.accent.gamma_multiply(0.22));
+                        layer.rect_stroke(r.shrink(2.0), 6.0, Stroke::new(2.0, self.theme.accent), egui::StrokeKind::Inside);
+                        layer.text(r.center(), Align2::CENTER_CENTER, "⇄", FontId::proportional(42.0), self.theme.accent);
+                    }
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    if ui.input(|i| i.pointer.any_released() || !i.pointer.any_down()) {
+                        if let Some((target, _)) = target {
+                            tab.layout.swap(dragged, target);
+                            tab.focused = dragged;
+                            self.focus_terminal = true;
+                        }
+                        self.pane_drag = None;
+                    }
+                }
 
                 if let (Some((_, prefix, items)), Some(term)) = (&suggest, tab.panes.get_mut(&tab.focused)) {
                     let pos = term.cursor_pos() + Vec2::new(-(prefix.chars().count() as f32) * term.cell_size().x, term.cell_size().y + 2.0);
