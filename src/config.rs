@@ -385,6 +385,17 @@ pub struct Settings {
     /// Size of the whole interface, terminal included (Cmd +/- changes it): 1.0 is 100 %.
     #[serde(default = "default_zoom")]
     pub ui_zoom: f32,
+    /// Tell when a command that ran at least `notify_after` seconds ends out of sight.
+    #[serde(default = "default_true")]
+    pub notify_commands: bool,
+    #[serde(default = "default_notify_after")]
+    pub notify_after: u64,
+}
+
+pub const NOTIFY_AFTER_SECS: std::ops::RangeInclusive<u64> = 3..=600;
+
+fn default_notify_after() -> u64 {
+    10
 }
 
 pub const UI_ZOOMS: std::ops::RangeInclusive<f32> = 0.6..=2.0;
@@ -519,7 +530,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after() }
     }
 }
 

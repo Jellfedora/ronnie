@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::config::{self, Config, Layout, Profile, Session, SessionTab, TabState, WindowState};
 use crate::i18n::{Lang, Strings};
 use crate::pane::{self, Direction, Node, PaneId};
-use crate::terminal::{FontSet, LocalUrl, Terminal};
+use crate::terminal::{Finished, FontSet, LocalUrl, Terminal};
 use crate::ssh::{self, SshAuth, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
@@ -71,12 +71,21 @@ pub struct Tab {
     /// terminals.
     files: Option<Box<files::FileManager>>,
     show_files: bool,
+    /// A long command ended here while the tab wasn't shown: a ✓ or ✗ on the tab until it is.
+    done: Option<Done>,
+}
+
+/// The end of a long command, marked on its tab.
+pub struct Done {
+    pub ok: bool,
+    /// Command and duration, shown on hover.
+    pub summary: String,
 }
 
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -995,6 +1004,42 @@ impl App {
         self.error = None;
     }
 
+    /// Long commands that ended out of sight: a ✓ or ✗ on their tab when it isn't shown, and a system
+    /// notification when Ronnie isn't the window in front.
+    fn finished_commands(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let settings = &self.config.settings;
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let mut notified = false;
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            let shown = i == self.active && !tab.show_files;
+            // Taken even when disabled, not to report old commands once enabled.
+            let finished: Vec<Finished> = tab.panes.values_mut().flat_map(|term| term.take_finished(ctx)).collect();
+            let long = finished.into_iter().filter(|f| settings.notify_commands && f.duration.as_secs() >= settings.notify_after).last();
+            let Some(done) = long.filter(|_| !(shown && focused)) else { continue };
+            let ok = done.code.is_none_or(|c| c == 0);
+            let command = done.command.as_deref().unwrap_or(t.command_generic);
+            let duration = format_duration(done.duration);
+            if !shown {
+                tab.done = Some(Done { ok, summary: format!("{} {command}  ·  {duration}", if ok { "✓" } else { "✗" }) });
+            }
+            if !focused {
+                let title = match done.code.filter(|c| *c != 0) {
+                    Some(code) => t.command_failed.replace("{code}", &code.to_string()),
+                    None => t.command_done.to_owned(),
+                };
+                crate::notify::send(&title, &format!("{command}\n{}  ·  {duration}", tab.title()));
+                notified = true;
+            }
+        }
+        if notified {
+            ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.show_files) {
+            tab.done = None;
+        }
+    }
+
     fn spawn(&mut self, ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Uuid) -> Option<(PaneId, Terminal)> {
         match Terminal::local(ctx, cwd, launch, crate::shell::history_path(history).as_deref()) {
             Ok(term) => {
@@ -1011,7 +1056,9 @@ impl App {
 
     fn new_tab(&mut self, ctx: &egui::Context) {
         let history = Uuid::new_v4();
-        if let Some((id, term)) = self.spawn(ctx, None, None, history) {
+        // Starts in the directory of the terminal in front, when it is a local one.
+        let cwd = self.tabs.get(self.active).filter(|t| t.ssh.is_none()).and_then(|t| t.panes.get(&t.focused)).and_then(Terminal::cwd);
+        if let Some((id, term)) = self.spawn(ctx, cwd.as_deref(), None, history) {
             let mut tab = Tab::new(Node::Leaf(id), HashMap::from([(id, term)]));
             tab.histories.insert(id, history);
             self.tabs.push(tab);
@@ -1027,7 +1074,12 @@ impl App {
         // The new pane starts in the same directory as the one being split (or another ssh session to the same host).
         let tab = &self.tabs[index];
         let cwd = tab.panes.get(&tab.focused).and_then(Terminal::cwd);
-        let launch = self.launch_for(index);
+        // SSH: in the same folder on the server, when the shell there tells which.
+        let remote_dir = tab.panes.get(&tab.focused).and_then(Terminal::reported_cwd);
+        let launch = match (tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)), remote_dir) {
+            (Some(host), Some(dir)) => Some(host.command_in(&dir)),
+            _ => self.launch_for(index),
+        };
         let history = Uuid::new_v4();
         if let Some((id, term)) = self.spawn(ctx, cwd.as_deref(), launch.as_ref(), history) {
             let tab = &mut self.tabs[index];
@@ -1317,6 +1369,16 @@ fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
     painter.circle_stroke(dot, 6.5, Stroke::new(1.2, theme.ansi[2].gamma_multiply(0.45 + 0.5 * phase)));
     if focused {
         ui.ctx().request_repaint_after(Duration::from_millis(250));
+    }
+}
+
+/// "45 s", "2 min 14 s", "1 h 03 min".
+fn format_duration(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s} s"),
+        60..3600 => format!("{} min {:02} s", s / 60, s % 60),
+        _ => format!("{} h {:02} min", s / 3600, s / 60 % 60),
     }
 }
 
@@ -1717,6 +1779,7 @@ impl eframe::App for App {
                 term.set_visible(i == self.active && !tab.show_files);
             }
         }
+        self.finished_commands(ui.ctx());
 
         // Panes whose shell has exited close by themselves. SSH panes stay, to show why the connection ended.
         let exited: Vec<(PaneId, usize)> = self
@@ -1820,7 +1883,9 @@ impl eframe::App for App {
                     let body = if !local || self.config.settings.show_cwd || !urls.is_empty() {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
-                        let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(&ssh_label) };
+                        // SSH: the folder on the server, when its shell tells.
+                        let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
+                        let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
                         let clicks = pane_header(ui, head, id, header, id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.search {
                             open_search = Some(id);

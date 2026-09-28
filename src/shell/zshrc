@@ -30,5 +30,21 @@ if [[ -n $RONNIE_HISTFILE ]]; then
   }
   autoload -Uz add-zsh-hook && add-zsh-hook zshaddhistory _ronnie_global_history
 fi
+# Command marks (OSC 133): Ronnie sees when a command starts, with its command line, and ends, with its
+# exit status (to notify the end of long commands). First in the hooks, to get the command's $?.
+_ronnie_preexec() {
+  local LC_ALL=C url= c
+  local cmd=${1[1,200]}
+  for c in ${(s::)cmd}; do
+    if [[ $c == [A-Za-z0-9._~/-] ]]; then url+=$c; else printf -v c '%%%02X' "'$c"; url+=$c; fi
+  done
+  print -rn -- $'\e]133;C;cmdline_url='$url$'\a'
+}
+_ronnie_precmd() {
+  print -rn -- $'\e]133;D;'$?$'\a\e]133;A\a'
+}
+preexec_functions=(_ronnie_preexec $preexec_functions)
+precmd_functions=(_ronnie_precmd $precmd_functions)
+
 # .zlogin comes next for login shells.
 [[ -o login ]] && ZDOTDIR=$RONNIE_ZDOTDIR

@@ -675,6 +675,11 @@ impl App {
             let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
             let show_close = active || row_hovered;
             let text_left = rect.min.x + 28.0;
+            // A long command ended in this tab while it wasn't shown: ✓ or ✗ where the ✕ goes.
+            let done = tab.done.as_ref().filter(|_| !show_close);
+            if let Some(done) = done {
+                paint_done(&painter, close_rect.center(), done.ok, &self.theme);
+            }
 
             let renaming = self.rename.as_ref().is_some_and(|r| r.tab == i);
             if renaming {
@@ -721,7 +726,7 @@ impl App {
                 }
             } else {
                 let text_color = if active { self.theme.text } else { self.theme.text_muted };
-                let text_right = if show_close { close_rect.min.x - 4.0 } else { rect.max.x - 10.0 };
+                let text_right = if show_close || done.is_some() { close_rect.min.x - 4.0 } else { rect.max.x - 10.0 };
                 let text_rect = Rect::from_min_max(Pos2::new(text_left, rect.min.y), Pos2::new(text_right, rect.max.y));
                 let mut job = egui::text::LayoutJob::simple_singleline(tab.title().to_owned(), FontId::proportional(13.0), text_color);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
@@ -760,10 +765,9 @@ impl App {
             if resp.drag_stopped() {
                 self.tab_grab = None;
             }
-            let resp = match &live {
-                Some(program) => resp.on_hover_text(format!("▶ {program}")),
-                None => resp,
-            };
+            let hint = [live.map(|program| format!("▶ {program}")), self.tabs[i].done.as_ref().map(|d| d.summary.clone())];
+            let hint: Vec<String> = hint.into_iter().flatten().collect();
+            let resp = if hint.is_empty() { resp } else { resp.on_hover_text(hint.join("\n")) };
             resp.context_menu(|ui| self.tab_menu(ui, i, &mut action));
         }
 
@@ -959,5 +963,20 @@ impl App {
             None => {}
         }
         });
+    }
+}
+
+/// ✓ (green) or ✗ (red) in a soft disc: a long command ended in a tab that wasn't shown.
+fn paint_done(painter: &egui::Painter, c: Pos2, ok: bool, theme: &crate::theme::Theme) {
+    let color = if ok { theme.ansi[2] } else { theme.ansi[1] };
+    painter.circle_filled(c, 7.5, color.gamma_multiply(0.18));
+    let stroke = Stroke::new(1.6, color);
+    if ok {
+        painter.line_segment([c + Vec2::new(-3.5, 0.2), c + Vec2::new(-1.0, 2.8)], stroke);
+        painter.line_segment([c + Vec2::new(-1.0, 2.8), c + Vec2::new(3.8, -2.6)], stroke);
+    } else {
+        let d = 3.0;
+        painter.line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], stroke);
+        painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], stroke);
     }
 }

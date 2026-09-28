@@ -32,3 +32,18 @@ jobs:
 
       - name: Tests
         run: cargo test --locked
+
+      # The AppImage is built on every push: a broken one shows here, not at release time.
+      - name: AppImage
+        if: runner.os == 'Linux'
+        run: |
+          scripts/package.sh
+          # Extracted instead of mounted: the runner may lack FUSE.
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/Ronnie-x86_64.AppImage --version
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: runner.os == 'Linux'
+        with:
+          name: ronnie-appimage
+          path: dist/Ronnie-x86_64.AppImage
+          if-no-files-found: error

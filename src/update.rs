@@ -62,11 +62,26 @@ pub struct Updater {
     state: Arc<Mutex<State>>,
     /// Path of the running executable, read at startup: on Linux it points to a deleted file once replaced.
     exe: Option<PathBuf>,
+    /// The AppImage file Ronnie runs from, if so: the update replaces it, not the (read-only) executable.
+    appimage: Option<PathBuf>,
+}
+
+/// The AppImage file this process runs from. Its runtime says so in APPIMAGE and APPDIR; a program
+/// started from Ronnie's terminal inherits them, hence the check that the executable is in APPDIR.
+pub fn appimage() -> Option<PathBuf> {
+    let (file, dir) = (std::env::var_os("APPIMAGE")?, std::env::var_os("APPDIR")?);
+    let exe = std::env::current_exe().ok()?;
+    exe.starts_with(&dir).then(|| PathBuf::from(file))
+}
+
+/// Release file for this platform: an AppImage replaces an AppImage, the archive the other installs.
+fn asset_name(appimage: bool) -> String {
+    if appimage { format!("Ronnie-{}.AppImage", std::env::consts::ARCH) } else { format!("ronnie-{TARGET}.{ARCHIVE_EXT}") }
 }
 
 impl Updater {
     pub fn new() -> Self {
-        Self { state: Arc::default(), exe: std::env::current_exe().ok() }
+        Self { state: Arc::default(), exe: std::env::current_exe().ok(), appimage: appimage() }
     }
 
     pub fn state(&self) -> State {
@@ -83,9 +98,9 @@ impl Updater {
             return;
         }
         *self.state.lock().unwrap() = State::Checking;
-        let (state, ctx) = (self.state.clone(), ctx.clone());
+        let (state, ctx, appimage) = (self.state.clone(), ctx.clone(), self.appimage.is_some());
         thread::spawn(move || {
-            let result = match latest() {
+            let result = match latest(appimage) {
                 Ok(Some(available)) => State::Available(available),
                 Ok(None) => State::UpToDate,
                 Err(e) => State::Failed(format!("{e:#}")),
@@ -99,9 +114,13 @@ impl Updater {
     pub fn install(&self, ctx: &egui::Context, available: Available) {
         let Some(exe) = self.exe.clone() else { return };
         *self.state.lock().unwrap() = State::Installing(available.version.clone());
-        let (state, ctx) = (self.state.clone(), ctx.clone());
+        let (state, ctx, appimage) = (self.state.clone(), ctx.clone(), self.appimage.clone());
         thread::spawn(move || {
-            let result = match install(&exe, &available.asset) {
+            let installed = match &appimage {
+                Some(file) => replace_appimage(file, &available.asset),
+                None => install(&exe, &available.asset),
+            };
+            let result = match installed {
                 Ok(()) => State::Installed(available.version),
                 Err(e) => State::Failed(format!("{e:#}")),
             };
@@ -112,6 +131,10 @@ impl Updater {
 
     /// Starts the (updated) app again; the caller then closes this instance.
     pub fn relaunch(&self) -> Result<()> {
+        if let Some(file) = &self.appimage {
+            Command::new(file).spawn()?;
+            return Ok(());
+        }
         let exe = self.exe.as_deref().context("unknown executable path")?;
         #[cfg(target_os = "macos")]
         if let Some(bundle) = app_bundle(exe) {
@@ -131,7 +154,7 @@ fn agent(total: Duration) -> ureq::Agent {
 
 /// The latest release, if it is newer than this build. A release without an archive for this platform
 /// is an error (reported) rather than "up to date".
-fn latest() -> Result<Option<Available>> {
+fn latest(appimage: bool) -> Result<Option<Available>> {
     let release: Release = agent(Duration::from_secs(30))
         .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .header("Accept", "application/vnd.github+json")
@@ -144,7 +167,7 @@ fn latest() -> Result<Option<Available>> {
     if !is_newer(&version, VERSION) {
         return Ok(None);
     }
-    let name = format!("ronnie-{TARGET}.{ARCHIVE_EXT}");
+    let name = asset_name(appimage);
     let asset = release.assets.into_iter().find(|a| a.name == name).with_context(|| format!("version {version} has no {name} archive"))?;
     Ok(Some(Available { version, url: release.html_url, asset }))
 }
@@ -200,6 +223,30 @@ fn install(exe: &Path, asset: &Asset) -> Result<()> {
         self_replace::self_replace(&new).context("could not replace the executable")
     })();
     let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Writes the new AppImage next to the running one, then renames it over: the running app keeps its
+/// (still mounted) old file until it quits.
+fn replace_appimage(file: &Path, asset: &Asset) -> Result<()> {
+    let bytes = download(asset)?;
+    let dir = file.parent().context("unknown AppImage directory")?;
+    let name = file.file_name().context("unknown AppImage name")?.to_string_lossy();
+    let temp = dir.join(format!(".{name}.update-{}", std::process::id()));
+    let result = (|| {
+        let mut out = std::fs::File::create(&temp).with_context(|| format!("cannot write in {}", dir.display()))?;
+        std::io::Write::write_all(&mut out, &bytes)?;
+        out.sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&temp, file).with_context(|| format!("impossible de remplacer {}", file.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
     result
 }
 

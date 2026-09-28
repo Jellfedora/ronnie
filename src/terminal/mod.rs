@@ -1,6 +1,7 @@
 mod boxdraw;
 mod input;
 mod links;
+mod osc;
 mod pty;
 mod render;
 
@@ -8,7 +9,7 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ use anyhow::Result;
 use egui::{Event, EventFilter, Id, MouseWheelUnit, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 pub use links::{open as open_url, LocalUrl};
+pub use osc::Finished;
 pub use render::FontSet;
 
 use crate::theme::Theme;
@@ -123,6 +125,10 @@ struct Activity {
     scanned: u64,
     program: Option<String>,
     urls: Vec<links::LocalUrl>,
+    /// Shells without command marks: when the foreground program was first seen, and its name.
+    started: Option<(Instant, String)>,
+    /// Shells without command marks: programs seen ending.
+    finished: Vec<Finished>,
 }
 
 /// One terminal session: the emulator state plus the process/connection feeding it.
@@ -132,6 +138,8 @@ pub struct Terminal {
     backend: Box<dyn Backend>,
     events: Receiver<TermEvent>,
     exited: Arc<AtomicBool>,
+    /// What the shell reported through its integration sequences (directory, command marks).
+    shell: Arc<Mutex<osc::Shell>>,
     /// The program has written something (an ssh session still connecting hasn't).
     received: Arc<AtomicBool>,
     /// Bumped by the reader thread on each chunk of output, to rescan only when something changed.
@@ -175,6 +183,7 @@ impl Terminal {
         let config = TermConfig { scrolling_history: SCROLLBACK.load(Ordering::Relaxed), ..TermConfig::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, listener)));
         let exited = Arc::new(AtomicBool::new(false));
+        let shell = Arc::new(Mutex::new(osc::Shell::default()));
         let received = Arc::new(AtomicBool::new(false));
         let output_seq = Arc::new(AtomicU64::new(0));
         let visible = Arc::new(AtomicBool::new(true));
@@ -182,6 +191,7 @@ impl Terminal {
         {
             let term = term.clone();
             let exited = exited.clone();
+            let shell = shell.clone();
             let received = received.clone();
             let output_seq = output_seq.clone();
             let visible = visible.clone();
@@ -190,6 +200,7 @@ impl Terminal {
                 .name("pty-reader".into())
                 .spawn(move || {
                     let mut parser: Processor = Processor::new();
+                    let mut scanner = osc::Scanner::default();
                     let mut buf = vec![0u8; 1 << 16];
                     loop {
                         match reader.read(&mut buf) {
@@ -197,6 +208,9 @@ impl Terminal {
                             Ok(n) => {
                                 received.store(true, Ordering::Relaxed);
                                 output_seq.fetch_add(1, Ordering::Relaxed);
+                                if let Ok(mut shell) = shell.lock() {
+                                    scanner.scan(&buf[..n], &mut shell);
+                                }
                                 parser.advance(&mut *term.lock(), &buf[..n]);
                                 // A hidden pane (other tab) needn't redraw the window at the pace of its
                                 // output: its badge and title catch up twice a second.
@@ -222,6 +236,7 @@ impl Terminal {
             backend,
             events,
             exited,
+            shell,
             received,
             output_seq,
             visible,
@@ -264,7 +279,19 @@ impl Terminal {
         }
         self.activity.checked = Some(now);
         self.activity.checked_seq = seq;
-        self.activity.program = self.foreground();
+        let program = self.foreground();
+        // Shells without command marks: a program starting then giving the terminal back to the shell.
+        match (&self.activity.started, &program) {
+            (None, Some(name)) => self.activity.started = Some((now, name.clone())),
+            (Some(_), None) => {
+                let (start, name) = self.activity.started.take().expect("matched");
+                if !self.shell.lock().is_ok_and(|s| s.integrated) {
+                    self.activity.finished.push(Finished { command: Some(name), code: None, duration: start.elapsed() });
+                }
+            }
+            _ => {}
+        }
+        self.activity.program = program;
         if self.activity.program.is_none() {
             self.activity.urls.clear();
             return;
@@ -290,6 +317,24 @@ impl Terminal {
     pub fn local_urls(&mut self, ctx: &egui::Context) -> &[links::LocalUrl] {
         self.refresh_activity(ctx);
         &self.activity.urls
+    }
+
+    /// Commands that ended since last asked: from the shell's marks when it sends them (exit status
+    /// included), otherwise from the foreground program giving the terminal back to the shell.
+    pub fn take_finished(&mut self, ctx: &egui::Context) -> Vec<Finished> {
+        self.refresh_activity(ctx);
+        let mut finished = std::mem::take(&mut self.activity.finished);
+        if let Ok(mut shell) = self.shell.lock() {
+            finished.append(&mut shell.finished);
+        }
+        finished
+    }
+
+    /// Working directory reported by the shell itself (OSC 7), or shown in the title as `user@host: path`.
+    /// For an SSH pane it is a path on the server, possibly starting with `~`.
+    pub fn reported_cwd(&self) -> Option<String> {
+        let reported = self.shell.lock().ok().and_then(|s| s.cwd.clone());
+        reported.or_else(|| self.title.as_deref().and_then(osc::title_path).map(str::to_owned))
     }
 
     /// Process id of the program started in the pane (the shell, or ssh).

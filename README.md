@@ -15,14 +15,23 @@ Télécharge l'archive de ton système dans la [dernière release](https://githu
    xattr -dr com.apple.quarantine /Applications/Ronnie.app
    ```
 
-### Linux (x86_64)
+### Linux (x86_64) : Ubuntu, Debian, Fedora…
+
+**AppImage** (un seul fichier, rien à installer) : télécharge `Ronnie-x86_64.AppImage`, range-le où tu veux (par exemple `~/Applications`), rends-le exécutable et lance-le :
+
+```sh
+chmod +x Ronnie-x86_64.AppImage
+./Ronnie-x86_64.AppImage
+```
+
+Double-cliquer dessus marche aussi une fois exécutable (clic droit > Propriétés > « Autoriser l'exécution »). Les mises à jour remplacent le fichier lui-même : son dossier doit être modifiable. Pour l'avoir dans le menu des applications, [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) ou AppImageLauncher s'en chargent.
+
+**Ou l'archive**, installée dans `~/.local/bin` avec une entrée dans le menu des applications :
 
 ```sh
 tar xzf ronnie-x86_64-unknown-linux-gnu.tar.gz
 ./ronnie/install.sh
 ```
-
-Ronnie est installé dans `~/.local/bin` avec une entrée dans le menu des applications.
 
 ### Windows (x86_64)
 
@@ -45,6 +54,6 @@ cargo run
 scripts/release.sh 0.2.0
 ```
 
-Le script met à jour la version dans `Cargo.toml`, commit, crée le tag `v0.2.0` et pousse. GitHub Actions compile alors pour macOS (app universelle), Linux et Windows, puis publie la release avec les archives. Les Ronnie installés la proposent à leurs utilisateurs à leur prochaine vérification (au lancement puis toutes les 6 h).
+Le script met à jour la version dans `Cargo.toml`, commit, crée le tag `v0.2.0` et pousse. GitHub Actions compile alors pour macOS (app universelle), Linux (archive et AppImage) et Windows, puis publie la release avec les archives. Les Ronnie installés la proposent à leurs utilisateurs à leur prochaine vérification (au lancement puis toutes les 6 h).
 
 `scripts/package.sh` produit localement l'archive du système courant dans `dist/`.

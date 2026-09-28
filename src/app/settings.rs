@@ -815,9 +815,18 @@ impl App {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(t.ui_zoom).size(14.0));
-                let mut percent = (picked.ui_zoom * 100.0).round();
-                if ui.add(egui::Slider::new(&mut percent, 60.0..=200.0).step_by(10.0).suffix(" %")).changed() {
-                    picked.ui_zoom = percent / 100.0;
+                // Applied once the slider is released: zooming while dragging would move the slider
+                // under the pointer, which would drag it further.
+                let id = ui.id().with("ui-zoom-drag");
+                let mut percent = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or((picked.ui_zoom * 100.0).round());
+                let resp = ui.add(egui::Slider::new(&mut percent, 60.0..=200.0).step_by(10.0).suffix(" %"));
+                if resp.dragged() {
+                    ui.data_mut(|d| d.insert_temp(id, percent));
+                } else {
+                    ui.data_mut(|d| d.remove::<f32>(id));
+                    if resp.changed() || resp.drag_stopped() {
+                        picked.ui_zoom = percent / 100.0;
+                    }
                 }
             });
             ui.horizontal(|ui| {
@@ -827,6 +836,14 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(t.scrollback).size(14.0));
                 ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
+            });
+            ui.add_space(6.0);
+            ui.checkbox(&mut picked.notify_commands, egui::RichText::new(t.notify_commands).size(14.0)).on_hover_text(t.notify_commands_hint);
+            ui.add_enabled_ui(picked.notify_commands, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(t.notify_after).size(14.0));
+                    ui.add(egui::Slider::new(&mut picked.notify_after, config::NOTIFY_AFTER_SECS).logarithmic(true).suffix(" s"));
+                });
             });
             ui.add_space(18.0);
 

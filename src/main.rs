@@ -6,6 +6,7 @@ mod askpass;
 mod config;
 mod i18n;
 mod log;
+mod notify;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pane;

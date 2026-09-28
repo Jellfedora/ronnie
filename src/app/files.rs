@@ -154,6 +154,11 @@ pub(super) struct FileManager {
     active: Side,
     /// The remote home directory, known once connected.
     home: Option<String>,
+    /// The terminal's directory when last followed: the file manager goes there again only once the
+    /// terminal has moved, not to undo the user's browsing.
+    terminal_dir: Option<String>,
+    /// A terminal directory under `~`, waiting for the home directory to be known.
+    pending_dir: Option<String>,
 }
 
 impl FileManager {
@@ -174,6 +179,8 @@ impl FileManager {
             show_hidden: false,
             active: Side::Remote,
             home: None,
+            terminal_dir: None,
+            pending_dir: None,
         };
         fm.read_local();
         fm
@@ -193,6 +200,28 @@ impl FileManager {
                 self.error = None;
             }
             Err(e) => self.status = Status::Closed(format!("{e:#}")),
+        }
+    }
+
+    /// Opens the terminal's working directory on the server (it may start with `~`), when it changed
+    /// since last time.
+    pub fn follow_terminal(&mut self, dir: Option<String>) {
+        let Some(dir) = dir.filter(|d| self.terminal_dir.as_ref() != Some(d)) else { return };
+        self.terminal_dir = Some(dir.clone());
+        match self.resolve_home(&dir) {
+            Some(path) if matches!(self.status, Status::Ready) => self.open_dir(Side::Remote, path),
+            // Listed once connected.
+            Some(path) => self.remote.path = path,
+            None => self.pending_dir = Some(dir),
+        }
+    }
+
+    /// `dir` with a leading `~` replaced by the home directory (None while it is unknown).
+    fn resolve_home(&self, dir: &str) -> Option<String> {
+        match dir.strip_prefix('~') {
+            Some("") => self.home.clone(),
+            Some(rest) if rest.starts_with('/') => self.home.as_deref().map(|h| sftp::join(h, rest.trim_start_matches('/'))),
+            _ => Some(dir.to_owned()),
         }
     }
 
@@ -241,6 +270,9 @@ impl FileManager {
                         self.remote.path = home.clone();
                     }
                     self.home = Some(home);
+                    if let Some(path) = self.pending_dir.take().and_then(|d| self.resolve_home(&d)) {
+                        self.remote.path = path;
+                    }
                     self.list_remote();
                 }
                 Event::ListFailed { path, error } => {
@@ -1017,6 +1049,13 @@ impl App {
             let mut fm = Box::new(FileManager::new(&host));
             fm.connect(&ctx, &host, #[cfg(unix)] &askpass);
             tab.files = Some(fm);
+        }
+        // The server side opens where the terminal is (when its shell tells).
+        if show {
+            let dir = tab.panes.get(&tab.focused).and_then(Terminal::reported_cwd);
+            if let Some(fm) = &mut tab.files {
+                fm.follow_terminal(dir);
+            }
         }
         if !show {
             self.focus_terminal = true;

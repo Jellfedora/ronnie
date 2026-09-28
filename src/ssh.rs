@@ -250,6 +250,54 @@ impl SshHost {
     }
 }
 
+impl SshHost {
+    /// The terminal command, starting the session in `dir` on the server (a path, `~` allowed) when
+    /// it can: not when the host has its own remote command (ssh refuses both).
+    pub fn command_in(&self, dir: &str) -> Launch {
+        let mut launch = self.command();
+        if self.has_remote_command(&launch) {
+            return launch;
+        }
+        // The command ends with "--", host: a terminal is requested before them, the command comes after.
+        let at = launch.args.len().saturating_sub(2);
+        launch.args.insert(at, "-t".to_owned());
+        // A folder that is gone lands in the home directory; the shell is the usual login shell.
+        launch.args.push(format!("cd {} 2>/dev/null; exec \"$SHELL\" -l", remote_path_arg(dir)));
+        launch
+    }
+
+    /// Whether ssh would run a RemoteCommand of the host's options or ~/.ssh/config (`ssh -G` resolves
+    /// the configuration without connecting).
+    fn has_remote_command(&self, launch: &Launch) -> bool {
+        if self.options.iter().any(|o| o.trim().to_lowercase().starts_with("remotecommand")) {
+            return true;
+        }
+        let mut cmd = std::process::Command::new(&launch.program);
+        cmd.arg("-G").args(&launch.args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // No console window flashing.
+            cmd.creation_flags(0x0800_0000);
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().any(|l| l.to_lowercase().starts_with("remotecommand ")),
+            // Unknown: keep the plain session.
+            _ => true,
+        }
+    }
+}
+
+/// A remote path for the server's shell: quoted, except a leading `~` which the shell must expand.
+fn remote_path_arg(dir: &str) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    match dir.strip_prefix('~') {
+        Some("") => "~".to_owned(),
+        Some(rest) if rest.starts_with('/') => format!("~/{}", quote(rest.trim_start_matches('/'))),
+        _ => quote(dir),
+    }
+}
+
 /// A program to run in a pane instead of the user's shell.
 #[derive(Clone, Debug)]
 pub struct Launch {
@@ -588,6 +636,14 @@ fn parse_ssh_config(text: &str) -> Vec<SshHost> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quotes_remote_paths() {
+        assert_eq!(remote_path_arg("/var/www"), "'/var/www'");
+        assert_eq!(remote_path_arg("~"), "~");
+        assert_eq!(remote_path_arg("~/it's here"), "~/'it'\\''s here'");
+        assert_eq!(remote_path_arg("~bob/x"), "'~bob/x'");
+    }
 
     const CONFIG: &str = "
 Host *

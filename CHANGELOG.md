@@ -2,6 +2,22 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.5.0] - 2026-09-26
+
+### Nouveautés
+
+- **Fin des commandes longues signalée** : quand une commande d'au moins 10 secondes se termine alors que Ronnie est au second plan, une notification du système indique la commande, sa durée et si elle a échoué (avec son code). Si elle tournait dans un autre onglet, un ✓ vert ou un ✗ rouge s'affiche sur l'onglet jusqu'à ce que tu y reviennes (détail au survol). Réglable dans Paramètres > Général (activer, durée minimale).
+- **Un nouvel onglet s'ouvre dans le dossier du terminal affiché**, comme le faisaient déjà les splits.
+- **SSH : Ronnie suit le dossier courant sur le serveur**, quand le shell distant l'indique (OSC 7, ou le titre `utilisateur@machine: dossier` du bash par défaut de Debian et Ubuntu) :
+  - l'en-tête du panneau l'affiche à côté de l'hôte ;
+  - un split ouvre la nouvelle session dans le même dossier ;
+  - le gestionnaire de fichiers (📁) s'ouvre sur ce dossier, et y retourne quand le terminal a changé de dossier depuis.
+- **AppImage pour Linux** (Ubuntu, Debian, Fedora…) : `Ronnie-x86_64.AppImage`, un seul fichier à rendre exécutable puis lancer, sans FUSE 2 à installer. Il se met à jour lui-même, comme les autres versions.
+
+### Corrections
+
+- Le curseur « Taille de l'interface » ne s'emballe plus quand on le fait glisser : la nouvelle taille s'applique au relâchement.
+
 ## [0.4.0] - 2026-09-26
 
 ### Nouveautés

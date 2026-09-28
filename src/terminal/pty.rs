@@ -39,6 +39,12 @@ impl LocalPty {
                 cmd
             }
         };
+        // Ronnie's AppImage runtime variables would make programs started here think they are Ronnie.
+        if crate::update::appimage().is_some() {
+            for var in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
+                cmd.env_remove(var);
+            }
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "ronnie");
