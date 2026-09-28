@@ -16,6 +16,28 @@ use russh_sftp::protocol::FileAttributes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc as tmpsc;
 
+/// What to apply: in each item's mode, `clear` bits are removed, then `set` bits added.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct ModeChange {
+    pub set: u32,
+    pub clear: u32,
+}
+
+impl ModeChange {
+    pub fn apply(self, mode: u32) -> u32 {
+        (mode & !self.clear | self.set) & 0o7777
+    }
+}
+
+/// Which items a recursive change reaches.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum Scope {
+    #[default]
+    All,
+    Files,
+    Dirs,
+}
+
 /// One file or directory in a listing.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -38,7 +60,8 @@ pub enum Request {
     Rename(String, String),
     /// Files and directories (recursively).
     Remove(Vec<String>),
-    Chmod { paths: Vec<String>, mode: u32, recursive: bool },
+    /// Each item gets `change` applied to its own mode (recursively: those `scope` picks).
+    Chmod { paths: Vec<String>, change: ModeChange, recursive: bool, scope: Scope },
     Download { id: u64, remote: Vec<String>, local_dir: PathBuf, overwrite: bool },
     Upload { id: u64, local: Vec<PathBuf>, remote_dir: String, overwrite: bool },
     /// An empty file (refused if the name is taken).
@@ -235,7 +258,7 @@ impl Connection {
                     Request::Mkdir(path) => sftp.create_dir(path).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Rename(from, to) => sftp.rename(from, to).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Remove(paths) => remove(&sftp, &paths).await.map(|_| emit.send(Event::Changed)),
-                    Request::Chmod { paths, mode, recursive } => chmod(&sftp, &paths, mode, recursive).await.map(|_| emit.send(Event::Changed)),
+                    Request::Chmod { paths, change, recursive, scope } => chmod(&sftp, &paths, change, recursive, scope).await.map(|_| emit.send(Event::Changed)),
                     Request::CreateFile(path) => {
                         let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::EXCLUDE | russh_sftp::protocol::OpenFlags::WRITE;
                         match sftp.open_with_flags(path.clone(), flags).await {
@@ -430,12 +453,21 @@ async fn remove(sftp: &SftpSession, paths: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn chmod(sftp: &SftpSession, paths: &[String], mode: u32, recursive: bool) -> Result<()> {
+async fn chmod(sftp: &SftpSession, paths: &[String], change: ModeChange, recursive: bool, scope: Scope) -> Result<()> {
     for root in paths {
         // Recursively, links are skipped: chmod follows them, and they may point anywhere (~/.ssh...).
-        let targets = if recursive { walk(sftp, root, false).await?.into_iter().filter(|(_, a)| !a.is_symlink()).map(|(p, _)| p).collect() } else { vec![root.clone()] };
-        for path in targets {
-            let attrs = FileAttributes { permissions: Some(mode & 0o7777), ..FileAttributes::empty() };
+        let targets: Vec<(String, FileAttributes)> = if recursive {
+            walk(sftp, root, false).await?.into_iter().filter(|(_, a)| !a.is_symlink()).filter(|(_, a)| match scope {
+                Scope::All => true,
+                Scope::Files => !a.is_dir(),
+                Scope::Dirs => a.is_dir(),
+            }).collect()
+        } else {
+            vec![(root.clone(), sftp.metadata(root.clone()).await.with_context(|| format!("reading {root}"))?)]
+        };
+        for (path, attrs) in targets {
+            let mode = change.apply(attrs.permissions.unwrap_or(0o644));
+            let attrs = FileAttributes { permissions: Some(mode), ..FileAttributes::empty() };
             sftp.set_metadata(path.clone(), attrs).await.with_context(|| format!("changing the permissions of {path}"))?;
         }
     }
@@ -768,7 +800,7 @@ mod tests {
         assert_eq!(names, [("a.txt", false), ("sub", true)]);
 
         // Permissions.
-        conn.send(Request::Chmod { paths: vec![join(&remote_s, "dir/a.txt")], mode: 0o640, recursive: false });
+        conn.send(Request::Chmod { paths: vec![join(&remote_s, "dir/a.txt")], change: ModeChange { set: 0o640, clear: 0o7777 }, recursive: false, scope: Scope::All });
         wait(&conn, |e| matches!(e, Event::Changed));
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(remote.join("dir/a.txt")).unwrap().permissions().mode() & 0o777, 0o640);

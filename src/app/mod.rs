@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use crate::config::{self, Config, Layout, Profile, Session, SessionTab, TabState, WindowState};
+use crate::config::{self, Config, Layout, Profile, Session, SessionTab, SessionWindow, TabState, WindowState};
 use crate::i18n::{Lang, Strings};
 use crate::pane::{self, Direction, Node, PaneId};
 use crate::terminal::{Finished, FontSet, LocalUrl, Terminal};
@@ -18,8 +18,11 @@ use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
 mod bigtext;
+mod complete;
 mod editor;
 mod files;
+mod guard;
+mod perms;
 mod popups;
 mod viewer;
 mod settings;
@@ -43,7 +46,9 @@ const GROUP_H: f32 = 24.0;
 const FOOTER_H: f32 = 40.0;
 /// How often open tabs are compared with what is on disk.
 /// Height of the strip above each local pane showing its working directory.
-const PANE_HEADER_H: f32 = 22.0;
+const PANE_HEADER_H: f32 = 26.0;
+/// Lines of a terminal kept to show again next time.
+const SCROLLBACK_SAVED: usize = 5000;
 const SYNC_INTERVAL: f64 = 1.0;
 /// Seconds between two automatic update checks.
 const UPDATE_INTERVAL: f64 = 6.0 * 3600.0;
@@ -153,6 +158,29 @@ struct Rename {
     error: Option<&'static str>,
 }
 
+/// What belongs to one window: its tabs and what is going on in them. The window being drawn has its
+/// own in `App` itself; the other windows' wait in `App::others`, and are swapped in to be drawn.
+#[derive(Default)]
+struct WindowSlot {
+    viewport: egui::ViewportId,
+    tabs: Vec<Tab>,
+    active: usize,
+    rename: Option<Rename>,
+    focus_terminal: bool,
+    tab_grab: Option<f32>,
+    window_title: String,
+    window: Option<WindowState>,
+    /// Where and how big the window opened (given once, not to fight the user moving it).
+    opened_at: Option<WindowState>,
+    live: Vec<Option<String>>,
+    commands_menu: Option<CommandsMenu>,
+    history_search: Option<HistorySearch>,
+    paste_confirm: Option<(PaneId, String)>,
+    confirm_close: Option<ConfirmClose>,
+    window_closing: bool,
+    guard_confirm: Option<(PaneId, String, guard::Danger)>,
+}
+
 pub struct App {
     tabs: Vec<Tab>,
     active: usize,
@@ -160,6 +188,9 @@ pub struct App {
     fonts: FontSet,
     rename: Option<Rename>,
     focus_terminal: bool,
+    /// Terminal contents saved: the output they had then, and when last saved.
+    scrollback_seq: HashMap<Uuid, u64>,
+    last_scrollback_save: f64,
     error: Option<String>,
     window_title: String,
     next_pane: PaneId,
@@ -243,6 +274,9 @@ pub struct App {
     /// The one being answered, and what is typed.
     #[cfg(unix)]
     ssh_prompt: Option<(crate::askpass::Prompt, String)>,
+    /// Path suggestions in terminals: folders listed lately, and the line and suggestion picked.
+    path_cache: HashMap<PathBuf, (std::time::Instant, Vec<(String, bool)>)>,
+    path_pick: (String, usize),
     /// Close waiting for the user to confirm, because programs are running.
     confirm_close: Option<ConfirmClose>,
     /// The window may close without asking again (confirmed, or restarting).
@@ -250,6 +284,40 @@ pub struct App {
     /// App time when the startup splash began; None once it is over.
     splash: Option<f64>,
     ctx: egui::Context,
+    /// The window being drawn (the main one is ROOT), and the other windows (see `WindowSlot`).
+    viewport: egui::ViewportId,
+    others: Vec<WindowSlot>,
+    /// Windows opened this frame, shown from the next one.
+    new_windows: Vec<WindowSlot>,
+    /// Where the app-wide dialogs (settings...) show: the window last in front.
+    dialog_viewport: egui::ViewportId,
+    /// Where this window opened (other windows only).
+    opened_at: Option<WindowState>,
+    /// This (other) window closes: its tabs close with it.
+    window_closing: bool,
+    /// A destructive command held back at Enter, waiting for "run it anyway" (see `guard`).
+    guard_confirm: Option<(PaneId, String, guard::Danger)>,
+}
+
+/// Pushes a window's tabs into their profiles, and returns what the session keeps of them.
+fn sync_tabs(tabs: &mut [Tab], config: &mut Config) -> Vec<SessionTab> {
+    let mut out = Vec::with_capacity(tabs.len());
+    for tab in tabs {
+        // An SSH tab shows its host's name and color.
+        if let Some(host) = tab.ssh.and_then(|id| config.ssh.iter().find(|h| h.id == id)) {
+            tab.name = Some(host.name.clone());
+            tab.color = host.color;
+        }
+        let state = tab.state();
+        if let Some(id) = tab.profile {
+            match config.profiles.iter_mut().find(|p| p.id == id) {
+                Some(p) => p.tab = state.clone(),
+                None => tab.profile = None,
+            }
+        }
+        out.push(SessionTab { profile: tab.profile, ssh: tab.ssh, tab: state });
+    }
+    out
 }
 
 /// A profile or an SSH host, as shown in the sidebar.
@@ -499,10 +567,11 @@ enum ShortcutAction {
     ClearPane,
     OpenSettings,
     ToggleFiles,
+    NewWindow,
 }
 
 impl ShortcutAction {
-    const ALL: [ShortcutAction; 10] = [
+    const ALL: [ShortcutAction; 11] = [
         Self::NewTab,
         Self::ClosePane,
         Self::SplitRight,
@@ -513,6 +582,7 @@ impl ShortcutAction {
         Self::ClearPane,
         Self::OpenSettings,
         Self::ToggleFiles,
+        Self::NewWindow,
     ];
 
     fn label(self, t: &Strings) -> &'static str {
@@ -527,6 +597,7 @@ impl ShortcutAction {
             Self::ClearPane => t.shortcut_clear_pane,
             Self::OpenSettings => t.shortcut_open_settings,
             Self::ToggleFiles => t.shortcut_toggle_files,
+            Self::NewWindow => t.new_window,
         }
     }
 
@@ -542,6 +613,7 @@ impl ShortcutAction {
             Self::ClearPane => &s.clear_pane,
             Self::OpenSettings => &s.open_settings,
             Self::ToggleFiles => &s.toggle_files,
+            Self::NewWindow => &s.new_window,
         }
     }
 
@@ -557,6 +629,7 @@ impl ShortcutAction {
             Self::ClearPane => &mut s.clear_pane,
             Self::OpenSettings => &mut s.open_settings,
             Self::ToggleFiles => &mut s.toggle_files,
+            Self::NewWindow => &mut s.new_window,
         }
     }
 }
@@ -583,6 +656,8 @@ impl App {
             fonts: FontSet { size: 14.0, line_height: 1.2 },
             rename: None,
             focus_terminal: true,
+            scrollback_seq: HashMap::new(),
+            last_scrollback_save: 0.0,
             error: None,
             window_title: String::new(),
             next_pane: 1,
@@ -618,6 +693,15 @@ impl App {
             ssh_prompts: std::sync::mpsc::channel().1,
             #[cfg(unix)]
             ssh_prompt: None,
+            viewport: egui::ViewportId::ROOT,
+            others: Vec::new(),
+            new_windows: Vec::new(),
+            dialog_viewport: egui::ViewportId::ROOT,
+            opened_at: None,
+            window_closing: false,
+            guard_confirm: None,
+            path_cache: HashMap::new(),
+            path_pick: (String::new(), 0),
             read_only: false,
             session_frozen: false,
             confirm_reset: false,
@@ -677,17 +761,17 @@ impl App {
         let known = |c: &&SessionTab| c.profile.is_some_and(|id| app.config.profiles.iter().any(|p| p.id == id));
         app.closed = session.closed.iter().filter(known).cloned().collect();
         app.window = session.window;
-        for tab in &session.tabs {
-            // A profile tab starts from its profile: it may have been edited in config.json since.
-            let profile = tab.profile.and_then(|id| app.config.profiles.iter().find(|p| p.id == id));
-            let state = profile.map_or_else(|| tab.tab.clone(), |p| p.tab.clone());
-            app.open_tab(&state, tab.profile);
-            // SSH tabs reconnect when first shown, like other restored tabs start their shell.
-            if let (Some(id), Some(last)) = (tab.ssh, app.tabs.last_mut()) {
-                last.ssh = app.config.ssh.iter().any(|h| h.id == id).then_some(id);
+        app.restore_tabs(&session.tabs, session.active);
+        // The other windows, where they were.
+        for w in &session.windows {
+            let mut slot = WindowSlot { viewport: egui::ViewportId::from_hash_of(("window", Uuid::new_v4())), opened_at: w.window, window: w.window, ..Default::default() };
+            app.swap_window(&mut slot);
+            app.restore_tabs(&w.tabs, w.active);
+            app.swap_window(&mut slot);
+            if !slot.tabs.is_empty() {
+                app.others.push(slot);
             }
         }
-        app.active = session.active.min(app.tabs.len().saturating_sub(1));
         watch_config(&cc.egui_ctx);
         // Ronnie handles Cmd +/- itself (the zoom is saved in the settings).
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -764,7 +848,8 @@ impl App {
     /// Deletes the command histories of terminals that were closed for good: neither open, nor in a
     /// profile or the recently closed tabs.
     fn forget_unused_histories(&self) {
-        let mut keep: Vec<Uuid> = self.tabs.iter().flat_map(|t| t.histories.values().copied()).collect();
+        let all_tabs = self.tabs.iter().chain(self.others.iter().chain(&self.new_windows).flat_map(|w| &w.tabs));
+        let mut keep: Vec<Uuid> = all_tabs.flat_map(|t| t.histories.values().copied()).collect();
         for p in &self.config.profiles {
             p.tab.layout.histories(&mut keep);
         }
@@ -783,10 +868,17 @@ impl App {
     /// Starts the shells of a tab's panes that have not run yet.
     fn start_pending(&mut self, ctx: &egui::Context, index: usize) {
         let launch = self.launch_for(index);
+        let restore = self.config.settings.restore_scrollback;
+        let restored = self.t().scrollback_restored;
         let Some(tab) = self.tabs.get_mut(index) else { return };
         for id in std::mem::take(&mut tab.pending) {
             let history = tab.history_path(id);
-            match Terminal::local(ctx, tab.cwds.get(&id).map(PathBuf::as_path), launch.as_ref(), history.as_deref()) {
+            // What the pane showed last time, then a line saying so.
+            let restore = restore.then(|| tab.histories.get(&id).and_then(|h| crate::shell::scrollback_path(*h)).and_then(|p| std::fs::read(p).ok())).flatten().filter(|b| !b.is_empty()).map(|mut bytes| {
+                bytes.extend_from_slice(format!("\x1b[0;2m── {} ──\x1b[0m\r\n", restored).as_bytes());
+                bytes
+            });
+            match Terminal::local(ctx, tab.cwds.get(&id).map(PathBuf::as_path), launch.as_ref(), history.as_deref(), restore.as_deref()) {
                 Ok(term) => {
                     tab.panes.insert(id, term);
                 }
@@ -816,7 +908,7 @@ impl App {
         let Some(tab) = self.tabs.get_mut(index) else { return };
         for &id in panes {
             let history = tab.history_path(id);
-            match Terminal::local(ctx, None, launch.as_ref(), history.as_deref()) {
+            match Terminal::local(ctx, None, launch.as_ref(), history.as_deref(), None) {
                 Ok(term) => {
                     tab.panes.insert(id, term);
                     tab.dead.remove(&id);
@@ -833,6 +925,9 @@ impl App {
     fn open_ssh(&mut self, id: Uuid) {
         if let Some(index) = self.tabs.iter().position(|t| t.ssh == Some(id)) {
             self.select(index);
+            return;
+        }
+        if self.show_elsewhere(|t| t.ssh == Some(id)) {
             return;
         }
         let Some(host) = self.config.ssh.iter().find(|h| h.id == id) else { return };
@@ -864,10 +959,94 @@ impl App {
     fn open_profile(&mut self, id: Uuid) {
         if let Some(index) = self.tabs.iter().position(|t| t.profile == Some(id)) {
             self.select(index);
+        } else if self.show_elsewhere(|t| t.profile == Some(id)) {
         } else if let Some(p) = self.config.profiles.iter().find(|p| p.id == id) {
             let state = p.tab.clone();
             self.open_tab(&state, Some(id));
         }
+    }
+
+    /// A tab open in another window: brings that window to the front, on the tab.
+    fn show_elsewhere(&mut self, is: impl Fn(&Tab) -> bool) -> bool {
+        for w in &mut self.others {
+            if let Some(i) = w.tabs.iter().position(&is) {
+                w.active = i;
+                w.focus_terminal = true;
+                self.ctx.send_viewport_cmd_to(w.viewport, ViewportCommand::Focus);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A new window, a little offset from this one, where `fill` opens its tabs.
+    fn new_window(&mut self, fill: impl FnOnce(&mut Self)) {
+        let opened_at = self.window.map(|w| WindowState { x: w.x + 36.0, y: w.y + 36.0, maximized: false, fullscreen: false, ..w });
+        let mut slot = WindowSlot { viewport: egui::ViewportId::from_hash_of(("window", Uuid::new_v4())), opened_at, window: opened_at, focus_terminal: true, ..Default::default() };
+        self.swap_window(&mut slot);
+        fill(self);
+        self.focus_terminal = true;
+        self.swap_window(&mut slot);
+        self.new_windows.push(slot);
+    }
+
+    /// Takes tab `index` out of this window (to move it to another), keeping its programs running.
+    fn take_tab(&mut self, index: usize) -> Option<Tab> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(index);
+        // Popups tied to this window's tabs by index.
+        self.rename = None;
+        self.commands_menu = None;
+        self.history_search = None;
+        self.confirm_close = None;
+        if self.active > index || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+        self.focus_terminal = true;
+        Some(tab)
+    }
+
+    /// Moves tab `index` to a new window.
+    fn tab_to_new_window(&mut self, index: usize) {
+        let Some(tab) = self.take_tab(index) else { return };
+        self.new_window(|app| {
+            app.tabs.push(tab);
+            app.active = 0;
+        });
+        // The main window keeps at least one tab.
+        if self.tabs.is_empty() && self.viewport == egui::ViewportId::ROOT {
+            self.new_tab(&self.ctx.clone());
+        }
+    }
+
+    /// Opens a profile or an SSH host in a new window; already open here, its tab moves there.
+    fn item_to_new_window(&mut self, id: Uuid) {
+        if let Some(index) = self.tabs.iter().position(|t| t.profile == Some(id) || t.ssh == Some(id)) {
+            self.tab_to_new_window(index);
+            return;
+        }
+        if self.show_elsewhere(|t| t.profile == Some(id) || t.ssh == Some(id)) {
+            return;
+        }
+        let profile = self.config.profiles.iter().any(|p| p.id == id);
+        self.new_window(|app| if profile { app.open_profile(id) } else { app.open_ssh(id) });
+    }
+
+    /// Opens the tabs of a saved window (session) in this one.
+    fn restore_tabs(&mut self, tabs: &[SessionTab], active: usize) {
+        for tab in tabs {
+            // A profile tab starts from its profile: it may have been edited in config.json since.
+            let profile = tab.profile.and_then(|id| self.config.profiles.iter().find(|p| p.id == id));
+            let state = profile.map_or_else(|| tab.tab.clone(), |p| p.tab.clone());
+            self.open_tab(&state, tab.profile);
+            // SSH tabs reconnect when first shown, like other restored tabs start their shell.
+            if let (Some(id), Some(last)) = (tab.ssh, self.tabs.last_mut()) {
+                last.ssh = self.config.ssh.iter().any(|h| h.id == id).then_some(id);
+            }
+        }
+        self.active = active.min(self.tabs.len().saturating_sub(1));
     }
 
     fn reopen_closed(&mut self, index: usize) {
@@ -898,25 +1077,44 @@ impl App {
         self.window = Some(w);
     }
 
-    /// Pushes open tabs into their profiles and writes what changed to disk.
-    fn sync(&mut self) {
-        let mut tabs = Vec::with_capacity(self.tabs.len());
-        for tab in &mut self.tabs {
-            // An SSH tab shows its host's name and color.
-            if let Some(host) = tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)) {
-                tab.name = Some(host.name.clone());
-                tab.color = host.color;
-            }
-            let state = tab.state();
-            if let Some(id) = tab.profile {
-                match self.config.profiles.iter_mut().find(|p| p.id == id) {
-                    Some(p) => p.tab = state.clone(),
-                    None => tab.profile = None,
+    /// Saves what the terminals of tab `index` (all tabs if None) show, those whose screen changed since
+    /// (or all, with `force`).
+    fn save_scrollbacks(&mut self, index: Option<usize>, force: bool) {
+        if !self.config.settings.restore_scrollback || self.read_only {
+            return;
+        }
+        // This window's tabs (only tab `index` if given), and the other windows' unless `index` is given.
+        let others = self.others.iter().flat_map(|w| &w.tabs).filter(|_| index.is_none());
+        let tabs = self.tabs.iter().enumerate().filter(|(i, _)| index.is_none_or(|x| x == *i)).map(|(_, t)| t).chain(others);
+        for tab in tabs {
+            for (pane, term) in &tab.panes {
+                let Some(&id) = tab.histories.get(pane) else { continue };
+                let seq = term.output_seq();
+                if !force && self.scrollback_seq.get(&id) == Some(&seq) {
+                    continue;
+                }
+                // A full-screen program's screen is not worth keeping: the last save stays.
+                if let Some(bytes) = term.dump(SCROLLBACK_SAVED) {
+                    self.scrollback_seq.insert(id, seq);
+                    crate::shell::save_scrollback(id, &bytes);
                 }
             }
-            tabs.push(SessionTab { profile: tab.profile, ssh: tab.ssh, tab: state });
         }
-        let session = Session { tabs, active: self.active, closed: self.closed.clone(), window: self.window };
+    }
+
+    /// Pushes open tabs into their profiles and writes what changed to disk.
+    fn sync(&mut self) {
+        // Every window, the main one (ROOT) apart; the window being drawn is in `self`.
+        let mut main = None;
+        let mut windows = Vec::new();
+        let here = SessionWindow { tabs: sync_tabs(&mut self.tabs, &mut self.config), active: self.active, window: self.window };
+        if self.viewport == egui::ViewportId::ROOT { main = Some(here) } else { windows.push(here) }
+        for slot in &mut self.others {
+            let w = SessionWindow { tabs: sync_tabs(&mut slot.tabs, &mut self.config), active: slot.active, window: slot.window };
+            if slot.viewport == egui::ViewportId::ROOT { main = Some(w) } else { windows.push(w) }
+        }
+        let main = main.unwrap_or_default();
+        let session = Session { tabs: main.tabs, active: main.active, closed: self.closed.clone(), window: main.window, windows };
 
         if self.read_only {
             return;
@@ -931,6 +1129,27 @@ impl App {
         }
         self.reload_config_if_edited();
         self.save_config();
+    }
+
+    /// Moves the state of window `slot` into `self` and this one's into `slot` (see `WindowSlot`).
+    fn swap_window(&mut self, slot: &mut WindowSlot) {
+        use std::mem::swap;
+        swap(&mut self.viewport, &mut slot.viewport);
+        swap(&mut self.tabs, &mut slot.tabs);
+        swap(&mut self.active, &mut slot.active);
+        swap(&mut self.rename, &mut slot.rename);
+        swap(&mut self.focus_terminal, &mut slot.focus_terminal);
+        swap(&mut self.tab_grab, &mut slot.tab_grab);
+        swap(&mut self.window_title, &mut slot.window_title);
+        swap(&mut self.window, &mut slot.window);
+        swap(&mut self.opened_at, &mut slot.opened_at);
+        swap(&mut self.live, &mut slot.live);
+        swap(&mut self.commands_menu, &mut slot.commands_menu);
+        swap(&mut self.history_search, &mut slot.history_search);
+        swap(&mut self.paste_confirm, &mut slot.paste_confirm);
+        swap(&mut self.confirm_close, &mut slot.confirm_close);
+        swap(&mut self.window_closing, &mut slot.window_closing);
+        swap(&mut self.guard_confirm, &mut slot.guard_confirm);
     }
 
     fn save_config(&mut self) {
@@ -1044,7 +1263,7 @@ impl App {
     }
 
     fn spawn(&mut self, ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Uuid) -> Option<(PaneId, Terminal)> {
-        match Terminal::local(ctx, cwd, launch, crate::shell::history_path(history).as_deref()) {
+        match Terminal::local(ctx, cwd, launch, crate::shell::history_path(history).as_deref(), None) {
             Ok(term) => {
                 let id = self.next_pane;
                 self.next_pane += 1;
@@ -1080,7 +1299,7 @@ impl App {
         // SSH: in the same folder on the server, when the shell there tells which.
         let remote_dir = tab.panes.get(&tab.focused).and_then(Terminal::reported_cwd);
         let launch = match (tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)), remote_dir) {
-            (Some(host), Some(dir)) => Some(host.command_in(&dir)),
+            (Some(host), Some(dir)) => Some(host.command_in(Some(&dir))),
             _ => self.launch_for(index),
         };
         let history = Uuid::new_v4();
@@ -1116,6 +1335,8 @@ impl App {
         if index >= self.tabs.len() {
             return;
         }
+        // Its profile shows it again when reopened.
+        self.save_scrollbacks(Some(index), false);
         let mut tab = self.tabs.remove(index);
         let state = tab.state();
         if let Some(p) = self.config.profiles.iter_mut().find(|p| Some(p.id) == tab.profile) {
@@ -1249,6 +1470,10 @@ impl App {
                     }
                 }
                 ShortcutAction::OpenSettings => self.settings_dialog = !self.settings_dialog,
+                ShortcutAction::NewWindow => {
+                    let ctx = ui.ctx().clone();
+                    self.new_window(|app| app.new_tab(&ctx));
+                }
                 ShortcutAction::ToggleFiles => {
                     if let Some(show) = self.tabs.get(self.active).map(|t| !t.show_files) {
                         self.toggle_files(self.active, show);
@@ -1516,21 +1741,21 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
 
     let mut clicks = HeaderClicks::default();
     let icon = |ui: &mut Ui, right: f32, text: &str, tip: String| {
-        let at = Rect::from_min_size(Pos2::new(right - 22.0, rect.min.y + 2.0), Vec2::new(22.0, rect.height() - 4.0));
-        let button = egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false);
+        let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+        let button = egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0);
         ui.put(at, button).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
     };
     let mut right = rect.max.x - 4.0;
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls) = header {
         clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label()));
-        right -= 26.0;
+        right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
-        right -= 26.0;
+        right -= 30.0;
         // This folder's files, with the editor.
         clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
-        right -= 26.0;
-        max_w -= 82.0;
+        right -= 30.0;
+        max_w -= 96.0;
         right -= 4.0;
         for url in urls.iter().rev() {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
@@ -1549,12 +1774,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
     }
     if let Header::Ssh(_) = header {
         clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned());
-        right -= 26.0;
+        right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
-        right -= 26.0;
+        right -= 30.0;
         // The server's files, FileZilla style.
         clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
-        max_w -= 82.0;
+        max_w -= 96.0;
     }
 
     let (text, tooltip) = match header {
@@ -1723,6 +1948,10 @@ enum TabAction {
     Reconnect(usize),
     /// Copy a profile (right after it), or open the host editor on a copy of a host.
     Duplicate(Uuid),
+    /// Open a profile or an SSH host in a new window (moving its tab there if it is open here).
+    ItemNewWindow(Uuid),
+    /// Move an open tab to a new window.
+    TabNewWindow(usize),
 }
 
 enum PaneAction {
@@ -1794,19 +2023,55 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     }
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        // Debug builds don't look for updates (they would replace themselves with a release), unless asked.
-        // Only published builds update themselves: a local build would replace itself with the release.
-        let updates_on = config::OFFICIAL || std::env::var_os("RONNIE_UPDATE_CHECK").is_some();
-        if updates_on && self.config.settings.auto_update {
-            let now = ui.input(|i| i.time);
-            if self.last_update_check.is_none_or(|last| now - last >= UPDATE_INTERVAL) {
-                self.last_update_check = Some(now);
-                self.updater.check(ui.ctx());
+impl App {
+    /// Draws the other windows, each with its state swapped in; closes those that were closed, and adds
+    /// those opened meanwhile.
+    fn other_windows(&mut self, ctx: &egui::Context) {
+        let mut k = 0;
+        while k < self.others.len() {
+            let mut slot = std::mem::take(&mut self.others[k]);
+            self.swap_window(&mut slot);
+            // While it is drawn, `others` holds every other window (the main one included).
+            self.others[k] = slot;
+            let mut builder = egui::ViewportBuilder::default().with_title(APP_TITLE).with_min_inner_size([520.0, 320.0]);
+            match self.opened_at {
+                Some(w) => builder = builder.with_position([w.x, w.y]).with_inner_size([w.width, w.height]),
+                None => builder = builder.with_inner_size([1100.0, 720.0]),
             }
-            ui.ctx().request_repaint_after(Duration::from_secs_f64(UPDATE_INTERVAL));
+            let viewport = self.viewport;
+            ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
+            // Its last tab closed: the window goes too.
+            let closing = self.window_closing || self.tabs.is_empty();
+            if closing {
+                while !self.tabs.is_empty() {
+                    self.close_tab(0);
+                }
+            }
+            let mut slot = std::mem::take(&mut self.others[k]);
+            self.swap_window(&mut slot);
+            if closing {
+                // Its dialogs go back to the main window.
+                if self.dialog_viewport == slot.viewport {
+                    self.dialog_viewport = egui::ViewportId::ROOT;
+                }
+                self.others.remove(k);
+            } else {
+                self.others[k] = slot;
+                k += 1;
+            }
         }
+        self.others.append(&mut self.new_windows);
+    }
+
+    /// One window: its sidebar, tabs and dialogs. Called for the main window, then for each other one
+    /// with its state swapped in (see `WindowSlot`).
+    fn window_ui(&mut self, ui: &mut Ui) {
+        let main_window = self.viewport == egui::ViewportId::ROOT;
+        // App-wide dialogs show in the window last in front.
+        if ui.input(|i| i.viewport().focused) == Some(true) {
+            self.dialog_viewport = self.viewport;
+        }
+        let dialogs_here = self.dialog_viewport == self.viewport;
         // Background tabs must keep answering their programs (cursor position reports, etc).
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             for term in tab.panes.values_mut() {
@@ -1837,20 +2102,9 @@ impl eframe::App for App {
         }
         self.handle_shortcuts(ui);
         self.poll_files();
-        // Errors shown to the user also go to ronnie.log, to diagnose them later.
-        if self.error != self.logged_error {
-            if let Some(e) = &self.error {
-                crate::log::error(e);
-            }
-            self.logged_error = self.error.clone();
-        }
 
         self.track_window(ui.ctx());
         let now = ui.input(|i| i.time);
-        if now - self.last_sync >= SYNC_INTERVAL {
-            self.last_sync = now;
-            self.sync();
-        }
         // Changes come with input: keep syncing shortly after it, then let an idle app sleep. Outside
         // edits of config.json wake it up through the config watcher.
         if ui.input(|i| !i.events.is_empty() || i.pointer.is_moving()) {
@@ -1886,11 +2140,17 @@ impl eframe::App for App {
                     self.empty_state(ui, rect);
                     return;
                 };
+                // Given once the click that asked for it (in the sidebar...) is over: during that frame, egui
+                // takes the focus away from every widget the pointer isn't on, the terminal included.
                 if self.focus_terminal && self.rename.is_none() {
-                    if let Some(term) = tab.panes.get(&tab.focused) {
-                        term.request_focus(ui);
+                    if ui.input(|i| i.pointer.any_pressed() || i.pointer.any_click() || i.pointer.any_down()) {
+                        ui.ctx().request_repaint();
+                    } else {
+                        if let Some(term) = tab.panes.get(&tab.focused) {
+                            term.request_focus(ui);
+                        }
+                        self.focus_terminal = false;
                     }
-                    self.focus_terminal = false;
                 }
 
                 let mut rects = Vec::with_capacity(tab.panes.len());
@@ -1908,6 +2168,103 @@ impl eframe::App for App {
                 let mut open_search = None;
                 let mut open_commands = None;
                 let mut open_files = false;
+                // Path suggestions (→ takes one, Alt+↑ ↓ picks): at a local zsh prompt (the shell tells
+                // what is typed), or at a server's usual prompt (read from the screen; the server's files
+                // come through a background SFTP session). Checked before the panes handle keys, so these
+                // don't reach the terminal.
+                let mut suggest: Option<(String, String, Vec<(String, bool)>)> = None;
+                let mut remote_query = None;
+                let modal = ui.ctx().memory(|m| m.top_modal_layer().is_some());
+                if let Some(term) = tab.panes.get(&tab.focused).filter(|t| self.config.settings.path_suggestions && !modal && !t.scrolled_back() && t.has_focus(ui)) {
+                    if local {
+                        suggest = (|| {
+                            let (line, end) = term.typed_input()?;
+                            if !end {
+                                return None;
+                            }
+                            let cwd = term.cwd()?;
+                            let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
+                            let wanted = complete::parse(&line, &cwd, &home)?;
+                            let listed = self.path_cache.get(&wanted.dir).is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(2));
+                            if !listed {
+                                if self.path_cache.len() > 64 {
+                                    self.path_cache.clear();
+                                }
+                                self.path_cache.insert(wanted.dir.clone(), (std::time::Instant::now(), complete::list(&wanted.dir)));
+                            }
+                            let items: Vec<(String, bool)> = complete::matching(&self.path_cache[&wanted.dir].1, &wanted.prefix, 6).into_iter().cloned().collect();
+                            (!items.is_empty()).then_some((line, wanted.prefix, items))
+                        })();
+                    } else if let Some((line, true)) = term.guess_prompt_input() {
+                        // Only when a path is being typed (no SFTP session for nothing).
+                        if complete::parse_remote(&line, "/", "/").is_some() {
+                            remote_query = Some((line, term.reported_cwd()));
+                        }
+                    }
+                }
+                // Hosts that log in without asking (agent, key, saved password): a password window must
+                // never pop up for a suggestion.
+                let quiet_host = tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).filter(|h| matches!(h.auth_method(), SshAuth::Auto | SshAuth::Key) || h.uses_saved_password()).cloned();
+                if let (Some((line, cwd)), Some(host)) = (remote_query, quiet_host) {
+                    if tab.files.is_none() {
+                        let mut fm = Box::new(files::FileManager::new(&host));
+                        fm.connect(&self.ctx, &host, #[cfg(unix)] &self.askpass);
+                        tab.files = Some(fm);
+                    }
+                    let mut waiting;
+                    if let Some(fm) = tab.files.as_mut() {
+                        waiting = fm.connecting();
+                        suggest = (|| {
+                            let home = fm.remote_home()?.to_owned();
+                            let cwd = match cwd {
+                                Some(c) if c == "~" || c.starts_with("~/") => format!("{home}{}", &c[1..]),
+                                Some(c) => c,
+                                None => home.clone(),
+                            };
+                            let (dir, prefix) = complete::parse_remote(&line, &cwd, &home)?;
+                            let entries = fm.remote_entries(&dir);
+                            waiting = entries.is_none();
+                            let items: Vec<(String, bool)> = complete::matching(&entries?, &prefix, 6).into_iter().cloned().collect();
+                            (!items.is_empty()).then_some((line, prefix, items))
+                        })();
+                    } else {
+                        waiting = true;
+                    }
+                    // The session or the listing arrives in the background.
+                    if waiting {
+                        ui.ctx().request_repaint_after(Duration::from_millis(150));
+                    }
+                }
+                // The metal guard: Enter on a destructive command waits for a confirmation.
+                if self.config.settings.metal_guard && self.guard_confirm.is_none() && !modal {
+                    if let Some(term) = tab.panes.get(&tab.focused).filter(|t| !t.scrolled_back() && t.has_focus(ui)) {
+                        let line = if local { term.typed_input() } else { term.guess_prompt_input() }.map(|(l, _)| l);
+                        if let Some((line, danger)) = line.and_then(|l| Some((l.clone(), guard::check(&l, !local)?))) {
+                            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+                                self.guard_confirm = Some((tab.focused, line, danger));
+                            }
+                        }
+                    }
+                }
+                let mut take_suggestion = None;
+                if let Some((line, _, items)) = &suggest {
+                    if self.path_pick.0 != *line {
+                        self.path_pick = (line.clone(), 0);
+                    }
+                    let pick = &mut self.path_pick.1;
+                    *pick = (*pick).min(items.len() - 1);
+                    ui.input_mut(|i| {
+                        if i.consume_key(Modifiers::ALT, Key::ArrowDown) {
+                            *pick = (*pick + 1) % items.len();
+                        }
+                        if i.consume_key(Modifiers::ALT, Key::ArrowUp) {
+                            *pick = (*pick + items.len() - 1) % items.len();
+                        }
+                        if i.consume_key(Modifiers::NONE, Key::ArrowRight) {
+                            take_suggestion = Some(*pick);
+                        }
+                    });
+                }
                 // Checked before the panes handle keys, so Cmd+Enter doesn't reach the terminal.
                 let prompt = password_host.filter(|_| tab.panes.get(&tab.focused).is_some_and(Terminal::awaits_password));
                 let mut fill_password = prompt.is_some()
@@ -1974,6 +2331,33 @@ impl eframe::App for App {
                 }
                 tab.rects = rects;
 
+                if let (Some((_, prefix, items)), Some(term)) = (&suggest, tab.panes.get_mut(&tab.focused)) {
+                    let pos = term.cursor_pos() + Vec2::new(-(prefix.chars().count() as f32) * term.cell_size().x, term.cell_size().y + 2.0);
+                    let pick = self.path_pick.1;
+                    let theme = &self.theme;
+                    egui::Area::new(egui::Id::new("path-suggestions")).order(egui::Order::Foreground).fixed_pos(pos).interactable(true).show(ui.ctx(), |ui| {
+                        Frame::popup(ui.style()).fill(theme.chrome_bg).inner_margin(6.0).show(ui, |ui| {
+                            for (i, (name, is_dir)) in items.iter().enumerate() {
+                                let row = ui.horizontal(|ui| {
+                                    let (icon, _) = ui.allocate_exact_size(Vec2::splat(15.0), Sense::hover());
+                                    files::paint_file_icon(ui.painter(), icon, name, *is_dir, false, None, theme);
+                                    let text = egui::RichText::new(if *is_dir { format!("{name}/") } else { name.clone() }).monospace().size(12.5);
+                                    ui.add(egui::Button::selectable(i == pick, text))
+                                });
+                                if row.inner.clicked() {
+                                    take_suggestion = Some(i);
+                                }
+                            }
+                            let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
+                            ui.label(egui::RichText::new(strings.path_suggest_hint.replace("{alt}", alt)).size(11.0).color(theme.text_muted));
+                        });
+                    });
+                    if let Some(i) = take_suggestion {
+                        let (name, is_dir) = &items[i];
+                        term.type_text(&complete::completion(name, prefix, *is_dir));
+                        self.focus_terminal = true;
+                    }
+                }
                 if let (Some(_), Some(term)) = (prompt, tab.panes.get(&tab.focused)) {
                     let pos = term.cursor_pos() + Vec2::new(10.0, -3.0);
                     let hint = if cfg!(target_os = "macos") { "⌘ ↩" } else { "Ctrl+↩" };
@@ -2069,13 +2453,15 @@ impl eframe::App for App {
                 }
             });
 
-        self.settings_window(ui.ctx());
-        self.host_editor_window(ui.ctx());
-        self.profile_editor_window(ui.ctx());
+        if dialogs_here {
+            self.settings_window(ui.ctx());
+            self.host_editor_window(ui.ctx());
+            self.profile_editor_window(ui.ctx());
+        }
 
         // macOS menu bar.
         #[cfg(target_os = "macos")]
-        if let Some(menu) = &mut self.menu {
+        if let Some(menu) = self.menu.as_mut().filter(|_| main_window) {
             menu.sync(self.config.settings.language.strings(), &self.config.settings.shortcuts.open_settings);
             for action in menu.actions() {
                 match action {
@@ -2086,24 +2472,30 @@ impl eframe::App for App {
             }
         }
 
-        // Closing the window (red button, Cmd+Q...) asks first when programs are still running.
+        // Closing the window (red button, Cmd+Q...) asks first when programs are still running. Another
+        // window than the main one closes by itself, with its tabs.
         if ui.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
             let busy = self.busy_for(CloseRequest::Window);
             if !busy.is_empty() {
                 ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
                 self.confirm_close = Some(ConfirmClose { request: CloseRequest::Window, busy });
+            } else if !main_window {
+                self.window_closing = true;
             }
         }
         self.history_search_ui(ui.ctx());
         self.commands_menu_ui(ui.ctx());
         self.confirm_close_window(ui.ctx());
-        self.confirm_reset_window(ui.ctx());
-        self.link_confirm_window(ui.ctx());
         self.paste_confirm_window(ui.ctx());
-        self.ssh_prompt_window(ui.ctx());
+        self.guard_window(ui.ctx());
+        if dialogs_here {
+            self.confirm_reset_window(ui.ctx());
+            self.link_confirm_window(ui.ctx());
+            self.ssh_prompt_window(ui.ctx());
+        }
 
         // Startup splash, over everything; a click or a key skips it.
-        if let Some(start) = self.splash {
+        if let Some(start) = self.splash.filter(|_| main_window) {
             let now = ui.input(|i| i.time);
             let start = if start.is_nan() { now } else { start };
             self.splash = Some(start);
@@ -2124,8 +2516,45 @@ impl eframe::App for App {
             }
         }
     }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        // Debug builds don't look for updates (they would replace themselves with a release), unless asked.
+        // Only published builds update themselves: a local build would replace itself with the release.
+        let updates_on = config::OFFICIAL || std::env::var_os("RONNIE_UPDATE_CHECK").is_some();
+        if updates_on && self.config.settings.auto_update {
+            let now = ui.input(|i| i.time);
+            if self.last_update_check.is_none_or(|last| now - last >= UPDATE_INTERVAL) {
+                self.last_update_check = Some(now);
+                self.updater.check(ui.ctx());
+            }
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(UPDATE_INTERVAL));
+        }
+        self.window_ui(ui);
+        self.other_windows(ui.ctx());
+
+        // Errors shown to the user also go to ronnie.log, to diagnose them later.
+        if self.error != self.logged_error {
+            if let Some(e) = &self.error {
+                crate::log::error(e);
+            }
+            self.logged_error = self.error.clone();
+        }
+        let now = ui.input(|i| i.time);
+        if now - self.last_sync >= SYNC_INTERVAL {
+            self.last_sync = now;
+            self.sync();
+        }
+        // Also saved now and then, so that a crash or a power cut loses little.
+        if now - self.last_scrollback_save >= 60.0 {
+            self.last_scrollback_save = now;
+            self.save_scrollbacks(None, false);
+        }
+    }
 
     fn on_exit(&mut self) {
+        self.save_scrollbacks(None, false);
         self.sync();
         #[cfg(unix)]
         crate::askpass::cleanup();

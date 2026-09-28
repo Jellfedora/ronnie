@@ -171,17 +171,23 @@ pub struct Terminal {
 impl Terminal {
     /// Starts `launch` (the user's shell if none) in a local pseudo-terminal.
     /// A shell keeps its command history in `history` (ignored for other programs).
-    pub fn local(ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Option<&Path>) -> Result<Self> {
+    /// `restore`: what the terminal showed last time (see `dump`), shown again before the program starts.
+    pub fn local(ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Option<&Path>, restore: Option<&[u8]>) -> Result<Self> {
         let size = GridSize { cols: 80, rows: 24 };
         let (backend, reader) = pty::LocalPty::spawn(size.cols as u16, size.rows as u16, cwd, launch, history)?;
-        Ok(Self::start(ctx, Box::new(backend), reader, size))
+        Ok(Self::start(ctx, Box::new(backend), reader, size, restore))
     }
 
-    fn start(ctx: &egui::Context, backend: Box<dyn Backend>, mut reader: Box<dyn Read + Send>, size: GridSize) -> Self {
+    fn start(ctx: &egui::Context, backend: Box<dyn Backend>, mut reader: Box<dyn Read + Send>, size: GridSize, restore: Option<&[u8]>) -> Self {
         let (tx, events) = mpsc::channel();
         let listener = Listener { tx, ctx: ctx.clone() };
         let config = TermConfig { scrolling_history: SCROLLBACK.load(Ordering::Relaxed), ..TermConfig::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, listener)));
+        if let Some(bytes) = restore {
+            // Lines are reflowed when the pane gets its real size.
+            let mut parser: Processor = Processor::new();
+            parser.advance(&mut *term.lock(), bytes);
+        }
         let exited = Arc::new(AtomicBool::new(false));
         let shell = Arc::new(Mutex::new(osc::Shell::default()));
         let received = Arc::new(AtomicBool::new(false));
@@ -254,6 +260,19 @@ impl Terminal {
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
         }
+    }
+
+    /// Bumped by every output (to tell whether the screen changed).
+    pub fn output_seq(&self) -> u64 {
+        self.output_seq.load(Ordering::Relaxed)
+    }
+
+    /// What the terminal shows, history included (the last `max_lines` lines), as text with its colors,
+    /// to show it again next time. The line being typed at the prompt is left out. None while a
+    /// full-screen program (vim, htop...) has the screen.
+    pub fn dump(&self, max_lines: usize) -> Option<Vec<u8>> {
+        let term = self.term.lock();
+        (!term.mode().contains(TermMode::ALT_SCREEN)).then(|| dump_term(&term, max_lines))
     }
 
     /// Title set by the running program (OSC 0/2), if any.
@@ -330,6 +349,12 @@ impl Terminal {
         finished
     }
 
+    /// At the prompt of Ronnie's zsh: the line typed left of the cursor, and whether the cursor is at
+    /// its end.
+    pub fn typed_input(&self) -> Option<(String, bool)> {
+        self.shell.lock().ok()?.input.clone()
+    }
+
     /// Working directory reported by the shell itself (OSC 7), or shown in the title as `user@host: path`.
     /// For an SSH pane it is a path on the server, possibly starting with `~`.
     pub fn reported_cwd(&self) -> Option<String> {
@@ -385,6 +410,32 @@ impl Terminal {
         let row = &term.grid()[cursor.line];
         let line: String = (0..cursor.column.0.min(self.size.cols)).map(|c| row[Column(c)].c).collect();
         looks_like_password_prompt(&line)
+    }
+
+    /// Without shell integration (a server's shell): what is typed after a usual prompt on the cursor's
+    /// line ("user@host:dir# ", "user@host ~ $ "...), and whether the cursor is at its end.
+    pub fn guess_prompt_input(&self) -> Option<(String, bool)> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        if grid.display_offset() != 0 || term.mode().contains(TermMode::ALT_SCREEN) {
+            return None;
+        }
+        let cursor = grid.cursor.point;
+        let row = &grid[cursor.line];
+        let cols = grid.columns();
+        let left: String = (0..cursor.column.0.min(cols)).map(|c| row[Column(c)].c).collect();
+        let end = (cursor.column.0..cols).all(|c| row[Column(c)].c == ' ');
+        prompt_input(&left).map(|typed| (typed.to_owned(), end))
+    }
+
+    /// Size of a character cell on screen, as drawn last frame.
+    pub fn cell_size(&self) -> Vec2 {
+        self.cell
+    }
+
+    /// Scrolled back into the history (the prompt is not on screen as usual).
+    pub fn scrolled_back(&self) -> bool {
+        self.term.lock().grid().display_offset() != 0
     }
 
     /// Screen position just right of the cursor, as drawn last frame.
@@ -514,6 +565,11 @@ impl Terminal {
 
     pub fn request_focus(&self, ui: &Ui) {
         ui.memory_mut(|m| m.request_focus(self.id));
+    }
+
+    /// The keyboard goes to this terminal.
+    pub fn has_focus(&self, ui: &Ui) -> bool {
+        ui.memory(|m| m.has_focus(self.id))
     }
 
     fn write(&mut self, data: &[u8]) {
@@ -849,6 +905,89 @@ impl Terminal {
     }
 }
 
+/// See `Terminal::dump`.
+fn dump_term<L: EventListener>(term: &Term<L>, max_lines: usize) -> Vec<u8> {
+    use alacritty_terminal::term::cell::Flags;
+    use std::fmt::Write as _;
+    let grid = term.grid();
+    let (history, screen, cols) = (grid.history_size() as i32, grid.screen_lines() as i32, grid.columns());
+    let last = grid.cursor.point.line.0 - 1;
+    let first = (-history).max(last - max_lines as i32 + 1);
+    let mut out = String::new();
+    let mut style = String::new();
+    let sgr = |cell: &alacritty_terminal::term::cell::Cell| -> String {
+        let mut codes = vec!["0".to_owned()];
+        for (flag, code) in [(Flags::BOLD, "1"), (Flags::DIM, "2"), (Flags::ITALIC, "3"), (Flags::UNDERLINE, "4"), (Flags::INVERSE, "7"), (Flags::HIDDEN, "8"), (Flags::STRIKEOUT, "9")] {
+            if cell.flags.contains(flag) {
+                codes.push(code.to_owned());
+            }
+        }
+        for (color, base) in [(cell.fg, 30), (cell.bg, 40)] {
+            match color {
+                Color::Named(n) if (n as usize) < 8 => codes.push((base + n as usize).to_string()),
+                Color::Named(n) if (n as usize) < 16 => codes.push((base + 60 + n as usize - 8).to_string()),
+                Color::Named(_) => {}
+                Color::Indexed(i) => codes.push(format!("{};5;{i}", base + 8)),
+                Color::Spec(rgb) => codes.push(format!("{};2;{};{};{}", base + 8, rgb.r, rgb.g, rgb.b)),
+            }
+        }
+        format!("\x1b[{}m", codes.join(";"))
+    };
+    for line in first..=last.min(screen - 1) {
+        let row = &grid[Line(line)];
+        // The "restored" line shown last time is not kept: it would pile up with each restart.
+        let text: String = (0..cols).map(|c| row[Column(c)].c).collect();
+        let text = text.trim();
+        if row[Column(0)].flags.contains(Flags::DIM) && text.starts_with("── ") && text.ends_with(" ──") {
+            continue;
+        }
+        let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        // Trailing blanks are dropped (unless the line goes on on the next row).
+        let end = if wrapped { cols } else { (0..cols).rev().find(|&c| row[Column(c)].c != ' ' || row[Column(c)].bg != Color::Named(NamedColor::Background)).map_or(0, |c| c + 1) };
+        for c in 0..end {
+            let cell = &row[Column(c)];
+            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            let s = sgr(cell);
+            if s != style {
+                out.push_str(&s);
+                style = s;
+            }
+            out.push(if cell.c == '\0' { ' ' } else { cell.c });
+            if let Some(extra) = cell.zerowidth() {
+                out.extend(extra);
+            }
+        }
+        if !wrapped {
+            if style != "\x1b[0m" {
+                out.push_str("\x1b[0m");
+                style = "\x1b[0m".to_owned();
+            }
+            let _ = write!(out, "\r\n");
+        }
+    }
+    out.push_str("\x1b[0m");
+    out.into_bytes()
+}
+
+/// What follows a usual shell prompt at the start of `line`: "user@host", then anything without
+/// spaces or with a few words ("~ ", a folder...), then "# ", "$ " or "% ".
+fn prompt_input(line: &str) -> Option<&str> {
+    let at = line.find('@')?;
+    // The user name: no spaces (a prompt starts the line, possibly after "(venv) " or "[...]").
+    if line[..at].trim_start().split_whitespace().last().is_none_or(|u| u.is_empty()) {
+        return None;
+    }
+    let rest = &line[at..];
+    let end = ["# ", "$ ", "% "].iter().filter_map(|p| rest.find(p)).min()?;
+    // The prompt itself is short.
+    if end > 120 {
+        return None;
+    }
+    Some(&rest[end + 2..])
+}
+
 fn looks_like_password_prompt(line: &str) -> bool {
     let line = line.trim_end().to_lowercase();
     let asks = ["password", "mot de passe", "passwort", "contraseña", "passphrase"].iter().any(|w| line.contains(w));
@@ -857,7 +996,39 @@ fn looks_like_password_prompt(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_password_prompt;
+    use super::*;
+
+    #[test]
+    fn restores_what_was_shown() {
+        use alacritty_terminal::event::VoidListener;
+        let size = GridSize { cols: 20, rows: 5 };
+        let mut a = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: Processor = Processor::new();
+        // Colors, a line longer than the width (wrapped), then the prompt being typed.
+        parser.advance(&mut a, "\x1b[31mrouge\x1b[0m normal\r\n\x1b[0;2m── restauré ──\x1b[0m\r\n0123456789abcdefghijKLMNO\r\né\r\n$ ls".as_bytes());
+        let saved = super::dump_term(&a, 100);
+        let text = String::from_utf8(saved.clone()).unwrap();
+        assert!(!text.contains("$ ls"), "the line being typed is left out");
+        // Shown again in a wider terminal: the long line is one line again.
+        let mut b = Term::new(TermConfig::default(), &GridSize { cols: 40, rows: 5 }, VoidListener);
+        parser.advance(&mut b, &saved);
+        let row = |t: &Term<VoidListener>, l: i32| (0..t.grid().columns()).map(|c| t.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_owned();
+        let lines: Vec<String> = (-(b.grid().history_size() as i32)..5).map(|l| row(&b, l)).filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, ["rouge normal", "0123456789abcdefghijKLMNO", "é"]);
+        let first = (-(b.grid().history_size() as i32)..5).find(|l| row(&b, *l) == "rouge normal").unwrap();
+        assert_eq!(b.grid()[Line(first)][Column(0)].fg, Color::Named(NamedColor::Red));
+        assert_eq!(b.grid()[Line(first)][Column(6)].fg, Color::Named(NamedColor::Foreground));
+    }
+
+    #[test]
+    fn reads_what_follows_a_prompt() {
+        assert_eq!(prompt_input("root@dev-julien:/home/pilote# ls /et"), Some("ls /et"));
+        assert_eq!(prompt_input("bob@box:~$ cd Doc"), Some("cd Doc"));
+        assert_eq!(prompt_input("[bob@box ~]$ vim a.t"), Some("vim a.t"));
+        assert_eq!(prompt_input("(venv) bob@box:~/x$ "), Some(""));
+        assert_eq!(prompt_input("total 28"), None);
+        assert_eq!(prompt_input("mysql> select"), None);
+    }
 
     #[test]
     fn detects_password_prompts() {

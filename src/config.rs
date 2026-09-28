@@ -342,6 +342,20 @@ pub struct Session {
     pub closed: Vec<SessionTab>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
+    /// The other windows, with their own tabs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<SessionWindow>,
+}
+
+/// A window besides the main one.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct SessionWindow {
+    #[serde(default)]
+    pub tabs: Vec<SessionTab>,
+    #[serde(default)]
+    pub active: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
 }
 
 /// Window geometry in points. Position and size are those of the normal (not maximized) window.
@@ -390,6 +404,15 @@ pub struct Settings {
     pub notify_commands: bool,
     #[serde(default = "default_notify_after")]
     pub notify_after: u64,
+    /// Suggest files and folders for the path being typed in local terminals.
+    #[serde(default = "default_true")]
+    pub path_suggestions: bool,
+    /// Show again, when Ronnie reopens, what each terminal showed.
+    #[serde(default = "default_true")]
+    pub restore_scrollback: bool,
+    /// Ask before running a well-known destructive command (see `app::guard`).
+    #[serde(default = "default_true")]
+    pub metal_guard: bool,
 }
 
 pub const NOTIFY_AFTER_SECS: std::ops::RangeInclusive<u64> = 3..=600;
@@ -433,6 +456,12 @@ pub struct Shortcuts {
     pub open_settings: Shortcut,
     /// Switches an SSH tab between its terminal and its file manager.
     pub toggle_files: Shortcut,
+    #[serde(default = "default_new_window")]
+    pub new_window: Shortcut,
+}
+
+fn default_new_window() -> Shortcut {
+    Shortcut::command('N')
 }
 
 impl Default for Shortcuts {
@@ -449,6 +478,7 @@ impl Default for Shortcuts {
             clear_pane: Shortcut::command('K'),
             open_settings: Shortcut::command('P'),
             toggle_files: Shortcut::command('E'),
+            new_window: default_new_window(),
         }
     }
 }
@@ -530,7 +560,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), path_suggestions: true, restore_scrollback: true, metal_guard: true }
     }
 }
 
@@ -803,6 +833,17 @@ mod tests {
         assert_eq!(typed.0, "Ctrl+Alt+F2");
         assert_eq!(typed.parse().unwrap().logical_key, egui::Key::F2);
         assert!(Shortcut("Hyper+K".into()).parse().is_none());
+    }
+
+    #[test]
+    fn session_keeps_other_windows() {
+        // A session from before windows existed still reads.
+        let old: Session = serde_json::from_str(r#"{"tabs":[],"active":0}"#).unwrap();
+        assert!(old.windows.is_empty());
+        let w = WindowState { x: 10.0, y: 20.0, width: 800.0, height: 600.0, maximized: false, fullscreen: false };
+        let session = Session { windows: vec![SessionWindow { tabs: Vec::new(), active: 0, window: Some(w) }], ..Default::default() };
+        let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        assert_eq!(back, session);
     }
 
     #[test]

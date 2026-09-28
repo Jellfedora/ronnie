@@ -77,6 +77,10 @@ pub struct SshHost {
     /// Folder on the server where sessions start (a path, `~` allowed); none: the home directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_dir: Option<String>,
+    /// Sessions start bash with a colored prompt and colored `ls` / `grep` (the server's own
+    /// configuration still loaded first), for servers that don't color anything.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub colors: bool,
     /// Whether a password is saved for this host.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub password_saved: bool,
@@ -112,6 +116,7 @@ impl SshHost {
             jump: None,
             options: Vec::new(),
             start_dir: None,
+            colors: false,
             password_saved: false,
             imported: false,
             commands: Vec::new(),
@@ -269,24 +274,26 @@ impl SshHost {
 impl SshHost {
     /// The terminal command for a new session: in the host's start folder, if it has one.
     pub fn session_command(&self) -> Launch {
-        match &self.start_dir {
-            Some(dir) => self.command_in(dir),
-            None => self.command(),
-        }
+        self.command_in(self.start_dir.as_deref())
     }
 
     /// The terminal command, starting the session in `dir` on the server (a path, `~` allowed) when
     /// it can: not when the host has its own remote command (ssh refuses both).
-    pub fn command_in(&self, dir: &str) -> Launch {
+    pub fn command_in(&self, dir: Option<&str>) -> Launch {
         let mut launch = self.command();
-        if self.has_remote_command(&launch) {
+        if (dir.is_none() && !self.colors) || self.has_remote_command(&launch) {
             return launch;
         }
         // The command ends with "--", host: a terminal is requested before them, the command comes after.
         let at = launch.args.len().saturating_sub(2);
         launch.args.insert(at, "-t".to_owned());
         // A folder that is gone lands in the home directory; the shell is the usual login shell.
-        launch.args.push(format!("cd {} 2>/dev/null; exec \"$SHELL\" -l", remote_path_arg(dir)));
+        launch.args.push(match (dir, self.colors) {
+            // Through sh: the user's shell may be fish or anything else.
+            (dir, true) => format!("exec sh -c {}", sh_quote(&color_script(dir))),
+            (Some(dir), false) => format!("cd {} 2>/dev/null; exec \"$SHELL\" -l", remote_path_arg(dir)),
+            (None, false) => unreachable!(),
+        });
         launch
     }
 
@@ -310,6 +317,33 @@ impl SshHost {
             _ => true,
         }
     }
+}
+
+/// Single quotes for sh (also read right by zsh, bash and fish).
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The sh script starting a colored bash session (in `dir` if given): a startup file loads the server's
+/// usual configuration, then sets the prompt (which also keeps the "user@host: dir" title Ronnie
+/// follows) and the color aliases; it deletes itself first thing. Without bash: the usual shell.
+fn color_script(dir: Option<&str>) -> String {
+    let cd = dir.map(|d| format!("cd {} 2>/dev/null\n", remote_path_arg(d))).unwrap_or_default();
+    format!(
+        r#"{cd}if command -v bash >/dev/null 2>&1 && f=$(mktemp 2>/dev/null); then
+cat > "$f" <<'RONNIE_RC'
+rm -f -- "${{BASH_SOURCE[0]}}"
+[ -r /etc/profile ] && . /etc/profile
+if [ -r ~/.bash_profile ]; then . ~/.bash_profile; elif [ -r ~/.profile ]; then . ~/.profile; elif [ -r ~/.bashrc ]; then . ~/.bashrc; fi
+if [ "$(id -u)" = 0 ]; then _ronnie_c='1;31'; else _ronnie_c='1;32'; fi
+PS1='\[\e]0;\u@\h: \w\a\]\[\e['"$_ronnie_c"'m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+unset _ronnie_c
+alias ls='ls --color=auto' grep='grep --color=auto' egrep='egrep --color=auto' fgrep='fgrep --color=auto' diff='diff --color=auto'
+RONNIE_RC
+exec bash --rcfile "$f" -i
+fi
+exec "${{SHELL:-/bin/sh}}" -l"#
+    )
 }
 
 /// A remote path for the server's shell: quoted, except a leading `~` which the shell must expand.
@@ -754,5 +788,48 @@ Host db
         let args = host.sftp_command().args.join(" ");
         assert!(args.ends_with("-T -s -- 10.0.0.1 sftp"), "{args}");
         assert_eq!(args.matches(" -- ").count(), 1);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod color_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// The colored session, run as ssh would on the server: the login shell (zsh here) runs the
+    /// command, which starts bash with Ronnie's startup file.
+    #[test]
+    fn starts_a_colored_bash() {
+        if !Path::new("/bin/bash").exists() || !Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("ronnie-colors-{}", std::process::id()));
+        let tmp = home.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(home.join(".bashrc"), "export FROM_BASHRC=yes\n").unwrap();
+        let command = format!("exec sh -c {}", sh_quote(&color_script(Some("/"))));
+        let pty = portable_pty::native_pty_system().openpty(portable_pty::PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let mut cmd = portable_pty::CommandBuilder::new("/bin/zsh");
+        cmd.args(["-f", "-c", &command]);
+        cmd.env("HOME", &home);
+        cmd.env("TMPDIR", &tmp);
+        cmd.env("SHELL", "/bin/zsh");
+        cmd.env("TERM", "xterm-256color");
+        let mut child = pty.slave.spawn_command(cmd).unwrap();
+        drop(pty.slave);
+        let mut reader = pty.master.try_clone_reader().unwrap();
+        let mut writer = pty.master.take_writer().unwrap();
+        writer.write_all(b"echo \"[$FROM_BASHRC]\"; alias ls; pwd; ls \"$TMPDIR\" | wc -l; exit\n").unwrap();
+        let mut out = Vec::new();
+        let _ = reader.read_to_end(&mut out);
+        let _ = child.wait();
+        let out = String::from_utf8_lossy(&out);
+        assert!(out.contains("[yes]"), "the server's own config is loaded: {out}");
+        assert!(out.contains("ls --color=auto"), "{out}");
+        assert!(out.contains("\x1b[1;3"), "a colored prompt: {out}");
+        assert!(out.contains("\x1b]0;"), "the title Ronnie follows the folder with: {out}");
+        assert!(out.lines().any(|l| l.trim() == "/"), "started in the folder asked: {out}");
+        assert!(out.lines().any(|l| l.trim() == "0"), "the startup file deleted itself: {out}");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

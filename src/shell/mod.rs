@@ -27,6 +27,33 @@ pub fn history_path(id: Uuid) -> Option<PathBuf> {
     history_dir().map(|d| d.join(id.to_string()))
 }
 
+/// File holding what the terminal `id` showed when last saved (its text and colors).
+pub fn scrollback_path(id: Uuid) -> Option<PathBuf> {
+    crate::config::config_dir().map(|d| d.join("scrollback").join(id.to_string()))
+}
+
+/// Saves what terminal `id` shows (it can hold secrets: readable by the user only).
+pub fn save_scrollback(id: Uuid, bytes: &[u8]) {
+    let Some(path) = scrollback_path(id) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    if let Ok(mut file) = options.open(&path) {
+        let _ = std::io::Write::write_all(&mut file, bytes);
+    }
+}
+
+/// Deletes every saved terminal content (the setting was turned off).
+pub fn forget_scrollbacks() {
+    if let Some(dir) = crate::config::config_dir().map(|d| d.join("scrollback")) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// The user's login shell, as the pseudo-terminal starts it.
 fn user_shell() -> Option<String> {
     let shell = std::env::var("SHELL").ok()?;
@@ -102,10 +129,11 @@ pub fn read_history(path: &Path) -> Vec<String> {
     entries.into_iter().rev().filter(|e| seen.insert(e.clone())).collect()
 }
 
-/// Deletes the history of terminals that no longer exist (not in `keep`).
+/// Deletes the history and saved content of terminals that no longer exist (not in `keep`).
 pub fn forget_others(keep: &HashSet<Uuid>) {
-    let Some(entries) = history_dir().and_then(|d| std::fs::read_dir(d).ok()) else { return };
-    for entry in entries.flatten() {
+    let scrollback = crate::config::config_dir().map(|d| d.join("scrollback"));
+    let dirs = [history_dir(), scrollback].into_iter().flatten().filter_map(|d| std::fs::read_dir(d).ok());
+    for entry in dirs.flatten().flatten() {
         let id = entry.file_name().to_str().and_then(|n| Uuid::parse_str(n).ok());
         if id.is_some_and(|id| !keep.contains(&id)) {
             let _ = std::fs::remove_file(entry.path());

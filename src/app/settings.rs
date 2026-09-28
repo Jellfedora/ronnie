@@ -607,6 +607,10 @@ impl App {
                 d.start_dir = Some(dir).filter(|d| !d.trim().is_empty());
                 ui.end_row();
 
+                label(ui, t.host_colors);
+                ui.checkbox(&mut d.colors, egui::RichText::new(t.host_colors_hint).size(12.5).color(theme.text_muted));
+                ui.end_row();
+
                 label(ui, t.host_group);
                 let current = groups.iter().find(|(id, _)| Some(*id) == editor.group).map_or(t.no_group, |(_, name)| name.as_str());
                 egui::ComboBox::from_id_salt("host-group").selected_text(current).width(field_w).show_ui(ui, |ui| {
@@ -818,6 +822,11 @@ impl App {
 
             heading(ui, &t.display.to_uppercase());
             ui.checkbox(&mut picked.show_cwd, egui::RichText::new(t.show_cwd).size(14.0));
+            ui.checkbox(&mut picked.path_suggestions, egui::RichText::new(t.path_suggestions).size(14.0));
+            ui.checkbox(&mut picked.metal_guard, egui::RichText::new(t.metal_guard).size(14.0));
+            if ui.checkbox(&mut picked.restore_scrollback, egui::RichText::new(t.restore_scrollback).size(14.0)).changed() && !picked.restore_scrollback {
+                crate::shell::forget_scrollbacks();
+            }
             ui.checkbox(&mut picked.clipboard_from_programs, egui::RichText::new(t.clipboard_from_programs).size(14.0));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -1028,7 +1037,10 @@ impl App {
                         self.update_dismissed = false;
                         self.updater.install(ctx, a.clone());
                     }
-                    ui.hyperlink_to(t.release_notes, &a.url);
+                    // Through Ronnie's own opener: egui's links do nothing in this build of eframe.
+                    if ui.link(t.release_notes).on_hover_text(&a.url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && a.url.starts_with("https://") {
+                        crate::terminal::open_url(&a.url);
+                    }
                 }
                 update::State::Installing(v) => {
                     ui.spinner();

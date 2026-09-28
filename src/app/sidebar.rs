@@ -342,6 +342,7 @@ impl App {
             menu_item(ui, t.rename, TabAction::StartItemRename(id), action);
         }
         menu_item(ui, t.duplicate, TabAction::Duplicate(id), action);
+        menu_item(ui, &format!("⧉  {}", t.new_window_open), TabAction::ItemNewWindow(id), action);
         if item.ssh {
             menu_item(ui, &format!("📁  {}", t.files_open), TabAction::OpenFiles(id), action);
         }
@@ -433,6 +434,7 @@ impl App {
         item(ui, t.rename, TabAction::StartRename(i));
         item(ui, t.split_right, TabAction::Split(i, Direction::Right));
         item(ui, t.split_down, TabAction::Split(i, Direction::Down));
+        item(ui, &format!("⧉  {}", t.new_window_move), TabAction::TabNewWindow(i));
         ui.separator();
         ui.label(egui::RichText::new(t.color).size(12.0).strong().color(self.theme.text_muted));
         ui.horizontal(|ui| {
@@ -874,6 +876,8 @@ impl App {
                 self.config.groups.push(group);
             }
             Some(TabAction::Duplicate(id)) => self.duplicate_item(id),
+            Some(TabAction::ItemNewWindow(id)) => self.item_to_new_window(id),
+            Some(TabAction::TabNewWindow(i)) => self.tab_to_new_window(i),
             Some(TabAction::DeleteGroup(id)) => {
                 // Its items stay, outside groups.
                 if let Some(index) = self.config.groups.iter().position(|g| g.id == id) {

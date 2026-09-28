@@ -21,6 +21,9 @@ pub struct Shell {
     running: Option<(Instant, Option<String>)>,
     /// Commands finished since last taken.
     pub finished: Vec<Finished>,
+    /// At the prompt: the line typed left of the cursor, and whether the cursor is at its end (Ronnie's
+    /// zsh sends it as it changes).
+    pub input: Option<(String, bool)>,
 }
 
 /// A command that ran to its end.
@@ -114,11 +117,20 @@ impl Scanner {
                     shell.cwd = Some(path);
                 }
             }
+            Some("1337") => {
+                if let Some(url) = parts.next().and_then(|p| p.strip_prefix("RonnieInput=")) {
+                    let end = parts.any(|p| p == "end=1");
+                    shell.input = Some((percent_decode(url), end));
+                }
+            }
             Some("133") => {
                 shell.integrated = true;
                 match parts.next() {
+                    // A new prompt: nothing typed yet.
+                    Some("A") => shell.input = None,
                     // Command started (the user pressed Enter).
                     Some("C") => {
+                        shell.input = None;
                         let command = parts.find_map(|p| {
                             p.strip_prefix("cmdline_url=").map(|u| percent_decode(u)).or_else(|| p.strip_prefix("cmdline=").map(str::to_owned))
                         });

@@ -2,6 +2,25 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.7.0] - 2026-09-28
+
+### Nouveautés
+
+- **Plusieurs fenêtres** : clic droit sur un profil ou un hôte SSH > Ouvrir dans une nouvelle fenêtre, clic droit sur un onglet > Déplacer dans une nouvelle fenêtre (sans couper ce qui tourne), ou **⌘ N**. Chaque fenêtre a ses onglets ; un profil déjà ouvert ailleurs y ramène au lieu d'être dupliqué. Les fenêtres se rouvrent à leur place au lancement suivant.
+- **Le contenu des terminaux revient** à la réouverture de Ronnie, couleurs comprises (les 5000 dernières lignes, en local comme en SSH), marqué « contenu restauré ». Désactivable dans Paramètres > Affichage.
+- **Garde-fou métal** : avant qu'Entrée lance une commande destructrice, Ronnie demande « Tu es sûr, guerrier ? » en expliquant ce qu'elle va faire. `rm -rf` sur `/`, `~` ou un dossier système, `chmod -R` / `chown -R` au même endroit, formatage ou écrasement de disque, fork bomb, `DROP DATABASE`, `DELETE` sans `WHERE`, `TRUNCATE`, volumes Docker supprimés, `git push --force` sur main / master, et sur un serveur `reboot` / `shutdown`. Désactivable dans Paramètres > Affichage.
+- **Autocomplétion des chemins** :
+  - dans le terminal, en local (zsh) comme sur un serveur SSH : les fichiers et dossiers qui complètent le chemin tapé s'affichent sous le curseur, **→** complète, **⌥ ↑ ↓** choisit. Sur un serveur, la ligne est lue après l'invite habituelle et les fichiers viennent par SFTP (hôtes qui se connectent sans rien demander) ;
+  - dans la barre de chemin du gestionnaire de fichiers (local et serveur) : Tab complète, ↑ ↓ choisit.
+- **Permissions en local** aussi, dans la même fenêtre qu'en SFTP, avec les bits spéciaux (setuid, setgid, sticky), une valeur octale ou textuelle (`u+x`, `go-w`, `rwxr-xr-x`), des cases mixtes quand plusieurs éléments diffèrent (chacun garde son bit), et en récursif : tout, fichiers seulement ou dossiers seulement.
+- **SSH : option Couleurs** par hôte, pour les serveurs qui ne colorent rien : invite colorée (rouge pour root), `ls`, `grep` et `diff` en couleur, la configuration du serveur étant chargée d'abord (bash).
+
+### Corrections
+
+- Cliquer un onglet, un profil ou un hôte SSH donne aussitôt le clavier au terminal.
+- Le lien « Nouveautés » des mises à jour s'ouvre bien.
+- Icônes plus grandes en haut à droite des terminaux.
+
 ## [0.6.0] - 2026-09-28
 
 ### Nouveautés

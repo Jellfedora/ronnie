@@ -46,5 +46,24 @@ _ronnie_precmd() {
 preexec_functions=(_ronnie_preexec $preexec_functions)
 precmd_functions=(_ronnie_precmd $precmd_functions)
 
+# The line being typed, left of the cursor (OSC 1337;RonnieInput), for Ronnie's path suggestions: sent
+# when it changes, before each redraw of the line.
+_ronnie_input() {
+  local left=${BUFFER[1,CURSOR]}
+  local end=$(( CURSOR == ${#BUFFER} ))
+  [[ $left == "$_ronnie_last_input" && $end == "$_ronnie_last_end" ]] && return
+  typeset -g _ronnie_last_input=$left _ronnie_last_end=$end
+  local LC_ALL=C url= c
+  for c in ${(s::)${left[-300,-1]}}; do
+    if [[ $c == [A-Za-z0-9._~/-] ]]; then url+=$c; else printf -v c '%%%02X' "'$c"; url+=$c; fi
+  done
+  print -rn -- $'\e]1337;RonnieInput='$url';end='$end$'\a' > /dev/tty
+}
+_ronnie_input_reset() { typeset -g _ronnie_last_input= _ronnie_last_end=; }
+autoload -Uz add-zle-hook-widget 2>/dev/null && {
+  add-zle-hook-widget line-pre-redraw _ronnie_input
+  add-zle-hook-widget line-init _ronnie_input_reset
+}
+
 # .zlogin comes next for login shells.
 [[ -o login ]] && ZDOTDIR=$RONNIE_ZDOTDIR

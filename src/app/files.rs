@@ -2,11 +2,12 @@
 //! transfers by drag and drop or buttons, a queue with progress at the bottom, and rename / delete /
 //! new folder / permissions on either side.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use super::*;
 use super::editor::{Editor, EditorAction};
+use super::perms::{perm_ui, PermEdit};
 use super::viewer::{Viewer, ViewerAction};
 use crate::sftp::{self, Entry, Event, Request};
 
@@ -52,11 +53,13 @@ struct Panel {
     order_for: Option<(u64, SortBy, bool, bool)>,
     /// Bumped whenever `entries` is replaced.
     generation: u64,
+    /// Path completion: the suggestion picked with the arrows (and whether the arrows were used).
+    completion: (usize, bool),
 }
 
 impl Panel {
     fn new(path: String) -> Self {
-        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0 }
+        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false) }
     }
 
     fn set_entries(&mut self, entries: Vec<Entry>) {
@@ -129,7 +132,7 @@ enum Dialog {
     Mkdir { side: Side, text: String, fresh: bool },
     NewFile { side: Side, text: String, fresh: bool },
     Delete { side: Side, names: Vec<String> },
-    Chmod { names: Vec<String>, mode: u32, octal: String, recursive: bool, any_dir: bool },
+    Chmod { side: Side, edit: Box<PermEdit> },
     /// Some of the files to transfer already exist on the other side.
     Conflict { from: Side, names: Vec<String>, target: String, existing: Vec<String> },
 }
@@ -177,6 +180,9 @@ pub(super) struct FileManager {
     ctx: Option<egui::Context>,
     #[cfg(unix)]
     askpass: Option<crate::askpass::Server>,
+    /// Folder names for path completion, by side and folder (remote ones asked for in the background).
+    dir_cache: HashMap<(bool, String), (Instant, Vec<(String, bool)>)>,
+    completion_pending: HashSet<String>,
     /// Archives being made: their line in the queue, and the result to come.
     zips: Vec<(u64, Side, std::sync::mpsc::Receiver<ZipResult>)>,
 }
@@ -208,6 +214,8 @@ impl FileManager {
             #[cfg(unix)]
             askpass: None,
             zips: Vec::new(),
+            dir_cache: HashMap::new(),
+            completion_pending: HashSet::new(),
         };
         fm.read_local();
         fm
@@ -292,6 +300,84 @@ impl FileManager {
             Side::Remote => self.send(Request::ReadFile(path)),
         }
         self.editor = Some(editor);
+    }
+
+    /// Folders completing what is typed in `side`'s path field: (the typed text up to its last
+    /// separator, matching names). Nothing while the field shows the current folder.
+    fn path_suggestions(&mut self, side: Side) -> (String, Vec<String>) {
+        let panel = self.panel(side);
+        let text = panel.path_text.clone();
+        if text == panel.path || text.is_empty() {
+            return (String::new(), Vec::new());
+        }
+        let seps: &[char] = if side == Side::Local && cfg!(windows) { &['/', '\\'] } else { &['/'] };
+        let Some(sep) = text.rfind(seps) else { return (String::new(), Vec::new()) };
+        let (head, prefix) = (text[..=sep].to_owned(), text[sep + 1..].to_owned());
+        let dir = match side {
+            Side::Local => match head.strip_prefix('~') {
+                Some(rest) => directories::BaseDirs::new().map(|d| format!("{}{rest}", d.home_dir().display())).unwrap_or_else(|| head.clone()),
+                None => head.clone(),
+            },
+            // Listings are asked without the trailing "/" (except the root).
+            Side::Remote => if head.len() > 1 { head.trim_end_matches('/').to_owned() } else { head.clone() },
+        };
+        let key = (side == Side::Remote, dir.clone());
+        let fresh = self.dir_cache.get(&key).is_some_and(|(at, _)| at.elapsed().as_secs() < 5);
+        if !fresh {
+            match side {
+                Side::Local => {
+                    let dirs = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir())).collect()).unwrap_or_default();
+                    self.dir_cache.insert(key.clone(), (Instant::now(), dirs));
+                }
+                Side::Remote if dir == self.remote.path => {
+                    let dirs = self.remote.entries.iter().map(|e| (e.name.clone(), e.is_dir)).collect();
+                    self.dir_cache.insert(key.clone(), (Instant::now(), dirs));
+                }
+                Side::Remote => {
+                    if self.conn.is_some() && self.completion_pending.insert(dir.clone()) {
+                        self.send(Request::List(dir.clone()));
+                    }
+                    if !self.dir_cache.contains_key(&key) {
+                        return (head, Vec::new());
+                    }
+                }
+            }
+        }
+        let lower = prefix.to_lowercase();
+        let hidden = prefix.starts_with('.') || self.show_hidden;
+        let mut names: Vec<String> = self.dir_cache[&key].1.iter().filter(|(n, is_dir)| *is_dir && (hidden || !n.starts_with('.')) && n.to_lowercase().starts_with(&lower) && sftp::valid_name(n)).map(|(n, _)| n.clone()).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        names.truncate(8);
+        (head, names)
+    }
+
+    /// The server's entries of `dir` (name, is a folder), for the terminal's path suggestions: from the
+    /// cache, else asked for in the background (None until they arrive).
+    pub fn remote_entries(&mut self, dir: &str) -> Option<Vec<(String, bool)>> {
+        if !matches!(self.status, Status::Ready) {
+            return None;
+        }
+        let dir = if dir.len() > 1 { dir.trim_end_matches('/').to_owned() } else { dir.to_owned() };
+        // The folder the panel shows: already listed.
+        if dir == self.remote.path && !self.remote.loading {
+            return Some(self.remote.entries.iter().map(|e| (e.name.clone(), e.is_dir)).collect());
+        }
+        let key = (true, dir.clone());
+        let fresh = self.dir_cache.get(&key).is_some_and(|(at, _)| at.elapsed().as_secs() < 5);
+        if !fresh && self.completion_pending.insert(dir.clone()) {
+            self.send(Request::List(dir));
+        }
+        self.dir_cache.get(&key).map(|(_, e)| e.clone())
+    }
+
+    /// The SFTP session is still opening.
+    pub fn connecting(&self) -> bool {
+        matches!(self.status, Status::Connecting)
+    }
+
+    /// The server's home directory, once connected.
+    pub fn remote_home(&self) -> Option<&str> {
+        self.home.as_deref()
     }
 
     /// Opens `name` of `side` in the read-only viewer (any size).
@@ -418,6 +504,9 @@ impl FileManager {
                     }
                     self.list_remote();
                 }
+                Event::ListFailed { path, .. } if path != self.remote.path && self.completion_pending.remove(&path) => {
+                    self.dir_cache.insert((true, path), (Instant::now(), Vec::new()));
+                }
                 Event::ListFailed { path, error } => {
                     if path == self.remote.path {
                         self.remote.loading = false;
@@ -430,6 +519,10 @@ impl FileManager {
                         }
                     }
                     self.error = Some(error);
+                }
+                Event::Listing { path, entries } if path != self.remote.path && self.completion_pending.remove(&path) => {
+                    let dirs = entries.into_iter().map(|e| (e.name, e.is_dir)).collect();
+                    self.dir_cache.insert((true, path), (Instant::now(), dirs));
                 }
                 Event::Listing { path, entries } => {
                     if path == self.remote.path {
@@ -840,6 +933,7 @@ impl FileManager {
     /// One panel: path bar, column headers, rows. Returns what the user did.
     fn panel_ui(&mut self, ui: &mut Ui, rect: Rect, side: Side, theme: &Theme, t: &Strings, connected: bool) -> PanelOut {
         let mut out = PanelOut::default();
+        let (completion_head, suggestions) = self.path_suggestions(side);
         let local_only = self.host.is_none();
         let show_hidden = self.show_hidden;
         let active = self.active == side;
@@ -879,9 +973,61 @@ impl FileManager {
                     .response
                     .on_hover_text(t.files_new);
                 });
-                let edit = ui.add(egui::TextEdit::singleline(&mut panel.path_text).font(FontId::monospace(12.5)).desired_width(f32::INFINITY));
+                let path_id = egui::Id::new(("files-path", side as u8));
+                let suggesting = !suggestions.is_empty() && ui.memory(|m| m.has_focus(path_id));
+                let (sel, touched) = &mut panel.completion;
+                *sel = (*sel).min(suggestions.len().saturating_sub(1));
+                let mut accept = None;
+                if suggesting {
+                    ui.input_mut(|i| {
+                        if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                            (*sel, *touched) = ((*sel + 1) % suggestions.len(), true);
+                        }
+                        if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                            (*sel, *touched) = ((*sel + suggestions.len() - 1) % suggestions.len(), true);
+                        }
+                        if i.consume_key(Modifiers::NONE, Key::Tab) {
+                            accept = Some(*sel);
+                        }
+                    });
+                }
+                let edit = ui.add(egui::TextEdit::singleline(&mut panel.path_text).id(path_id).font(FontId::monospace(12.5)).desired_width(f32::INFINITY));
+                if edit.changed() {
+                    panel.completion = (0, false);
+                }
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    out.go = Some(panel.path_text.trim().to_owned());
+                    // Enter takes a suggestion picked with the arrows; otherwise goes to what is typed.
+                    if suggesting && panel.completion.1 {
+                        accept = Some(panel.completion.0);
+                    } else {
+                        out.go = Some(panel.path_text.trim().to_owned());
+                    }
+                }
+                if suggesting {
+                    let chosen = panel.completion.0;
+                    let width = edit.rect.width().clamp(160.0, 380.0);
+                    egui::Area::new(path_id.with("suggestions")).order(egui::Order::Foreground).fixed_pos(edit.rect.left_bottom() + Vec2::new(0.0, 2.0)).show(ui.ctx(), |ui| {
+                        Frame::popup(ui.style()).fill(theme.chrome_bg).show(ui, |ui| {
+                            ui.set_width(width);
+                            for (i, name) in suggestions.iter().enumerate() {
+                                let label = egui::RichText::new(format!("{}/", display_name(name))).monospace().size(12.5);
+                                if ui.add_sized(Vec2::new(width, 20.0), egui::Button::selectable(i == chosen, label)).clicked() {
+                                    accept = Some(i);
+                                }
+                            }
+                            ui.label(egui::RichText::new(t.files_complete_hint).size(11.0).color(theme.text_muted));
+                        });
+                    });
+                }
+                if let Some(i) = accept.filter(|i| *i < suggestions.len()) {
+                    panel.path_text = format!("{completion_head}{}/", suggestions[i]);
+                    panel.completion = (0, false);
+                    // Keep typing after it.
+                    let mut state = egui::TextEdit::load_state(ui.ctx(), path_id).unwrap_or_default();
+                    let end = egui::text::CCursor::new(panel.path_text.chars().count());
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                    state.store(ui.ctx(), path_id);
+                    ui.memory_mut(|m| m.request_focus(path_id));
                 }
             });
         });
@@ -1054,10 +1200,13 @@ impl FileManager {
                         out.duplicate = Some(selection.clone());
                         ui.close();
                     }
-                    if side == Side::Remote && ui.button(t.files_permissions).clicked() {
-                        let mode = entry.mode.unwrap_or(0o644);
-                        let any_dir = panel.entries.iter().any(|e| e.is_dir && selection.contains(&e.name));
-                        out.dialog = Some(Dialog::Chmod { names: selection.clone(), mode, octal: octal_string(mode), recursive: false, any_dir });
+                    // Windows has no such permissions on this computer.
+                    if (side == Side::Remote || cfg!(unix)) && ui.button(t.files_permissions).clicked() {
+                        let chosen: Vec<&Entry> = panel.entries.iter().filter(|e| selection.contains(&e.name)).collect();
+                        let modes: Vec<Option<u32>> = chosen.iter().map(|e| e.mode).collect();
+                        let any_dir = chosen.iter().any(|e| e.is_dir);
+                        let owner = chosen.first().and_then(|e| e.owner.clone()).filter(|o| side == Side::Remote && chosen.iter().all(|e| e.owner.as_ref() == Some(o)));
+                        out.dialog = Some(Dialog::Chmod { side, edit: Box::new(PermEdit::new(selection.clone(), &modes, any_dir, owner)) });
                         ui.close();
                     }
                     if ui.button(t.files_new_file).clicked() {
@@ -1302,43 +1451,9 @@ impl FileManager {
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(t.files_delete_body).size(12.5).color(theme.text_muted));
                 }
-                Dialog::Chmod { names, mode, octal, recursive, any_dir } => {
-                    title(ui, t.files_permissions);
-                    let what = if names.len() == 1 { names[0].clone() } else { t.files_n_items.replace("{n}", &names.len().to_string()) };
-                    ui.label(egui::RichText::new(what).monospace().size(12.5).color(theme.text_muted));
-                    ui.add_space(8.0);
-                    egui::Grid::new("chmod-grid").num_columns(4).spacing([18.0, 8.0]).show(ui, |ui| {
-                        ui.label("");
-                        for h in [t.files_read, t.files_write, t.files_exec] {
-                            ui.label(egui::RichText::new(h).size(12.5).color(theme.text_muted));
-                        }
-                        ui.end_row();
-                        for (who, shift) in [(t.files_owner, 6), (t.files_group, 3), (t.files_others, 0)] {
-                            ui.label(egui::RichText::new(who).size(13.0));
-                            for bit in [4u32, 2, 1] {
-                                let flag = bit << shift;
-                                let mut on = *mode & flag != 0;
-                                if ui.checkbox(&mut on, "").changed() {
-                                    *mode = if on { *mode | flag } else { *mode & !flag };
-                                    *octal = octal_string(*mode);
-                                }
-                            }
-                            ui.end_row();
-                        }
-                    });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(t.files_octal).size(13.0));
-                        if ui.add(egui::TextEdit::singleline(octal).desired_width(60.0).font(FontId::monospace(13.0))).changed() {
-                            if let Some(value) = u32::from_str_radix(octal.trim(), 8).ok().filter(|v| *v <= 0o7777) {
-                                *mode = value;
-                            }
-                        }
-                        ui.label(egui::RichText::new(mode_string(*mode, false)).monospace().size(12.5).color(theme.text_muted));
-                    });
-                    if *any_dir {
-                        ui.checkbox(recursive, egui::RichText::new(t.files_recursive).size(13.0));
-                    }
+                Dialog::Chmod { edit, .. } => {
+                    title(ui, t.files_permissions.trim_end_matches('…'));
+                    perm_ui(ui, edit, theme, t);
                 }
                 Dialog::Conflict { existing, .. } => {
                     title(ui, &t.files_conflict_title.replace("{n}", &existing.len().to_string()));
@@ -1416,10 +1531,24 @@ impl FileManager {
                 }
             }
             (Dialog::Delete { side, names }, _) => self.delete(side, &names),
-            (Dialog::Chmod { names, mode, recursive, .. }, _) => {
-                let paths = names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
-                self.send(Request::Chmod { paths, mode, recursive });
+            (Dialog::Chmod { side, edit }, _) if edit.invalid => {
+                // Not applied: keep the dialog open with what was typed.
+                self.dialog = Some(Dialog::Chmod { side, edit });
             }
+            (Dialog::Chmod { side: Side::Remote, edit }, _) => {
+                let paths = edit.names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
+                self.send(Request::Chmod { paths, change: edit.change(), recursive: edit.recursive, scope: edit.scope });
+            }
+            #[cfg(unix)]
+            (Dialog::Chmod { side: Side::Local, edit }, _) => {
+                let paths: Vec<std::path::PathBuf> = edit.names.iter().map(|n| std::path::Path::new(&self.local.path).join(n)).collect();
+                if let Err(e) = super::perms::chmod_local(&paths, edit.change(), edit.recursive, edit.scope) {
+                    self.error = Some(e);
+                }
+                self.read_local();
+            }
+            #[cfg(not(unix))]
+            (Dialog::Chmod { .. }, _) => {}
             (Dialog::Conflict { from, names, target, .. }, outcome) => self.start_transfer(from, names, target, outcome == Outcome::Confirm),
         }
     }
@@ -1840,7 +1969,7 @@ impl FileKind {
 }
 
 /// A folder, or a page with the file kind's color and a small drawing; hidden files are dimmed.
-fn paint_file_icon(painter: &egui::Painter, rect: Rect, name: &str, is_dir: bool, is_link: bool, mode: Option<u32>, theme: &Theme) {
+pub(super) fn paint_file_icon(painter: &egui::Painter, rect: Rect, name: &str, is_dir: bool, is_link: bool, mode: Option<u32>, theme: &Theme) {
     let r = rect.shrink(1.0);
     let kind = FileKind::of(name, is_dir, mode);
     let hidden = name.starts_with('.') && name.len() > 1;
@@ -1960,7 +2089,7 @@ fn format_time(mtime: Option<i64>) -> String {
 }
 
 /// "drwxr-xr-x" style, with setuid / setgid / sticky shown as s / S / t / T like `ls`.
-fn mode_string(mode: u32, is_dir: bool) -> String {
+pub(super) fn mode_string(mode: u32, is_dir: bool) -> String {
     let mut s = String::with_capacity(10);
     s.push(if is_dir { 'd' } else { '-' });
     for (shift, special, mark) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
@@ -1976,11 +2105,6 @@ fn mode_string(mode: u32, is_dir: bool) -> String {
         });
     }
     s
-}
-
-/// The octal value, on 4 digits when setuid / setgid / sticky are set (so they are never hidden).
-fn octal_string(mode: u32) -> String {
-    if mode & 0o7000 != 0 { format!("{:04o}", mode & 0o7777) } else { format!("{:03o}", mode & 0o777) }
 }
 
 /// A name typed for a new file or folder: a plain name, never a path.
@@ -2004,8 +2128,6 @@ mod tests {
         assert_eq!(mode_string(0o640, false), "-rw-r-----");
         assert_eq!(mode_string(0o4755, false), "-rwsr-xr-x");
         assert_eq!(mode_string(0o1777, true), "drwxrwxrwt");
-        assert_eq!(octal_string(0o4755), "4755");
-        assert_eq!(octal_string(0o644), "644");
         assert_eq!(display_name("a\u{202E}txt.exe"), "a�txt.exe");
         let fr = crate::i18n::Lang::Fr.strings();
         assert_eq!(format_size(512, fr), "512 o");

@@ -354,6 +354,11 @@ impl App {
     /// instead of the shell, and open SSH connections.
     pub(super) fn busy(&self, index: usize, panes: Option<&[PaneId]>) -> Vec<String> {
         let Some(tab) = self.tabs.get(index) else { return Vec::new() };
+        self.busy_in(tab, panes)
+    }
+
+    /// See `busy`, for any tab (of any window).
+    pub(super) fn busy_in(&self, tab: &Tab, panes: Option<&[PaneId]>) -> Vec<String> {
         let mut busy = Vec::new();
         // Transfers stop with the tab: closing it, or its last panes.
         let whole_tab = panes.is_none_or(|p| tab.layout.leaves().iter().all(|l| p.contains(l)));
@@ -387,7 +392,14 @@ impl App {
         match request {
             CloseRequest::Pane(index, id) => self.busy(index, Some(&[id])),
             CloseRequest::Tab(index) => self.busy(index, None),
-            CloseRequest::Window | CloseRequest::Restart => (0..self.tabs.len()).flat_map(|i| self.busy(i, None)).collect(),
+            // This window; quitting (from the main one) or restarting: every window.
+            CloseRequest::Window | CloseRequest::Restart => {
+                let mut busy: Vec<String> = (0..self.tabs.len()).flat_map(|i| self.busy(i, None)).collect();
+                if matches!(request, CloseRequest::Restart) || self.viewport == egui::ViewportId::ROOT {
+                    busy.extend(self.others.iter().flat_map(|w| &w.tabs).flat_map(|tab| self.busy_in(tab, None)));
+                }
+                busy
+            }
         }
     }
 
@@ -405,12 +417,72 @@ impl App {
         match request {
             CloseRequest::Pane(index, id) => self.close_pane(index, id),
             CloseRequest::Tab(index) => self.close_tab(index),
+            // Another window than the main one closes alone, with its tabs.
+            CloseRequest::Window if self.viewport != egui::ViewportId::ROOT => self.window_closing = true,
             CloseRequest::Window => {
                 self.close_confirmed = true;
-                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+                self.ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
             }
             CloseRequest::Restart => self.restart(),
         }
+    }
+
+    /// "Are you sure, warrior?" before a destructive command runs (see `guard`).
+    pub(super) fn guard_window(&mut self, ctx: &egui::Context) {
+        let Some((pane, line, danger)) = &self.guard_confirm else { return };
+        let t = self.t();
+        let reason = match danger {
+            super::guard::Danger::Delete(target) => t.guard_delete.replace("{t}", target),
+            super::guard::Danger::Permissions(target) => t.guard_permissions.replace("{t}", target),
+            super::guard::Danger::Disk => t.guard_disk.to_owned(),
+            super::guard::Danger::ForkBomb => t.guard_fork.to_owned(),
+            super::guard::Danger::DropDatabase => t.guard_drop.to_owned(),
+            super::guard::Danger::EmptyTable => t.guard_table.to_owned(),
+            super::guard::Danger::DockerVolumes => t.guard_docker.to_owned(),
+            super::guard::Danger::ForcePush(branch) => t.guard_push.replace("{t}", branch),
+            super::guard::Danger::Reboot => t.guard_reboot.to_owned(),
+        };
+        let (pane, line) = (*pane, line.clone());
+        let hand = self.metal_hand.get_or_insert_with(|| load_png(ctx, "metal-hand", include_bytes!("../../assets/icon/metal-hand.png"))).clone();
+        let mut answer = None;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg).stroke(Stroke::new(1.5, self.theme.ansi[1]));
+        let modal = egui::Modal::new(egui::Id::new("metal-guard")).frame(frame).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::Image::new(&hand).fit_to_exact_size(Vec2::splat(34.0)).tint(self.theme.ansi[1]));
+                ui.label(egui::RichText::new(t.guard_title).size(19.0).strong().color(self.theme.ansi[1]));
+            });
+            ui.add_space(10.0);
+            egui::Frame::NONE.fill(self.theme.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(egui::RichText::new(&line).monospace().size(13.5)).wrap());
+            });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(reason).size(13.5));
+            ui.add_space(16.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let run = egui::Button::new(egui::RichText::new(t.guard_run).size(13.5).color(self.theme.bg)).fill(self.theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(130.0, 30.0));
+                if ui.add(run).clicked() {
+                    answer = Some(true);
+                }
+                let cancel = egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0));
+                if ui.add(cancel).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        // Escape or a click outside: not run (the line stays typed, to fix it).
+        if modal.should_close() {
+            answer.get_or_insert(false);
+        }
+        let Some(run) = answer else { return };
+        self.guard_confirm = None;
+        if run {
+            if let Some(term) = self.tabs.get_mut(self.active).and_then(|t| t.panes.get_mut(&pane)) {
+                term.type_text("\r");
+            }
+        }
+        self.focus_terminal = true;
     }
 
     /// "Paste N lines?" when the program would run each pasted line at once (no bracketed paste).
