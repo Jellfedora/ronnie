@@ -2930,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "ronnie"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
