@@ -1411,7 +1411,7 @@ impl App {
                         ui.label(egui::RichText::new(t.update_available.replace("{v}", &a.version)).size(13.0).color(theme.accent));
                     }
                     update::State::Installing(v) => {
-                        ui.label(muted(&t.installing.replace("{v}", &v)));
+                        ui.label(muted(&format!("{}  {}", t.installing.replace("{v}", &v), super::sidebar::download_text(self.updater.progress(), t))));
                         ui.spinner();
                     }
                     update::State::Installed(v) => {

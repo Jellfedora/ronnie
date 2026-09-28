@@ -560,8 +560,15 @@ impl App {
                 painter.rect_filled(r, 8.0, self.theme.accent.gamma_multiply(0.08));
                 painter.rect_stroke(r, 8.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.35)), egui::StrokeKind::Inside);
                 super::dbview::paint_db_icon(&painter, Pos2::new(r.min.x + 16.0, r.center().y), self.theme.accent);
-                painter.text(Pos2::new(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, t.db_local_found, FontId::proportional(12.0), self.theme.text);
-                let button = Rect::from_min_size(Pos2::new(r.max.x - 64.0, r.center().y - 11.0), Vec2::new(56.0, 22.0));
+                // The button fits its label; the text before it is cut short if needed (with its whole
+                // wording on hover).
+                let label_w = painter.layout_no_wrap(t.db_add.to_owned(), FontId::proportional(12.0), self.theme.bg).size().x;
+                let button = Rect::from_min_size(Pos2::new(r.max.x - label_w - 24.0, r.center().y - 11.0), Vec2::new(label_w + 16.0, 22.0));
+                let mut job = egui::text::LayoutJob::simple_singleline(t.db_local_found.to_owned(), FontId::proportional(12.0), self.theme.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(button.min.x - r.min.x - 36.0);
+                let galley = painter.layout_job(job);
+                painter.galley(Pos2::new(r.min.x + 30.0, r.center().y - galley.size().y / 2.0), galley, self.theme.text);
+                ui.interact(Rect::from_min_max(r.min, Pos2::new(button.min.x - 4.0, r.max.y)), ui.id().with("db-local-hint"), Sense::hover()).on_hover_text(t.db_local_found);
                 let add = ui.put(button, egui::Button::new(egui::RichText::new(t.db_add).size(12.0).color(self.theme.bg)).fill(self.theme.accent).corner_radius(5.0));
                 if add.clicked() {
                     *action = Some(TabAction::AddLocalDb);
@@ -782,7 +789,7 @@ impl App {
         let t = self.t();
         let (title, detail) = match self.updater.state() {
             update::State::Available(a) if !self.update_dismissed => (t.update_available.replace("{v}", &a.version), None),
-            update::State::Installing(v) => (t.installing.replace("{v}", &v), None),
+            update::State::Installing(v) => (format!("{}  {}", t.installing.replace("{v}", &v), download_text(self.updater.progress(), t)), None),
             update::State::Installed(v) => (t.update_installed.replace("{v}", &v), None),
             update::State::Failed(e) if self.update_attempted => (t.update_failed.to_owned(), Some(e)),
             _ => return area.max.y,
@@ -803,6 +810,14 @@ impl App {
         }
         if matches!(state, update::State::Installing(_)) {
             ui.put(Rect::from_center_size(Pos2::new(card.max.x - 20.0, card.min.y + 20.0), Vec2::splat(14.0)), egui::Spinner::new().size(14.0));
+            // How much has arrived.
+            let (done, total) = self.updater.progress();
+            if total > 0 {
+                let bar = Rect::from_min_max(Pos2::new(card.min.x + 12.0, card.max.y - 10.0), Pos2::new(card.max.x - 12.0, card.max.y - 7.0));
+                ui.painter().rect_filled(bar, 1.5, self.theme.tab_hover);
+                let filled = Rect::from_min_max(bar.min, Pos2::new(bar.min.x + bar.width() * (done as f32 / total as f32).min(1.0), bar.max.y));
+                ui.painter().rect_filled(filled, 1.5, self.theme.accent);
+            }
             return card.min.y - 6.0;
         }
 
@@ -1426,5 +1441,18 @@ fn paint_server_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
         let r = Rect::from_center_size(c + Vec2::new(0.0, dy), Vec2::new(14.0, 5.5));
         painter.rect_stroke(r, 1.5, stroke, egui::StrokeKind::Middle);
         painter.circle_filled(Pos2::new(r.max.x - 3.0, r.center().y), 0.9, color);
+    }
+}
+
+/// "42 % · 8,1 / 19,3 Mo" while an update downloads (empty until it starts).
+pub(super) fn download_text((done, total): (u64, u64), t: &Strings) -> String {
+    let mb = |n: u64| {
+        let s = format!("{:.1}", n as f64 / 1_048_576.0);
+        if t.decimal_comma { s.replace('.', ",") } else { s }
+    };
+    match (done, total) {
+        (0, _) => String::new(),
+        (_, 0) => format!("{} {}", mb(done), t.unit_mb),
+        _ => format!("{} %  ·  {} / {} {}", done * 100 / total, mb(done), mb(total), t.unit_mb),
     }
 }

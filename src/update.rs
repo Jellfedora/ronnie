@@ -14,8 +14,9 @@ use sha2::{Digest, Sha256};
 
 pub const REPO: &str = "Jellfedora/ronnie";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Target in the release archive names; macOS gets a single universal (arm64 + x86_64) app.
-const TARGET: &str = if cfg!(target_os = "macos") { "universal-apple-darwin" } else { env!("TARGET") };
+/// Target in the release archive names. macOS: Apple Silicon since 0.9.1 (up to 0.9.0, a universal
+/// app, whose archive name the releases still carry for those versions).
+const TARGET: &str = if cfg!(target_os = "macos") { "aarch64-apple-darwin" } else { env!("TARGET") };
 const ARCHIVE_EXT: &str = if cfg!(windows) { "zip" } else { "tar.gz" };
 /// Refuse absurd downloads (the archive is a few tens of MB).
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
@@ -64,6 +65,8 @@ pub struct Updater {
     exe: Option<PathBuf>,
     /// The AppImage file Ronnie runs from, if so: the update replaces it, not the (read-only) executable.
     appimage: Option<PathBuf>,
+    /// Bytes downloaded so far, and how many there are (0: unknown).
+    progress: Arc<Mutex<(u64, u64)>>,
 }
 
 /// The AppImage file this process runs from. Its runtime says so in APPIMAGE and APPDIR; a program
@@ -81,7 +84,12 @@ fn asset_name(appimage: bool) -> String {
 
 impl Updater {
     pub fn new() -> Self {
-        Self { state: Arc::default(), exe: std::env::current_exe().ok(), appimage: appimage() }
+        Self { state: Arc::default(), exe: std::env::current_exe().ok(), appimage: appimage(), progress: Arc::default() }
+    }
+
+    /// How far the download of an update went: bytes received, and the total (0: unknown).
+    pub fn progress(&self) -> (u64, u64) {
+        *self.progress.lock().unwrap()
     }
 
     pub fn state(&self) -> State {
@@ -115,10 +123,12 @@ impl Updater {
         let Some(exe) = self.exe.clone() else { return };
         *self.state.lock().unwrap() = State::Installing(available.version.clone());
         let (state, ctx, appimage) = (self.state.clone(), ctx.clone(), self.appimage.clone());
+        let progress = Progress { shared: self.progress.clone(), ctx: ctx.clone() };
+        *progress.shared.lock().unwrap() = (0, 0);
         thread::spawn(move || {
             let installed = match &appimage {
-                Some(file) => replace_appimage(file, &available.asset),
-                None => install(&exe, &available.asset),
+                Some(file) => replace_appimage(file, &available.asset, &progress),
+                None => install(&exe, &available.asset, &progress),
             };
             let result = match installed {
                 Ok(()) => State::Installed(available.version),
@@ -190,18 +200,39 @@ fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-fn download(asset: &Asset) -> Result<Vec<u8>> {
+/// Where a download says how far it went (and wakes the window up to show it).
+struct Progress {
+    shared: Arc<Mutex<(u64, u64)>>,
+    ctx: egui::Context,
+}
+
+fn download(asset: &Asset, progress: &Progress) -> Result<Vec<u8>> {
+    use std::io::Read as _;
     // Without GitHub's digest the archive can't be checked: don't install it.
     let expected = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).context("the release publishes no SHA-256 digest for its archive")?;
-    let bytes = agent(Duration::from_secs(600))
+    let mut response = agent(Duration::from_secs(900))
         .get(&asset.browser_download_url)
         .header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION")))
         .call()
-        .context("download failed")?
-        .body_mut()
-        .with_config()
-        .limit(MAX_DOWNLOAD)
-        .read_to_vec()?;
+        .context("download failed")?;
+    let total: u64 = response.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut reader = response.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
+    let mut bytes = Vec::with_capacity(total.min(MAX_DOWNLOAD) as usize);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut shown = std::time::Instant::now();
+    loop {
+        let n = reader.read(&mut buf).context("download failed")?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        if shown.elapsed() > Duration::from_millis(200) {
+            shown = std::time::Instant::now();
+            *progress.shared.lock().unwrap() = (bytes.len() as u64, total);
+            progress.ctx.request_repaint();
+        }
+    }
+    *progress.shared.lock().unwrap() = (bytes.len() as u64, total);
     let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
     if !actual.eq_ignore_ascii_case(expected) {
         bail!("the downloaded archive is corrupted (SHA-256 mismatch)");
@@ -209,8 +240,8 @@ fn download(asset: &Asset) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn install(exe: &Path, asset: &Asset) -> Result<()> {
-    let archive = download(asset)?;
+fn install(exe: &Path, asset: &Asset, progress: &Progress) -> Result<()> {
+    let archive = download(asset, progress)?;
     #[cfg(target_os = "macos")]
     if let Some(bundle) = app_bundle(exe) {
         return replace_bundle(&bundle, &archive);
@@ -228,8 +259,8 @@ fn install(exe: &Path, asset: &Asset) -> Result<()> {
 
 /// Writes the new AppImage next to the running one, then renames it over: the running app keeps its
 /// (still mounted) old file until it quits.
-fn replace_appimage(file: &Path, asset: &Asset) -> Result<()> {
-    let bytes = download(asset)?;
+fn replace_appimage(file: &Path, asset: &Asset, progress: &Progress) -> Result<()> {
+    let bytes = download(asset, progress)?;
     let dir = file.parent().context("unknown AppImage directory")?;
     let name = file.file_name().context("unknown AppImage name")?.to_string_lossy();
     let temp = dir.join(format!(".{name}.update-{}", std::process::id()));

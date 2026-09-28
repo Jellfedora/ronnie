@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.9.1] - 2026-09-28
+
+### Changements
+
+- **Mises à jour plus rapides** : sur Mac, un seul téléchargement pour Apple Silicon, deux fois plus léger que l'ancienne app universelle ; la progression s'affiche (pourcentage et Mo reçus) pendant le téléchargement.
+- Fichiers publiés : **macOS Apple Silicon**, **Linux en AppImage** et **Windows**. Les Mac Intel et l'archive Linux `.tar.gz` ne sont plus fournis (une installation Linux faite avec l'archive ne se met plus à jour d'elle-même : passer à l'AppImage).
+
+### Corrections
+
+- Barre latérale : le texte « Base locale détectée » ne passe plus sous le bouton Ajouter.
+
 ## [0.9.0] - 2026-09-28
 
 ### Nouveautés

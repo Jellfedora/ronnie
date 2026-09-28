@@ -1,14 +1,14 @@
 # Ronnie
 
-Terminal rapide écrit en Rust : onglets, splits, profils sauvegardés et hôtes SSH, pour macOS, Linux et Windows.
+Terminal rapide écrit en Rust : onglets, splits, profils sauvegardés et hôtes SSH, pour macOS (Apple Silicon), Linux et Windows.
 
 ## Installation
 
 Télécharge l'archive de ton système dans la [dernière release](https://github.com/Jellfedora/ronnie/releases/latest). Ensuite, Ronnie se met à jour tout seul : quand une nouvelle version sort, il propose de l'installer puis de redémarrer (réglable dans Paramètres > Général).
 
-### macOS (Apple Silicon et Intel)
+### macOS (Apple Silicon)
 
-1. Télécharge `ronnie-universal-apple-darwin.tar.gz`, ouvre-le et glisse **Ronnie.app** dans **Applications**.
+1. Télécharge `ronnie-aarch64-apple-darwin.tar.gz`, ouvre-le et glisse **Ronnie.app** dans **Applications**.
 2. L'app n'est pas signée par Apple : au premier lancement macOS la bloque. Ouvre **Réglages Système > Confidentialité et sécurité** et clique **Ouvrir quand même**, ou lance une fois dans un terminal :
 
    ```sh
@@ -25,13 +25,6 @@ chmod +x Ronnie-x86_64.AppImage
 ```
 
 Double-cliquer dessus marche aussi une fois exécutable (clic droit > Propriétés > « Autoriser l'exécution »). Les mises à jour remplacent le fichier lui-même : son dossier doit être modifiable. Pour l'avoir dans le menu des applications, [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) ou AppImageLauncher s'en chargent.
-
-**Ou l'archive**, installée dans `~/.local/bin` avec une entrée dans le menu des applications :
-
-```sh
-tar xzf ronnie-x86_64-unknown-linux-gnu.tar.gz
-./ronnie/install.sh
-```
 
 ### Windows (x86_64)
 

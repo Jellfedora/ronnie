@@ -46,28 +46,23 @@ appimage() {
 
 case "$(uname -s)" in
 Darwin)
-    # One universal app for Apple Silicon and Intel Macs.
-    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    # Apple Silicon only (Intel Macs aren't built any more).
+    rustup target add aarch64-apple-darwin
     cargo build --release --locked --target aarch64-apple-darwin
-    cargo build --release --locked --target x86_64-apple-darwin
     app=dist/stage/Ronnie.app
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    lipo -create -output "$app/Contents/MacOS/ronnie" \
-        target/aarch64-apple-darwin/release/ronnie target/x86_64-apple-darwin/release/ronnie
+    cp target/aarch64-apple-darwin/release/ronnie "$app/Contents/MacOS/ronnie"
     cp assets/icon/Ronnie.icns "$app/Contents/Resources/"
     sed "s/{{VERSION}}/$version/g" packaging/macos/Info.plist >"$app/Contents/Info.plist"
     # Ad-hoc signature: required for arm64 code to run at all (no Apple Developer ID).
     codesign --force --deep --sign - "$app"
-    tar -C dist/stage -czf dist/ronnie-universal-apple-darwin.tar.gz Ronnie.app
+    tar -C dist/stage -czf dist/ronnie-aarch64-apple-darwin.tar.gz Ronnie.app
+    # The same app under the name versions up to 0.9.0 download, so that they can still update.
+    cp dist/ronnie-aarch64-apple-darwin.tar.gz dist/ronnie-universal-apple-darwin.tar.gz
     ;;
 Linux)
-    target=$(rustc -vV | sed -n 's/^host: //p')
     cargo build --release --locked
-    dir=dist/stage/ronnie
-    mkdir -p "$dir"
-    cp target/release/ronnie packaging/linux/ronnie.desktop packaging/linux/install.sh "$dir/"
-    cp assets/icon/icon.png "$dir/ronnie.png"
-    tar -C dist/stage -czf "dist/ronnie-$target.tar.gz" ronnie
+    # The AppImage only.
     appimage "$(uname -m)"
     ;;
 MINGW* | MSYS* | CYGWIN*)
