@@ -4,6 +4,7 @@ mod app;
 #[cfg(unix)]
 mod askpass;
 mod config;
+mod db;
 mod i18n;
 mod log;
 mod notify;

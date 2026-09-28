@@ -318,10 +318,10 @@ impl Terminal {
         let seq = self.output_seq.load(Ordering::Relaxed);
         if seq != self.activity.scanned {
             self.activity.scanned = seq;
-            for url in links::local_urls(&self.term.lock(), URL_SCAN_ROWS) {
-                if !self.activity.urls.iter().any(|u| u.port == url.port) {
-                    self.activity.urls.push(url);
-                }
+            // Only the latest one: a server restarted on another port (the first one taken) would
+            // otherwise leave its old address behind.
+            if let Some(url) = links::local_urls(&self.term.lock(), URL_SCAN_ROWS).pop() {
+                self.activity.urls = vec![url];
             }
         }
     }

@@ -15,6 +15,7 @@ directories = "6"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 egui = "0.36"
 flate2 = "1.1.10"
+mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust"] }
 portable-pty = "0.9"
 rfd = "0.17"
 russh-sftp = "3"

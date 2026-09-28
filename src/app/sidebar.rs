@@ -73,7 +73,7 @@ impl App {
         // SSH header: title and a "+" menu.
         if !local {
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        paint_section_title(&painter, header, t.profiles, true, &self.theme);
+        let collapsed = self.section_title(ui, header, t.profiles, true, RailSection::Ssh);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
         let plus = icon_button(ui, &painter, plus_rect, "profiles-plus", &self.theme, paint_plus);
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
@@ -81,6 +81,9 @@ impl App {
             menu_item(ui, t.new_group, TabAction::NewGroup(false), action);
         });
         *y += SECTION_HEADER_H;
+        if collapsed {
+            return;
+        }
         }
 
         if !local && self.config.ssh.is_empty() && !self.config.groups.iter().any(|g| !g.local) {
@@ -318,6 +321,316 @@ impl App {
         resp.context_menu(|ui| self.item_menu(ui, id, &item, action));
     }
 
+    /// The folded sidebar: a button to unfold it, then everything the sidebar lists as badges (the
+    /// open terminals and local profiles, the SSH hosts, the databases), each with its "+", and the settings.
+    pub(super) fn sidebar_rail(&mut self, ui: &mut Ui) {
+        let t = self.t();
+        let ctx = ui.ctx().clone();
+        self.live = self.tabs.iter_mut().map(|tab| tab.panes.values_mut().find_map(|term| term.live_program(&ctx).map(str::to_owned))).collect();
+        self.config.normalize();
+        let bar = ui.max_rect();
+        ui.painter().rect_filled(bar, 0.0, self.theme.chrome_bg);
+        ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
+        // Empty space drags the window, as in the sidebar.
+        let bg = ui.interact(bar, ui.id().with("rail-bg"), Sense::click_and_drag());
+        if bg.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
+        let cx = bar.center().x;
+        // The R of the logo, where the logo sits unfolded.
+        super::paint_metal(ui.painter(), Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0), Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
+        let unfold = Rect::from_center_size(Pos2::new(cx, bar.min.y + top + LOGO_H + 10.0), Vec2::splat(26.0));
+        if icon_button(ui, ui.painter(), unfold, "unfold-sidebar", &self.theme, paint_unfold).on_hover_text(format!("{}  ({})", t.unfold_sidebar, self.config.settings.shortcuts.toggle_sidebar.label())).clicked() {
+            self.config.settings.sidebar_folded = false;
+        }
+
+        // What the sidebar lists, section by section.
+        let kind = |local: bool| {
+            let of_kind = |id: &Uuid| if local { self.config.profiles.iter().any(|p| p.id == *id) } else { self.config.ssh.iter().any(|h| h.id == *id) };
+            let mut ids: Vec<Uuid> = self.config.ungrouped.iter().copied().filter(of_kind).collect();
+            for g in self.config.groups.iter().filter(|g| g.local == local) {
+                ids.extend(g.items.iter().copied().filter(of_kind));
+            }
+            ids
+        };
+        let plain: Vec<RailEntry> = (0..self.tabs.len())
+            .filter(|&i| {
+                let tab = &self.tabs[i];
+                tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none()
+            })
+            .map(RailEntry::Tab)
+            .collect();
+        let sections: Vec<(RailSection, &str, Vec<RailEntry>)> = vec![
+            (RailSection::Local, t.terminals, plain.into_iter().chain(kind(true).into_iter().map(RailEntry::Item)).collect()),
+            (RailSection::Ssh, t.profiles, kind(false).into_iter().map(RailEntry::Item).collect()),
+            (RailSection::Db, t.db_section, self.config.databases.iter().map(|c| RailEntry::Db(c.id)).collect()),
+        ];
+
+        let footer = bar.max.y - 54.0;
+        let list = Rect::from_min_max(Pos2::new(bar.min.x, unfold.max.y + 8.0), Pos2::new(bar.max.x - 1.0, footer));
+        let mut action: Option<TabAction> = None;
+        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list));
+        list_ui.spacing_mut().scroll = egui::style::ScrollStyle { bar_width: 4.0, floating_allocated_width: 2.0, dormant_handle_opacity: 0.5, ..egui::style::ScrollStyle::thin() };
+        egui::ScrollArea::vertical().id_salt("rail-scroll").auto_shrink(false).show(&mut list_ui, |ui| {
+            let origin = ui.max_rect().min;
+            let mut y = origin.y;
+            for (k, (section, title, entries)) in sections.iter().enumerate() {
+                // Each section: a line, its "+" (with the section's name on hover), then its badges.
+                if k > 0 {
+                    ui.painter().hline(bar.min.x + 14.0..=bar.max.x - 14.0, y + 2.0, Stroke::new(1.0, self.theme.tab_hover));
+                    y += 8.0;
+                }
+                // The section's icon (lit when the tab shown is in it), and its "+".
+                let here = entries.iter().any(|e| self.rail_open(*e) == Some(self.active));
+                let icon_rect = Rect::from_center_size(Pos2::new(cx - 11.0, y + 12.0), Vec2::splat(22.0));
+                let color = if here { self.theme.accent } else { self.theme.text_muted };
+                match section {
+                    RailSection::Local => paint_prompt_icon(ui.painter(), icon_rect.center(), color),
+                    RailSection::Ssh => paint_server_icon(ui.painter(), icon_rect.center(), color),
+                    RailSection::Db => super::dbview::paint_db_icon(ui.painter(), icon_rect.center(), color),
+                }
+                let collapsed = *self.collapsed(*section);
+                let icon = ui.interact(icon_rect, ui.id().with(("rail-section", k)), Sense::click());
+                if collapsed || icon.hovered() {
+                    ui.painter().rect_filled(icon_rect, 5.0, self.theme.tab_hover.gamma_multiply(if icon.hovered() { 1.0 } else { 0.6 }));
+                }
+                let hint = if collapsed { format!("{title} ({})  ·  {}", entries.len(), t.unfold_section) } else { format!("{title}  ·  {}", t.fold_section) };
+                if icon.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    let c = self.collapsed(*section);
+                    *c = !*c;
+                }
+                let plus_rect = Rect::from_center_size(Pos2::new(cx + 13.0, y + 12.0), Vec2::splat(20.0));
+                y += 26.0;
+                let plus = icon_button(ui, ui.painter(), plus_rect, &format!("rail-plus-{k}"), &self.theme, paint_plus);
+                match section {
+                    RailSection::Local => {
+                        if plus.on_hover_text(format!("{}  ·  {} ({})", title, t.new_tab, self.config.settings.shortcuts.new_tab.label())).clicked() {
+                            action = Some(TabAction::New);
+                        }
+                    }
+                    RailSection::Ssh => {
+                        let plus = plus.on_hover_text(*title);
+                        egui::Popup::menu(&plus).width(210.0).show(|ui| {
+                            menu_item(ui, t.new_host, TabAction::NewHost, &mut action);
+                            menu_item(ui, t.new_group, TabAction::NewGroup(false), &mut action);
+                        });
+                    }
+                    RailSection::Db => {
+                        if plus.on_hover_text(format!("{}  ·  {}", title, t.db_new_connection)).clicked() {
+                            action = Some(if self.config.databases.is_empty() && self.local_db { TabAction::AddLocalDb } else { TabAction::NewDb });
+                        }
+                    }
+                }
+                for entry in entries.iter().filter(|_| !collapsed) {
+                    let slot = Rect::from_center_size(Pos2::new(cx, y + 18.0), Vec2::new(46.0, 36.0));
+                    y += 40.0;
+                    self.rail_entry(ui, *entry, slot, bar.min.x, &mut action);
+                }
+            }
+            ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + 6.0)), Sense::hover());
+        });
+
+        ui.painter().hline(bar.min.x + 16.0..=bar.max.x - 16.0, footer + 2.0, Stroke::new(1.0, self.theme.tab_hover));
+        let gear = Rect::from_center_size(Pos2::new(cx, bar.max.y - 26.0), Vec2::splat(32.0));
+        let settings = ui.interact(gear, ui.id().with("rail-settings"), Sense::click());
+        if settings.hovered() || self.settings_dialog {
+            ui.painter().rect_filled(gear, 8.0, self.theme.tab_active);
+        }
+        paint_gear(ui.painter(), gear.center(), self.theme.accent);
+        if settings.on_hover_text(t.settings).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.settings_dialog = true;
+        }
+        self.apply_tab_action(ui, action, &[]);
+    }
+
+    /// Whether a section of the sidebar is folded to its title.
+    fn collapsed(&mut self, section: RailSection) -> &mut bool {
+        let s = &mut self.config.settings;
+        match section {
+            RailSection::Local => &mut s.local_collapsed,
+            RailSection::Ssh => &mut s.ssh_collapsed,
+            RailSection::Db => &mut s.db_collapsed,
+        }
+    }
+
+    /// A section's title (with its chevron), which folds or unfolds it when clicked. `plus`: room kept
+    /// on the right for its "+". True when the section is folded.
+    fn section_title(&mut self, ui: &Ui, rect: Rect, title: &str, plus: bool, section: RailSection) -> bool {
+        let hit = Rect::from_min_max(rect.min, Pos2::new(if plus { rect.max.x - 26.0 } else { rect.max.x }, rect.max.y));
+        let resp = ui.interact(hit, ui.id().with(("section-title", section as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            let c = self.collapsed(section);
+            *c = !*c;
+        }
+        let collapsed = *self.collapsed(section);
+        paint_section_title(ui.painter(), rect, title, plus, collapsed, resp.hovered(), &self.theme);
+        collapsed
+    }
+
+    /// The tab an entry of the folded sidebar is open in.
+    fn rail_open(&self, entry: RailEntry) -> Option<usize> {
+        match entry {
+            RailEntry::Tab(i) => Some(i),
+            RailEntry::Item(id) => self.item(id).and_then(|item| item.open),
+            RailEntry::Db(id) => self.tabs.iter().position(|tab| tab.db == Some(id)),
+        }
+    }
+
+    /// One badge of the folded sidebar: an open tab, a profile or host, or a database connection.
+    fn rail_entry(&self, ui: &mut Ui, entry: RailEntry, slot: Rect, left: f32, action: &mut Option<TabAction>) {
+        let t = self.t();
+        let (name, color, ssh, open, hint, click) = match entry {
+            RailEntry::Tab(i) => {
+                let tab = &self.tabs[i];
+                (tab.title().to_owned(), tab.color, false, Some(i), tab.title().to_owned(), TabAction::Select(i))
+            }
+            RailEntry::Item(id) => {
+                let Some(item) = self.item(id) else { return };
+                let hint = format!("{}\n{}", item.name, item.hint);
+                (item.name, item.color, item.ssh, item.open, hint, TabAction::OpenItem(id))
+            }
+            RailEntry::Db(id) => {
+                let Some(c) = self.config.databases.iter().find(|c| c.id == id) else { return };
+                let open = self.tabs.iter().position(|tab| tab.db == Some(id));
+                (c.name.clone(), c.color, false, open, format!("{}\n{}", c.name, c.address()), TabAction::OpenDb(id))
+            }
+        };
+        let resp = ui.interact(slot, ui.id().with(("rail", entry)), Sense::click());
+        let active = open == Some(self.active);
+        if active {
+            ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
+            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(left + 3.0, slot.min.y + 8.0), Vec2::new(3.0, slot.height() - 16.0)), 1.5, self.theme.accent);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(slot, 9.0, self.theme.tab_hover.gamma_multiply(0.75));
+        }
+        if open.and_then(|i| self.live.get(i)).is_some_and(|l| l.is_some()) {
+            paint_live(ui, ui.painter(), slot.center(), &self.theme);
+        }
+        paint_badge(ui.painter(), slot.center(), &name, color, ssh, open.is_some(), active, &self.theme);
+        let done = open.and_then(|i| self.tabs.get(i)).and_then(|tab| tab.done.as_ref());
+        if let Some(done) = done {
+            paint_done(ui.painter(), slot.right_top() + Vec2::new(-6.0, 7.0), done.ok, &self.theme);
+        }
+        let hint = match done {
+            Some(d) => format!("{hint}\n{}", d.summary),
+            None => hint,
+        };
+        let resp = resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            *action = Some(click);
+        }
+        resp.context_menu(|ui| match entry {
+            RailEntry::Tab(i) => self.tab_menu(ui, i, action),
+            RailEntry::Item(id) => {
+                if let Some(item) = self.item(id) {
+                    self.item_menu(ui, id, &item, action);
+                }
+            }
+            RailEntry::Db(id) => {
+                ui.set_min_width(170.0);
+                menu_item(ui, t.connect, TabAction::OpenDb(id), action);
+                menu_item(ui, t.edit, TabAction::EditDb(id), action);
+                ui.separator();
+                if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
+                    *action = Some(TabAction::DeleteDb(id));
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// The "Databases" section: the saved connections (the local server offered while there is none).
+    pub(super) fn db_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) {
+        let t = self.t();
+        let painter = ui.painter().clone();
+        let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
+        let collapsed = self.section_title(ui, header, t.db_section, true, RailSection::Db);
+        let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
+        if icon_button(ui, &painter, plus_rect, "db-plus", &self.theme, paint_plus).on_hover_text(t.db_new_connection).clicked() {
+            *action = Some(TabAction::NewDb);
+        }
+        *y += SECTION_HEADER_H;
+        if collapsed {
+            return;
+        }
+        if self.config.databases.is_empty() {
+            if self.local_db {
+                let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 6.0));
+                painter.rect_filled(r, 8.0, self.theme.accent.gamma_multiply(0.08));
+                painter.rect_stroke(r, 8.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.35)), egui::StrokeKind::Inside);
+                super::dbview::paint_db_icon(&painter, Pos2::new(r.min.x + 16.0, r.center().y), self.theme.accent);
+                painter.text(Pos2::new(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, t.db_local_found, FontId::proportional(12.0), self.theme.text);
+                let button = Rect::from_min_size(Pos2::new(r.max.x - 64.0, r.center().y - 11.0), Vec2::new(56.0, 22.0));
+                let add = ui.put(button, egui::Button::new(egui::RichText::new(t.db_add).size(12.0).color(self.theme.bg)).fill(self.theme.accent).corner_radius(5.0));
+                if add.clicked() {
+                    *action = Some(TabAction::AddLocalDb);
+                }
+                *y += r.height() + 6.0;
+            } else {
+                let hint = painter.layout(t.db_no_connections.to_owned(), FontId::proportional(12.0), self.theme.text_muted.gamma_multiply(0.7), row_w - 12.0);
+                let h = hint.size().y;
+                painter.galley(Pos2::new(left + 6.0, *y + 4.0), hint, self.theme.text_muted);
+                *y += h + 12.0;
+            }
+            return;
+        }
+        for c in self.config.databases.clone() {
+            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
+            *y += ROW_H + ROW_GAP;
+            let resp = ui.interact(slot, ui.id().with(("db-item", c.id)), Sense::click());
+            let open = self.tabs.iter().position(|tab| tab.db == Some(c.id));
+            let active = open == Some(self.active);
+            let hovered = resp.contains_pointer();
+            paint_row_bg(&painter, slot, active, hovered, &self.theme);
+            let dot = Pos2::new(slot.min.x + 17.0, slot.center().y);
+            paint_badge(&painter, dot, &c.name, c.color, false, open.is_some(), active, &self.theme);
+            let close_rect = Rect::from_center_size(Pos2::new(slot.max.x - 14.0, slot.center().y), Vec2::splat(18.0));
+            let show_close = open.is_some() && (active || hovered);
+            let color = if active { self.theme.text } else if open.is_some() || hovered { self.theme.text_muted } else { self.theme.text_muted.gamma_multiply(0.75) };
+            let text_rect = Rect::from_min_max(Pos2::new(slot.min.x + 36.0, slot.min.y), Pos2::new(if show_close { close_rect.min.x - 4.0 } else { slot.max.x - 10.0 }, slot.max.y));
+            let mut job = egui::text::LayoutJob::simple_singleline(c.name.clone(), FontId::proportional(13.0), color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
+            let galley = painter.layout_job(job);
+            painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
+            if show_close {
+                let close = ui.interact(close_rect, ui.id().with(("db-close", c.id)), Sense::click());
+                if close.hovered() {
+                    painter.rect_filled(close_rect, 4.0, self.theme.tab_hover.gamma_multiply(1.8));
+                }
+                paint_cross(&painter, close_rect.center(), if close.hovered() { self.theme.text } else { self.theme.text_muted });
+                if close.clicked() {
+                    *action = open.map(TabAction::Close);
+                }
+            }
+            let resp = resp.on_hover_text(c.address());
+            if resp.double_clicked() {
+                *action = Some(TabAction::EditDb(c.id));
+            } else if resp.clicked() {
+                action.get_or_insert(TabAction::OpenDb(c.id));
+            }
+            resp.context_menu(|ui| {
+                ui.set_min_width(170.0);
+                menu_item(ui, t.connect, TabAction::OpenDb(c.id), action);
+                menu_item(ui, t.edit, TabAction::EditDb(c.id), action);
+                ui.separator();
+                if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
+                    *action = Some(TabAction::DeleteDb(c.id));
+                    ui.close();
+                }
+            });
+        }
+    }
+
+    /// Removes a database connection (its tab closes, its password is forgotten).
+    pub(super) fn delete_db(&mut self, id: Uuid) {
+        if let Some(i) = self.tabs.iter().position(|t| t.db == Some(id)) {
+            self.close_tab(i);
+        }
+        self.config.databases.retain(|c| c.id != id);
+        ssh::delete_password(id);
+    }
+
     /// The profile editor on profile `id`.
     pub(super) fn open_profile_editor(&mut self, id: Uuid) {
         // An open profile tab has the latest layout: save it first.
@@ -404,10 +717,10 @@ impl App {
     }
 
     /// Small caps section title with an optional "+" button on the right. Returns true when "+" is clicked.
-    pub(super) fn section_header(&self, ui: &Ui, title: &str, pos: Pos2, width: f32, plus_hint: Option<&str>) -> bool {
+    pub(super) fn section_header(&mut self, ui: &Ui, title: &str, pos: Pos2, width: f32, plus_hint: Option<&str>, section: RailSection) -> bool {
         let rect = Rect::from_min_size(pos, Vec2::new(width, SECTION_HEADER_H));
+        self.section_title(ui, rect, title, plus_hint.is_some(), section);
         let painter = ui.painter();
-        paint_section_title(painter, rect, title, plus_hint.is_some(), &self.theme);
         let Some(hint) = plus_hint else { return false };
         let plus_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(20.0));
         let plus = ui.interact(plus_rect, ui.id().with(("section-plus", title)), Sense::click());
@@ -584,6 +897,11 @@ impl App {
             ui.painter().rect_filled(badge, 3.0, self.theme.ansi[3]);
             ui.painter().galley(badge.min + Vec2::new(4.0, 1.0), galley, self.theme.bg);
         }
+        // Fold into a rail («), on the row of the window buttons.
+        let fold_rect = Rect::from_center_size(Pos2::new(bar.max.x - 20.0, bar.min.y + if cfg!(target_os = "macos") { 14.0 } else { 18.0 }), Vec2::splat(22.0));
+        if icon_button(ui, ui.painter(), fold_rect, "fold-sidebar", &self.theme, paint_fold).on_hover_text(format!("{}  ({})", t.fold_sidebar, self.config.settings.shortcuts.toggle_sidebar.label())).clicked() {
+            self.config.settings.sidebar_folded = true;
+        }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
 
@@ -628,12 +946,13 @@ impl App {
 
         // Local section: open tabs that are neither a profile nor an SSH host, then local profiles.
         let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
-        if self.section_header(ui, t.terminals, Pos2::new(left, y), row_w, Some(&new_hint)) {
+        if self.section_header(ui, t.terminals, Pos2::new(left, y), row_w, Some(&new_hint), RailSection::Local) {
             action = Some(TabAction::New);
         }
         y += SECTION_HEADER_H;
 
-        let is_plain = |tab: &Tab| tab.ssh.is_none() && tab.profile.is_none();
+        let local_collapsed = self.config.settings.local_collapsed;
+        let is_plain = |tab: &Tab| tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none() && !local_collapsed;
         let first_y = y;
         let local_count = self.tabs.iter().filter(|t| is_plain(t)).count();
         let mut tab_rects: Vec<(usize, Rect)> = Vec::with_capacity(local_count);
@@ -775,14 +1094,27 @@ impl App {
         }
 
         // Local profiles sit with the terminals, in their own groups; the SSH section below lists hosts.
-        self.profiles_section(ui, left, row_w, &mut y, &mut action, true);
+        if !local_collapsed {
+            self.profiles_section(ui, left, row_w, &mut y, &mut action, true);
+        }
 
         y += SECTION_GAP;
         self.profiles_section(ui, left, row_w, &mut y, &mut action, false);
 
+        y += SECTION_GAP;
+        self.db_section(ui, left, row_w, &mut y, &mut action);
+
         // Content height, so the scroll area knows how far it can go.
         ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
 
+        self.apply_tab_action(ui, action, &tab_rects);
+        });
+    }
+
+    /// Carries out what was clicked in the sidebar (folded or not). `tab_rects`: the slots of the
+    /// local tabs, for a tab dragged over them.
+    fn apply_tab_action(&mut self, ui: &Ui, action: Option<TabAction>, tab_rects: &[(usize, Rect)]) {
+        let t = self.t();
         match action {
             Some(TabAction::Select(i)) => self.select(i),
             Some(TabAction::Close(i)) => self.request_close(CloseRequest::Tab(i)),
@@ -862,6 +1194,20 @@ impl App {
                 self.config.groups.push(group);
             }
             Some(TabAction::Duplicate(id)) => self.duplicate_item(id),
+            Some(TabAction::NewDb) => self.db_editor = Some(DbEditor::new(config::DbConnection::new(), true)),
+            Some(TabAction::AddLocalDb) => {
+                let mut c = config::DbConnection::new();
+                c.name = "Local".into();
+                c.user = std::env::var("USER").unwrap_or_default();
+                self.db_editor = Some(DbEditor::new(c, true));
+            }
+            Some(TabAction::OpenDb(id)) => self.open_db(id),
+            Some(TabAction::EditDb(id)) => {
+                if let Some(c) = self.config.databases.iter().find(|c| c.id == id) {
+                    self.db_editor = Some(DbEditor::new(c.clone(), false));
+                }
+            }
+            Some(TabAction::DeleteDb(id)) => self.delete_db(id),
             Some(TabAction::ItemNewWindow(id)) => self.item_to_new_window(id),
             Some(TabAction::TabNewWindow(i)) => self.tab_to_new_window(i),
             Some(TabAction::DeleteGroup(id)) => {
@@ -952,7 +1298,6 @@ impl App {
             }
             None => {}
         }
-        });
     }
 }
 
@@ -1011,15 +1356,75 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 /// A sidebar section's title: small spaced capitals, then a thin line (up to the + button).
-fn paint_section_title(painter: &egui::Painter, rect: Rect, title: &str, plus: bool, theme: &crate::theme::Theme) {
+/// A section's title, after the chevron that folds it.
+fn paint_section_title(painter: &egui::Painter, rect: Rect, title: &str, plus: bool, collapsed: bool, hovered: bool, theme: &crate::theme::Theme) {
+    let color = if hovered { theme.text } else { theme.text_muted.gamma_multiply(0.85) };
+    paint_chevron(painter, Pos2::new(rect.min.x + 9.0, rect.center().y), !collapsed, color);
     let mut job = egui::text::LayoutJob::default();
-    job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(10.5), color: theme.text_muted.gamma_multiply(0.85), extra_letter_spacing: 1.2, ..Default::default() });
+    job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(10.5), color, extra_letter_spacing: 1.2, ..Default::default() });
     let galley = painter.layout_job(job);
-    let text_end = rect.min.x + 6.0 + galley.size().x;
-    painter.galley(Pos2::new(rect.min.x + 6.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
+    let text_end = rect.min.x + 20.0 + galley.size().x;
+    painter.galley(Pos2::new(rect.min.x + 20.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
     let line_end = if plus { rect.max.x - 28.0 } else { rect.max.x - 6.0 };
     if line_end > text_end + 10.0 {
         painter.hline(text_end + 8.0..=line_end, rect.center().y, Stroke::new(1.0, theme.tab_hover.gamma_multiply(0.9)));
     }
 }
 
+/// « : fold the sidebar.
+fn paint_fold(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    for dx in [-2.5, 2.5] {
+        painter.line_segment([c + Vec2::new(dx + 2.0, -4.0), c + Vec2::new(dx - 2.0, 0.0)], stroke);
+        painter.line_segment([c + Vec2::new(dx - 2.0, 0.0), c + Vec2::new(dx + 2.0, 4.0)], stroke);
+    }
+}
+
+/// »: unfold it.
+fn paint_unfold(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    for dx in [-2.5, 2.5] {
+        painter.line_segment([c + Vec2::new(dx - 2.0, -4.0), c + Vec2::new(dx + 2.0, 0.0)], stroke);
+        painter.line_segment([c + Vec2::new(dx + 2.0, 0.0), c + Vec2::new(dx - 2.0, 4.0)], stroke);
+    }
+}
+
+
+/// A badge of the folded sidebar.
+#[derive(Clone, Copy, Debug, Hash)]
+enum RailEntry {
+    /// A local tab that is no profile.
+    Tab(usize),
+    /// A profile or an SSH host.
+    Item(Uuid),
+    Db(Uuid),
+}
+
+/// A section of the sidebar (folded or not).
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum RailSection {
+    Local,
+    Ssh,
+    Db,
+}
+
+/// A terminal prompt (">_" in a window): the local section of the folded sidebar.
+fn paint_prompt_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3, color);
+    let r = Rect::from_center_size(c, Vec2::new(15.0, 12.0));
+    painter.rect_stroke(r, 2.5, stroke, egui::StrokeKind::Middle);
+    let (x, y) = (r.min.x + 3.5, r.center().y);
+    painter.line_segment([Pos2::new(x, y - 2.5), Pos2::new(x + 3.0, y)], stroke);
+    painter.line_segment([Pos2::new(x + 3.0, y), Pos2::new(x, y + 2.5)], stroke);
+    painter.line_segment([Pos2::new(x + 5.0, y + 2.5), Pos2::new(x + 8.5, y + 2.5)], stroke);
+}
+
+/// Two stacked server units: the SSH section of the folded sidebar.
+fn paint_server_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3, color);
+    for dy in [-3.25, 3.25] {
+        let r = Rect::from_center_size(c + Vec2::new(0.0, dy), Vec2::new(14.0, 5.5));
+        painter.rect_stroke(r, 1.5, stroke, egui::StrokeKind::Middle);
+        painter.circle_filled(Pos2::new(r.max.x - 3.0, r.center().y), 0.9, color);
+    }
+}

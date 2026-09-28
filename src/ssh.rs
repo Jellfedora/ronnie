@@ -260,6 +260,21 @@ impl SshHost {
 }
 
 impl SshHost {
+    /// ssh only forwarding ports (`-L` options go before its last two arguments, "--" and the host):
+    /// no terminal, no command, prompts answered in the window.
+    pub fn tunnel_command(&self) -> Launch {
+        let mut launch = self.sftp_command();
+        // It ends with "-T", "-s", "--", host, "sftp"; its forwards are cleared (not these).
+        launch.args.truncate(launch.args.len().saturating_sub(5));
+        if let Some(i) = launch.args.iter().position(|a| a == "ClearAllForwardings=yes") {
+            launch.args.drain(i.saturating_sub(1)..=i);
+        }
+        launch.args.extend(["-N".to_owned(), "-o".to_owned(), "ExitOnForwardFailure=yes".to_owned(), "--".to_owned(), self.host.clone()]);
+        launch
+    }
+}
+
+impl SshHost {
     /// ssh running `command` on the server, without terminal, prompts answered in the window (like the
     /// file manager's session).
     pub fn exec_command(&self, command: &str) -> Launch {

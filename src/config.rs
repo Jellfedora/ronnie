@@ -149,10 +149,52 @@ pub struct Config {
     /// Commands saved for every terminal (the ⚡ menu), written at the prompt on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// MariaDB / MySQL servers. Passwords are in passwords.json, encrypted, like the SSH ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<DbConnection>,
     /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
     /// version never erases them.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A MariaDB / MySQL server to browse.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct DbConnection {
+    pub id: Uuid,
+    pub name: String,
+    /// Address or name; "localhost" goes through the local socket, as for the mysql client.
+    pub host: String,
+    #[serde(default = "default_db_port")]
+    pub port: u16,
+    pub user: String,
+    /// Database opened first (none: the list of all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "hex_color")]
+    pub color: Option<egui::Color32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password_saved: bool,
+    /// Reached through this SSH host (a port forward): `host` and `port` are then as seen from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<Uuid>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_db_port() -> u16 {
+    3306
+}
+
+impl DbConnection {
+    pub fn new() -> Self {
+        Self { id: Uuid::new_v4(), name: String::new(), host: "localhost".into(), port: 3306, user: String::new(), database: None, color: None, password_saved: false, ssh: None, extra: Default::default() }
+    }
+
+    /// `user@host:port`, for display.
+    pub fn address(&self) -> String {
+        if self.port == 3306 { format!("{}@{}", self.user, self.host) } else { format!("{}@{}:{}", self.user, self.host, self.port) }
+    }
 }
 
 /// A named, collapsible set of profiles and SSH hosts in the sidebar.
@@ -330,6 +372,9 @@ pub struct SessionTab {
     /// SSH host this tab is connected to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<Uuid>,
+    /// Database server this tab browses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db: Option<Uuid>,
     #[serde(flatten)]
     pub tab: TabState,
 }
@@ -413,6 +458,16 @@ pub struct Settings {
     /// How to tell, Ronnie being in front (in the background, it is always the system's).
     #[serde(default)]
     pub notify_style: NotifyStyle,
+    /// The sidebar folded into a narrow rail of badges.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sidebar_folded: bool,
+    /// Sections of the sidebar folded to their title: local terminals, SSH hosts, databases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_collapsed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ssh_collapsed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub db_collapsed: bool,
     /// Suggest files and folders for the path being typed in local terminals.
     #[serde(default = "default_true")]
     pub path_suggestions: bool,
@@ -519,6 +574,12 @@ pub struct Shortcuts {
     pub toggle_files: Shortcut,
     #[serde(default = "default_new_window")]
     pub new_window: Shortcut,
+    #[serde(default = "default_toggle_sidebar")]
+    pub toggle_sidebar: Shortcut,
+}
+
+fn default_toggle_sidebar() -> Shortcut {
+    Shortcut::command('B')
 }
 
 fn default_new_window() -> Shortcut {
@@ -540,6 +601,7 @@ impl Default for Shortcuts {
             open_settings: Shortcut::command('P'),
             toggle_files: Shortcut::command('E'),
             new_window: default_new_window(),
+            toggle_sidebar: default_toggle_sidebar(),
         }
     }
 }
@@ -621,7 +683,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), path_suggestions: true, restore_scrollback: true, metal_guard: true }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true }
     }
 }
 

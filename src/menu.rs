@@ -1,4 +1,5 @@
-//! macOS menu bar: Ronnie's app menu (about, settings, reload, hide, quit) and a Window menu.
+//! macOS menu bar: Ronnie's app menu (about, settings, reload, hide, quit) and a Window menu (new window,
+//! minimize...).
 //! There is deliberately no Edit menu: its items would take Cmd+C / Cmd+V away from the terminal.
 
 use std::sync::mpsc::{self, Receiver};
@@ -13,6 +14,7 @@ pub enum MenuAction {
     Settings,
     Reload,
     Quit,
+    NewWindow,
 }
 
 pub struct MenuBar {
@@ -21,17 +23,19 @@ pub struct MenuBar {
     settings: MenuItem,
     reload: MenuItem,
     quit: MenuItem,
+    new_window: MenuItem,
     events: Receiver<MenuEvent>,
     /// What the items currently show, to update them only on change.
-    shown: (&'static str, String),
+    shown: (&'static str, String, String),
 }
 
 impl MenuBar {
     /// Replaces the default menu bar. Clicks wake the UI up through `ctx`.
-    pub fn install(ctx: &egui::Context, t: &'static Strings, settings_shortcut: &Shortcut) -> Option<Self> {
+    pub fn install(ctx: &egui::Context, t: &'static Strings, settings_shortcut: &Shortcut, new_window_shortcut: &Shortcut) -> Option<Self> {
         let settings = MenuItem::new(format!("{}…", t.settings), true, accelerator(settings_shortcut));
         let reload = MenuItem::new(t.reload_app, true, None);
         let quit = MenuItem::new(t.quit_app, true, "Cmd+Q".parse().ok());
+        let new_window = MenuItem::new(t.new_window, true, accelerator(new_window_shortcut));
         let about = AboutMetadata { name: Some("Ronnie".into()), version: Some(crate::update::VERSION.into()), ..Default::default() };
         let app_menu = Submenu::with_items(
             "Ronnie",
@@ -56,6 +60,8 @@ impl MenuBar {
             t.window_menu,
             true,
             &[
+                &new_window,
+                &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::minimize(None),
                 &PredefinedMenuItem::maximize(None),
                 &PredefinedMenuItem::fullscreen(None),
@@ -73,7 +79,7 @@ impl MenuBar {
             let _ = tx.send(event);
             ctx.request_repaint();
         }));
-        Some(Self { _menu: menu, settings, reload, quit, events, shown: (t.settings, settings_shortcut.0.clone()) })
+        Some(Self { _menu: menu, settings, reload, quit, new_window, events, shown: (t.settings, settings_shortcut.0.clone(), new_window_shortcut.0.clone()) })
     }
 
     /// The menu items clicked since the last call.
@@ -84,21 +90,24 @@ impl MenuBar {
                 id if id == *self.settings.id() => Some(MenuAction::Settings),
                 id if id == *self.reload.id() => Some(MenuAction::Reload),
                 id if id == *self.quit.id() => Some(MenuAction::Quit),
+                id if id == *self.new_window.id() => Some(MenuAction::NewWindow),
                 _ => None,
             })
             .collect()
     }
 
     /// Follows the language and the settings shortcut.
-    pub fn sync(&mut self, t: &'static Strings, settings_shortcut: &Shortcut) {
-        if self.shown.0 == t.settings && self.shown.1 == settings_shortcut.0 {
+    pub fn sync(&mut self, t: &'static Strings, settings_shortcut: &Shortcut, new_window_shortcut: &Shortcut) {
+        if self.shown.0 == t.settings && self.shown.1 == settings_shortcut.0 && self.shown.2 == new_window_shortcut.0 {
             return;
         }
+        self.new_window.set_text(t.new_window);
+        let _ = self.new_window.set_accelerator(accelerator(new_window_shortcut));
         self.settings.set_text(format!("{}…", t.settings));
         let _ = self.settings.set_accelerator(accelerator(settings_shortcut));
         self.reload.set_text(t.reload_app);
         self.quit.set_text(t.quit_app);
-        self.shown = (t.settings, settings_shortcut.0.clone());
+        self.shown = (t.settings, settings_shortcut.0.clone(), new_window_shortcut.0.clone());
     }
 }
 

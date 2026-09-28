@@ -19,6 +19,7 @@ use crate::update::{self, Updater};
 
 mod bigtext;
 mod complete;
+mod dbview;
 mod editor;
 mod files;
 mod guard;
@@ -29,6 +30,8 @@ mod settings;
 mod sidebar;
 
 const SIDEBAR_WIDTH: f32 = 220.0;
+/// The folded sidebar: room for the macOS window buttons, then badges.
+const RAIL_WIDTH: f32 = 72.0;
 /// Window title: dev builds are told apart from the installed app.
 const APP_TITLE: &str = if config::OFFICIAL { "Ronnie" } else { "Ronnie (dev)" };
 const SIDEBAR_PAD: f32 = 8.0;
@@ -81,6 +84,10 @@ pub struct Tab {
     /// terminals.
     files: Option<Box<files::FileManager>>,
     show_files: bool,
+    /// Database server this tab browses: its view is shown instead of the terminals (⌘ E switches).
+    db: Option<Uuid>,
+    db_view: Option<Box<dbview::DbView>>,
+    show_db: bool,
     /// A long command ended here while the tab wasn't shown: a ✓ or ✗ on the tab until it is.
     done: Option<Done>,
 }
@@ -95,7 +102,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -223,6 +230,10 @@ pub struct App {
     editor: Option<ConfigEditor>,
     /// SSH host being created or edited.
     host_editor: Option<HostEditor>,
+    /// Database connection being created or edited.
+    db_editor: Option<DbEditor>,
+    /// A MariaDB / MySQL server runs on this machine (offered in the sidebar while none is set up).
+    local_db: bool,
     /// Profile or group being dragged in the sidebar.
     item_drag: Option<ItemDrag>,
     /// Group being renamed: id, typed name, whether the editor was just opened.
@@ -324,6 +335,10 @@ fn sync_tabs(tabs: &mut [Tab], config: &mut Config) -> Vec<SessionTab> {
             tab.name = Some(host.name.clone());
             tab.color = host.color;
         }
+        if let Some(c) = tab.db.and_then(|id| config.databases.iter().find(|c| c.id == id)) {
+            tab.name = Some(c.name.clone());
+            tab.color = c.color;
+        }
         let state = tab.state();
         if let Some(id) = tab.profile {
             match config.profiles.iter_mut().find(|p| p.id == id) {
@@ -331,9 +346,31 @@ fn sync_tabs(tabs: &mut [Tab], config: &mut Config) -> Vec<SessionTab> {
                 None => tab.profile = None,
             }
         }
-        out.push(SessionTab { profile: tab.profile, ssh: tab.ssh, tab: state });
+        out.push(SessionTab { profile: tab.profile, ssh: tab.ssh, db: tab.db, tab: state });
     }
     out
+}
+
+/// The database connection editor's state.
+struct DbEditor {
+    draft: config::DbConnection,
+    port: String,
+    password: String,
+    password_changed: bool,
+    reveal: bool,
+    is_new: bool,
+    error: Option<String>,
+    /// "Test the connection": waiting, then its outcome.
+    testing: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    tested: Option<Result<String, String>>,
+    /// The test's SSH forward, kept until the test ends.
+    test_pid: Option<u32>,
+}
+
+impl DbEditor {
+    fn new(draft: config::DbConnection, is_new: bool) -> Self {
+        Self { port: draft.port.to_string(), draft, password: String::new(), password_changed: false, reveal: false, is_new, error: None, testing: None, tested: None, test_pid: None }
+    }
 }
 
 /// A profile or an SSH host, as shown in the sidebar.
@@ -587,10 +624,11 @@ enum ShortcutAction {
     OpenSettings,
     ToggleFiles,
     NewWindow,
+    ToggleSidebar,
 }
 
 impl ShortcutAction {
-    const ALL: [ShortcutAction; 11] = [
+    const ALL: [ShortcutAction; 12] = [
         Self::NewTab,
         Self::ClosePane,
         Self::SplitRight,
@@ -602,6 +640,7 @@ impl ShortcutAction {
         Self::OpenSettings,
         Self::ToggleFiles,
         Self::NewWindow,
+        Self::ToggleSidebar,
     ];
 
     fn label(self, t: &Strings) -> &'static str {
@@ -617,6 +656,7 @@ impl ShortcutAction {
             Self::OpenSettings => t.shortcut_open_settings,
             Self::ToggleFiles => t.shortcut_toggle_files,
             Self::NewWindow => t.new_window,
+            Self::ToggleSidebar => t.toggle_sidebar,
         }
     }
 
@@ -633,6 +673,7 @@ impl ShortcutAction {
             Self::OpenSettings => &s.open_settings,
             Self::ToggleFiles => &s.toggle_files,
             Self::NewWindow => &s.new_window,
+            Self::ToggleSidebar => &s.toggle_sidebar,
         }
     }
 
@@ -649,6 +690,7 @@ impl ShortcutAction {
             Self::OpenSettings => &mut s.open_settings,
             Self::ToggleFiles => &mut s.toggle_files,
             Self::NewWindow => &mut s.new_window,
+            Self::ToggleSidebar => &mut s.toggle_sidebar,
         }
     }
 }
@@ -694,6 +736,8 @@ impl App {
             settings_tab: SettingsTab::General,
             editor: None,
             host_editor: None,
+            db_editor: None,
+            local_db: crate::db::local_server(),
             item_drag: None,
             group_rename: None,
             item_rename: None,
@@ -816,7 +860,7 @@ impl App {
         }
         #[cfg(target_os = "macos")]
         {
-            app.menu = crate::menu::MenuBar::install(&cc.egui_ctx, app.t(), &app.config.settings.shortcuts.open_settings);
+            app.menu = crate::menu::MenuBar::install(&cc.egui_ctx, app.t(), &app.config.settings.shortcuts.open_settings, &app.config.settings.shortcuts.new_window);
         }
         // Development: open the settings on a page right away (to look at them).
         if cfg!(debug_assertions) {
@@ -971,6 +1015,56 @@ impl App {
     }
 
     /// Connects to an SSH host, or switches to its tab if it is already open.
+    /// Opens (or shows) the tab of database connection `id`.
+    fn open_db(&mut self, id: Uuid) {
+        if let Some(index) = self.tabs.iter().position(|t| t.db == Some(id)) {
+            if let Some(tab) = self.tabs.get_mut(index) {
+                tab.show_db = true;
+            }
+            self.select(index);
+            return;
+        }
+        if self.show_elsewhere(|t| t.db == Some(id)) {
+            return;
+        }
+        let Some(conn) = self.config.databases.iter().find(|c| c.id == id) else { return };
+        let (name, color) = (conn.name.clone(), conn.color);
+        let pane = self.next_pane;
+        self.next_pane += 1;
+        // A terminal behind the view (⌘ E), started only when shown.
+        let mut tab = Tab::new(Node::Leaf(pane), HashMap::new());
+        tab.pending = vec![pane];
+        tab.db = Some(id);
+        tab.show_db = true;
+        tab.name = Some(name);
+        tab.color = color;
+        self.tabs.push(tab);
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// The active tab's database view, filling `rect` (connecting it the first time).
+    fn db_view_ui(&mut self, ui: &mut Ui, rect: Rect) {
+        let t = self.t();
+        let index = self.active;
+        let Some(id) = self.tabs.get(index).and_then(|t| t.db) else { return };
+        let Some(conn) = self.config.databases.iter().find(|c| c.id == id).cloned() else { return };
+        let host = conn.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned();
+        let Some(tab) = self.tabs.get_mut(index) else { return };
+        let view = tab.db_view.get_or_insert_with(|| {
+            let password = conn.password_saved.then(|| ssh::load_password(conn.id)).flatten();
+            let tunnel = host.as_ref().map(|h| (h.tunnel_command(), h.name.clone()));
+            Box::new(dbview::DbView::new(ui.ctx(), &conn, password, tunnel))
+        });
+        let dbview::DbAction::None = view.ui(ui, rect, &self.theme, t);
+        // A new SSH forward (opened, or opened again): its prompts are answered in the window.
+        if let (Some(pid), Some(h)) = (view.take_tunnel_pid(), &host) {
+            #[cfg(unix)]
+            self.askpass.allow_interactive(pid, h.id, &h.name, h.uses_saved_password());
+            #[cfg(not(unix))]
+            let _ = (pid, h);
+        }
+    }
+
     fn open_ssh(&mut self, id: Uuid) {
         if let Some(index) = self.tabs.iter().position(|t| t.ssh == Some(id)) {
             self.select(index);
@@ -1093,6 +1187,11 @@ impl App {
             // SSH tabs reconnect when first shown, like other restored tabs start their shell.
             if let (Some(id), Some(last)) = (tab.ssh, self.tabs.last_mut()) {
                 last.ssh = self.config.ssh.iter().any(|h| h.id == id).then_some(id);
+            }
+            // Database tabs connect when first shown.
+            if let (Some(id), Some(last)) = (tab.db, self.tabs.last_mut()) {
+                last.db = self.config.databases.iter().any(|c| c.id == id).then_some(id);
+                last.show_db = true;
             }
         }
         self.active = active.min(self.tabs.len().saturating_sub(1));
@@ -1355,7 +1454,8 @@ impl App {
         let screen = ctx.content_rect();
         let place = self.config.settings.toast_position;
         // On the left: next to the sidebar, not over it.
-        let (left, right) = (screen.min.x + SIDEBAR_WIDTH + 16.0, screen.max.x - 16.0);
+        let sidebar_w = if self.config.settings.sidebar_folded { RAIL_WIDTH } else { SIDEBAR_WIDTH };
+        let (left, right) = (screen.min.x + sidebar_w + 16.0, screen.max.x - 16.0);
         let mut edge = if place.top() { screen.min.y + 16.0 } else { screen.max.y - 16.0 };
         let mut go = None;
         let mut hovered_any = false;
@@ -1517,7 +1617,7 @@ impl App {
         // Only profiles are worth reopening; a plain terminal is just a new tab.
         if tab.profile.is_some() {
             self.closed.retain(|c| c.profile != tab.profile);
-            self.closed.push(SessionTab { profile: tab.profile, ssh: None, tab: state });
+            self.closed.push(SessionTab { profile: tab.profile, ssh: None, db: None, tab: state });
             if self.closed.len() > config::MAX_CLOSED {
                 self.closed.remove(0);
             }
@@ -1586,7 +1686,7 @@ impl App {
         }
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         // The file manager hides the terminals: their actions would act on panes the user can't see.
-        let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files);
+        let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files || (t.db.is_some() && t.show_db));
         let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane);
         // A file open in the file manager's editor: ⌘ F searches it, ⌘ W closes it.
         if let Some(viewer) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.viewer.as_mut()) {
@@ -1642,12 +1742,14 @@ impl App {
                     }
                 }
                 ShortcutAction::OpenSettings => self.settings_dialog = !self.settings_dialog,
+                ShortcutAction::ToggleSidebar => self.config.settings.sidebar_folded = !self.config.settings.sidebar_folded,
                 ShortcutAction::NewWindow => {
                     let ctx = ui.ctx().clone();
                     self.new_window(|app| app.new_tab(&ctx));
                 }
                 ShortcutAction::ToggleFiles => {
-                    if let Some(show) = self.tabs.get(self.active).map(|t| !t.show_files) {
+                    // A database tab has no terminal to switch to.
+                    if let Some(show) = self.tabs.get(self.active).filter(|t| t.db.is_none()).map(|t| !t.show_files) {
                         self.toggle_files(self.active, show);
                     }
                 }
@@ -1844,11 +1946,11 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
 
 /// Startup splash, `t` seconds in: the letters of "Ronnie" drop in one by one, an accent line and the
 /// version appear, then everything fades out. Returns false once it is over.
-fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) -> bool {
+fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, warning: &str) -> bool {
     const LETTERS: f32 = 0.13; // delay between two letters
     const DROP: f32 = 0.55; // duration of a letter's fall
-    const FADE_START: f32 = 2.4;
-    const END: f32 = 3.0;
+    const FADE_START: f32 = 3.0;
+    const END: f32 = 3.6;
     if t >= END {
         return false;
     }
@@ -1888,6 +1990,13 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32) ->
         painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, theme.accent.gamma_multiply(fade)));
         let version = ((t - 1.4) / 0.4).clamp(0.0, 1.0) * fade;
         painter.text(Pos2::new(center.x, y + 22.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
+        // Alpha: not for production work.
+        let alpha = ((t - 1.6) / 0.4).clamp(0.0, 1.0) * fade;
+        let galley = painter.layout(warning.to_owned(), FontId::proportional(12.5), theme.ansi[3].gamma_multiply(alpha), (screen.width() - 48.0).min(460.0));
+        let box_rect = Rect::from_center_size(Pos2::new(center.x, y + 62.0), galley.size() + Vec2::new(24.0, 14.0));
+        painter.rect_filled(box_rect, 8.0, theme.ansi[3].gamma_multiply(0.10 * alpha));
+        painter.rect_stroke(box_rect, 8.0, Stroke::new(1.0, theme.ansi[3].gamma_multiply(0.45 * alpha)), egui::StrokeKind::Inside);
+        painter.galley(box_rect.center() - galley.size() / 2.0, galley, theme.ansi[3].gamma_multiply(alpha));
     }
     true
 }
@@ -2160,6 +2269,12 @@ enum TabAction {
     Duplicate(Uuid),
     /// Open a profile or an SSH host in a new window (moving its tab there if it is open here).
     ItemNewWindow(Uuid),
+    NewDb,
+    /// New database connection, filled for the server found on this machine.
+    AddLocalDb,
+    OpenDb(Uuid),
+    EditDb(Uuid),
+    DeleteDb(Uuid),
     /// Move an open tab to a new window.
     TabNewWindow(usize),
 }
@@ -2314,6 +2429,11 @@ impl App {
         }
         self.handle_shortcuts(ui);
         self.poll_files();
+        for tab in &mut self.tabs {
+            if let Some(view) = &mut tab.db_view {
+                view.poll();
+            }
+        }
 
         self.track_window(ui.ctx());
         let now = ui.input(|i| i.time);
@@ -2326,11 +2446,12 @@ impl App {
             ui.ctx().request_repaint_after(Duration::from_secs_f64(SYNC_INTERVAL));
         }
 
+        let folded = self.config.settings.sidebar_folded;
         egui::Panel::left("sidebar")
-            .exact_size(SIDEBAR_WIDTH)
+            .exact_size(if folded { RAIL_WIDTH } else { SIDEBAR_WIDTH })
             .resizable(false)
             .frame(Frame::NONE)
-            .show(ui, |ui| self.sidebar(ui));
+            .show(ui, |ui| if folded { self.sidebar_rail(ui) } else { self.sidebar(ui) });
 
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(self.theme.bg))
@@ -2342,6 +2463,11 @@ impl App {
                 // An SSH tab showing its file manager.
                 if self.tabs.get(self.active).is_some_and(|t| t.show_files) {
                     self.files_view(ui, rect);
+                    return;
+                }
+                // A database tab showing its view.
+                if self.tabs.get(self.active).is_some_and(|t| t.db.is_some() && t.show_db) {
+                    self.db_view_ui(ui, rect);
                     return;
                 }
                 self.start_pending(ui.ctx(), self.active);
@@ -2742,20 +2868,29 @@ impl App {
         if dialogs_here {
             self.settings_window(ui.ctx());
             self.host_editor_window(ui.ctx());
+            self.db_editor_window(ui.ctx());
             self.profile_editor_window(ui.ctx());
         }
 
         // macOS menu bar.
         #[cfg(target_os = "macos")]
+        let mut new_window = false;
+        #[cfg(target_os = "macos")]
         if let Some(menu) = self.menu.as_mut().filter(|_| main_window) {
-            menu.sync(self.config.settings.language.strings(), &self.config.settings.shortcuts.open_settings);
+            menu.sync(self.config.settings.language.strings(), &self.config.settings.shortcuts.open_settings, &self.config.settings.shortcuts.new_window);
             for action in menu.actions() {
                 match action {
                     crate::menu::MenuAction::Settings => self.settings_dialog = true,
                     crate::menu::MenuAction::Reload => self.request_close(CloseRequest::Restart),
                     crate::menu::MenuAction::Quit => self.request_close(CloseRequest::Window),
+                    crate::menu::MenuAction::NewWindow => new_window = true,
                 }
             }
+        }
+        #[cfg(target_os = "macos")]
+        if new_window {
+            let ctx = ui.ctx().clone();
+            self.new_window(|app| app.new_tab(&ctx));
         }
 
         // Closing the window (red button, Cmd+Q...) asks first when programs are still running. Another
@@ -2789,7 +2924,7 @@ impl App {
             self.splash = Some(start);
             let skip = ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("splash")));
-            if skip || !paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32) {
+            if skip || !paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32, self.t().alpha_warning) {
                 self.splash = None;
             }
             ui.ctx().request_repaint();

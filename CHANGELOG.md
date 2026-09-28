@@ -2,6 +2,30 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.9.0] - 2026-09-28
+
+### Nouveautés
+
+- **Bases de données MariaDB / MySQL**, façon phpMyAdmin : une section « Bases de données » dans la barre latérale (la base locale est détectée et proposée), des connexions comme dans un client lourd (adresse, port, utilisateur, mot de passe chiffré), ou **à travers un hôte SSH** (tunnel ouvert par Ronnie, pour les serveurs qui n'écoutent que sur leur machine).
+  - Bases et tables à gauche ; pour une table : **Contenu** paginé et triable, **recherche** dans toutes les colonnes, **champ SQL** au-dessus du tableau, **double-clic pour modifier une cellule** (fenêtre pour les valeurs longues), mettre à NULL, **cases à cocher** pour supprimer des lignes, **insérer une ligne**.
+  - **Structure** : modifier le type, le nom, la valeur par défaut, le commentaire d'une colonne (sans perdre sa collation), en ajouter, en supprimer ; index et CREATE TABLE.
+  - **Nouvelle table** (formulaire de colonnes), renommer, vider, supprimer une table ; créer, supprimer une base.
+  - **Export** d'une base ou d'une table en .sql (ou .sql.gz) cohérent, avec vues, procédures, fonctions, triggers et événements ; **export CSV** d'une table ou d'un résultat ; **import** de .sql / .sql.gz lu au fil de l'eau, même très gros. Option « Vérifier les clés étrangères », cochée par défaut.
+  - Page **SQL** avec historique des requêtes ; **bouton Arrêter** pour une requête trop longue, un export ou un import ; reconnexion automatique.
+  - **Utilisateurs** : liste des comptes et de leurs droits, créer un compte, changer son mot de passe, accorder ou retirer des droits, supprimer.
+  - Le garde-fou demande confirmation avant un DROP, un TRUNCATE, un DELETE ou un UPDATE sans WHERE, un ALTER TABLE … DROP (aussi dans le terminal).
+- **Barre latérale repliable** (⌘ B, ou le bouton « en haut) : une colonne de badges avec le R de Ronnie, les icônes des sections, tous les terminaux, profils, serveurs et bases, leurs menus et leurs « + ». Les **sections** Local, SSH et Bases se replient aussi, dans les deux modes.
+- **Menu Fenêtre > Nouvelle fenêtre** sur macOS ; au relancement, **toutes les fenêtres** ouvertes sont restaurées.
+- Gestionnaire de fichiers :
+  - **Déplacer par glisser-déposer** des fichiers et dossiers dans un dossier du même panneau, en local comme en SSH ; un élément du même nom : **Remplacer** (les dossiers sont fusionnés) ou **Ignorer**, avec « Toujours faire ce choix pendant cette session » (aussi pour les transferts).
+  - **Sélection au lasso** : glisser depuis la zone vide à côté des noms.
+  - **Taille d'un dossier** : clic droit > Calculer la taille.
+- Écran de démarrage : un rappel que Ronnie est en **version alpha**, à ne pas utiliser pour des opérations de production.
+
+### Corrections
+
+- Seule la dernière adresse locale ouverte par un terminal est proposée en raccourci (plus toute la liste des ports).
+
 ## [0.8.0] - 2026-09-28
 
 ### Nouveautés

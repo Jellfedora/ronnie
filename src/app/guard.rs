@@ -13,6 +13,11 @@ pub(super) enum Danger {
     DropDatabase,
     /// DELETE without WHERE, or TRUNCATE: a whole table emptied.
     EmptyTable,
+    /// UPDATE without WHERE: every row of a table changed.
+    UpdateAll,
+    DropTable,
+    /// ALTER TABLE ... DROP (a column and its values).
+    DropColumn,
     DockerVolumes,
     ForcePush(String),
     /// Reboots or shuts down the server (SSH panes only).
@@ -74,6 +79,25 @@ fn commands(line: &str) -> Vec<Vec<String>> {
     out
 }
 
+/// SQL in `upper` (uppercased) that changes or drops a lot, statement by statement.
+fn sql_danger(upper: &str) -> Option<Danger> {
+    for statement in upper.split(';') {
+        let words: Vec<&str> = statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
+        let has = |w: &str| words.contains(&w);
+        for (i, w) in words.iter().enumerate() {
+            let next = words.get(i + 1).copied();
+            match *w {
+                // Not "ON UPDATE CURRENT_TIMESTAMP" in a table's definition.
+                "UPDATE" if i.checked_sub(1).and_then(|p| words.get(p)) != Some(&"ON") && has("SET") && !has("WHERE") => return Some(Danger::UpdateAll),
+                "DROP" if next == Some("TABLE") => return Some(Danger::DropTable),
+                "DROP" if has("ALTER") && has("TABLE") && !matches!(next, Some("INDEX" | "KEY" | "FOREIGN" | "PRIMARY" | "CONSTRAINT" | "CHECK" | "PARTITION" | "TABLE" | "DEFAULT")) => return Some(Danger::DropColumn),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// What `line` would destroy, if it's one of the well-known disasters. `ssh`: typed on a server.
 pub(super) fn check(line: &str, ssh: bool) -> Option<Danger> {
     let upper = line.to_uppercase();
@@ -82,6 +106,9 @@ pub(super) fn check(line: &str, ssh: bool) -> Option<Danger> {
     }
     if upper.contains("TRUNCATE ") || (upper.contains("DELETE FROM") && !upper.contains("WHERE")) {
         return Some(Danger::EmptyTable);
+    }
+    if let Some(danger) = sql_danger(&upper) {
+        return Some(danger);
     }
     if line.replace(' ', "").contains(":(){:|:&};:") {
         return Some(Danger::ForkBomb);
@@ -155,6 +182,11 @@ mod tests {
         assert_eq!(check(":(){ :|:& };:", false), Some(Danger::ForkBomb));
         assert_eq!(check("mysql -e 'drop database prod'", false), Some(Danger::DropDatabase));
         assert_eq!(check("DELETE FROM users;", false), Some(Danger::EmptyTable));
+        assert_eq!(check("UPDATE users SET admin = 1", false), Some(Danger::UpdateAll));
+        assert_eq!(check("mysql -e 'update users set admin=1'", false), Some(Danger::UpdateAll));
+        assert_eq!(check("DROP TABLE users", false), Some(Danger::DropTable));
+        assert_eq!(check("ALTER TABLE users DROP COLUMN email", false), Some(Danger::DropColumn));
+        assert_eq!(check("alter table users drop email", false), Some(Danger::DropColumn));
         assert_eq!(check("docker compose down -v", false), Some(Danger::DockerVolumes));
         assert_eq!(check("git push --force origin main", false), Some(Danger::ForcePush("main".into())));
         assert_eq!(check("sudo reboot", true), Some(Danger::Reboot));
@@ -171,6 +203,10 @@ mod tests {
             "chmod -R 755 storage",
             "dd if=/dev/zero of=/dev/null count=1",
             "DELETE FROM users WHERE id = 3;",
+            "UPDATE users SET a = 1 WHERE id = 2",
+            "ALTER TABLE t ADD COLUMN at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+            "ALTER TABLE t DROP INDEX idx_a",
+            "CREATE TABLE t (a INT)",
             "docker compose down",
             "git push --force origin feature/x",
             "git push origin main",

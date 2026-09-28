@@ -15,7 +15,7 @@ use crate::sftp::{self, Entry, Event, Request};
 type ZipResult = Result<(), String>;
 
 /// Where a panel's files are.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Side {
     Local,
     Remote,
@@ -45,6 +45,9 @@ struct Panel {
     selected: HashSet<String>,
     /// Last clicked row, for Shift+click ranges.
     anchor: Option<String>,
+    /// A selection rectangle being drawn: the row it started on (the number of rows: below them) and
+    /// where on screen.
+    marquee: Option<(usize, Pos2)>,
     sort: (SortBy, bool),
     loading: bool,
     /// Indexes of `entries` in display order, and what it was computed for: rebuilt only when the
@@ -59,7 +62,7 @@ struct Panel {
 
 impl Panel {
     fn new(path: String) -> Self {
-        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false) }
+        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, marquee: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false) }
     }
 
     fn set_entries(&mut self, entries: Vec<Entry>) {
@@ -135,6 +138,69 @@ enum Dialog {
     Chmod { side: Side, edit: Box<PermEdit> },
     /// Some of the files to transfer already exist on the other side.
     Conflict { from: Side, names: Vec<String>, target: String, existing: Vec<String> },
+    /// Some of the items moved into folder `dir` (a path) already exist there; `from`: their paths.
+    MoveConflict { side: Side, from: Vec<String>, dir: String, existing: Vec<String> },
+}
+
+/// The answer to "already exists" kept for the rest of the session, when asked to: 0 none, 1 replace,
+/// 2 skip. Shared by every file manager.
+static CONFLICT_CHOICE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Replace (true) or skip (false), if chosen for the session.
+fn session_choice() -> Option<bool> {
+    match CONFLICT_CHOICE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+/// The size of the files under `root` on this computer (links not followed).
+fn local_dir_size(root: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.path().symlink_metadata() else { continue };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Moves `from` to `to` on this computer: renamed if `to` is free; folders merged; a file there replaced
+/// if `overwrite`. How many items stayed (not replaced).
+fn move_local(from: &std::path::Path, to: &std::path::Path, overwrite: bool) -> std::io::Result<u64> {
+    let Ok(target) = std::fs::symlink_metadata(to) else {
+        std::fs::rename(from, to)?;
+        return Ok(0);
+    };
+    let source = std::fs::symlink_metadata(from)?;
+    if source.is_dir() && target.is_dir() {
+        let mut kept = 0;
+        for child in std::fs::read_dir(from)?.flatten() {
+            kept += move_local(&child.path(), &to.join(child.file_name()), overwrite)?;
+        }
+        if kept == 0 {
+            let _ = std::fs::remove_dir(from);
+        }
+        return Ok(kept);
+    }
+    if !overwrite {
+        return Ok(1);
+    }
+    if target.is_dir() {
+        std::fs::remove_dir_all(to)?;
+    } else {
+        std::fs::remove_file(to)?;
+    }
+    std::fs::rename(from, to)?;
+    Ok(0)
 }
 
 enum Status {
@@ -160,6 +226,12 @@ pub(super) struct FileManager {
     transfers: Vec<Transfer>,
     next_id: u64,
     dialog: Option<Dialog>,
+    /// "Always, for this session" ticked in the conflict dialog.
+    remember_choice: bool,
+    /// Sizes of folders asked for (by side and path): None while counting, then the total.
+    dir_sizes: HashMap<(Side, String), Option<Result<u64, String>>>,
+    /// Folders of this computer being counted.
+    local_sizing: Vec<(String, std::sync::mpsc::Receiver<Result<u64, String>>)>,
     error: Option<String>,
     show_hidden: bool,
     /// The panel the keyboard acts on (last clicked).
@@ -201,6 +273,9 @@ impl FileManager {
             transfers: Vec::new(),
             next_id: 1,
             dialog: None,
+            remember_choice: false,
+            dir_sizes: HashMap::new(),
+            local_sizing: Vec::new(),
             error: None,
             show_hidden: false,
             active: Side::Remote,
@@ -489,6 +564,18 @@ impl FileManager {
     /// Handles what the session sent. Called every frame, for every tab (transfers go on in the background).
     pub fn poll(&mut self, t: &Strings) {
         self.poll_zips();
+        let mut counted = Vec::new();
+        self.local_sizing.retain(|(path, rx)| match rx.try_recv() {
+            Ok(result) => {
+                counted.push((path.clone(), result));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        });
+        for (path, result) in counted {
+            self.dir_sizes.insert((Side::Local, path), Some(result));
+        }
         self.feed_viewer();
         let Some(conn) = &self.conn else { return };
         for event in conn.poll() {
@@ -532,6 +619,10 @@ impl FileManager {
                     }
                 }
                 Event::Changed => self.list_remote(),
+                Event::DirSize { path, result } => {
+                    self.dir_sizes.insert((Side::Remote, path), Some(result));
+                }
+                Event::MoveConflict { from, dir, existing } => self.dialog = Some(Dialog::MoveConflict { side: Side::Remote, from, dir, existing }),
                 Event::Error(e) => self.error = Some(e),
                 Event::Range { path, result } => {
                     if let Some(viewer) = self.viewer.as_mut().filter(|v| v.remote && v.path == path) {
@@ -642,10 +733,10 @@ impl FileManager {
         } else {
             Vec::new()
         };
-        if existing.is_empty() {
-            self.start_transfer(from, names, target, false);
-        } else {
-            self.dialog = Some(Dialog::Conflict { from, names, target, existing });
+        match (existing.is_empty(), session_choice()) {
+            (true, _) => self.start_transfer(from, names, target, false),
+            (false, Some(overwrite)) => self.start_transfer(from, names, target, overwrite),
+            (false, None) => self.dialog = Some(Dialog::Conflict { from, names, target, existing }),
         }
     }
 
@@ -815,6 +906,74 @@ impl FileManager {
                 self.read_local();
             }
             Side::Remote => self.send(Request::Rename(a, b)),
+        }
+    }
+
+    /// Counts what folders `names` hold, in the background.
+    fn count_sizes(&mut self, side: Side, names: &[String], ctx: Option<egui::Context>) {
+        let paths: Vec<String> = names.iter().map(|n| self.path_of(side, n)).collect();
+        for path in &paths {
+            self.dir_sizes.insert((side, path.clone()), None);
+        }
+        match side {
+            Side::Remote => self.send(Request::DirSize(paths)),
+            Side::Local => {
+                for path in paths {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let (p, ctx) = (path.clone(), ctx.clone());
+                    let _ = std::thread::Builder::new().name("dir-size".into()).spawn(move || {
+                        let _ = tx.send(local_dir_size(std::path::Path::new(&p)).map_err(|e| e.to_string()));
+                        if let Some(ctx) = ctx {
+                            ctx.request_repaint();
+                        }
+                    });
+                    self.local_sizing.push((path, rx));
+                }
+            }
+        }
+    }
+
+    fn name_of(side: Side, path: &str) -> String {
+        match side {
+            Side::Local => std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            Side::Remote => path.trim_end_matches('/').rsplit('/').next().unwrap_or(path).to_owned(),
+        }
+    }
+
+    /// Moves `names` (in the panel's folder) into its subfolder `dir`; what already exists there is
+    /// asked about first (unless answered for the session).
+    fn move_into(&mut self, side: Side, names: &[String], dir: &str) {
+        let from: Vec<String> = names.iter().filter(|n| *n != dir).map(|n| self.path_of(side, n)).collect();
+        let dir = self.path_of(side, dir);
+        self.panel(side).selected.clear();
+        match side {
+            Side::Local => {
+                let existing: Vec<String> = names.iter().filter(|n| std::path::Path::new(&dir).join(n).symlink_metadata().is_ok()).cloned().collect();
+                match (existing.is_empty(), session_choice()) {
+                    (true, _) => self.move_now(side, from, dir, false),
+                    (false, Some(overwrite)) => self.move_now(side, from, dir, overwrite),
+                    (false, None) => self.dialog = Some(Dialog::MoveConflict { side, from, dir, existing }),
+                }
+            }
+            // The server tells which exist (MoveConflict), unless answered for the session.
+            Side::Remote => self.send(Request::Move { from, dir, overwrite: session_choice() }),
+        }
+    }
+
+    fn move_now(&mut self, side: Side, from: Vec<String>, dir: String, overwrite: bool) {
+        match side {
+            Side::Local => {
+                for path in &from {
+                    let path = std::path::Path::new(path);
+                    let Some(name) = path.file_name() else { continue };
+                    if let Err(e) = move_local(path, &std::path::Path::new(&dir).join(name), overwrite) {
+                        self.error = Some(format!("{} : {e}", path.display()));
+                        break;
+                    }
+                }
+                self.read_local();
+            }
+            Side::Remote => self.send(Request::Move { from, dir, overwrite: Some(overwrite) }),
         }
     }
 
@@ -1057,10 +1216,17 @@ impl FileManager {
         let released = ui.input(|i| i.pointer.any_released());
         let mut drop_into: Option<String> = None;
         // Empty space (under the rows): a click clears the selection, a right-click offers a new folder.
-        let background = ui.interact(list, ui.id().with(("files-bg", side as u8)), Sense::click());
+        let background = ui.interact(list, ui.id().with(("files-bg", side as u8)), Sense::click_and_drag());
         if background.clicked() {
             panel.selected.clear();
             out.focus = true;
+        }
+        if background.drag_started() {
+            if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+                panel.marquee = Some((panel.order.len(), p));
+                panel.selected.clear();
+                out.focus = true;
+            }
         }
         background.context_menu(|ui| {
             if ui.button(t.files_new_file).clicked() {
@@ -1083,14 +1249,25 @@ impl FileManager {
             list_ui.label(egui::RichText::new(if loading { t.files_loading } else { t.files_empty }).size(12.5).color(theme.text_muted));
         }
         let visible = !(side == Side::Remote && !connected);
+        // Sizes counted for folders shown here, by name.
+        let here = self.panel(side).path.clone();
+        let sizes: HashMap<String, Option<Result<u64, String>>> = self
+            .dir_sizes
+            .iter()
+            .filter(|((s, path), _)| *s == side && Self::parent_of(side, path) == here)
+            .map(|((_, path), size)| (Self::name_of(side, path), size.clone()))
+            .collect();
         egui::ScrollArea::vertical().id_salt(("files-list", side as u8)).auto_shrink(false).show_rows(&mut list_ui, 22.0, if visible { count } else { 0 }, |ui, range| {
             let panel = self.panel(side);
+            // Rows under the pointer and on screen, for the selection rectangle.
+            let (mut under, mut first_row, mut last_row): (Option<usize>, Option<usize>, Option<(usize, f32)>) = (None, None, None);
             for position in range {
                 let entry = panel.entries[panel.order[position]].clone();
                 let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click_and_drag());
                 let selected = panel.selected.contains(&entry.name);
-                // A folder of the other panel under a drag: drop into it.
-                let drop_target = entry.is_dir && drag_payload.as_ref().is_some_and(|p| p.from != side) && pointer.is_some_and(|p| row.contains(p));
+                // A folder under a drag: drop into it (from the other panel, or moved within this one; not
+                // into one of the folders dragged).
+                let drop_target = entry.is_dir && drag_payload.as_ref().is_some_and(|p| p.from != side || !p.names.contains(&entry.name)) && pointer.is_some_and(|p| row.contains(p));
                 if drop_target {
                     drop_into = Some(entry.name.clone());
                 }
@@ -1109,10 +1286,29 @@ impl FileManager {
                 let mut job = egui::text::LayoutJob::simple_singleline(display_name(&entry.name), FontId::proportional(13.0), theme.text);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(cols.name - 36.0);
                 let galley = ui.painter().layout_job(job);
+                let name_end = row.min.x + 26.0 + galley.size().x;
                 ui.painter().galley(Pos2::new(row.min.x + 26.0, y - galley.size().y / 2.0), galley, theme.text);
+                if pointer.is_some_and(|p| p.y >= row.min.y && p.y < row.max.y) {
+                    under = Some(position);
+                }
+                first_row.get_or_insert(position);
+                last_row = Some((position, row.max.y));
+                // A drag from beside the name (not on it): a selection rectangle, not a move.
+                let marquee_start = resp.drag_started() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| p.x > name_end + 10.0);
+                if marquee_start {
+                    panel.marquee = Some((position, ui.input(|i| i.pointer.press_origin()).unwrap_or(row.min)));
+                }
                 let muted = FontId::proportional(12.0);
                 if cols.size > 0.0 && !entry.is_dir {
                     ui.painter().text(Pos2::new(row.min.x + cols.size_x + cols.size - 6.0, y), Align2::RIGHT_CENTER, format_size(entry.size, t), muted.clone(), theme.text_muted);
+                } else if let (true, Some(size)) = (cols.size > 0.0, sizes.get(&entry.name)) {
+                    // A folder's size, counted on demand.
+                    let text = match size {
+                        None => "…".to_owned(),
+                        Some(Ok(n)) => format_size(*n, t),
+                        Some(Err(_)) => "?".to_owned(),
+                    };
+                    ui.painter().text(Pos2::new(row.min.x + cols.size_x + cols.size - 6.0, y), Align2::RIGHT_CENTER, text, muted.clone(), theme.accent.gamma_multiply(0.85));
                 }
                 if cols.date > 0.0 {
                     ui.painter().text(Pos2::new(row.min.x + cols.date_x + 4.0, y), Align2::LEFT_CENTER, format_time(entry.mtime), muted.clone(), theme.text_muted);
@@ -1124,7 +1320,7 @@ impl FileManager {
                 }
 
                 // Selection: click, Cmd+click (toggle), Shift+click (range).
-                if resp.clicked() || resp.secondary_clicked() || resp.drag_started() {
+                if (resp.clicked() || resp.secondary_clicked() || resp.drag_started()) && !marquee_start {
                     out.focus = true;
                     let (cmd, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
                     if shift {
@@ -1159,7 +1355,7 @@ impl FileManager {
                         out.transfer = Some(vec![entry.name.clone()]);
                     }
                 }
-                if resp.drag_started() {
+                if resp.drag_started() && !marquee_start {
                     egui::DragAndDrop::set_payload(ui.ctx(), FilesDrag { from: side, names: panel.selection() });
                 }
                 resp.context_menu(|ui| {
@@ -1217,6 +1413,12 @@ impl FileManager {
                         out.dialog = Some(Dialog::Mkdir { side, text: String::new(), fresh: true });
                         ui.close();
                     }
+                    let dirs: Vec<String> = panel.entries.iter().filter(|e| e.is_dir && selection.contains(&e.name)).map(|e| e.name.clone()).collect();
+                    if !dirs.is_empty() && (side == Side::Local || connected) && ui.button(format!("Σ  {}", t.files_dir_size)).clicked() {
+                        out.sizes = Some(dirs);
+                        out.ctx = Some(ui.ctx().clone());
+                        ui.close();
+                    }
                     if ui.button(t.files_copy_path).clicked() {
                         ui.ctx().copy_text(match side {
                             Side::Local => std::path::Path::new(&panel.path).join(&entry.name).display().to_string(),
@@ -1235,8 +1437,41 @@ impl FileManager {
                     }
                 });
             }
+            // The selection rectangle: every row between where it started and the pointer.
+            if let (Some((origin, start)), Some(p)) = (panel.marquee, pointer) {
+                if !ui.input(|i| i.pointer.primary_down()) {
+                    panel.marquee = None;
+                } else {
+                    let current = match (under, first_row, last_row) {
+                        (Some(u), _, _) => u,
+                        (None, Some(first), _) if p.y < list.min.y => first,
+                        (None, _, Some((_, bottom))) if p.y >= bottom => panel.order.len(),
+                        _ => origin,
+                    };
+                    let (a, b) = (origin.min(current), origin.max(current));
+                    let names = panel.ordered_names();
+                    let b = b.min(names.len().saturating_sub(1));
+                    panel.selected = if a < names.len() { names[a..=b].iter().cloned().collect() } else { HashSet::new() };
+                    // Near the edges: the list scrolls.
+                    if p.y < list.min.y + 16.0 {
+                        ui.scroll_with_delta(Vec2::new(0.0, 10.0));
+                    } else if p.y > list.max.y - 16.0 {
+                        ui.scroll_with_delta(Vec2::new(0.0, -10.0));
+                    }
+                    let r = Rect::from_two_pos(start, p).intersect(list);
+                    let painter = ui.painter().clone().with_clip_rect(list);
+                    painter.rect_filled(r, 2.0, theme.accent.gamma_multiply(0.12));
+                    painter.rect_stroke(r, 2.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    ui.ctx().request_repaint();
+                }
+            }
         });
 
+        // Dropped on a folder of the same panel: moved into it.
+        if let (Some(payload), Some(dir), true) = (drag_payload.as_ref().filter(|p| p.from == side), &drop_into, released) {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            out.moved = Some((payload.names.clone(), dir.clone()));
+        }
         // Drop from the other panel: into the folder under the pointer, or this panel's folder.
         let over = pointer.is_some_and(|p| rect.contains(p));
         if let Some(payload) = drag_payload.as_ref().filter(|p| p.from != side && over) {
@@ -1281,6 +1516,12 @@ impl FileManager {
         }
         if let Some(names) = out.transfer {
             self.transfer(side, names, None);
+        }
+        if let Some(dirs) = out.sizes {
+            self.count_sizes(side, &dirs, out.ctx.clone());
+        }
+        if let Some((names, dir)) = out.moved {
+            self.move_into(side, &names, &dir);
         }
         if let Some((names, target)) = out.dropped {
             let from = if side == Side::Local { Side::Remote } else { Side::Local };
@@ -1455,9 +1696,15 @@ impl FileManager {
                     title(ui, t.files_permissions.trim_end_matches('…'));
                     perm_ui(ui, edit, theme, t);
                 }
-                Dialog::Conflict { existing, .. } => {
+                Dialog::Conflict { existing, .. } | Dialog::MoveConflict { existing, .. } => {
                     title(ui, &t.files_conflict_title.replace("{n}", &existing.len().to_string()));
                     list(ui, existing);
+                    if matches!(dialog, Dialog::MoveConflict { .. }) {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(t.files_merge_hint).size(12.0).color(theme.text_muted));
+                    }
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut self.remember_choice, t.files_remember_choice);
                 }
             }
             ui.add_space(14.0);
@@ -1472,7 +1719,7 @@ impl FileManager {
                     }
                 };
                 match dialog {
-                    Dialog::Conflict { .. } => {
+                    Dialog::Conflict { .. } | Dialog::MoveConflict { .. } => {
                         if ui.add(button(t.files_overwrite, Some(theme.accent))).clicked() {
                             outcome = Some(Outcome::Confirm);
                         }
@@ -1549,7 +1796,23 @@ impl FileManager {
             }
             #[cfg(not(unix))]
             (Dialog::Chmod { .. }, _) => {}
-            (Dialog::Conflict { from, names, target, .. }, outcome) => self.start_transfer(from, names, target, outcome == Outcome::Confirm),
+            (Dialog::Conflict { from, names, target, .. }, outcome) => {
+                self.remember(outcome);
+                self.start_transfer(from, names, target, outcome == Outcome::Confirm);
+            }
+            (Dialog::MoveConflict { side, from, dir, .. }, outcome) => {
+                self.remember(outcome);
+                self.move_now(side, from, dir, outcome == Outcome::Confirm);
+            }
+        }
+    }
+}
+
+impl FileManager {
+    /// Keeps the answer for the session, if asked to.
+    fn remember(&mut self, outcome: Outcome) {
+        if std::mem::take(&mut self.remember_choice) {
+            CONFLICT_CHOICE.store(if outcome == Outcome::Confirm { 1 } else { 2 }, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -1719,6 +1982,11 @@ struct PanelOut {
     transfer: Option<Vec<String>>,
     /// Names dragged from the other panel, and the folder dropped onto (None: this panel's folder).
     dropped: Option<(Vec<String>, Option<String>)>,
+    /// Names dragged onto a folder of the same panel: moved into it.
+    moved: Option<(Vec<String>, String)>,
+    /// Folders whose size to count, and the context to wake once counted.
+    sizes: Option<Vec<String>>,
+    ctx: Option<egui::Context>,
     dialog: Option<Dialog>,
     /// A file to open in the editor.
     edit: Option<String>,

@@ -384,6 +384,206 @@ impl App {
         }
     }
 
+    /// Dialog to create or edit a database connection, with a connection test.
+    pub(super) fn db_editor_window(&mut self, ctx: &egui::Context) {
+        let hosts: Vec<(Uuid, String)> = self.config.ssh.iter().map(|h| (h.id, if h.name.is_empty() { h.address() } else { h.name.clone() })).collect();
+        let Some(editor) = &mut self.db_editor else { return };
+        let t = self.config.settings.language.strings();
+        let theme = self.theme.clone();
+        if let Some(result) = editor.testing.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            editor.tested = Some(result);
+            editor.testing = None;
+        }
+        let (mut save, mut cancel, mut delete, mut test) = (false, false, false, false);
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(24.0).fill(theme.chrome_bg).corner_radius(12.0);
+        let modal = egui::Modal::new(egui::Id::new("db-editor")).frame(frame).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+                super::dbview::paint_db_icon(ui.painter(), r.center(), theme.accent);
+                ui.label(egui::RichText::new(if editor.is_new { t.db_new_connection } else { t.db_edit_connection }).size(18.0).strong());
+            });
+            ui.add_space(16.0);
+            let d = &mut editor.draft;
+            let field = |ui: &mut Ui, value: &mut String, hint: &str, password: bool| {
+                ui.add(egui::TextEdit::singleline(value).hint_text(hint).password(password).desired_width(f32::INFINITY).margin(Vec2::new(8.0, 6.0)))
+            };
+            egui::Grid::new("db-editor-grid").num_columns(2).spacing([16.0, 12.0]).min_col_width(130.0).show(ui, |ui| {
+                ui.label(egui::RichText::new(t.db_name).color(theme.text_muted));
+                field(ui, &mut d.name, &d.host.clone(), false);
+                ui.end_row();
+                ui.label(egui::RichText::new(format!("{}  ·  {}", t.db_host, t.db_port)).color(theme.text_muted));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut d.host).hint_text(t.db_host_hint).desired_width(ui.available_width() - 90.0).margin(Vec2::new(8.0, 6.0)));
+                    ui.add(egui::TextEdit::singleline(&mut editor.port).hint_text("3306").desired_width(80.0).margin(Vec2::new(8.0, 6.0)));
+                });
+                ui.end_row();
+                ui.label("");
+                ui.label(egui::RichText::new(if d.ssh.is_some() { t.db_via_ssh_hint } else { t.db_localhost_hint }).size(11.5).color(theme.text_muted));
+                ui.end_row();
+                // Through an SSH host: for servers that only listen on their own machine.
+                ui.label(egui::RichText::new(t.db_via_ssh).color(theme.text_muted));
+                let current = d.ssh.and_then(|id| hosts.iter().find(|(h, _)| *h == id)).map_or(t.db_direct.to_owned(), |(_, n)| format!("🔒  {n}"));
+                egui::ComboBox::from_id_salt("db-editor-ssh").selected_text(current).width(ui.available_width()).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut d.ssh, None, t.db_direct);
+                    for (id, name) in &hosts {
+                        ui.selectable_value(&mut d.ssh, Some(*id), format!("🔒  {name}"));
+                    }
+                });
+                ui.end_row();
+                ui.label(egui::RichText::new(t.db_user).color(theme.text_muted));
+                field(ui, &mut d.user, "root", false);
+                ui.end_row();
+                ui.label(egui::RichText::new(t.db_password).color(theme.text_muted));
+                ui.horizontal(|ui| {
+                    let hint = if d.password_saved && !editor.password_changed { t.password_saved } else { t.optional };
+                    let edit = ui.add(egui::TextEdit::singleline(&mut editor.password).hint_text(hint).password(!editor.reveal).desired_width(ui.available_width() - 40.0).margin(Vec2::new(8.0, 6.0)));
+                    if edit.changed() {
+                        editor.password_changed = true;
+                    }
+                    if ui.add(egui::Button::new(if editor.reveal { "🙈" } else { "👁" }).frame_when_inactive(false)).clicked() {
+                        editor.reveal = !editor.reveal;
+                    }
+                });
+                ui.end_row();
+                ui.label(egui::RichText::new(t.db_default_db).color(theme.text_muted));
+                let mut database = d.database.clone().unwrap_or_default();
+                field(ui, &mut database, t.optional, false);
+                d.database = Some(database.trim().to_owned()).filter(|x| !x.is_empty());
+                ui.end_row();
+                ui.label(egui::RichText::new(capitalized(t.color)).color(theme.text_muted));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for color in TAB_COLORS {
+                        let (r, s) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                        ui.painter().circle_filled(r.center(), 7.5, color);
+                        if d.color == Some(color) || s.hovered() {
+                            ui.painter().circle_stroke(r.center(), 9.0, Stroke::new(1.5, theme.text));
+                        }
+                        if s.clicked() {
+                            d.color = if d.color == Some(color) { None } else { Some(color) };
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+            ui.add_space(14.0);
+            // Test the connection with what is typed.
+            ui.horizontal(|ui| {
+                if ui.add_enabled(editor.testing.is_none(), egui::Button::new(egui::RichText::new(format!("⚡  {}", t.db_test)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    test = true;
+                }
+                match (&editor.testing, &editor.tested) {
+                    (Some(_), _) => {
+                        ui.spinner();
+                        ui.label(egui::RichText::new(t.db_testing).size(12.5).color(theme.text_muted));
+                    }
+                    (None, Some(Ok(v))) => {
+                        ui.label(egui::RichText::new(format!("✓  {}", t.db_test_ok.replace("{v}", v))).size(12.5).color(theme.ansi[2]));
+                    }
+                    (None, Some(Err(e))) => {
+                        ui.add(egui::Label::new(egui::RichText::new(format!("✗  {e}")).size(12.5).color(theme.ansi[1])).wrap());
+                    }
+                    _ => {}
+                }
+            });
+            if let Some(e) = &editor.error {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(e).size(12.5).color(theme.ansi[1]));
+            }
+            ui.add_space(18.0);
+            ui.horizontal(|ui| {
+                if !editor.is_new && ui.add(egui::Button::new(egui::RichText::new(t.delete).size(13.5).color(theme.ansi[1])).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    delete = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ok = egui::Button::new(egui::RichText::new(t.save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(110.0, 32.0));
+                    if ui.add(ok).clicked() {
+                        save = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 32.0))).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+        if modal.should_close() {
+            cancel = true;
+        }
+        let Some(editor) = &mut self.db_editor else { return };
+        let port = editor.port.trim().parse::<u16>().ok().filter(|p| *p > 0);
+        if test {
+            let password = if editor.password_changed || !editor.draft.password_saved { Some(editor.password.clone()).filter(|p| !p.is_empty()) } else { ssh::load_password(editor.draft.id) };
+            let host = editor.draft.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned();
+            let tunnel = host.as_ref().map(|h| h.tunnel_command());
+            let target = crate::db::Target { host: editor.draft.host.trim().to_owned(), port: port.unwrap_or(3306), user: editor.draft.user.trim().to_owned(), password, database: editor.draft.database.clone(), tunnel };
+            editor.tested = None;
+            let (rx, pid) = crate::db::test(ctx, target);
+            editor.testing = Some(rx);
+            editor.test_pid = pid;
+            // The forward's ssh may ask for the host's password or key: in the window.
+            #[cfg(unix)]
+            if let (Some(pid), Some(h)) = (pid, &host) {
+                self.askpass.allow_interactive(pid, h.id, &h.name, h.uses_saved_password());
+            }
+        }
+        if delete {
+            let id = editor.draft.id;
+            self.db_editor = None;
+            self.delete_db(id);
+            return;
+        }
+        if cancel {
+            self.db_editor = None;
+            return;
+        }
+        if !save {
+            return;
+        }
+        let mut c = editor.draft.clone();
+        c.host = c.host.trim().to_owned();
+        c.user = c.user.trim().to_owned();
+        if c.host.is_empty() {
+            editor.error = Some(t.host_required.to_owned());
+            return;
+        }
+        let Some(port) = port else {
+            editor.error = Some(t.invalid_port.to_owned());
+            return;
+        };
+        c.port = port;
+        c.name = c.name.trim().to_owned();
+        if c.name.is_empty() {
+            c.name = c.host.clone();
+        }
+        if editor.password_changed {
+            if editor.password.is_empty() {
+                ssh::delete_password(c.id);
+                c.password_saved = false;
+            } else {
+                match ssh::save_password(c.id, &editor.password) {
+                    Ok(()) => c.password_saved = true,
+                    Err(e) => {
+                        editor.error = Some(format!("{} : {e}", t.keychain_failed));
+                        return;
+                    }
+                }
+            }
+        }
+        match self.config.databases.iter_mut().find(|x| x.id == c.id) {
+            Some(existing) => *existing = c.clone(),
+            None => self.config.databases.push(c.clone()),
+        }
+        // An open view reconnects with the new settings.
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.db == Some(c.id)) {
+            tab.db_view = None;
+            tab.name = Some(c.name.clone());
+            tab.color = c.color;
+        }
+        self.db_editor = None;
+        self.save_config();
+    }
+
     /// Dialog to create or edit an SSH host.
     pub(super) fn profile_editor_window(&mut self, ctx: &egui::Context) {
         let Some(editor) = &mut self.profile_editor else { return };

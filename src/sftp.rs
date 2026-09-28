@@ -64,6 +64,12 @@ pub enum Request {
     Chmod { paths: Vec<String>, change: ModeChange, recursive: bool, scope: Scope },
     Download { id: u64, remote: Vec<String>, local_dir: PathBuf, overwrite: bool },
     Upload { id: u64, local: Vec<PathBuf>, remote_dir: String, overwrite: bool },
+    /// Moves `from` (paths) into the directory `dir`. Items already there: a folder is merged (its
+    /// contents moved into the one there), a file replaced if `overwrite` is true, kept (the one moved
+    /// stays) if false; None: nothing is moved, MoveConflict tells which exist.
+    Move { from: Vec<String>, dir: String, overwrite: Option<bool> },
+    /// The total size of what these folders hold (each: DirSize).
+    DirSize(Vec<String>),
     /// An empty file (refused if the name is taken).
     CreateFile(String),
     /// Copies a file or folder (recursively) on the server, to a name that must be free.
@@ -86,6 +92,10 @@ pub enum Event {
     ListFailed { path: String, error: String },
     /// A change (mkdir, rename, remove, chmod) is done: the listing may be out of date.
     Changed,
+    /// The total size of the files under a folder, or why it couldn't be counted.
+    DirSize { path: String, result: Result<u64, String> },
+    /// Nothing moved: these names already exist in `dir`.
+    MoveConflict { from: Vec<String>, dir: String, existing: Vec<String> },
     Error(String),
     Progress { id: u64, done: u64, total: u64, current: String },
     /// Done: how many files were skipped because they already existed, or why it failed.
@@ -257,6 +267,18 @@ impl Connection {
                     },
                     Request::Mkdir(path) => sftp.create_dir(path).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Rename(from, to) => sftp.rename(from, to).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
+                    Request::Move { from, dir, overwrite } => move_items(&sftp, from, dir, overwrite, &emit).await,
+                    // In the background: a big tree takes a while to go through.
+                    Request::DirSize(paths) => {
+                        let (sftp, emit) = (sftp.clone(), emit.clone());
+                        tokio::spawn(async move {
+                            for path in paths {
+                                let result = dir_size(&sftp, &path).await.map_err(|e| format!("{e:#}"));
+                                emit.send(Event::DirSize { path, result });
+                            }
+                        });
+                        Ok(())
+                    }
                     Request::Remove(paths) => remove(&sftp, &paths).await.map(|_| emit.send(Event::Changed)),
                     Request::Chmod { paths, change, recursive, scope } => chmod(&sftp, &paths, change, recursive, scope).await.map(|_| emit.send(Event::Changed)),
                     Request::CreateFile(path) => {
@@ -439,6 +461,96 @@ async fn walk(sftp: &SftpSession, root: &str, follow_root: bool) -> Result<Vec<(
         }
     }
     Ok(out)
+}
+
+/// The size of the files under `root` (links not followed).
+async fn dir_size(sftp: &SftpSession, root: &str) -> Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![root.to_owned()];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(dir) = stack.pop() {
+        if !visited.insert(dir.clone()) {
+            continue;
+        }
+        for item in sftp.read_dir(dir.clone()).await.with_context(|| format!("listing {dir}"))? {
+            let name = item.file_name();
+            if name == "." || name == ".." || !valid_name(&name) {
+                continue;
+            }
+            let attrs = item.metadata();
+            if attrs.is_dir() && !attrs.is_symlink() {
+                stack.push(join(&dir, &name));
+            } else if !attrs.is_symlink() {
+                total += attrs.size.unwrap_or(0);
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// The last part of a remote path.
+fn base_name(path: &str) -> &str {
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+}
+
+async fn move_items(sftp: &SftpSession, from: Vec<String>, dir: String, overwrite: Option<bool>, emit: &Emitter) -> Result<()> {
+    let Some(overwrite) = overwrite else {
+        let mut existing = Vec::new();
+        for path in &from {
+            let name = base_name(path);
+            if sftp.try_exists(join(&dir, name)).await.unwrap_or(false) {
+                existing.push(name.to_owned());
+            }
+        }
+        if !existing.is_empty() {
+            emit.send(Event::MoveConflict { from, dir, existing });
+            return Ok(());
+        }
+        return Box::pin(move_items(sftp, from, dir, Some(false), emit)).await;
+    };
+    let mut result = Ok(());
+    for path in &from {
+        let to = join(&dir, base_name(path));
+        if let Err(e) = move_entry(sftp, path.clone(), to, overwrite).await {
+            result = Err(e);
+            break;
+        }
+    }
+    emit.send(Event::Changed);
+    result.map(|_| ())
+}
+
+/// Moves `from` to `to`: renamed if `to` is free; folders merged; a file there replaced if `overwrite`.
+/// How many items stayed (not replaced).
+fn move_entry(sftp: &SftpSession, from: String, to: String, overwrite: bool) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> {
+    Box::pin(async move {
+        let Ok(target) = sftp.symlink_metadata(to.clone()).await else {
+            sftp.rename(from.clone(), to.clone()).await.with_context(|| format!("moving {from}"))?;
+            return Ok(0);
+        };
+        let source = sftp.symlink_metadata(from.clone()).await.with_context(|| format!("reading {from}"))?;
+        if source.is_dir() && target.is_dir() {
+            let mut kept = 0;
+            for item in sftp.read_dir(from.clone()).await.with_context(|| format!("listing {from}"))? {
+                let name = item.file_name();
+                if name == "." || name == ".." {
+                    continue;
+                }
+                kept += move_entry(sftp, join(&from, &name), join(&to, &name), overwrite).await?;
+            }
+            // Emptied: the folder moved goes.
+            if kept == 0 {
+                let _ = sftp.remove_dir(from).await;
+            }
+            return Ok(kept);
+        }
+        if !overwrite {
+            return Ok(1);
+        }
+        remove(sftp, std::slice::from_ref(&to)).await?;
+        sftp.rename(from.clone(), to).await.with_context(|| format!("moving {from}"))?;
+        Ok(0)
+    })
 }
 
 async fn remove(sftp: &SftpSession, paths: &[String]) -> Result<()> {
