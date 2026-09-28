@@ -6,7 +6,12 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use super::*;
+use super::editor::{Editor, EditorAction};
+use super::viewer::{Viewer, ViewerAction};
 use crate::sftp::{self, Entry, Event, Request};
+
+/// How making an archive ended.
+type ZipResult = Result<(), String>;
 
 /// Where a panel's files are.
 #[derive(Clone, Copy, PartialEq)]
@@ -108,6 +113,8 @@ enum TransferState {
 struct Transfer {
     id: u64,
     upload: bool,
+    /// A zip archive being made (no progress, no cancel).
+    zip: bool,
     label: String,
     done: u64,
     total: u64,
@@ -120,6 +127,7 @@ struct Transfer {
 enum Dialog {
     Rename { side: Side, from: String, text: String, fresh: bool },
     Mkdir { side: Side, text: String, fresh: bool },
+    NewFile { side: Side, text: String, fresh: bool },
     Delete { side: Side, names: Vec<String> },
     Chmod { names: Vec<String>, mode: u32, octal: String, recursive: bool, any_dir: bool },
     /// Some of the files to transfer already exist on the other side.
@@ -140,7 +148,8 @@ pub(super) enum FilesAction {
 }
 
 pub(super) struct FileManager {
-    pub host: Uuid,
+    /// The SSH host; None: a local terminal's file manager (this computer only, one panel).
+    pub host: Option<Uuid>,
     conn: Option<sftp::Connection>,
     status: Status,
     local: Panel,
@@ -159,6 +168,17 @@ pub(super) struct FileManager {
     terminal_dir: Option<String>,
     /// A terminal directory under `~`, waiting for the home directory to be known.
     pending_dir: Option<String>,
+    /// A file being edited, shown in place of the panels.
+    pub editor: Option<Box<Editor>>,
+    /// A file too big to edit, shown read-only.
+    pub viewer: Option<Box<Viewer>>,
+    /// The host, for commands run on the server (compressing), and what wakes the window up.
+    ssh_host: Option<SshHost>,
+    ctx: Option<egui::Context>,
+    #[cfg(unix)]
+    askpass: Option<crate::askpass::Server>,
+    /// Archives being made: their line in the queue, and the result to come.
+    zips: Vec<(u64, Side, std::sync::mpsc::Receiver<ZipResult>)>,
 }
 
 impl FileManager {
@@ -167,7 +187,7 @@ impl FileManager {
         let home = directories::BaseDirs::new().map(|d| d.home_dir().display().to_string()).unwrap_or_else(|| "/".into());
         let local = host.sftp_local.as_ref().filter(|p| std::path::Path::new(p).is_dir()).cloned().unwrap_or(home);
         let mut fm = Self {
-            host: host.id,
+            host: Some(host.id),
             conn: None,
             status: Status::Connecting,
             local: Panel::new(local),
@@ -181,13 +201,46 @@ impl FileManager {
             home: None,
             terminal_dir: None,
             pending_dir: None,
+            editor: None,
+            viewer: None,
+            ssh_host: None,
+            ctx: None,
+            #[cfg(unix)]
+            askpass: None,
+            zips: Vec::new(),
         };
         fm.read_local();
         fm
     }
 
+    /// This computer's files only (a local terminal tab), starting in `dir`.
+    pub fn local(dir: &str) -> Self {
+        let mut fm = Self::new(&SshHost::new());
+        fm.host = None;
+        fm.local = Panel::new(dir.to_owned());
+        fm.active = Side::Local;
+        fm.terminal_dir = Some(dir.to_owned());
+        fm.read_local();
+        fm
+    }
+
+    /// A local terminal moved to another folder: go there too (only when it moved, not to undo browsing).
+    pub fn follow_local(&mut self, dir: Option<String>) {
+        let Some(dir) = dir.filter(|d| self.terminal_dir.as_ref() != Some(d) && std::path::Path::new(d).is_dir()) else { return };
+        self.terminal_dir = Some(dir.clone());
+        if self.editor.is_none() && self.viewer.is_none() {
+            self.open_dir(Side::Local, dir);
+        }
+    }
+
     /// Opens the SFTP session; ssh's questions (password, host key) go to the askpass prompter.
     pub fn connect(&mut self, ctx: &egui::Context, host: &SshHost, #[cfg(unix)] askpass: &crate::askpass::Server) {
+        self.ssh_host = Some(host.clone());
+        self.ctx = Some(ctx.clone());
+        #[cfg(unix)]
+        {
+            self.askpass = Some(askpass.clone());
+        }
         let launch = host.sftp_command();
         match sftp::Connection::open(ctx, &launch.program, &launch.args, &launch.env) {
             Ok(conn) => {
@@ -225,9 +278,97 @@ impl FileManager {
         }
     }
 
+    /// Opens `name` of `side` in the editor.
+    fn edit(&mut self, side: Side, name: &str, t: &Strings) {
+        let path = self.path_of(side, name);
+        let size = self.panel(side).entries.iter().find(|e| e.name == name).map_or(0, |e| e.size);
+        if size > sftp::MAX_EDIT {
+            self.view(side, name);
+            return;
+        }
+        let mut editor = Box::new(Editor::opening(side == Side::Remote, path.clone(), name.to_owned()));
+        match side {
+            Side::Local => editor.loaded(read_local_file(&path, t), t),
+            Side::Remote => self.send(Request::ReadFile(path)),
+        }
+        self.editor = Some(editor);
+    }
+
+    /// Opens `name` of `side` in the read-only viewer (any size).
+    fn view(&mut self, side: Side, name: &str) {
+        let path = self.path_of(side, name);
+        let size = match side {
+            Side::Local => std::fs::metadata(&path).map_or(0, |m| m.len()),
+            Side::Remote => self.panel(side).entries.iter().find(|e| e.name == name).map_or(0, |e| e.size),
+        };
+        self.viewer = Some(Box::new(Viewer::new(side == Side::Remote, path, name.to_owned(), size)));
+    }
+
+    /// Gives the viewer the part of its file it needs next (one per frame, so that searching a big local
+    /// file never freezes the window).
+    fn feed_viewer(&mut self) {
+        let Some(viewer) = &mut self.viewer else { return };
+        let Some(req) = viewer.take_request() else { return };
+        if viewer.remote {
+            let path = viewer.path.clone();
+            if let Some(conn) = &self.conn {
+                conn.send(Request::ReadRange { path, offset: req.offset, len: req.len, tail: req.tail });
+            } else {
+                viewer.range_arrived(Err(String::new()));
+            }
+        } else {
+            let result = read_local_range(&viewer.path, req.offset, req.len, req.tail);
+            viewer.range_arrived(result);
+        }
+    }
+
+    /// Does what the editor asked.
+    fn editor_action(&mut self, action: EditorAction, t: &Strings) {
+        let Some(editor) = &mut self.editor else { return };
+        match action {
+            EditorAction::None => {}
+            EditorAction::Close => {
+                self.editor = None;
+                // Sizes and dates changed.
+                self.read_local();
+                self.list_remote();
+            }
+            EditorAction::Reload if editor.remote => {
+                if self.conn.is_some() {
+                    let path = editor.path.clone();
+                    self.send(Request::ReadFile(path));
+                } else {
+                    editor.save_failed(t.editor_disconnected.to_owned());
+                }
+            }
+            EditorAction::Reload => {
+                let result = read_local_file(&editor.path, t);
+                editor.loaded(result, t);
+            }
+            EditorAction::Save { data, mtime, force } if editor.remote => {
+                if self.conn.is_some() && matches!(self.status, Status::Ready) {
+                    let path = editor.path.clone();
+                    self.send(Request::WriteFile { path, data, mtime, force });
+                } else {
+                    editor.save_failed(t.editor_disconnected.to_owned());
+                }
+            }
+            EditorAction::Save { data, mtime, force } => {
+                let path = std::path::Path::new(&editor.path);
+                let (result, conflict) = if !force && local_mtime(path) != mtime {
+                    (Err(String::new()), true)
+                } else {
+                    // Written in place: the file keeps its permissions.
+                    (std::fs::write(path, &data).map(|_| local_mtime(path)).map_err(|e| format!("{} : {e}", path.display())), false)
+                };
+                editor.saved(result, conflict, t);
+            }
+        }
+    }
+
     /// Transfers not finished yet (to warn before closing).
     pub fn busy(&self) -> bool {
-        self.transfers.iter().any(|t| matches!(t.state, TransferState::Queued | TransferState::Running))
+        !self.zips.is_empty() || self.transfers.iter().any(|t| matches!(t.state, TransferState::Queued | TransferState::Running))
     }
 
     /// The folders to remember for the host: (local, remote).
@@ -260,7 +401,9 @@ impl FileManager {
     }
 
     /// Handles what the session sent. Called every frame, for every tab (transfers go on in the background).
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self, t: &Strings) {
+        self.poll_zips();
+        self.feed_viewer();
         let Some(conn) = &self.conn else { return };
         for event in conn.poll() {
             match event {
@@ -297,6 +440,26 @@ impl FileManager {
                 }
                 Event::Changed => self.list_remote(),
                 Event::Error(e) => self.error = Some(e),
+                Event::Range { path, result } => {
+                    if let Some(viewer) = self.viewer.as_mut().filter(|v| v.remote && v.path == path) {
+                        viewer.range_arrived(result);
+                    }
+                }
+                Event::FileProgress { path, done, total } => {
+                    if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
+                        editor.progress = Some((done, total));
+                    }
+                }
+                Event::FileRead { path, result } => {
+                    if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
+                        editor.loaded(result, t);
+                    }
+                }
+                Event::FileWritten { path, result, conflict } => {
+                    if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
+                        editor.saved(result, conflict, t);
+                    }
+                }
                 Event::Progress { id, done, total, current } => {
                     if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
                         // The speed counts from the actual start, not from the time it was queued.
@@ -404,7 +567,7 @@ impl FileManager {
                 Side::Remote => Request::Download { id, remote: vec![path], local_dir: target.clone().into(), overwrite },
             };
             self.send(request);
-            self.transfers.push(Transfer { id, upload: from == Side::Local, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+            self.transfers.push(Transfer { id, upload: from == Side::Local, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
         }
     }
 
@@ -418,6 +581,134 @@ impl FileManager {
                 self.read_local();
             }
             Side::Remote => self.send(Request::Mkdir(path)),
+        }
+    }
+
+    /// Creates an empty file and opens it in the editor.
+    fn new_file(&mut self, side: Side, name: &str, t: &Strings) {
+        let path = self.path_of(side, name);
+        match side {
+            Side::Local => {
+                // create_new: never over an existing file.
+                if let Err(e) = std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                    self.error = Some(format!("{path} : {e}"));
+                    return;
+                }
+                self.read_local();
+            }
+            // The editor's read comes after the creation (requests are handled in order).
+            Side::Remote => self.send(Request::CreateFile(path)),
+        }
+        self.edit(side, name, t);
+    }
+
+    /// Makes a zip of `names` next to them: "name.zip" for one item, "Archive.zip" for several. On the
+    /// server, with its `zip` (or Python's zipfile): nothing goes through this computer.
+    fn compress(&mut self, side: Side, names: Vec<String>, t: &Strings) {
+        if names.is_empty() {
+            return;
+        }
+        let taken: HashSet<String> = self.panel(side).entries.iter().map(|e| e.name.clone()).collect();
+        let stem = if names.len() == 1 { names[0].clone() } else { t.files_archive.to_owned() };
+        let out = (1..).map(|n| if n == 1 { format!("{stem}.zip") } else { format!("{stem} {n}.zip") }).find(|c| !taken.contains(c)).unwrap();
+        let dir = self.panel(side).path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let done = move |result: Result<(), String>| {
+            let _ = tx.send(result);
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        };
+        match side {
+            Side::Local => {
+                let (dir, names, out) = (std::path::PathBuf::from(dir), names, out.clone());
+                std::thread::spawn(move || done(zip_local(&dir, &names, &out)));
+            }
+            Side::Remote => {
+                let Some(host) = self.ssh_host.clone() else { return };
+                let launch = host.exec_command(&format!("sh -c {}", sh_quote(&zip_script(&dir, &names, &out))));
+                #[cfg(unix)]
+                let askpass = self.askpass.clone();
+                let no_zip = t.files_no_zip;
+                std::thread::spawn(move || {
+                    let mut cmd = std::process::Command::new(&launch.program);
+                    cmd.args(&launch.args).envs(launch.env.iter().cloned()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        cmd.creation_flags(0x0800_0000);
+                    }
+                    let result = match cmd.spawn() {
+                        Ok(child) => {
+                            #[cfg(unix)]
+                            if let Some(askpass) = &askpass {
+                                askpass.allow_interactive(child.id(), host.id, &host.name, host.uses_saved_password());
+                            }
+                            match child.wait_with_output() {
+                                Ok(o) if o.status.success() => Ok(()),
+                                Ok(o) if o.status.code() == Some(127) && String::from_utf8_lossy(&o.stderr).contains("RONNIE_NO_ZIP") => Err(no_zip.to_owned()),
+                                Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().chars().take(300).collect()),
+                                Err(e) => Err(e.to_string()),
+                            }
+                        }
+                        Err(e) => Err(format!("ssh : {e}")),
+                    };
+                    done(result);
+                });
+            }
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.transfers.push(Transfer { id, upload: false, zip: true, label: out, done: 0, total: 0, current: String::new(), state: TransferState::Running, started: Instant::now() });
+        self.zips.push((id, side, rx));
+    }
+
+    fn poll_zips(&mut self) {
+        let mut finished = Vec::new();
+        self.zips.retain(|(id, side, rx)| match rx.try_recv() {
+            Ok(result) => {
+                finished.push((*id, *side, result));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                finished.push((*id, *side, Err(String::new())));
+                false
+            }
+        });
+        for (id, side, result) in finished {
+            if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                t.state = match result {
+                    Ok(()) => TransferState::Done(0),
+                    Err(e) => TransferState::Failed(e),
+                };
+            }
+            match side {
+                Side::Local => self.read_local(),
+                Side::Remote => self.list_remote(),
+            }
+        }
+    }
+
+    /// Copies each item next to itself: "a copie.txt", "a copie 2.txt"...
+    fn duplicate(&mut self, side: Side, names: &[String], t: &Strings) {
+        let mut taken: HashSet<String> = self.panel(side).entries.iter().map(|e| e.name.clone()).collect();
+        for name in names {
+            let copy = copy_name(name, t.copy_suffix, &taken);
+            taken.insert(copy.clone());
+            let (from, to) = (self.path_of(side, name), self.path_of(side, &copy));
+            match side {
+                Side::Local => {
+                    if let Err(e) = copy_local(std::path::Path::new(&from), std::path::Path::new(&to)) {
+                        self.error = Some(format!("{from} : {e}"));
+                    }
+                }
+                Side::Remote => self.send(Request::Duplicate { from, to }),
+            }
+        }
+        if side == Side::Local {
+            self.read_local();
         }
     }
 
@@ -463,16 +754,17 @@ impl FileManager {
         ui.painter().rect_filled(bar, 0.0, theme.chrome_bg);
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(Vec2::new(10.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-            paint_file_icon(ui.painter(), icon, true, false, theme);
+            paint_file_icon(ui.painter(), icon, "", true, false, None, theme);
             ui.label(egui::RichText::new(host_name).size(14.0).strong());
             ui.add_space(8.0);
             let (text, color) = match &self.status {
+                _ if self.host.is_none() => (String::new(), theme.text_muted),
                 Status::Connecting => (t.files_connecting.to_owned(), theme.text_muted),
                 Status::Ready => (t.files_connected.to_owned(), theme.ansi[2]),
                 Status::Closed(_) => (t.files_disconnected.to_owned(), theme.ansi[1]),
             };
             ui.label(egui::RichText::new(text).size(12.5).color(color));
-            if let Status::Closed(reason) = &self.status {
+            if let Status::Closed(reason) = self.host.and(Some(&self.status)).unwrap_or(&Status::Ready) {
                 if !reason.is_empty() {
                     ui.label(egui::RichText::new("ⓘ").color(theme.ansi[1])).on_hover_text(reason);
                 }
@@ -494,23 +786,53 @@ impl FileManager {
         });
 
         // Panels, with the transfer buttons between them, and the queue below.
-        let queue_h = 150.0_f32.min(rect.height() * 0.35);
+        let local_only = self.host.is_none();
+        let queue_h = if local_only { 110.0 } else { 150.0_f32 }.min(rect.height() * 0.35);
         let body = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), Pos2::new(rect.max.x, rect.max.y - queue_h));
         // Transfers: double-click a file, or drag from one panel to the other.
-        let panel_w = body.width() / 2.0;
+        let panel_w = if local_only { body.width() } else { body.width() / 2.0 };
         let left = Rect::from_min_size(body.min, Vec2::new(panel_w, body.height()));
         let right = Rect::from_min_max(Pos2::new(left.max.x, body.min.y), body.max);
 
+        if let Some(viewer) = &mut self.viewer {
+            let area = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), rect.max);
+            match viewer.ui(ui, area, theme, t) {
+                ViewerAction::None => {}
+                ViewerAction::Close => self.viewer = None,
+                ViewerAction::Edit => {
+                    let (remote, path) = (viewer.remote, viewer.path.clone());
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                    self.viewer = None;
+                    let mut editor = Box::new(Editor::opening(remote, path.clone(), name));
+                    if remote {
+                        self.send(Request::ReadFile(path));
+                    } else {
+                        editor.loaded(read_local_file(&path, t), t);
+                    }
+                    self.editor = Some(editor);
+                }
+            }
+            return action;
+        }
+        // A file being edited takes the panels' and the queue's place.
+        if let Some(editor) = &mut self.editor {
+            let area = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), rect.max);
+            let editor_action = editor.ui(ui, area, theme, t);
+            self.editor_action(editor_action, t);
+            return action;
+        }
+
         let connected = matches!(self.status, Status::Ready);
         let local_out = self.panel_ui(ui, left.shrink(6.0), Side::Local, theme, t, connected);
-        let remote_out = self.panel_ui(ui, right.shrink(6.0), Side::Remote, theme, t, connected);
-        for out in [local_out, remote_out] {
-            self.apply(out);
+        self.apply(local_out, t);
+        if !local_only {
+            let remote_out = self.panel_ui(ui, right.shrink(6.0), Side::Remote, theme, t, connected);
+            self.apply(remote_out, t);
         }
 
         let queue = Rect::from_min_max(Pos2::new(rect.min.x, body.max.y), rect.max);
         self.queue_ui(ui, queue, theme, t);
-        self.keyboard(ui);
+        self.keyboard(ui, t);
         self.dialog_ui(ui.ctx(), theme, t);
         action
     }
@@ -518,6 +840,7 @@ impl FileManager {
     /// One panel: path bar, column headers, rows. Returns what the user did.
     fn panel_ui(&mut self, ui: &mut Ui, rect: Rect, side: Side, theme: &Theme, t: &Strings, connected: bool) -> PanelOut {
         let mut out = PanelOut::default();
+        let local_only = self.host.is_none();
         let show_hidden = self.show_hidden;
         let active = self.active == side;
         let panel = self.panel(side);
@@ -537,6 +860,25 @@ impl FileManager {
                 if ui.button("🏠").on_hover_text(t.files_home).clicked() {
                     out.home = true;
                 }
+                let can_create = side == Side::Local || connected;
+                let selection = panel.selection();
+                if ui.add_enabled(can_create && !selection.is_empty(), egui::Button::new("📦")).on_hover_text(t.files_compress_hint).clicked() {
+                    out.compress = Some(selection);
+                }
+                ui.add_enabled_ui(can_create, |ui| {
+                    ui.menu_button("＋", |ui| {
+                        if ui.button(t.files_new_file).clicked() {
+                            out.dialog = Some(Dialog::NewFile { side, text: String::new(), fresh: true });
+                            ui.close();
+                        }
+                        if ui.button(t.files_new_folder).clicked() {
+                            out.dialog = Some(Dialog::Mkdir { side, text: String::new(), fresh: true });
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text(t.files_new);
+                });
                 let edit = ui.add(egui::TextEdit::singleline(&mut panel.path_text).font(FontId::monospace(12.5)).desired_width(f32::INFINITY));
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     out.go = Some(panel.path_text.trim().to_owned());
@@ -575,6 +917,10 @@ impl FileManager {
             out.focus = true;
         }
         background.context_menu(|ui| {
+            if ui.button(t.files_new_file).clicked() {
+                out.dialog = Some(Dialog::NewFile { side, text: String::new(), fresh: true });
+                ui.close();
+            }
             if ui.button(t.files_new_folder).clicked() {
                 out.dialog = Some(Dialog::Mkdir { side, text: String::new(), fresh: true });
                 ui.close();
@@ -613,7 +959,7 @@ impl FileManager {
                 };
                 ui.painter().rect_filled(row, 3.0, fill);
                 let y = row.center().y;
-                paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(row.min.x + 13.0, y), Vec2::splat(15.0)), entry.is_dir, entry.is_link, theme);
+                paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(row.min.x + 13.0, y), Vec2::splat(15.0)), &entry.name, entry.is_dir, entry.is_link, entry.mode, theme);
                 let mut job = egui::text::LayoutJob::simple_singleline(display_name(&entry.name), FontId::proportional(13.0), theme.text);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(cols.name - 36.0);
                 let galley = ui.painter().layout_job(job);
@@ -660,6 +1006,9 @@ impl FileManager {
                             Side::Local => std::path::Path::new(&panel.path).join(&entry.name).display().to_string(),
                             Side::Remote => sftp::join(&panel.path, &entry.name),
                         });
+                    } else if local_only {
+                        // Nothing to transfer to: a double click opens the file.
+                        out.edit = Some(entry.name.clone());
                     } else {
                         out.transfer = Some(vec![entry.name.clone()]);
                     }
@@ -672,8 +1021,17 @@ impl FileManager {
                     // Built only while the menu is open.
                     let selection = panel.selection();
                     let other = if side == Side::Local { t.files_upload } else { t.files_download };
-                    if ui.add_enabled(connected, egui::Button::new(other)).clicked() {
+                    if !local_only && ui.add_enabled(connected, egui::Button::new(other)).clicked() {
                         out.transfer = Some(selection.clone());
+                        ui.close();
+                    }
+                    let editable = !entry.is_dir && (side == Side::Local || connected);
+                    if editable && selection.len() == 1 && ui.button(format!("✎  {}", t.files_edit)).clicked() {
+                        out.edit = Some(entry.name.clone());
+                        ui.close();
+                    }
+                    if editable && selection.len() == 1 && entry.size > 1024 * 1024 && ui.button(format!("👁  {}", t.viewer_open)).clicked() {
+                        out.view = Some(entry.name.clone());
                         ui.close();
                     }
                     if entry.is_dir && ui.button(t.open).clicked() {
@@ -688,10 +1046,22 @@ impl FileManager {
                         out.dialog = Some(Dialog::Rename { side, from: entry.name.clone(), text: entry.name.clone(), fresh: true });
                         ui.close();
                     }
+                    if ui.add_enabled(side == Side::Local || connected, egui::Button::new(format!("📦  {}", t.files_compress))).clicked() {
+                        out.compress = Some(selection.clone());
+                        ui.close();
+                    }
+                    if ui.add_enabled(side == Side::Local || connected, egui::Button::new(t.duplicate)).clicked() {
+                        out.duplicate = Some(selection.clone());
+                        ui.close();
+                    }
                     if side == Side::Remote && ui.button(t.files_permissions).clicked() {
                         let mode = entry.mode.unwrap_or(0o644);
                         let any_dir = panel.entries.iter().any(|e| e.is_dir && selection.contains(&e.name));
                         out.dialog = Some(Dialog::Chmod { names: selection.clone(), mode, octal: octal_string(mode), recursive: false, any_dir });
+                        ui.close();
+                    }
+                    if ui.button(t.files_new_file).clicked() {
+                        out.dialog = Some(Dialog::NewFile { side, text: String::new(), fresh: true });
                         ui.close();
                     }
                     if ui.button(t.files_new_folder).clicked() {
@@ -737,7 +1107,7 @@ impl FileManager {
         out
     }
 
-    fn apply(&mut self, out: PanelOut) {
+    fn apply(&mut self, out: PanelOut, t: &Strings) {
         let Some(side) = out.side else { return };
         if out.focus {
             self.active = side;
@@ -770,10 +1140,22 @@ impl FileManager {
         if let Some(dialog) = out.dialog {
             self.dialog = Some(dialog);
         }
+        if let Some(names) = out.compress {
+            self.compress(side, names, t);
+        }
+        if let Some(names) = out.duplicate {
+            self.duplicate(side, &names, t);
+        }
+        if let Some(name) = out.view {
+            self.view(side, &name);
+        }
+        if let Some(name) = out.edit {
+            self.edit(side, &name, t);
+        }
     }
 
     /// Delete / F2 / Enter / Cmd+A on the active panel, when no text field has the keyboard.
-    fn keyboard(&mut self, ui: &Ui) {
+    fn keyboard(&mut self, ui: &Ui, t: &Strings) {
         // Not while typing, nor through a window opened over the file manager (settings, questions...).
         if ui.ctx().egui_wants_keyboard_input() || self.dialog.is_some() || ui.ctx().memory(|m| m.top_modal_layer().is_some()) {
             return;
@@ -795,6 +1177,8 @@ impl FileManager {
             if is_dir {
                 let path = self.path_of(side, &selection[0]);
                 self.open_dir(side, path);
+            } else if side == Side::Local || matches!(self.status, Status::Ready) {
+                self.edit(side, &selection[0].clone(), t);
             }
         }
         if all {
@@ -831,11 +1215,13 @@ impl FileManager {
             egui::ScrollArea::vertical().id_salt("files-queue").auto_shrink(false).stick_to_bottom(true).show_rows(ui, 22.0, self.transfers.len(), |ui, range| {
                 for tr in &self.transfers[range] {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(if tr.upload { "↑" } else { "↓" }).size(14.0).color(theme.accent));
+                        ui.label(egui::RichText::new(if tr.zip { "📦" } else if tr.upload { "↑" } else { "↓" }).size(14.0).color(theme.accent));
                         ui.add_sized(Vec2::new(200.0, 18.0), egui::Label::new(egui::RichText::new(&tr.label).size(12.5)).truncate());
                         let fraction = if tr.total > 0 { tr.done as f32 / tr.total as f32 } else { 0.0 };
                         let secs = tr.started.elapsed().as_secs_f64().max(0.1);
                         let text = match &tr.state {
+                            TransferState::Running if tr.zip => t.files_compressing.to_owned(),
+                            TransferState::Done(_) if tr.zip => format!("✔  {}", t.files_compressed),
                             TransferState::Queued => t.files_queued.to_owned(),
                             TransferState::Running => format!("{} / {}  ·  {}/s", format_size(tr.done, t), format_size(tr.total, t), format_size((tr.done as f64 / secs) as u64, t)),
                             TransferState::Done(0) => format!("✔  {}", format_size(tr.total, t)),
@@ -851,7 +1237,7 @@ impl FileManager {
                         let bar_w = (ui.available_width() - 40.0).max(80.0);
                         let bar = egui::ProgressBar::new(if matches!(tr.state, TransferState::Done(_)) { 1.0 } else { fraction }).text(egui::RichText::new(text).size(11.5)).fill(color.gamma_multiply(0.6)).desired_width(bar_w);
                         ui.add(bar).on_hover_text(&tr.current);
-                        if matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
+                        if !tr.zip && matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
                             cancel = Some(tr.id);
                         }
                     });
@@ -894,12 +1280,13 @@ impl FileManager {
             if let Some(heading) = match dialog {
                 Dialog::Rename { .. } => Some(t.rename),
                 Dialog::Mkdir { .. } => Some(t.files_new_folder),
+                Dialog::NewFile { .. } => Some(t.files_new_file),
                 _ => None,
             } {
                 title(ui, heading);
             }
             match dialog {
-                Dialog::Rename { text, fresh, .. } | Dialog::Mkdir { text, fresh, .. } => {
+                Dialog::Rename { text, fresh, .. } | Dialog::Mkdir { text, fresh, .. } | Dialog::NewFile { text, fresh, .. } => {
                     let edit = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
                     if *fresh {
                         edit.request_focus();
@@ -1018,6 +1405,16 @@ impl FileManager {
                     self.mkdir(side, name);
                 }
             }
+            (Dialog::NewFile { side, text, .. }, _) => {
+                let name = text.trim();
+                if valid_new_name(name) {
+                    if self.panel(side).entries.iter().any(|e| e.name == name) {
+                        self.error = Some(t.files_exists.replace("{name}", name));
+                    } else {
+                        self.new_file(side, name, t);
+                    }
+                }
+            }
             (Dialog::Delete { side, names }, _) => self.delete(side, &names),
             (Dialog::Chmod { names, mode, recursive, .. }, _) => {
                 let paths = names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
@@ -1039,6 +1436,26 @@ enum Outcome {
 impl App {
     /// Shows the file manager of SSH tab `index` (connecting it the first time), or its terminal again.
     pub(super) fn toggle_files(&mut self, index: usize, show: bool) {
+        let Some(tab) = self.tabs.get_mut(index) else { return };
+        // A local terminal: this computer's files, where the terminal is.
+        if tab.ssh.is_none() {
+            let dir = tab.panes.get(&tab.focused).and_then(Terminal::cwd).map(|d| d.display().to_string());
+            tab.show_files = show;
+            if show {
+                match &mut tab.files {
+                    Some(fm) => fm.follow_local(dir),
+                    None => {
+                        let home = directories::BaseDirs::new().map(|d| d.home_dir().display().to_string()).unwrap_or_else(|| "/".into());
+                        let mut fm = Box::new(FileManager::local(&dir.unwrap_or(home)));
+                        fm.ctx = Some(self.ctx.clone());
+                        tab.files = Some(fm);
+                    }
+                }
+            } else {
+                self.focus_terminal = true;
+            }
+            return;
+        }
         let Some(host) = self.tabs.get(index).and_then(|t| t.ssh).and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned() else { return };
         let ctx = self.ctx.clone();
         #[cfg(unix)]
@@ -1065,11 +1482,12 @@ impl App {
     /// Lets every file manager handle its events (transfers go on in background tabs), and remembers
     /// each host's folders.
     pub(super) fn poll_files(&mut self) {
+        let t = self.t();
         for tab in &mut self.tabs {
             let Some(fm) = &mut tab.files else { continue };
-            fm.poll();
+            fm.poll(t);
             let (local, remote) = fm.folders();
-            if let Some(host) = self.config.ssh.iter_mut().find(|h| h.id == fm.host) {
+            if let Some(host) = self.config.ssh.iter_mut().find(|h| Some(h.id) == fm.host) {
                 if host.sftp_local.as_deref() != Some(&local) {
                     host.sftp_local = Some(local);
                 }
@@ -1131,8 +1549,9 @@ impl App {
                     });
                 } else {
                     let edit = ui.add(egui::TextEdit::singleline(answer).password(true).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
+                    // Focus is taken back every frame, so lost_focus() never fires: check Enter itself.
                     edit.request_focus();
-                    if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    if ui.input(|i| i.key_pressed(Key::Enter)) {
                         done = Some(Some(answer.clone()));
                     }
                 }
@@ -1172,6 +1591,11 @@ struct PanelOut {
     /// Names dragged from the other panel, and the folder dropped onto (None: this panel's folder).
     dropped: Option<(Vec<String>, Option<String>)>,
     dialog: Option<Dialog>,
+    /// A file to open in the editor.
+    edit: Option<String>,
+    duplicate: Option<Vec<String>>,
+    view: Option<String>,
+    compress: Option<Vec<String>>,
 }
 
 /// Column positions of a panel of `width`: narrow panels drop the date, then the permissions.
@@ -1193,6 +1617,130 @@ impl Columns {
         let name = (width - size - date - mode).max(80.0);
         Self { name, size_x: name, size, date_x: name + size, date, mode_x: name + size + date, mode }
     }
+}
+
+/// Single quotes for sh.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The sh script making `out` from `names` in `dir`, on the server: Info-ZIP's zip if there, else
+/// Python's zipfile; neither: exit 127 with RONNIE_NO_ZIP.
+fn zip_script(dir: &str, names: &[String], out: &str) -> String {
+    // "./" first: a name starting with "-" is not an option.
+    let items: Vec<String> = names.iter().map(|n| sh_quote(&format!("./{n}"))).collect();
+    let (items, out_q) = (items.join(" "), sh_quote(out));
+    format!(
+        "cd {} || exit 1\n[ -e {out_q} ] && {{ echo \"{out} exists\" >&2; exit 1; }}\nif command -v zip >/dev/null 2>&1; then zip -rqy {out_q} {items}\nelif command -v python3 >/dev/null 2>&1; then python3 -m zipfile -c {out_q} {items}\nelse echo RONNIE_NO_ZIP >&2; exit 127; fi",
+        sh_quote(dir)
+    )
+}
+
+/// Zips `names` of `dir` into `out` (in `dir`, which must not exist yet); links are stored as links.
+fn zip_local(dir: &std::path::Path, names: &[String], out: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    use zip::write::SimpleFileOptions;
+    let target = dir.join(out);
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| format!("{} : {e}", target.display()))?;
+    let written: std::io::Result<()> = (|| {
+        let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
+        let base = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let mut stack: Vec<(std::path::PathBuf, String)> = names.iter().map(|n| (dir.join(n), n.clone())).collect();
+        while let Some((path, name)) = stack.pop() {
+            if path == target {
+                continue;
+            }
+            let meta = path.symlink_metadata()?;
+            #[cfg(unix)]
+            let mode = { use std::os::unix::fs::PermissionsExt; meta.permissions().mode() };
+            #[cfg(not(unix))]
+            let mode = if meta.is_dir() { 0o755 } else { 0o644 };
+            let options = base.unix_permissions(mode & 0o7777).large_file(meta.len() >= u32::MAX as u64);
+            if meta.file_type().is_symlink() {
+                zip.add_symlink(&name, std::fs::read_link(&path)?.to_string_lossy(), options)?;
+            } else if meta.is_dir() {
+                zip.add_directory(format!("{name}/"), options)?;
+                for entry in std::fs::read_dir(&path)? {
+                    let entry = entry?;
+                    stack.push((entry.path(), format!("{name}/{}", entry.file_name().to_string_lossy())));
+                }
+            } else {
+                zip.start_file(&name, options)?;
+                std::io::copy(&mut std::fs::File::open(&path)?, &mut zip)?;
+            }
+        }
+        zip.finish()?.flush()
+    })();
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&target);
+        format!("{out} : {e}")
+    })
+}
+
+/// A free name for a copy of `name`: "a copie.txt", then "a copie 2.txt"... (the extension stays last;
+/// folders and dotfiles keep their whole name first).
+fn copy_name(name: &str, suffix: &str, taken: &HashSet<String>) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (1..)
+        .map(|n| if n == 1 { format!("{stem} {suffix}{ext}") } else { format!("{stem} {suffix} {n}{ext}") })
+        .find(|c| !taken.contains(c))
+        .unwrap()
+}
+
+/// Copies a file or a folder tree (symbolic links are copied as links), never over something existing.
+fn copy_local(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    if to.symlink_metadata().is_ok() {
+        return Err(std::io::ErrorKind::AlreadyExists.into());
+    }
+    let meta = from.symlink_metadata()?;
+    if meta.file_type().is_symlink() {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(std::fs::read_link(from)?, to);
+        #[cfg(not(unix))]
+        return std::fs::copy(from, to).map(|_| ());
+    }
+    if meta.is_dir() {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_local(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(to, meta.permissions())
+    } else {
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// A local file for the editor, with its modification time.
+fn read_local_file(path: &str, t: &Strings) -> Result<(Vec<u8>, Option<i64>), String> {
+    let p = std::path::Path::new(path);
+    let meta = std::fs::metadata(p).map_err(|e| format!("{path} : {e}"))?;
+    if meta.len() > sftp::MAX_EDIT {
+        return Err(t.editor_too_big.to_owned());
+    }
+    let data = std::fs::read(p).map_err(|e| format!("{path} : {e}"))?;
+    Ok((data, local_mtime(p)))
+}
+
+/// Part of a local file for the viewer: (offset, bytes, file size).
+fn read_local_range(path: &str, offset: u64, len: u64, tail: bool) -> Result<(u64, Vec<u8>, u64), String> {
+    use std::io::{Read as _, Seek as _};
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{path} : {e}"))?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    let len = len.min(sftp::MAX_RANGE);
+    let offset = if tail { size.saturating_sub(len) } else { offset.min(size) };
+    file.seek(std::io::SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut data = Vec::with_capacity(len as usize);
+    file.take(len).read_to_end(&mut data).map_err(|e| format!("{path} : {e}"))?;
+    Ok((offset, data, size))
+}
+
+fn local_mtime(path: &std::path::Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64)
 }
 
 fn local_entry(entry: &std::fs::DirEntry) -> Option<Entry> {
@@ -1220,22 +1768,169 @@ fn local_entry(entry: &std::fs::DirEntry) -> Option<Entry> {
 
 /// A small drawn icon (emoji fonts lack or garble 📁 📄): a folder in the theme's accent color, or a
 /// page with a folded corner; a link gets a small arrow.
-fn paint_file_icon(painter: &egui::Painter, rect: Rect, is_dir: bool, is_link: bool, theme: &Theme) {
+/// What a file is, for its icon.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FileKind {
+    Folder,
+    Image,
+    Video,
+    Audio,
+    Archive,
+    Code,
+    Script,
+    Config,
+    Text,
+    Document,
+    Database,
+    Key,
+    Other,
+}
+
+impl FileKind {
+    /// From the name (extension or well-known names); an executable without extension is a script.
+    fn of(name: &str, is_dir: bool, mode: Option<u32>) -> Self {
+        if is_dir {
+            return Self::Folder;
+        }
+        let lower = name.to_lowercase();
+        match lower.as_str() {
+            "dockerfile" | "makefile" | "containerfile" | "gemfile" | "rakefile" | "vagrantfile" => return Self::Code,
+            "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa" | "authorized_keys" | "known_hosts" => return Self::Key,
+            "license" | "readme" | "changelog" | "authors" | "todo" => return Self::Text,
+            _ => {}
+        }
+        if lower.starts_with(".env") || matches!(lower.as_str(), ".htaccess" | ".gitignore" | ".gitattributes" | ".editorconfig" | ".npmrc" | ".bashrc" | ".zshrc" | ".profile" | ".bash_profile" | "crontab") {
+            return Self::Config;
+        }
+        let ext = lower.rsplit_once('.').map_or("", |(_, e)| e);
+        match ext {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "tif" | "tiff" | "heic" | "avif" | "psd" | "xcf" => Self::Image,
+            "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "wmv" | "flv" | "mpg" | "mpeg" => Self::Video,
+            "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" | "wma" | "mid" | "midi" => Self::Audio,
+            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "deb" | "rpm" | "dmg" | "iso" | "jar" | "war" | "apk" | "pkg" => Self::Archive,
+            "rs" | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "py" | "php" | "rb" | "go" | "c" | "h" | "cpp" | "cc" | "hpp" | "java" | "kt" | "swift"
+            | "vue" | "svelte" | "cs" | "lua" | "pl" | "html" | "htm" | "css" | "scss" | "sass" | "less" | "xml" | "twig" | "dart" | "scala" | "ex" | "exs" => Self::Code,
+            "sh" | "bash" | "zsh" | "fish" | "ksh" | "bat" | "cmd" | "ps1" | "command" => Self::Script,
+            "json" | "jsonc" | "yml" | "yaml" | "toml" | "ini" | "conf" | "cfg" | "cnf" | "env" | "properties" | "lock" | "plist" | "service" | "timer" | "neon" => Self::Config,
+            "txt" | "md" | "markdown" | "rst" | "log" | "csv" | "tsv" | "nfo" => Self::Text,
+            "pdf" | "doc" | "docx" | "odt" | "rtf" | "xls" | "xlsx" | "ods" | "ppt" | "pptx" | "odp" | "epub" | "pages" | "numbers" => Self::Document,
+            "sql" | "sqlite" | "sqlite3" | "db" | "dump" | "mdb" => Self::Database,
+            "pem" | "key" | "crt" | "cer" | "der" | "p12" | "pfx" | "pub" | "csr" | "gpg" | "asc" | "ppk" => Self::Key,
+            "" if mode.is_some_and(|m| m & 0o111 != 0) => Self::Script,
+            _ => Self::Other,
+        }
+    }
+
+    fn color(self, theme: &Theme) -> Color32 {
+        match self {
+            Self::Folder => theme.accent.gamma_multiply(0.85),
+            Self::Image => theme.ansi[5],
+            Self::Video => theme.ansi[1],
+            Self::Audio => theme.ansi[6],
+            Self::Archive => theme.ansi[3],
+            Self::Code => theme.ansi[4],
+            Self::Script => theme.ansi[2],
+            Self::Config => theme.ansi[11],
+            Self::Text | Self::Other => theme.text_muted,
+            Self::Document => theme.ansi[9],
+            Self::Database => theme.ansi[14],
+            Self::Key => theme.ansi[3],
+        }
+    }
+}
+
+/// A folder, or a page with the file kind's color and a small drawing; hidden files are dimmed.
+fn paint_file_icon(painter: &egui::Painter, rect: Rect, name: &str, is_dir: bool, is_link: bool, mode: Option<u32>, theme: &Theme) {
     let r = rect.shrink(1.0);
-    if is_dir {
-        let color = theme.accent.gamma_multiply(0.85);
+    let kind = FileKind::of(name, is_dir, mode);
+    let hidden = name.starts_with('.') && name.len() > 1;
+    let color = if hidden { kind.color(theme).gamma_multiply(0.55) } else { kind.color(theme) };
+    if kind == FileKind::Folder {
         let tab = Rect::from_min_size(r.min + Vec2::new(0.0, 1.0), Vec2::new(r.width() * 0.45, r.height() * 0.3));
         painter.rect_filled(tab, 1.5, color);
         let body = Rect::from_min_max(Pos2::new(r.min.x, r.min.y + r.height() * 0.22), r.max);
         painter.rect_filled(body, 2.0, color);
     } else {
-        let color = theme.text_muted;
-        let page = Rect::from_center_size(r.center(), Vec2::new(r.width() * 0.72, r.height()));
+        let page = Rect::from_center_size(r.center(), Vec2::new(r.width() * 0.76, r.height()));
         let fold = page.width() * 0.35;
         let points = vec![page.left_top(), Pos2::new(page.max.x - fold, page.min.y), Pos2::new(page.max.x, page.min.y + fold), page.right_bottom(), page.left_bottom()];
+        if kind != FileKind::Other && kind != FileKind::Text {
+            painter.add(egui::Shape::convex_polygon(points.clone(), color.gamma_multiply(0.18), Stroke::NONE));
+        }
         painter.add(egui::Shape::closed_line(points, Stroke::new(1.2, color)));
         painter.line_segment([Pos2::new(page.max.x - fold, page.min.y), Pos2::new(page.max.x - fold, page.min.y + fold)], Stroke::new(1.0, color));
         painter.line_segment([Pos2::new(page.max.x - fold, page.min.y + fold), Pos2::new(page.max.x, page.min.y + fold)], Stroke::new(1.0, color));
+        // The drawing, in the lower part of the page.
+        let g = Rect::from_min_max(Pos2::new(page.min.x + 2.0, page.min.y + fold + 1.0), Pos2::new(page.max.x - 2.0, page.max.y - 2.0));
+        let (c, w, h) = (g.center(), g.width(), g.height());
+        let thin = Stroke::new(1.1, color);
+        match kind {
+            FileKind::Image => {
+                painter.add(egui::Shape::convex_polygon(vec![Pos2::new(g.min.x, g.max.y), Pos2::new(g.min.x + w * 0.4, g.min.y + h * 0.35), Pos2::new(g.min.x + w * 0.7, g.max.y)], color, Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(vec![Pos2::new(g.min.x + w * 0.5, g.max.y), Pos2::new(g.min.x + w * 0.75, g.min.y + h * 0.55), Pos2::new(g.max.x, g.max.y)], color, Stroke::NONE));
+                painter.circle_filled(Pos2::new(g.max.x - w * 0.15, g.min.y + h * 0.1), 1.1, color);
+            }
+            FileKind::Video => {
+                painter.add(egui::Shape::convex_polygon(vec![Pos2::new(c.x - w * 0.3, g.min.y), Pos2::new(c.x + w * 0.4, c.y), Pos2::new(c.x - w * 0.3, g.max.y)], color, Stroke::NONE));
+            }
+            FileKind::Audio => {
+                let head = Pos2::new(c.x - w * 0.15, g.max.y - 1.5);
+                painter.circle_filled(head, 1.7, color);
+                painter.line_segment([head + Vec2::new(1.5, 0.0), Pos2::new(head.x + 1.5, g.min.y)], thin);
+                painter.line_segment([Pos2::new(head.x + 1.5, g.min.y), Pos2::new(g.max.x, g.min.y + 1.5)], thin);
+            }
+            FileKind::Archive => {
+                let x = page.max.x - fold - 0.5;
+                let mut y = page.min.y + 1.0;
+                let mut left = true;
+                while y < page.max.y - 3.0 {
+                    let (a, b) = if left { (x - 1.8, x) } else { (x, x + 1.8) };
+                    painter.line_segment([Pos2::new(a, y), Pos2::new(b, y)], Stroke::new(1.2, color));
+                    y += 1.6;
+                    left = !left;
+                }
+                painter.rect_filled(Rect::from_center_size(Pos2::new(x, page.max.y - 2.5), Vec2::new(3.0, 2.5)), 0.5, color);
+            }
+            FileKind::Code => {
+                let (l, rr, m) = (g.min.x, g.max.x, c.y);
+                painter.line_segment([Pos2::new(l + w * 0.35, m - h * 0.45), Pos2::new(l, m)], thin);
+                painter.line_segment([Pos2::new(l, m), Pos2::new(l + w * 0.35, m + h * 0.45)], thin);
+                painter.line_segment([Pos2::new(rr - w * 0.35, m - h * 0.45), Pos2::new(rr, m)], thin);
+                painter.line_segment([Pos2::new(rr, m), Pos2::new(rr - w * 0.35, m + h * 0.45)], thin);
+            }
+            FileKind::Script => {
+                painter.line_segment([Pos2::new(g.min.x, g.min.y), Pos2::new(g.min.x + w * 0.35, c.y)], thin);
+                painter.line_segment([Pos2::new(g.min.x + w * 0.35, c.y), Pos2::new(g.min.x, g.max.y)], thin);
+                painter.line_segment([Pos2::new(c.x, g.max.y), Pos2::new(g.max.x, g.max.y)], thin);
+            }
+            FileKind::Config => {
+                painter.circle_stroke(c, (w.min(h) * 0.38).max(1.5), thin);
+                painter.circle_filled(c, 0.9, color);
+                for (dx, dy) in [(0.0, -1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, 0.0)] {
+                    let rad = (w.min(h) * 0.38).max(1.5);
+                    painter.line_segment([c + Vec2::new(dx, dy) * rad, c + Vec2::new(dx, dy) * (rad + 1.4)], thin);
+                }
+            }
+            FileKind::Text | FileKind::Document => {
+                for (i, part) in [1.0, 0.7, 0.9].into_iter().enumerate() {
+                    let y = g.min.y + 0.5 + i as f32 * (h / 2.6);
+                    painter.line_segment([Pos2::new(g.min.x, y), Pos2::new(g.min.x + w * part, y)], Stroke::new(1.0, color));
+                }
+            }
+            FileKind::Database => {
+                for i in 0..3 {
+                    let y = g.min.y + i as f32 * (h / 3.0);
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(g.min.x, y), Vec2::new(w, (h / 3.0 - 0.8).max(1.0))), 1.0, color);
+                }
+            }
+            FileKind::Key => {
+                let ring = Pos2::new(g.min.x + 1.6, c.y);
+                painter.circle_stroke(ring, 1.6, thin);
+                painter.line_segment([ring + Vec2::new(1.6, 0.0), Pos2::new(g.max.x, c.y)], thin);
+                painter.line_segment([Pos2::new(g.max.x - 0.5, c.y), Pos2::new(g.max.x - 0.5, c.y + 1.8)], thin);
+            }
+            FileKind::Folder | FileKind::Other => {}
+        }
     }
     if is_link {
         let a = Pos2::new(r.min.x + 1.0, r.max.y - 1.0);
@@ -1316,5 +2011,56 @@ mod tests {
         assert_eq!(format_size(512, fr), "512 o");
         assert_eq!(format_size(1536, fr), "1,5 Ko");
         assert_eq!(format_size(5 * 1024 * 1024, crate::i18n::Lang::En.strings()), "5.0 MB");
+    }
+
+    #[test]
+    fn names_copies() {
+        let taken: HashSet<String> = ["a copy.txt".to_owned()].into();
+        assert_eq!(copy_name("a.txt", "copy", &taken), "a copy 2.txt");
+        assert_eq!(copy_name("dir", "copy", &taken), "dir copy");
+        assert_eq!(copy_name(".env", "copy", &taken), ".env copy");
+    }
+
+    #[test]
+    fn knows_file_kinds() {
+        assert_eq!(FileKind::of("photo.JPG", false, None), FileKind::Image);
+        assert_eq!(FileKind::of("docker-compose.yml", false, None), FileKind::Config);
+        assert_eq!(FileKind::of(".env.local", false, None), FileKind::Config);
+        assert_eq!(FileKind::of("backup.tar.gz", false, None), FileKind::Archive);
+        assert_eq!(FileKind::of("deploy", false, Some(0o755)), FileKind::Script);
+        assert_eq!(FileKind::of("id_ed25519", false, None), FileKind::Key);
+        assert_eq!(FileKind::of("src", true, None), FileKind::Folder);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zips_here_and_on_a_server() {
+        let base = std::env::temp_dir().join(format!("ronnie-zip-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("it's dir/sub")).unwrap();
+        std::fs::write(base.join("it's dir/sub/a.txt"), b"hello").unwrap();
+        std::fs::write(base.join("-b.txt"), b"world").unwrap();
+        let names = vec!["it's dir".to_owned(), "-b.txt".to_owned()];
+
+        zip_local(&base, &names, "local.zip").unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(base.join("local.zip")).unwrap()).unwrap();
+        let mut listed: Vec<String> = archive.file_names().map(str::to_owned).collect();
+        listed.sort();
+        assert_eq!(listed, ["-b.txt", "it's dir/", "it's dir/sub/", "it's dir/sub/a.txt"]);
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("it's dir/sub/a.txt").unwrap(), &mut text).unwrap();
+        assert_eq!(text, "hello");
+        assert!(zip_local(&base, &names, "local.zip").is_err(), "never over an existing file");
+
+        // The server's script, run by sh here (zip or python3 needed).
+        let script = zip_script(&base.display().to_string(), &names, "remote.zip");
+        let status = std::process::Command::new("sh").arg("-c").arg(&script).status().unwrap();
+        if status.code() != Some(127) {
+            assert!(status.success());
+            let archive = zip::ZipArchive::new(std::fs::File::open(base.join("remote.zip")).unwrap()).unwrap();
+            assert!(archive.file_names().any(|n| n.ends_with("sub/a.txt")));
+            let again = std::process::Command::new("sh").arg("-c").arg(&script).status().unwrap();
+            assert!(!again.success(), "never over an existing archive");
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

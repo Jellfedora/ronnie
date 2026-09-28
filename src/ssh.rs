@@ -74,6 +74,9 @@ pub struct SshHost {
     /// Other ssh options, "Key Value" as in ~/.ssh/config (passed as `-o Key=Value`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// Folder on the server where sessions start (a path, `~` allowed); none: the home directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_dir: Option<String>,
     /// Whether a password is saved for this host.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub password_saved: bool,
@@ -108,6 +111,7 @@ impl SshHost {
             identity_file: None,
             jump: None,
             options: Vec::new(),
+            start_dir: None,
             password_saved: false,
             imported: false,
             commands: Vec::new(),
@@ -251,6 +255,26 @@ impl SshHost {
 }
 
 impl SshHost {
+    /// ssh running `command` on the server, without terminal, prompts answered in the window (like the
+    /// file manager's session).
+    pub fn exec_command(&self, command: &str) -> Launch {
+        let mut launch = self.sftp_command();
+        // It ends with "-T", "-s", "--", host, "sftp".
+        launch.args.truncate(launch.args.len().saturating_sub(5));
+        launch.args.extend(["-T".to_owned(), "--".to_owned(), self.host.clone(), command.to_owned()]);
+        launch
+    }
+}
+
+impl SshHost {
+    /// The terminal command for a new session: in the host's start folder, if it has one.
+    pub fn session_command(&self) -> Launch {
+        match &self.start_dir {
+            Some(dir) => self.command_in(dir),
+            None => self.command(),
+        }
+    }
+
     /// The terminal command, starting the session in `dir` on the server (a path, `~` allowed) when
     /// it can: not when the host has its own remote command (ssh refuses both).
     pub fn command_in(&self, dir: &str) -> Launch {

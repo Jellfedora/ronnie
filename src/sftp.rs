@@ -41,6 +41,17 @@ pub enum Request {
     Chmod { paths: Vec<String>, mode: u32, recursive: bool },
     Download { id: u64, remote: Vec<String>, local_dir: PathBuf, overwrite: bool },
     Upload { id: u64, local: Vec<PathBuf>, remote_dir: String, overwrite: bool },
+    /// An empty file (refused if the name is taken).
+    CreateFile(String),
+    /// Copies a file or folder (recursively) on the server, to a name that must be free.
+    Duplicate { from: String, to: String },
+    /// Part of a file (the viewer of big files): `len` bytes from `offset`, or the last `len` if `tail`.
+    ReadRange { path: String, offset: u64, len: u64, tail: bool },
+    /// A file to edit (at most `MAX_EDIT` bytes).
+    ReadFile(String),
+    /// Saves an edited file in place (keeping its owner and permissions). Unless `force`, refused when it
+    /// changed on the server since it was read (its modification time is no longer `mtime`).
+    WriteFile { path: String, data: Vec<u8>, mtime: Option<i64>, force: bool },
 }
 
 #[derive(Debug)]
@@ -56,9 +67,20 @@ pub enum Event {
     Progress { id: u64, done: u64, total: u64, current: String },
     /// Done: how many files were skipped because they already existed, or why it failed.
     Finished { id: u64, result: Result<u64, String> },
+    /// Part of a file: where it starts, and the file's size now.
+    Range { path: String, result: Result<(u64, Vec<u8>, u64), String> },
+    /// How much of a file to edit has arrived.
+    FileProgress { path: String, done: u64, total: u64 },
+    /// A file to edit, with its modification time, or why it can't be read.
+    FileRead { path: String, result: Result<(Vec<u8>, Option<i64>), String> },
+    /// A file saved: its new modification time, or why it wasn't (`conflict`: it changed on the server).
+    FileWritten { path: String, result: Result<Option<i64>, String>, conflict: bool },
     /// The connection is over (with ssh's last words, if any).
     Closed(String),
 }
+
+/// Largest file the editor opens.
+pub const MAX_EDIT: u64 = 200 * 1024 * 1024;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -214,6 +236,44 @@ impl Connection {
                     Request::Rename(from, to) => sftp.rename(from, to).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Remove(paths) => remove(&sftp, &paths).await.map(|_| emit.send(Event::Changed)),
                     Request::Chmod { paths, mode, recursive } => chmod(&sftp, &paths, mode, recursive).await.map(|_| emit.send(Event::Changed)),
+                    Request::CreateFile(path) => {
+                        let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::EXCLUDE | russh_sftp::protocol::OpenFlags::WRITE;
+                        match sftp.open_with_flags(path.clone(), flags).await {
+                            Ok(file) => file.close().await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
+                            Err(e) => Err(anyhow::Error::from(e).context(format!("creating {path}"))),
+                        }
+                    }
+                    // In the background: copying goes through this computer and may take a while.
+                    Request::Duplicate { from, to } => {
+                        let (sftp, emit) = (sftp.clone(), emit.clone());
+                        tokio::spawn(async move {
+                            let result = duplicate(&sftp, &from, &to).await;
+                            if let Err(e) = result {
+                                emit.send(Event::Error(format!("{e:#}")));
+                            }
+                            emit.send(Event::Changed);
+                        });
+                        Ok(())
+                    }
+                    Request::ReadRange { path, offset, len, tail } => {
+                        let result = read_range(&sftp, &path, offset, len, tail).await.map_err(|e| format!("{e:#}"));
+                        emit.send(Event::Range { path, result });
+                        Ok(())
+                    }
+                    Request::ReadFile(path) => {
+                        let result = read_file(&sftp, &path, &emit).await.map_err(|e| format!("{e:#}"));
+                        emit.send(Event::FileRead { path, result });
+                        Ok(())
+                    }
+                    Request::WriteFile { path, data, mtime, force } => {
+                        let (result, conflict) = match write_file(&sftp, &path, &data, mtime, force).await {
+                            Ok(Some(mtime)) => (Ok(mtime), false),
+                            Ok(None) => (Err(String::new()), true),
+                            Err(e) => (Err(format!("{e:#}")), false),
+                        };
+                        emit.send(Event::FileWritten { path, result, conflict });
+                        Ok(())
+                    }
                     job @ (Request::Download { .. } | Request::Upload { .. }) => {
                         let _ = jobs.send(job);
                         Ok(())
@@ -402,6 +462,100 @@ impl Progress<'_> {
 }
 
 const CHUNK: usize = 256 * 1024;
+
+/// Copies `from` (a file, or a folder and everything in it, symbolic links aside) to `to`, which must
+/// not exist yet.
+async fn duplicate(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
+    anyhow::ensure!(!sftp.try_exists(to).await.unwrap_or(true), "{to} already exists");
+    let mut buf = vec![0u8; CHUNK];
+    // Parents come before what they hold.
+    for (path, attrs) in walk(sftp, from, false).await? {
+        let relative = path.strip_prefix(from).unwrap_or("").trim_start_matches('/');
+        let target = if relative.is_empty() { to.to_owned() } else { join(to, relative) };
+        // Links are left out: servers disagree on the order of SSH_FXP_SYMLINK's arguments (OpenSSH has
+        // them reversed), and a link made the wrong way round would land elsewhere.
+        if attrs.is_symlink() {
+            continue;
+        }
+        if attrs.is_dir() {
+            sftp.create_dir(target.clone()).await.with_context(|| format!("creating {target}"))?;
+        } else {
+            let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::EXCLUDE | russh_sftp::protocol::OpenFlags::WRITE;
+            let mut src = sftp.open(path.clone()).await.with_context(|| format!("opening {path}"))?;
+            let mut dst = sftp.open_with_flags(target.clone(), flags).await.with_context(|| format!("creating {target}"))?;
+            loop {
+                let n = src.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n]).await.with_context(|| format!("writing {target}"))?;
+            }
+            dst.close().await?;
+        }
+        if let Some(mode) = attrs.permissions {
+            let _ = sftp.set_metadata(target, FileAttributes { permissions: Some(mode & 0o7777), ..FileAttributes::empty() }).await;
+        }
+    }
+    Ok(())
+}
+
+/// Largest part of a file read at once.
+pub const MAX_RANGE: u64 = 8 * 1024 * 1024;
+
+/// (offset, bytes, file size).
+async fn read_range(sftp: &SftpSession, path: &str, offset: u64, len: u64, tail: bool) -> Result<(u64, Vec<u8>, u64)> {
+    use tokio::io::AsyncSeekExt;
+    let mut file = sftp.open(path).await.with_context(|| format!("opening {path}"))?;
+    let size = file.metadata().await.ok().and_then(|a| a.size).unwrap_or(0);
+    let len = len.min(MAX_RANGE);
+    let offset = if tail { size.saturating_sub(len) } else { offset.min(size) };
+    file.seek(std::io::SeekFrom::Start(offset)).await?;
+    let mut data = Vec::with_capacity(len as usize);
+    (&mut file).take(len).read_to_end(&mut data).await.with_context(|| format!("reading {path}"))?;
+    Ok((offset, data, size))
+}
+
+async fn read_file(sftp: &SftpSession, path: &str, emit: &Emitter) -> Result<(Vec<u8>, Option<i64>)> {
+    let attrs = sftp.metadata(path).await.with_context(|| format!("reading {path}"))?;
+    anyhow::ensure!(!attrs.is_dir(), "{path} is a folder");
+    anyhow::ensure!(attrs.size.unwrap_or(0) <= MAX_EDIT, "too big to edit ({} MB at most)", MAX_EDIT / (1024 * 1024));
+    let mut file = sftp.open(path).await.with_context(|| format!("opening {path}"))?;
+    let total = attrs.size.unwrap_or(0);
+    let mut data = Vec::with_capacity(total as usize);
+    let mut buf = vec![0u8; CHUNK];
+    let mut last = Instant::now();
+    loop {
+        let n = file.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n]);
+        // Not more than the limit (a hostile server could send endless data).
+        anyhow::ensure!(data.len() as u64 <= MAX_EDIT, "too big to edit");
+        if last.elapsed() > Duration::from_millis(150) {
+            last = Instant::now();
+            emit.send(Event::FileProgress { path: path.to_owned(), done: data.len() as u64, total });
+        }
+    }
+    anyhow::ensure!(data.len() as u64 <= MAX_EDIT, "too big to edit");
+    Ok((data, attrs.mtime.map(i64::from)))
+}
+
+/// The new modification time; Ok(None) when the file changed on the server meanwhile (not written).
+async fn write_file(sftp: &SftpSession, path: &str, data: &[u8], mtime: Option<i64>, force: bool) -> Result<Option<Option<i64>>> {
+    if !force {
+        let now = sftp.metadata(path).await.ok().and_then(|a| a.mtime.map(i64::from));
+        if now != mtime {
+            return Ok(None);
+        }
+    }
+    // Written in place, so the file keeps its owner and permissions.
+    let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::TRUNCATE | russh_sftp::protocol::OpenFlags::WRITE;
+    let mut file = sftp.open_with_flags(path, flags).await.with_context(|| format!("opening {path}"))?;
+    file.write_all(data).await.with_context(|| format!("writing {path}"))?;
+    file.close().await?;
+    Ok(Some(sftp.metadata(path).await.ok().and_then(|a| a.mtime.map(i64::from))))
+}
 
 /// Returns how many files were skipped (they existed and `overwrite` is off).
 async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overwrite: bool, id: u64, emit: &Emitter, cancel: &AtomicBool) -> Result<u64> {
@@ -632,6 +786,87 @@ mod tests {
         wait(&conn, |e| matches!(e, Event::Changed));
         assert!(std::fs::read_dir(&remote).unwrap().next().is_none(), "deleted recursively");
 
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn edits_a_file_in_place() {
+        if server().is_none() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("ronnie-edit-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("conf.yml");
+        std::fs::write(&file, b"a: 1\nb: 22\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let path = file.canonicalize().unwrap().display().to_string();
+
+        let conn = connect();
+        wait(&conn, |e| matches!(e, Event::Connected { .. }));
+        conn.send(Request::ReadFile(path.clone()));
+        let Event::FileRead { result, .. } = wait(&conn, |e| matches!(e, Event::FileRead { .. })) else { unreachable!() };
+        let (data, mtime) = result.unwrap();
+        assert_eq!(data, b"a: 1\nb: 22\n");
+
+        // Shorter than before: the rest is cut, the permissions stay.
+        conn.send(Request::WriteFile { path: path.clone(), data: b"a: 2\n".to_vec(), mtime, force: false });
+        let Event::FileWritten { result, conflict, .. } = wait(&conn, |e| matches!(e, Event::FileWritten { .. })) else { unreachable!() };
+        assert!(!conflict);
+        result.unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"a: 2\n");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640);
+
+        // Changed meanwhile (another modification time): refused unless forced.
+        conn.send(Request::WriteFile { path: path.clone(), data: b"x".to_vec(), mtime: Some(1), force: false });
+        let Event::FileWritten { conflict, .. } = wait(&conn, |e| matches!(e, Event::FileWritten { .. })) else { unreachable!() };
+        assert!(conflict);
+        assert_eq!(std::fs::read(&file).unwrap(), b"a: 2\n");
+        conn.send(Request::WriteFile { path: path.clone(), data: b"x".to_vec(), mtime: Some(1), force: true });
+        let Event::FileWritten { result, .. } = wait(&conn, |e| matches!(e, Event::FileWritten { .. })) else { unreachable!() };
+        result.unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"x");
+
+        // Parts of a file (the viewer): from an offset, and the end.
+        std::fs::write(&file, b"0123456789").unwrap();
+        conn.send(Request::ReadRange { path: path.clone(), offset: 3, len: 4, tail: false });
+        let Event::Range { result, .. } = wait(&conn, |e| matches!(e, Event::Range { .. })) else { unreachable!() };
+        assert_eq!(result.unwrap(), (3, b"3456".to_vec(), 10));
+        conn.send(Request::ReadRange { path: path.clone(), offset: 0, len: 3, tail: true });
+        let Event::Range { result, .. } = wait(&conn, |e| matches!(e, Event::Range { .. })) else { unreachable!() };
+        assert_eq!(result.unwrap(), (7, b"789".to_vec(), 10));
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn creates_and_duplicates() {
+        if server().is_none() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("ronnie-dup-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("dir/sub")).unwrap();
+        std::fs::write(base.join("dir/sub/a.txt"), b"hello").unwrap();
+        let root = base.canonicalize().unwrap().display().to_string();
+
+        let conn = connect();
+        wait(&conn, |e| matches!(e, Event::Connected { .. }));
+        conn.send(Request::CreateFile(join(&root, "new.txt")));
+        wait(&conn, |e| matches!(e, Event::Changed));
+        assert_eq!(std::fs::read(base.join("new.txt")).unwrap(), b"");
+
+        conn.send(Request::Duplicate { from: join(&root, "dir"), to: join(&root, "dir copy") });
+        wait(&conn, |e| matches!(e, Event::Changed));
+        assert_eq!(std::fs::read(base.join("dir copy/sub/a.txt")).unwrap(), b"hello");
+        assert_eq!(std::fs::read(base.join("dir/sub/a.txt")).unwrap(), b"hello");
+
+        // Never over an existing name.
+        conn.send(Request::CreateFile(join(&root, "new.txt")));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !conn.poll().iter().any(|e| matches!(e, Event::Error(_))) {
+            assert!(Instant::now() < deadline, "no error for an existing name");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         std::fs::remove_dir_all(&base).unwrap();
     }
 

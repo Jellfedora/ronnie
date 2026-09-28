@@ -17,8 +17,11 @@ use crate::ssh::{self, SshAuth, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
+mod bigtext;
+mod editor;
 mod files;
 mod popups;
+mod viewer;
 mod settings;
 mod sidebar;
 
@@ -774,7 +777,7 @@ impl App {
     /// What a new pane of this tab runs: an ssh session for SSH tabs, the user's shell otherwise.
     fn launch_for(&self, index: usize) -> Option<crate::ssh::Launch> {
         let id = self.tabs.get(index)?.ssh?;
-        Some(self.config.ssh.iter().find(|h| h.id == id)?.command())
+        Some(self.config.ssh.iter().find(|h| h.id == id)?.session_command())
     }
 
     /// Starts the shells of a tab's panes that have not run yet.
@@ -1192,6 +1195,33 @@ impl App {
         // The file manager hides the terminals: their actions would act on panes the user can't see.
         let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files);
         let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane);
+        // A file open in the file manager's editor: ⌘ F searches it, ⌘ W closes it.
+        if let Some(viewer) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.viewer.as_mut()) {
+            fired.retain(|a| match a {
+                ShortcutAction::FindText => {
+                    viewer.open_find();
+                    false
+                }
+                ShortcutAction::ClosePane => {
+                    viewer.request_close();
+                    false
+                }
+                _ => true,
+            });
+        }
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.editor.as_mut()) {
+            fired.retain(|a| match a {
+                ShortcutAction::FindText => {
+                    editor.open_find(ui.ctx());
+                    false
+                }
+                ShortcutAction::ClosePane => {
+                    editor.request_close();
+                    false
+                }
+                _ => true,
+            });
+        }
         fired.retain(|a| !(files_shown && pane_action(*a)));
         for action in fired {
             match action {
@@ -1220,7 +1250,7 @@ impl App {
                 }
                 ShortcutAction::OpenSettings => self.settings_dialog = !self.settings_dialog,
                 ShortcutAction::ToggleFiles => {
-                    if let Some(show) = self.tabs.get(self.active).filter(|t| t.ssh.is_some()).map(|t| !t.show_files) {
+                    if let Some(show) = self.tabs.get(self.active).map(|t| !t.show_files) {
                         self.toggle_files(self.active, show);
                     }
                 }
@@ -1497,7 +1527,10 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, focused: boo
         right -= 26.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
         right -= 26.0;
-        max_w -= 56.0;
+        // This folder's files, with the editor.
+        clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
+        right -= 26.0;
+        max_w -= 82.0;
         right -= 4.0;
         for url in urls.iter().rev() {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
@@ -1699,6 +1732,8 @@ enum PaneAction {
     Close(PaneId),
     Reveal(PaneId),
     Reconnect(PaneId),
+    /// The file manager (this folder, or the server's).
+    Files(PaneId),
     /// Write a saved command at the prompt, without running it.
     Insert(PaneId, String),
     /// Open the saved commands menu.
@@ -1727,8 +1762,10 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     if local {
         // An SSH pane's directory is on the server.
         item(ui, true, t.open_location, String::new(), PaneAction::Reveal(id));
+        item(ui, true, &format!("📁  {}", t.files_open_here), shortcuts.toggle_files.label(), PaneAction::Files(id));
     } else {
         item(ui, true, t.reconnect, String::new(), PaneAction::Reconnect(id));
+        item(ui, true, &format!("📁  {}", t.files_open), shortcuts.toggle_files.label(), PaneAction::Files(id));
     }
     ui.separator();
     let mut picked = None;
@@ -1995,6 +2032,10 @@ impl eframe::App for App {
                     }
                     Some(PaneAction::Close(id)) => self.request_close(CloseRequest::Pane(self.active, id)),
                     Some(PaneAction::Reconnect(id)) => reconnect = Some(vec![id]),
+                    Some(PaneAction::Files(id)) => {
+                        tab.focused = id;
+                        open_files = true;
+                    }
                     Some(PaneAction::Insert(id, command)) => {
                         if let Some(term) = tab.panes.get_mut(&id) {
                             term.paste_text(&command);

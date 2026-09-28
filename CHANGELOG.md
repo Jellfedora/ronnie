@@ -2,6 +2,29 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.6.0] - 2026-09-28
+
+### Nouveautés
+
+- **Éditeur de fichiers intégré** au gestionnaire de fichiers : clic droit > Modifier, Entrée, ou double-clic sur un fichier local. Le fichier s'ouvre à la place des panneaux, sans logiciel externe.
+  - Numéros de ligne, coloration pour une trentaine de formats (YAML, JSON, `.env`, nginx, Dockerfile, shell, PHP, JS/TS, Python, HTML, CSS, SQL…).
+  - **⌘ S** enregistre directement sur le serveur : le fichier garde son propriétaire et ses permissions. S'il a été modifié ailleurs depuis son ouverture, Ronnie propose d'écraser ou de recharger.
+  - Rechercher (⌘ F, ⌘ G / ⇧ ⌘ G, respect de la casse), remplacer et tout remplacer, aller à la ligne (⌘ L).
+  - Indentation détectée (tabulations, 2 ou 4 espaces), Tab / ⇧ Tab sur la sélection, Entrée garde l'indentation, ⌘ / commente les lignes.
+  - Fins de ligne CRLF et BOM conservés ; « Enregistrer les modifications ? » avant de fermer.
+- **Gros fichiers** :
+  - de 1 à 200 Mo, un moteur d'édition qui ne dessine que les lignes visibles : frappe, défilement et recherche restent fluides, même sur des millions de lignes ;
+  - au-delà, une **visionneuse en lecture seule** de taille illimitée qui lit le fichier par morceaux, cherche dans tout le fichier et peut **suivre** ce qui s'ajoute à la fin, comme `tail -f` (aussi par clic droit > Afficher en lecture seule).
+- **Fichiers des terminaux locaux** : ⌘ E, 📁 dans l'en-tête ou clic droit > Fichiers de ce dossier ouvre le dossier courant du terminal, avec les mêmes outils (éditeur, visionneuse, zip…).
+- **Icônes selon le format** des fichiers : images, vidéos, audio, archives, code, scripts, configuration, documents, bases de données, clés et certificats.
+- **Nouveau fichier** (bouton ＋ ou clic droit), ouvert aussitôt dans l'éditeur, et **Dupliquer** des fichiers et dossiers (« nom copie.txt »).
+- **Compresser en zip** (bouton 📦 ou clic droit) un ou plusieurs fichiers et dossiers. Sur un serveur, l'archive est faite sur place (`zip`, ou Python), sans rien faire transiter par cet ordinateur.
+- **SSH : dossier de départ** par hôte, où s'ouvrent ses sessions.
+
+### Corrections
+
+- La fenêtre qui demande une passphrase ou un mot de passe pour le gestionnaire de fichiers se valide avec Entrée.
+
 ## [0.5.0] - 2026-09-28
 
 ### Nouveautés

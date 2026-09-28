@@ -601,6 +601,12 @@ impl App {
                 d.jump = Some(jump.trim().to_owned()).filter(|j| !j.is_empty());
                 ui.end_row();
 
+                label(ui, t.start_dir);
+                let mut dir = d.start_dir.clone().unwrap_or_default();
+                text_field(ui, &mut dir, t.start_dir_hint);
+                d.start_dir = Some(dir).filter(|d| !d.trim().is_empty());
+                ui.end_row();
+
                 label(ui, t.host_group);
                 let current = groups.iter().find(|(id, _)| Some(*id) == editor.group).map_or(t.no_group, |(_, name)| name.as_str());
                 egui::ComboBox::from_id_salt("host-group").selected_text(current).width(field_w).show_ui(ui, |ui| {
@@ -691,6 +697,7 @@ impl App {
                 }
             },
         };
+        host.start_dir = host.start_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(str::to_owned);
         host.name = host.name.trim().to_owned();
         if host.name.is_empty() {
             host.name = host.host.clone();
