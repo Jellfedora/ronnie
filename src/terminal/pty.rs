@@ -136,12 +136,144 @@ fn process_cwd(pid: libc::pid_t) -> Option<PathBuf> {
 
 impl Drop for LocalPty {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(shell) = self.child.process_id() {
+            end_session(shell as libc::pid_t);
+            return;
+        }
         let _ = self.child.kill();
     }
 }
 
+/// Ends what runs in a closed pane, like a terminal window closing: every process of the shell's
+/// session (the shell leads it), the program in the foreground and those sent to the background alike.
+/// Hung up first, killed if still there a moment later. In the background: closing doesn't wait.
+///
+/// The shell alone isn't enough: killed, it can't pass the hangup on, and the pseudo-terminal isn't
+/// hung up by the kernel while Ronnie's reader still holds it.
+/// Sessions of panes closed and possibly still ending (see `finish_ending`).
+#[cfg(unix)]
+static ENDING: std::sync::Mutex<Vec<libc::pid_t>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(unix)]
+fn end_session(shell: libc::pid_t) {
+    if let Ok(mut ending) = ENDING.lock() {
+        ending.retain(|&s| !session_members(s).is_empty());
+        ending.push(shell);
+    }
+    let signal_all = move |signal| {
+        for pid in session_members(shell) {
+            // SAFETY: plain signal to a process of this pane's session.
+            unsafe { libc::kill(pid, signal) };
+        }
+    };
+    signal_all(libc::SIGHUP);
+    let _ = std::thread::Builder::new().name("pane-end".into()).spawn(move || {
+        let reap = || {
+            // SAFETY: the shell is our child; WNOHANG never blocks.
+            unsafe { libc::waitpid(shell, std::ptr::null_mut(), libc::WNOHANG) };
+        };
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            reap();
+            if session_members(shell).is_empty() {
+                return;
+            }
+        }
+        signal_all(libc::SIGKILL);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        reap();
+    });
+}
+
+/// On quit: what closed panes ran gets a last moment to end, then is killed (the background threads
+/// that would do it end with Ronnie).
+pub fn finish_ending() {
+    #[cfg(unix)]
+    {
+        let shells = ENDING.lock().map(|e| e.clone()).unwrap_or_default();
+        let running = || shells.iter().flat_map(|&s| session_members(s)).collect::<Vec<_>>();
+        for _ in 0..10 {
+            if running().is_empty() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        for pid in running() {
+            // SAFETY: plain signal to a process of a closed pane's session.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// The processes of session `sid` still running (zombies apart), the shell included.
+#[cfg(unix)]
+fn session_members(sid: libc::pid_t) -> Vec<libc::pid_t> {
+    let own = std::process::id() as libc::pid_t;
+    // SAFETY: getsid only reads the process table.
+    let in_session = |pid: libc::pid_t| pid > 0 && pid != own && unsafe { libc::getsid(pid) } == sid && !is_zombie(pid);
+    all_pids().into_iter().filter(|&pid| in_session(pid)).collect()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn all_pids() -> Vec<libc::pid_t> {
+    std::fs::read_dir("/proc").map(|d| d.flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).collect()).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn all_pids() -> Vec<libc::pid_t> {
+    // SAFETY: a null buffer asks for the count; the second call fills at most `pids.len()` ids.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    let mut pids = vec![0 as libc::pid_t; count as usize + 64];
+    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(n.max(0) as usize);
+    pids
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn is_zombie(pid: libc::pid_t) -> bool {
+    // "pid (comm) state ...": the state follows the last parenthesis.
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|s| s.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next())) == Some('Z')
+}
+
+#[cfg(target_os = "macos")]
+fn is_zombie(pid: libc::pid_t) -> bool {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a properly sized, writable proc_bsdinfo.
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    n == size && info.pbi_status == libc::SZOMB as u32
+}
+
 #[cfg(all(test, unix))]
 mod tests {
+    /// Programs that ignore the hangup too (dev servers often catch it), started in the foreground and
+    /// in the background.
+    #[test]
+    fn closing_ends_what_runs_in_the_pane() {
+        let launch = crate::ssh::Launch { program: "/bin/sh".into(), args: vec!["-c".into(), "trap '' HUP; sleep 1000 & sleep 1001".into()], env: Vec::new() };
+        let (pty, mut reader) = super::LocalPty::spawn(80, 24, None, Some(&launch), None).unwrap();
+        std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
+        let shell = super::Backend::pid(&pty).unwrap() as libc::pid_t;
+        // The shell and its two sleeps.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while super::session_members(shell).len() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let members = super::session_members(shell);
+        assert_eq!(members.len(), 3, "{members:?}");
+        drop(pty);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !super::session_members(shell).is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(super::session_members(shell).is_empty(), "still running: {:?}", super::session_members(shell));
+    }
+
     #[test]
     fn sees_foreground_program() {
         use super::super::Backend;

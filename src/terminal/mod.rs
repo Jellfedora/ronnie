@@ -3,6 +3,7 @@ mod input;
 mod links;
 mod osc;
 mod pty;
+pub use pty::finish_ending;
 mod render;
 
 use std::io::{ErrorKind, Read};

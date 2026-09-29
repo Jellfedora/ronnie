@@ -160,7 +160,7 @@ fn main() -> eframe::Result {
     }
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Ronnie",
         options,
         Box::new(move |cc| {
@@ -170,5 +170,8 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_visuals(theme.visuals());
             Ok(Box::new(app::App::new(cc, session, session_error, config, theme)))
         }),
-    )
+    );
+    // The windows are closed and their terminals dropped: what ran in them ends before Ronnie does.
+    terminal::finish_ending();
+    result
 }
