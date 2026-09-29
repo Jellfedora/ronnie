@@ -31,13 +31,7 @@ impl LocalPty {
                 }
                 cmd
             }
-            None => {
-                let mut cmd = CommandBuilder::new_default_prog();
-                if let Some(history) = history {
-                    crate::shell::use_history(&mut cmd, history);
-                }
-                cmd
-            }
+            None => crate::shell::local_command(history),
         };
         // Ronnie's AppImage runtime variables would make programs started here think they are Ronnie.
         if crate::update::appimage().is_some() {

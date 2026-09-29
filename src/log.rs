@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Past this size the log starts over (the previous one is kept as ronnie.log.old).
 const MAX_LOG: u64 = 1024 * 1024;
 
-fn log_path() -> Option<PathBuf> {
+pub fn log_path() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join("ronnie.log"))
 }
 
@@ -56,4 +56,55 @@ pub fn install_panic_hook() {
         error(&report);
         default(info);
     }));
+}
+
+/// A line of the log, for the settings page.
+pub struct Entry {
+    /// When it was written (seconds since 1970); none for the rest of a message spanning lines.
+    pub time: Option<i64>,
+    pub error: bool,
+    pub text: String,
+}
+
+/// The log's lines, oldest first: those of the previous file, then of the current one.
+pub fn entries() -> Vec<Entry> {
+    let Some(path) = log_path() else { return Vec::new() };
+    let old = fs::read_to_string(path.with_extension("log.old")).unwrap_or_default();
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    old.lines().chain(current.lines()).filter(|l| !l.trim().is_empty()).map(parse).collect()
+}
+
+/// "<seconds> <LEVEL> <message>", as `write` puts it.
+fn parse(line: &str) -> Entry {
+    let mut parts = line.splitn(3, ' ');
+    let (time, level, text) = (parts.next(), parts.next(), parts.next());
+    match (time.and_then(|t| t.parse().ok()), level, text) {
+        (Some(time), Some(level @ ("INFO" | "ERROR")), text) => Entry { time: Some(time), error: level == "ERROR", text: text.unwrap_or_default().to_owned() },
+        _ => Entry { time: None, error: false, text: line.to_owned() },
+    }
+}
+
+/// Empties the log, the previous file included.
+pub fn clear() -> std::io::Result<()> {
+    let Some(path) = log_path() else { return Ok(()) };
+    for file in [path.with_extension("log.old"), path] {
+        match fs::remove_file(&file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_lines() {
+        let e = parse("1790667376 ERROR Trousseau : mot de passe introuvable");
+        assert_eq!((e.time, e.error, e.text.as_str()), (Some(1790667376), true, "Trousseau : mot de passe introuvable"));
+        let e = parse("   at src/main.rs:12");
+        assert_eq!((e.time, e.error, e.text.as_str()), (None, false, "   at src/main.rs:12"));
+    }
 }

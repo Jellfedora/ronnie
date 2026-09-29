@@ -349,10 +349,16 @@ impl Terminal {
         finished
     }
 
-    /// At the prompt of Ronnie's zsh: the line typed left of the cursor, and whether the cursor is at
-    /// its end.
+    /// At a local prompt: the line typed left of the cursor, and whether the cursor is at its end (sent
+    /// by Ronnie's zsh; with bash, read after the prompt on the screen).
     pub fn typed_input(&self) -> Option<(String, bool)> {
-        self.shell.lock().ok()?.input.clone()
+        let shell = self.shell.lock().ok()?;
+        if shell.reports_input {
+            return shell.input.clone();
+        }
+        drop(shell);
+        // A shell that doesn't tell (bash): read after its prompt on the screen.
+        self.guess_prompt_input()
     }
 
     /// Working directory reported by the shell itself (OSC 7), or shown in the title as `user@host: path`.
@@ -392,6 +398,21 @@ impl Terminal {
 
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::Relaxed)
+    }
+
+    /// Ready for commands typed for the user: the shell shows its prompt (marked by Ronnie's zsh and
+    /// bash, else seen on the screen), not asking for a password. A local shell with a prompt too
+    /// unusual to be seen gets them after a few seconds.
+    pub fn ready_for_commands(&self, waited: Duration, local: bool) -> bool {
+        if !self.has_output() || self.has_exited() || self.awaits_password() {
+            return false;
+        }
+        if let Ok(shell) = self.shell.lock() {
+            if shell.integrated {
+                return shell.at_prompt;
+            }
+        }
+        self.guess_prompt_input().is_some_and(|(typed, _)| typed.is_empty()) || (local && waited > Duration::from_secs(3))
     }
 
     /// Types text as if the user did (snaps the view to the bottom).

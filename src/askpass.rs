@@ -3,6 +3,7 @@
 //! over a private local socket. The window answers only when the asking process is the child of an ssh
 //! it started itself in one of its panes — so a jump host's ssh (a grandchild) doesn't get the target's
 //! password — and only once per connection: after a wrong password, ssh asks again and the user types.
+//! With a key file, the saved password also unlocks the key (ssh's own passphrase prompt), once too.
 //!
 //! Unix only; on Windows the helper reads the saved password itself (see `ssh::run_askpass`).
 
@@ -32,6 +33,10 @@ struct State {
     interactive: HashSet<u32>,
     /// Those whose host doesn't use its saved password (asked each time, or a key).
     unsaved: HashSet<u32>,
+    /// Those whose host logs in with a key file: the saved password is also its passphrase.
+    key: HashSet<u32>,
+    /// Those that already got it as the key's passphrase.
+    unlocked: HashSet<u32>,
     /// Those whose question the user cancelled: not asked again (ssh retries a few times).
     refused: HashSet<u32>,
     /// Host names, to show which server asks.
@@ -63,19 +68,19 @@ impl Server {
         self.state.lock().unwrap().prompter = Some((prompts, ctx.clone()));
     }
 
-    /// `ssh_pid` (SFTP, no terminal) may get the saved password of `host` if `saved` (the host logs
-    /// in with it), and its other prompts are asked in the window.
-    pub fn allow_interactive(&self, ssh_pid: u32, host: Uuid, name: &str, saved: bool) {
+    /// `ssh_pid` (SFTP, no terminal) may get the saved password of `host` if the host logs in with
+    /// it, and its other prompts are asked in the window.
+    pub fn allow_interactive(&self, ssh_pid: u32, host: &crate::ssh::SshHost) {
         self.allow(ssh_pid, host);
         let mut state = self.state.lock().unwrap();
-        if saved {
+        if host.uses_saved_password() {
             state.unsaved.remove(&ssh_pid);
         } else {
             state.unsaved.insert(ssh_pid);
         }
         state.interactive.insert(ssh_pid);
         state.refused.remove(&ssh_pid);
-        state.names.insert(host, name.to_owned());
+        state.names.insert(host.id, host.name.clone());
     }
 
     /// Starts listening in the background. Without a socket, helpers ask on the terminal.
@@ -101,13 +106,19 @@ impl Server {
     }
 
     /// `ssh_pid` (started in a pane) may get the saved password of `host`.
-    pub fn allow(&self, ssh_pid: u32, host: Uuid) {
+    pub fn allow(&self, ssh_pid: u32, host: &crate::ssh::SshHost) {
         let mut state = self.state.lock().unwrap();
         // A new process (possibly reusing an old pid) gets its own single try.
-        if state.allowed.insert(ssh_pid, host) != Some(host) {
+        if state.allowed.insert(ssh_pid, host.id) != Some(host.id) {
             state.answered.remove(&ssh_pid);
+            state.unlocked.remove(&ssh_pid);
         }
         state.unsaved.remove(&ssh_pid);
+        if host.auth_method() == crate::ssh::SshAuth::Key {
+            state.key.insert(ssh_pid);
+        } else {
+            state.key.remove(&ssh_pid);
+        }
     }
 }
 
@@ -152,11 +163,13 @@ fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
             drop(state);
             return (&stream).write_all(b"NO\n");
         };
-        // One automatic try per connection, and only for a password prompt.
+        // One automatic try per connection, and only for a password prompt, or with a key file for
+        // ssh's own passphrase prompt (not a server's question that would merely mention a passphrase).
         let lower = prompt.to_lowercase();
         let first_password = lower.contains("password") && !lower.contains("passphrase") && state.answered.insert(ssh);
+        let first_passphrase = crate::ssh::is_key_passphrase_prompt(&prompt) && state.key.contains(&ssh) && state.unlocked.insert(ssh);
         let id = state.allowed[&ssh];
-        let host = (first_password && !state.unsaved.contains(&ssh)).then_some(id);
+        let host = ((first_password || first_passphrase) && !state.unsaved.contains(&ssh)).then_some(id);
         let name = state.names.get(&id).cloned().unwrap_or_default();
         let interactive = state.interactive.contains(&ssh) && !state.refused.contains(&ssh);
         (host, interactive, state.prompter.clone().map(|p| (p, name, ssh)))
@@ -265,5 +278,27 @@ mod tests {
         let mut reply = String::new();
         helper.read_to_string(&mut reply).unwrap();
         assert_eq!(reply, "NO\n", "a process no pane started gets nothing");
+    }
+
+    #[test]
+    fn unlocks_the_key_once_only_with_a_key_file() {
+        let ssh = unsafe { libc::getppid() } as u32;
+        let ask = |state: &Arc<Mutex<State>>, prompt: &str| {
+            let (ours, mut helper) = UnixStream::pair().unwrap();
+            writeln!(helper, "{prompt}").unwrap();
+            answer(ours, state).unwrap();
+        };
+        let prompt = "Enter passphrase for key '/home/demo/.ssh/id_ed25519': ";
+        let state = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().allowed.insert(ssh, Uuid::new_v4());
+        ask(&state, prompt);
+        assert!(state.lock().unwrap().unlocked.is_empty(), "not tried without a key file");
+
+        state.lock().unwrap().key.insert(ssh);
+        ask(&state, "(demo@host) Your passphrase: ");
+        assert!(state.lock().unwrap().unlocked.is_empty(), "a server's question isn't the key's");
+        ask(&state, prompt);
+        assert!(state.lock().unwrap().unlocked.contains(&ssh), "counted as tried");
+        assert!(state.lock().unwrap().answered.is_empty(), "the password's try is left");
     }
 }

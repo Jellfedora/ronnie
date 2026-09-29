@@ -24,6 +24,10 @@ pub struct Shell {
     /// At the prompt: the line typed left of the cursor, and whether the cursor is at its end (Ronnie's
     /// zsh sends it as it changes).
     pub input: Option<(String, bool)>,
+    /// The shell sends what is typed (Ronnie's zsh does, bash can't).
+    pub reports_input: bool,
+    /// Waiting at its prompt (marked), no command running.
+    pub at_prompt: bool,
 }
 
 /// A command that ran to its end.
@@ -121,16 +125,21 @@ impl Scanner {
                 if let Some(url) = parts.next().and_then(|p| p.strip_prefix("RonnieInput=")) {
                     let end = parts.any(|p| p == "end=1");
                     shell.input = Some((percent_decode(url), end));
+                    shell.reports_input = true;
                 }
             }
             Some("133") => {
                 shell.integrated = true;
                 match parts.next() {
                     // A new prompt: nothing typed yet.
-                    Some("A") => shell.input = None,
+                    Some("A") => {
+                        shell.input = None;
+                        shell.at_prompt = true;
+                    }
                     // Command started (the user pressed Enter).
                     Some("C") => {
                         shell.input = None;
+                        shell.at_prompt = false;
                         let command = parts.find_map(|p| {
                             p.strip_prefix("cmdline_url=").map(|u| percent_decode(u)).or_else(|| p.strip_prefix("cmdline=").map(str::to_owned))
                         });
@@ -221,6 +230,13 @@ mod tests {
         assert_eq!(shell.finished.len(), 1);
         assert_eq!(shell.finished[0].command.as_deref(), Some("npm run build"));
         assert_eq!(shell.finished[0].code, Some(2));
+    }
+
+    #[test]
+    fn knows_when_at_the_prompt() {
+        assert!(!scan(&[b"loading..."]).at_prompt);
+        assert!(scan(&[b"\x1b]133;A\x07$ "]).at_prompt);
+        assert!(!scan(&[b"\x1b]133;A\x07$ ", b"\x1b]133;C;cmdline_url=npm\x07"]).at_prompt, "a command runs");
     }
 
     #[test]

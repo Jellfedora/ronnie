@@ -70,6 +70,7 @@ pub(super) struct CellEdit {
 }
 
 /// A column's definition, as edited.
+#[derive(Clone)]
 struct ColumnEdit {
     original: Option<String>,
     name: String,
@@ -215,6 +216,7 @@ enum FieldMode {
     Default,
 }
 
+#[derive(Clone)]
 struct InsertField {
     name: String,
     kind: String,
@@ -258,6 +260,7 @@ fn grant_sql(access: Access, database: &str, user: &str, host: &str) -> Option<S
     access.privileges().map(|p| format!("GRANT {p} ON {scope} TO {}", db::account(user, host)))
 }
 
+#[derive(Clone)]
 enum Dialog {
     NewDatabase { name: String, fresh: bool },
     NewTable { db: String, name: String, columns: Vec<NewColumn>, fresh: bool },
@@ -274,6 +277,28 @@ enum Dialog {
     Column(ColumnEdit),
     /// A destructive statement, run once confirmed (`query`: as a query, its results shown).
     Confirm { sql: String, db: Option<String>, reason: String, query: bool, expect: Option<Expect> },
+    /// A change made through the interface, its SQL shown before it runs.
+    Review(Change),
+}
+
+/// A change made through the interface (a cell written, a row added, a column changed...).
+#[derive(Clone)]
+struct Change {
+    db: Option<String>,
+    sql: String,
+    expect: Option<Expect>,
+    /// The rows shown are read again once it is sent.
+    reload: bool,
+    /// The account to select once it is sent (one just created).
+    select_user: Option<(String, String)>,
+    /// The dialog it came from, shown again if the change is cancelled.
+    back: Option<Box<Dialog>>,
+}
+
+impl Change {
+    fn new(sql: String, expect: Option<Expect>) -> Self {
+        Self { db: None, sql, expect, reload: false, select_user: None, back: None }
+    }
 }
 
 pub(super) enum DbAction {
@@ -327,8 +352,17 @@ pub(super) struct DbView {
     notice: Option<Notice>,
     /// The transfer going on is an import (an error then leaves what came before it applied).
     transfer_import: bool,
-    /// Queries run, the latest first.
-    history: Vec<String>,
+    /// Queries run and changes made, the latest first; the text searched in it.
+    history: Vec<super::sql::Entry>,
+    history_filter: String,
+    /// The history entry of the query running, and of each change sent (by tag), with when it left.
+    running_entry: Option<(u64, Instant)>,
+    exec_entries: HashMap<u32, (u64, Instant)>,
+    /// Colors of the SQL typed (on the SQL page, above a table), rebuilt when it changes.
+    sql_colors: Option<(String, egui::text::LayoutJob)>,
+    table_sql_colors: Option<(String, egui::text::LayoutJob)>,
+    /// Show the SQL of a change made through the interface before it runs (a setting).
+    pub confirm_changes: bool,
     /// Set when a change is done (the texts come with the next frame), and a table to open then.
     pending_notice: Option<(PendingNotice, u64)>,
     open_after: Option<(String, String)>,
@@ -336,25 +370,6 @@ pub(super) struct DbView {
     users_asked: bool,
     user: Option<(String, String)>,
     grants: Option<(String, String, Vec<String>)>,
-}
-
-/// Queries remembered per connection.
-const HISTORY_MAX: usize = 100;
-
-fn history_path() -> Option<std::path::PathBuf> {
-    config::config_dir().map(|d| d.join("db-history.json"))
-}
-
-fn load_history(id: uuid::Uuid) -> Vec<String> {
-    let all: HashMap<uuid::Uuid, Vec<String>> = history_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    all.get(&id).cloned().unwrap_or_default()
-}
-
-fn save_history(id: uuid::Uuid, history: &[String]) {
-    let Some(path) = history_path() else { return };
-    let mut all: HashMap<uuid::Uuid, Vec<String>> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    all.insert(id, history.to_vec());
-    let _ = config::save(&path, &all);
 }
 
 /// The columns that tell a row apart: the primary key, else a unique key without NULLs.
@@ -428,7 +443,13 @@ impl DbView {
             next_tag: 0,
             notice: None,
             transfer_import: false,
-            history: load_history(conn.id),
+            history: super::sql::load(conn.id),
+            history_filter: String::new(),
+            running_entry: None,
+            exec_entries: HashMap::new(),
+            sql_colors: None,
+            table_sql_colors: None,
+            confirm_changes: true,
             pending_notice: None,
             open_after: None,
             users: None,
@@ -462,7 +483,41 @@ impl DbView {
         if let Some(e) = expect {
             self.expect.insert(self.next_tag, e);
         }
+        let entry = self.remember(&sql, db.clone().or_else(|| self.db.clone()), true);
+        if let Some(id) = entry {
+            self.exec_entries.insert(self.next_tag, (id, Instant::now()));
+        }
         self.send(Request::Exec { db, sql, tag: self.next_tag });
+    }
+
+    /// A change made through the interface: its SQL shown first (unless the setting says not to).
+    fn change(&mut self, change: Change) {
+        if self.confirm_changes {
+            self.dialog = Some(Dialog::Review(change));
+        } else {
+            self.run_change(change);
+        }
+    }
+
+    fn run_change(&mut self, change: Change) {
+        let reload = change.reload.then(|| self.rows.as_ref().map(|r| (r.db.clone(), r.table.clone(), r.offset, r.order.clone()))).flatten();
+        self.exec(change.db, change.sql, change.expect);
+        if let Some(user) = change.select_user {
+            self.user = Some(user);
+        }
+        // Read after the change (one request at a time).
+        if let Some((d, tb, offset, order)) = reload {
+            self.load_rows(d, tb, offset, order);
+        }
+    }
+
+    /// Sets how the history entry `id` ended.
+    fn finish_entry(&mut self, id: u64, since: Instant, outcome: super::sql::Outcome) {
+        if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
+            e.ms = Some(since.elapsed().as_millis() as u64);
+            e.outcome = Some(outcome);
+            super::sql::save(self.id, &self.history);
+        }
     }
 
     fn notify(&mut self, text: String, warning: bool) {
@@ -503,6 +558,14 @@ impl DbView {
                     self.editing = None;
                 }
                 Event::Query { results, elapsed, error } => {
+                    if let Some((id, since)) = self.running_entry.take() {
+                        let outcome = match (&error, results.iter().rev().find(|r| !r.columns.is_empty())) {
+                            (Some(e), _) => super::sql::Outcome::Error(e.clone()),
+                            (None, Some(r)) => super::sql::Outcome::Rows(r.rows.len() as u64),
+                            (None, None) => super::sql::Outcome::Affected(results.iter().map(|r| r.affected).sum()),
+                        };
+                        self.finish_entry(id, since, outcome);
+                    }
                     // A change typed above a table (UPDATE, DELETE...): its rows are reloaded.
                     let changed = error.is_none() && results.iter().all(|r| r.columns.is_empty());
                     self.sql_out = Some((results, elapsed, error));
@@ -525,7 +588,18 @@ impl DbView {
                     self.transfer = None;
                     self.transfer_done = Some(result);
                 }
+                Event::Failed { error, tag } => {
+                    self.expect.remove(&tag);
+                    if let Some((id, since)) = self.exec_entries.remove(&tag) {
+                        self.finish_entry(id, since, super::sql::Outcome::Error(error.clone()));
+                    }
+                    self.error = Some(error);
+                    self.rows_loading = false;
+                }
                 Event::Done { affected, tag } => {
+                    if let Some((id, since)) = self.exec_entries.remove(&tag) {
+                        self.finish_entry(id, since, super::sql::Outcome::Affected(affected));
+                    }
                     match self.expect.remove(&tag) {
                         Some(Expect::Cell) if affected == 0 => self.pending_notice = Some((PendingNotice::CellUnchanged, 0)),
                         Some(Expect::Cell) => {}
@@ -650,16 +724,14 @@ impl DbView {
     }
 
     /// Writes a new value (None: NULL) in cell (row, col) of the content shown, then reloads it.
-    fn update_cell(&mut self, db_name: &str, table: &str, row: usize, col: usize, value: Option<String>) {
+    /// `back`: the dialog it was typed in, shown again if the change is cancelled.
+    fn update_cell(&mut self, db_name: &str, table: &str, row: usize, col: usize, value: Option<String>, back: Option<Box<Dialog>>) {
         let Some(condition) = self.row_condition(db_name, table, row) else { return };
         let Some(rows) = self.rows.as_ref() else { return };
         let Some(column) = rows.result.columns.get(col) else { return };
         let new_value = value.map_or_else(|| "NULL".to_owned(), |v| db::literal(&v));
         let sql = format!("UPDATE {}.{} SET {} = {new_value} WHERE {condition} LIMIT 1", db::ident(db_name), db::ident(table), db::ident(column));
-        let (offset, order) = (rows.offset, rows.order.clone());
-        self.exec(None, sql, Some(Expect::Cell));
-        // Read after the change (one request at a time).
-        self.load_rows(db_name.to_owned(), table.to_owned(), offset, order);
+        self.change(Change { reload: true, back, ..Change::new(sql, Some(Expect::Cell)) });
     }
 
     fn new_table_dialog(&mut self, d: &str) {
@@ -758,16 +830,29 @@ impl DbView {
         }
     }
 
-    /// Remembers a query run (the latest first, without repeats).
-    fn remember(&mut self, sql: &str) {
-        let sql = sql.trim();
-        if sql.is_empty() {
-            return;
+    /// Remembers a query run or a change made (the latest first); its entry's id, for its outcome.
+    fn remember(&mut self, sql: &str, db: Option<String>, ui: bool) -> Option<u64> {
+        if sql.trim().is_empty() {
+            return None;
         }
-        self.history.retain(|q| q != sql);
-        self.history.insert(0, sql.to_owned());
-        self.history.truncate(HISTORY_MAX);
-        save_history(self.id, &self.history);
+        let entry = super::sql::Entry::new(sql, db, ui);
+        let id = entry.id;
+        self.history.insert(0, entry);
+        self.history.truncate(super::sql::HISTORY_MAX);
+        super::sql::save(self.id, &self.history);
+        Some(id)
+    }
+
+    fn clear_history(&mut self) {
+        self.history.clear();
+        super::sql::save(self.id, &self.history);
+    }
+
+    /// Sends a query typed, remembered with its outcome to come.
+    fn send_query(&mut self, db: Option<String>, sql: String) {
+        self.running_entry = self.remember(&sql, db.clone(), false).map(|id| (id, Instant::now()));
+        self.sql_running = true;
+        self.send(Request::Query { db, sql });
     }
 
     /// Runs the SQL typed (on the SQL page, or `sql` above a table), asking first when it destroys a lot.
@@ -792,9 +877,7 @@ impl DbView {
             self.dialog = Some(Dialog::Confirm { sql, db: self.db.clone(), reason, query: true, expect: None });
             return;
         }
-        self.remember(&sql);
-        self.sql_running = true;
-        self.send(Request::Query { db: self.db.clone(), sql });
+        self.send_query(self.db.clone(), sql);
     }
 
     pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings) -> DbAction {
@@ -1321,7 +1404,10 @@ impl DbView {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("SQL").size(11.5).strong().color(theme.accent));
                 let hint = format!("SELECT * FROM {} WHERE …", db::ident(&tb));
-                let edit = ui.add(egui::TextEdit::singleline(&mut self.table_sql).id(egui::Id::new(("table-sql", &d, &tb))).hint_text(hint).frame(Frame::NONE).font(FontId::monospace(13.0)).desired_width(ui.available_width() - 72.0));
+                let edit = {
+                    let mut layouter = super::sql::layouter(theme, FontId::monospace(13.0), &mut self.table_sql_colors);
+                    ui.add(egui::TextEdit::singleline(&mut self.table_sql).id(egui::Id::new(("table-sql", &d, &tb))).hint_text(hint).frame(Frame::NONE).font(FontId::monospace(13.0)).layouter(&mut layouter).desired_width(ui.available_width() - 72.0))
+                };
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     run = true;
                 }
@@ -1329,8 +1415,10 @@ impl DbView {
                 if ui.add_enabled(!self.sql_running && !self.table_sql.trim().is_empty(), play).on_hover_text(t.db_run).clicked() {
                     run = true;
                 }
-                if let Some(q) = history_menu(ui, &self.history, t) {
-                    self.table_sql = q;
+                match super::sql::history_menu(ui, &self.history, &mut self.history_filter, theme, t) {
+                    Some(super::sql::Pick::Load(q)) => self.table_sql = q,
+                    Some(super::sql::Pick::Clear) => self.clear_history(),
+                    None => {}
                 }
             });
         });
@@ -1493,7 +1581,7 @@ impl DbView {
         }
         self.detail_ui(ui, theme, t);
         if let Some((r, c, value)) = change {
-            self.update_cell(&d, &tb, r, c, value);
+            self.update_cell(&d, &tb, r, c, value, None);
         }
         if delete_rows {
             self.confirm_delete_rows(&d, &tb, t);
@@ -1622,13 +1710,16 @@ impl DbView {
 
     fn sql_page(&mut self, ui: &mut Ui, theme: &Theme, t: &Strings) {
         let run_key = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)));
-        let editor_h = 150.0_f32.min(ui.available_height() * 0.4);
+        let format_key = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)));
+        let editor_h = 220.0_f32.min(ui.available_height() * 0.45);
         Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(8.0).inner_margin(8.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical().id_salt("db-sql-editor").max_height(editor_h).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.sql).code_editor().frame(Frame::NONE).desired_width(f32::INFINITY).desired_rows(6).hint_text(t.db_sql_hint).font(FontId::monospace(13.0)));
+                let mut layouter = super::sql::layouter(theme, FontId::monospace(13.0), &mut self.sql_colors);
+                ui.add(egui::TextEdit::multiline(&mut self.sql).code_editor().frame(Frame::NONE).desired_width(f32::INFINITY).desired_rows(6).hint_text(t.db_sql_hint).font(FontId::monospace(13.0)).layouter(&mut layouter));
             });
         });
+        let mut format = format_key;
         ui.add_space(8.0);
         let mut run = run_key;
         ui.horizontal(|ui| {
@@ -1643,15 +1734,25 @@ impl DbView {
                     self.cancel_query();
                 }
             }
+            let shortcut = if cfg!(target_os = "macos") { "⌘ ⇧ F" } else { "Ctrl+Shift+F" };
+            let tidy = egui::Button::new(egui::RichText::new(format!("{}   {shortcut}", t.db_format)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+            if ui.add_enabled(!self.sql.trim().is_empty(), tidy).on_hover_text(t.db_format_hint).clicked() {
+                format = true;
+            }
             if let Some(d) = &self.db {
                 ui.label(egui::RichText::new(t.db_in_database.replace("{db}", d)).size(12.0).color(theme.text_muted));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(q) = history_menu(ui, &self.history, t) {
-                    self.sql = q;
+                match super::sql::history_menu(ui, &self.history, &mut self.history_filter, theme, t) {
+                    Some(super::sql::Pick::Load(q)) => self.sql = q,
+                    Some(super::sql::Pick::Clear) => self.clear_history(),
+                    None => {}
                 }
             });
         });
+        if format && !self.sql.trim().is_empty() {
+            self.sql = super::sql::format(&self.sql);
+        }
         if run && !self.sql_running {
             self.run_sql(t);
         }
@@ -1714,7 +1815,7 @@ impl DbView {
         let mut drop_column: Option<String> = None;
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
         let width = match dialog {
-            Dialog::NewTable { .. } | Dialog::Cell { .. } | Dialog::Insert(_) => 660.0,
+            Dialog::NewTable { .. } | Dialog::Cell { .. } | Dialog::Insert(_) | Dialog::Review(_) => 660.0,
             _ => 440.0,
         };
         let modal = egui::Modal::new(egui::Id::new("db-dialog")).frame(frame).show(ctx, |ui| {
@@ -1927,13 +2028,17 @@ impl DbView {
                         }
                     }
                 }
+                Dialog::Review(change) => {
+                    ui.label(egui::RichText::new(t.db_review_title).size(17.0).strong());
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(t.db_review_hint).size(12.5).color(theme.text_muted));
+                    ui.add_space(10.0);
+                    sql_box(ui, theme, &change.sql);
+                }
                 Dialog::Confirm { sql, reason, .. } => {
                     ui.label(egui::RichText::new(t.guard_title).size(18.0).strong().color(theme.ansi[1]));
                     ui.add_space(10.0);
-                    Frame::NONE.fill(theme.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.add(egui::Label::new(egui::RichText::new(sql.as_str()).monospace().size(13.0)).wrap());
-                    });
+                    sql_box(ui, theme, sql);
                     if !reason.is_empty() {
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new(reason.as_str()).size(13.0));
@@ -1948,6 +2053,7 @@ impl DbView {
                     Dialog::Grant { .. } => (t.db_grant, theme.accent),
                     Dialog::Column(_) | Dialog::RenameTable { .. } | Dialog::Cell { .. } | Dialog::Password { .. } => (t.save, theme.accent),
                     Dialog::Confirm { .. } => (t.guard_run, theme.ansi[1]),
+                    Dialog::Review(_) => (t.db_run, theme.accent),
                 };
                 if ui.add(egui::Button::new(egui::RichText::new(label).size(13.5).color(theme.bg)).fill(fill).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0))).clicked() {
                     done = Some(true);
@@ -1970,37 +2076,43 @@ impl DbView {
         let Some(ok) = done else { return };
         let Some(dialog) = self.dialog.take() else { return };
         if !ok {
+            // A change not wanted: back to the dialog it was made in.
+            if let Dialog::Review(change) = dialog {
+                self.dialog = change.back.map(|b| *b);
+            }
             return;
         }
+        // Shown again if the change it makes is cancelled.
+        let back = Some(Box::new(dialog.clone()));
         match dialog {
+            Dialog::Review(change) => self.run_change(change),
             Dialog::Column(c) => {
                 let (d, tb) = (self.db.clone().unwrap_or_default(), self.table.clone().unwrap_or_default());
                 if !c.name.trim().is_empty() && !c.kind.trim().is_empty() && !c.generated() {
-                    self.exec(None, c.sql(&d, &tb), None);
+                    self.change(Change { back, ..Change::new(c.sql(&d, &tb), None) });
                 }
             }
             Dialog::NewTable { db: d, name, columns, .. } => {
                 if !name.trim().is_empty() && columns.iter().any(|c| !c.name.trim().is_empty()) {
-                    self.exec(None, create_table_sql(&d, &name, &columns), Some(Expect::Open(d.clone(), name.trim().to_owned())));
+                    let expect = Some(Expect::Open(d.clone(), name.trim().to_owned()));
+                    self.change(Change { back, ..Change::new(create_table_sql(&d, &name, &columns), expect) });
                 }
             }
             Dialog::RenameTable { db: d, old, name, .. } => {
                 let name = name.trim().to_owned();
                 if !name.is_empty() && name != old {
                     let sql = format!("RENAME TABLE {0}.{1} TO {0}.{2}", db::ident(&d), db::ident(&old), db::ident(&name));
-                    self.exec(None, sql, Some(Expect::Open(d, name)));
+                    self.change(Change { back, ..Change::new(sql, Some(Expect::Open(d, name))) });
                 }
             }
             Dialog::Insert(fields) => {
                 if let (Some(d), Some(tb)) = (self.db.clone(), self.table.clone()) {
-                    self.exec(None, insert_sql(&d, &tb, &fields), Some(Expect::Insert));
-                    let (offset, order) = self.rows.as_ref().map_or((0, None), |r| (r.offset, r.order.clone()));
-                    self.load_rows(d, tb, offset, order);
+                    self.change(Change { reload: true, back, ..Change::new(insert_sql(&d, &tb, &fields), Some(Expect::Insert)) });
                 }
             }
             Dialog::Cell { row, col, text, .. } => {
                 if let (Some(d), Some(tb)) = (self.db.clone(), self.table.clone()) {
-                    self.update_cell(&d, &tb, row, col, Some(text));
+                    self.update_cell(&d, &tb, row, col, Some(text), back);
                 }
             }
             Dialog::NewUser { user, host, password, access, database, .. } => {
@@ -2011,28 +2123,28 @@ impl DbView {
                         sql.push_str(";\n");
                         sql.push_str(&grant);
                     }
-                    self.exec(None, sql, Some(Expect::Users));
-                    self.user = Some((user, host));
+                    self.change(Change { select_user: Some((user, host)), back, ..Change::new(sql, Some(Expect::Users)) });
                 }
             }
             Dialog::Password { user, host, password, .. } => {
-                self.exec(None, format!("ALTER USER {} IDENTIFIED BY {}", db::account(&user, &host), db::literal(&password)), Some(Expect::Users));
+                let sql = format!("ALTER USER {} IDENTIFIED BY {}", db::account(&user, &host), db::literal(&password));
+                self.change(Change { back, ..Change::new(sql, Some(Expect::Users)) });
             }
             Dialog::Grant { user, host, access, database } => {
                 if let Some(sql) = grant_sql(access, &database, &user, &host) {
-                    self.exec(None, sql, Some(Expect::Users));
+                    self.change(Change { back, ..Change::new(sql, Some(Expect::Users)) });
                 }
             }
             Dialog::NewDatabase { name, .. } => {
                 let name = name.trim();
                 if !name.is_empty() {
-                    self.exec(None, format!("CREATE DATABASE {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", db::ident(name)), None);
+                    let sql = format!("CREATE DATABASE {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", db::ident(name));
+                    self.change(Change { back, ..Change::new(sql, None) });
                 }
             }
             Dialog::Confirm { sql, db, query, expect, .. } => {
                 if query {
-                    self.sql_running = true;
-                    self.send(Request::Query { db, sql });
+                    self.send_query(db, sql);
                 } else {
                     // What was just removed is no longer selected.
                     if sql.starts_with("DROP DATABASE") {
@@ -2056,23 +2168,16 @@ impl DbView {
     }
 }
 
-/// A "recent queries" button; the one picked.
-fn history_menu(ui: &mut Ui, history: &[String], t: &Strings) -> Option<String> {
-    let mut picked = None;
-    let button = ui.add_enabled(!history.is_empty(), egui::Button::new("🕘").frame_when_inactive(false)).on_hover_text(t.db_history);
-    egui::Popup::menu(&button).width(420.0).show(|ui| {
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-            for q in history.iter().take(40) {
-                let line: String = q.split_whitespace().collect::<Vec<_>>().join(" ");
-                let short: String = if line.chars().count() > 70 { format!("{}…", line.chars().take(70).collect::<String>()) } else { line };
-                if ui.add(egui::Button::new(egui::RichText::new(short).monospace().size(12.0)).frame_when_inactive(false)).on_hover_text(q.as_str()).clicked() {
-                    picked = Some(q.clone());
-                    ui.close();
-                }
-            }
+/// SQL to be run, laid out and colored, in a box that scrolls when long.
+fn sql_box(ui: &mut Ui, theme: &Theme, sql: &str) {
+    Frame::NONE.fill(theme.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        egui::ScrollArea::vertical().id_salt("db-sql-box").max_height(320.0).show(ui, |ui| {
+            let mut job = super::sql::highlight(&super::sql::format(sql), theme, &FontId::monospace(13.0));
+            job.wrap.max_width = ui.available_width();
+            ui.add(egui::Label::new(job).selectable(true));
         });
     });
-    picked
 }
 
 /// A password field with an eye to show it.

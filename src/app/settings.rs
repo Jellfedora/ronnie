@@ -524,7 +524,7 @@ impl App {
             // The forward's ssh may ask for the host's password or key: in the window.
             #[cfg(unix)]
             if let (Some(pid), Some(h)) = (pid, &host) {
-                self.askpass.allow_interactive(pid, h.id, &h.name, h.uses_saved_password());
+                self.askpass.allow_interactive(pid, h);
             }
         }
         if delete {
@@ -830,7 +830,8 @@ impl App {
                 // Required for the "saved password" method; optional with a key (servers asking for both).
                 let password_mode = d.auth_method() == SshAuth::Password;
                 if password_mode || d.auth_method() == SshAuth::Key {
-                    label(ui, t.password);
+                    // With a key: its passphrase, typed when ssh unlocks it (or a server's password).
+                    label(ui, if password_mode { t.password } else { t.key_password });
                     ui.vertical(|ui| {
                         let hint = if d.password_saved && !editor.password_changed { "••••••••" } else if password_mode { "" } else { t.optional };
                         ui.horizontal(|ui| {
@@ -1064,6 +1065,7 @@ impl App {
                     (SettingsTab::Profiles, "▣", t.manage_profiles),
                     (SettingsTab::Ssh, "🖧", t.ssh_tab),
                     (SettingsTab::ConfigFile, "{ }", t.config_nav),
+                    (SettingsTab::Logs, "☰", t.logs_nav),
                 ];
                 for (tab, icon, label) in pages {
                     if nav_item(ui, &theme, icon, label, self.settings_tab == tab) {
@@ -1089,6 +1091,7 @@ impl App {
                     SettingsTab::Profiles => (t.manage_profiles, t.sub_profiles),
                     SettingsTab::Ssh => (t.ssh_tab, t.sub_ssh),
                     SettingsTab::ConfigFile => (t.config_file, t.sub_config),
+                    SettingsTab::Logs => (t.logs_nav, t.sub_logs),
                     SettingsTab::About => (t.about, t.sub_about),
                 };
                 // Title and subtitle, with the close button at the right.
@@ -1107,6 +1110,7 @@ impl App {
                     let height = body.height();
                     match self.settings_tab {
                         SettingsTab::ConfigFile => self.config_editor_ui(ui, t),
+                        SettingsTab::Logs => self.logs_ui(ui, t, &theme),
                         SettingsTab::Profiles => self.profiles_ui(ui, t),
                         SettingsTab::Ssh => self.ssh_settings_ui(ui, t),
                         SettingsTab::About => {
@@ -1129,10 +1133,15 @@ impl App {
         if self.settings_tab != SettingsTab::Shortcuts {
             self.shortcut_capture = None;
         }
+        // Read again the next time the page opens.
+        if self.settings_tab != SettingsTab::Logs {
+            self.logs = None;
+        }
         if close || modal.should_close() {
             self.settings_dialog = false;
             self.shortcut_capture = None;
             self.editor = None;
+            self.logs = None;
             self.profile_names.clear();
             self.profile_error = None;
             self.focus_terminal = true;
@@ -1185,6 +1194,11 @@ impl App {
             divider(ui, theme);
             setting_row(ui, theme, t.metal_guard, Some(t.metal_guard_desc), |ui| {
                 toggle(ui, theme, &mut picked.metal_guard);
+            });
+        });
+        card(ui, theme, Some(t.set_databases), |ui| {
+            setting_row(ui, theme, t.db_confirm_changes, Some(t.db_confirm_changes_desc), |ui| {
+                toggle(ui, theme, &mut picked.db_confirm_changes);
             });
         });
         card(ui, theme, Some(t.set_notifications), |ui| {
@@ -1448,6 +1462,74 @@ impl App {
     }
 
     /// The config file, editable as JSON. Saving validates it first: a mistake is reported, never written.
+    /// The log (ronnie.log), newest at the bottom: copy it for a bug report, or clear it.
+    pub(super) fn logs_ui(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme) {
+        use chrono::TimeZone as _;
+        let entries = self.logs.get_or_insert_with(crate::log::entries);
+        ui.label(egui::RichText::new(t.logs_hint).size(13.0).color(theme.text_muted));
+        ui.add_space(6.0);
+        let path = crate::log::log_path();
+        ui.horizontal(|ui| {
+            if let Some(path) = &path {
+                let label = egui::RichText::new(path.display().to_string()).monospace().size(12.0).color(theme.text_muted);
+                ui.add_sized(Vec2::new(EDITOR_WIDTH - 200.0, 20.0), egui::Label::new(label).truncate()).on_hover_text(path.display().to_string());
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let exists = path.as_ref().is_some_and(|p| p.exists());
+                if ui.add_enabled(exists, egui::Button::new(t.reveal_file)).clicked() {
+                    if let Some(path) = &path {
+                        config::reveal(path);
+                    }
+                }
+            });
+        });
+        ui.add_space(6.0);
+
+        let time = |secs: i64| chrono::Local.timestamp_opt(secs, 0).single().map(|d| d.format("%d/%m/%Y %H:%M:%S").to_string()).unwrap_or_default();
+        let font = egui::FontId::new(12.5, egui::FontFamily::Name("mono".into()));
+        let row_height = ui.fonts_mut(|f| f.row_height(&font)) + 2.0;
+        let frame = Frame::new().fill(theme.bg).corner_radius(6.0).inner_margin(8.0).stroke(Stroke::new(1.0, theme.tab_hover));
+        frame.show(ui, |ui| {
+            if entries.is_empty() {
+                ui.label(egui::RichText::new(t.logs_empty).size(13.0).color(theme.text_muted));
+                return;
+            }
+            egui::ScrollArea::both().max_height(ui.available_height() - 50.0).auto_shrink(false).stick_to_bottom(true).show_rows(ui, row_height, entries.len(), |ui, rows| {
+                for entry in &entries[rows] {
+                    let mut job = egui::text::LayoutJob::default();
+                    let stamp = entry.time.map(time).unwrap_or_default();
+                    job.append(&format!("{stamp:<19}  "), 0.0, egui::TextFormat::simple(font.clone(), theme.text_muted));
+                    let color = if entry.error { theme.ansi[1] } else { theme.fg };
+                    job.append(&entry.text, 0.0, egui::TextFormat::simple(font.clone(), color));
+                    ui.add(egui::Label::new(job).extend());
+                }
+            });
+        });
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let clear = egui::Button::new(egui::RichText::new(t.logs_clear).size(14.0).color(theme.ansi[1]))
+                    .stroke(Stroke::new(1.0, theme.ansi[1].gamma_multiply(0.7)))
+                    .fill(Color32::TRANSPARENT)
+                    .min_size(Vec2::new(0.0, 30.0));
+                if ui.add_enabled(!entries.is_empty(), clear).clicked() {
+                    match crate::log::clear() {
+                        Ok(()) => entries.clear(),
+                        Err(e) => self.error = Some(format!("{e:#}")),
+                    }
+                }
+                if ui.add_enabled(!entries.is_empty(), egui::Button::new(egui::RichText::new(t.copy).size(14.0)).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    let text: Vec<String> = entries.iter().map(|e| format!("{}  {}{}", e.time.map(time).unwrap_or_default(), if e.error { "ERROR " } else { "" }, e.text)).collect();
+                    ui.ctx().copy_text(text.join("\n"));
+                }
+                if ui.add(egui::Button::new(egui::RichText::new(t.logs_refresh).size(14.0)).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    *entries = crate::log::entries();
+                }
+            });
+        });
+    }
+
     pub(super) fn config_editor_ui(&mut self, ui: &mut Ui, t: &Strings) {
         let current = self.config.to_json();
         let editor = self.editor.get_or_insert_with(|| ConfigEditor::new(current.clone()));

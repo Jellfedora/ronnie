@@ -142,6 +142,8 @@ pub enum Event {
     Query { results: Vec<QueryResult>, elapsed: Duration, error: Option<String> },
     /// A change went through; it changed this many rows. `tag`: the Exec's (0 after an import).
     Done { affected: u64, tag: u32 },
+    /// A change (Exec) refused by the server, with its `tag`.
+    Failed { error: String, tag: u32 },
     /// How far an export or import went (0 to 1), and what it is on.
     Progress { fraction: f32, text: String },
     /// An export or import finished: what it did, or why it stopped (CANCELLED: the user stopped it).
@@ -1087,8 +1089,11 @@ async fn handle(conn: &mut Conn, request: Request, emit: &Emitter) -> mysql_asyn
             if let Some(db) = db.filter(|d| !d.is_empty()) {
                 conn.query_drop(format!("USE {}", ident(&db))).await?;
             }
-            conn.query_drop(sql).await?;
-            emit.send(Event::Done { affected: conn.affected_rows(), tag });
+            match conn.query_drop(sql).await {
+                Ok(()) => emit.send(Event::Done { affected: conn.affected_rows(), tag }),
+                Err(e) if is_lost(&e) => return Err(e),
+                Err(e) => emit.send(Event::Failed { error: e.to_string(), tag }),
+            }
         }
         Request::Users => {
             let users: Vec<(String, String)> = conn.query("SELECT User, Host FROM mysql.user ORDER BY User, Host").await?;
@@ -1346,5 +1351,33 @@ mod tests {
         assert_eq!(results[0].columns, ["un", "rien"]);
         assert_eq!(results[0].rows[0], vec![Cell::Text("1".into()), Cell::Null]);
         assert_eq!(results[1].rows[0], vec![Cell::Text("deux".into())]);
+    }
+
+    /// Needs a local MariaDB/MySQL server (like `local_server`).
+    #[test]
+    #[ignore]
+    fn refused_change_tells_its_tag() {
+        let target = Target { host: "localhost".into(), port: 3306, user: std::env::var("USER").unwrap_or_default(), password: None, database: None, tunnel: None };
+        let ctx = egui::Context::default();
+        let conn = Connection::open(&ctx, target);
+        conn.send(Request::Exec { db: None, sql: "UPDATE no_such_db.no_such_table SET a = 1".into(), tag: 7 });
+        conn.send(Request::Exec { db: None, sql: "DO 1".into(), tag: 8 });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (mut failed, mut done) = (None, None);
+        while (failed.is_none() || done.is_none()) && Instant::now() < deadline {
+            for e in conn.poll() {
+                match e {
+                    Event::Failed { tag, error } => failed = Some((tag, error)),
+                    Event::Done { tag, .. } => done = Some(tag),
+                    Event::Closed(e) | Event::Error(e) => panic!("{e}"),
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (tag, error) = failed.expect("failed");
+        assert_eq!(tag, 7);
+        assert!(!error.is_empty());
+        assert_eq!(done, Some(8), "the connection goes on after a refused change");
     }
 }

@@ -2,6 +2,26 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.10.0] - 2026-09-29
+
+### Nouveautés
+
+- **Vue git d'un pane** : dans un dossier suivi par git, un bouton de branche dans la barre du pane affiche, à la place du terminal, les **fichiers modifiés** (M, A, D, R, U) et, pour celui choisi, sa version du dernier commit et sa version actuelle **côte à côte**, colorées, les changements en rouge et vert. Défilement horizontal, séparateurs à glisser pour régler les largeurs, **mini-carte** du fichier façon VS Code (cliquer ou glisser pour s'y rendre), ↑ ↓ d'une modification à l'autre. En lecture seule.
+- **Commandes au démarrage d'un pane** (clic droit ou ⚙ > Commandes au démarrage…) : une commande par ligne (`cd ~/projet`, `nvm use 20`, `npm run dev`…), tapées quand le terminal s'ouvre, une fois son invite affichée. Le bouton ▶ **relance** le terminal et les tape à nouveau. Enregistrées avec la session et les profils.
+- **Bouton ⚙ sur chaque pane** : le menu du clic droit, sans avoir à y penser.
+- **Rouvrir un terminal fermé** : un pane renommé (ou avec des commandes au démarrage) qu'on ferme reste disponible dans le menu du pane > Rouvrir un terminal fermé, avec son dossier, son historique, ce qu'il affichait et ses commandes.
+- Bases de données :
+  - Chaque modification faite via l'interface (cellule, ligne, colonne, table, compte…) **montre la requête SQL** qu'elle va exécuter, à valider ; Annuler revient au formulaire. Désactivable dans Réglages > Général.
+  - **Coloration syntaxique** du SQL (éditeur, champ au-dessus des tables, confirmations) et bouton **Formater** (⌘ ⇧ F) : une clause par ligne, mots-clés en majuscules.
+  - **Historique** complet : les requêtes tapées et les modifications faites via l'interface, avec la date, la base, la durée et le résultat (ou l'erreur) ; recherche, rechargement d'un clic, « Vider l'historique ». Les mots de passe des comptes n'y sont pas écrits.
+- Réglages > **Journal** : ce que Ronnie a noté (démarrages, relances, erreurs), avec les dates, à copier pour un rapport de bug ou à vider.
+
+### Corrections
+
+- Linux (Debian…) avec bash : le terminal local charge `~/.bashrc` comme le terminal du système (invite colorée, `ls` en couleur, alias), l'**autocomplétion des chemins** fonctionne, chaque terminal garde son historique et les fins de longues commandes sont notifiées.
+- SSH avec un fichier de clé : le mot de passe enregistré sert aussi de **passphrase** de la clé, dans le terminal comme dans la vue fichiers (elle était redemandée à chaque connexion).
+- Redémarrage après une mise à jour : la nouvelle version n'est lancée qu'une fois l'ancienne fermée, et le bouton ferme bien toute l'application même cliqué depuis une autre fenêtre. Chaque étape est notée dans le journal.
+
 ## [0.9.1] - 2026-09-28
 
 ### Changements

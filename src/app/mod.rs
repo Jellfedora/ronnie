@@ -5,7 +5,7 @@ use egui::{
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -22,8 +22,10 @@ mod complete;
 mod dbview;
 mod editor;
 mod files;
+mod git;
 mod guard;
 mod perms;
+mod sql;
 mod popups;
 mod viewer;
 mod settings;
@@ -75,6 +77,10 @@ pub struct Tab {
     histories: HashMap<PaneId, Uuid>,
     /// Names given to panes.
     names: HashMap<PaneId, String>,
+    /// Commands typed in panes when they start (see `Layout::Pane::startup`), and the panes waiting
+    /// for their shell's prompt to get them (since when).
+    startup: HashMap<PaneId, String>,
+    startup_due: HashMap<PaneId, Instant>,
     /// SSH panes whose connection ended: kept on screen with their last output until reconnected or closed.
     dead: std::collections::HashSet<PaneId>,
     /// Panes whose shell starts the first time the tab is shown: restoring many tabs at once
@@ -84,6 +90,8 @@ pub struct Tab {
     /// terminals.
     files: Option<Box<files::FileManager>>,
     show_files: bool,
+    /// Local panes showing their repository's changes instead of their terminal.
+    git: HashMap<PaneId, Box<git::GitView>>,
     /// Database server this tab browses: its view is shown instead of the terminals (⌘ E switches).
     db: Option<Uuid>,
     db_view: Option<Box<dbview::DbView>>,
@@ -102,7 +110,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, git: HashMap::new(), done: None, db: None, db_view: None, show_db: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -118,7 +126,12 @@ impl Tab {
 
     fn layout_of(&self, node: &Node) -> Layout {
         match node {
-            Node::Leaf(id) => Layout::Pane { cwd: self.cwds.get(id).cloned(), history: self.histories.get(id).copied(), name: self.names.get(id).cloned() },
+            Node::Leaf(id) => Layout::Pane {
+                cwd: self.cwds.get(id).cloned(),
+                history: self.histories.get(id).copied(),
+                name: self.names.get(id).cloned(),
+                startup: self.startup.get(id).cloned(),
+            },
             Node::Split { axis, ratio, a, b } => Layout::Split {
                 axis: *axis,
                 ratio: *ratio,
@@ -133,6 +146,18 @@ impl Tab {
         crate::shell::history_path(*self.histories.entry(id).or_insert_with(Uuid::new_v4))
     }
 
+    /// Pane `id` as saved, when worth reopening once closed: named or with startup commands, in a
+    /// local tab (an SSH or database tab's panes belong to it).
+    fn closed_pane(&mut self, id: PaneId) -> Option<Layout> {
+        if self.ssh.is_some() || self.db.is_some() || !(self.names.contains_key(&id) || self.startup.contains_key(&id)) {
+            return None;
+        }
+        if let Some(cwd) = self.panes.get(&id).and_then(Terminal::cwd) {
+            self.cwds.insert(id, cwd);
+        }
+        Some(self.layout_of(&Node::Leaf(id)))
+    }
+
     fn title(&self) -> &str {
         self.name.as_deref().or_else(|| self.panes.get(&self.focused)?.title()).unwrap_or("Terminal")
     }
@@ -144,6 +169,8 @@ impl Tab {
         }
         self.pending.retain(|p| *p != id);
         self.dead.remove(&id);
+        self.startup.remove(&id);
+        self.startup_due.remove(&id);
         // Hand focus to the pane that visually takes its place.
         let next = [Direction::Left, Direction::Up, Direction::Right, Direction::Down]
             .into_iter()
@@ -213,6 +240,8 @@ pub struct App {
     config: Config,
     /// Recently closed tabs, most recent last.
     closed: Vec<SessionTab>,
+    /// Named panes closed (see `Session::closed_panes`), most recent last.
+    closed_panes: Vec<Layout>,
     /// What was last written to disk, to skip identical writes.
     saved_config: Config,
     saved_session: Session,
@@ -228,6 +257,8 @@ pub struct App {
     settings_tab: SettingsTab,
     /// Text of the config file editor while it is shown.
     editor: Option<ConfigEditor>,
+    /// The log's lines while its page is shown (read when it opens, or on "Refresh").
+    logs: Option<Vec<crate::log::Entry>>,
     /// SSH host being created or edited.
     host_editor: Option<HostEditor>,
     /// Database connection being created or edited.
@@ -321,6 +352,8 @@ pub struct App {
     pane_drag: Option<PaneId>,
     /// Pane being renamed: its id, the name typed, whether the field was just opened.
     pane_rename: Option<(PaneId, String, bool)>,
+    /// A pane's startup commands being edited: in which window and tab, and the text typed.
+    startup_edit: Option<(egui::ViewportId, usize, PaneId, String)>,
     /// Notices in the window's corner, and where they were drawn (for the hover).
     toasts: Vec<Toast>,
     toast_rects: Vec<Rect>,
@@ -606,6 +639,7 @@ enum SettingsTab {
     Profiles,
     Ssh,
     ConfigFile,
+    Logs,
     Shortcuts,
     About,
 }
@@ -725,6 +759,7 @@ impl App {
             tab_grab: None,
             config: Config::default(),
             closed: Vec::new(),
+            closed_panes: Vec::new(),
             saved_config: Config::default(),
             saved_session: Session::default(),
             config_writable: true,
@@ -735,6 +770,7 @@ impl App {
             settings_dialog: false,
             settings_tab: SettingsTab::General,
             editor: None,
+            logs: None,
             host_editor: None,
             db_editor: None,
             local_db: crate::db::local_server(),
@@ -765,6 +801,7 @@ impl App {
             guard_confirm: None,
             pane_drag: None,
             pane_rename: None,
+            startup_edit: None,
             toasts: Vec::new(),
             toast_rects: Vec::new(),
             path_cache: HashMap::new(),
@@ -828,6 +865,7 @@ impl App {
         }
         let known = |c: &&SessionTab| c.profile.is_some_and(|id| app.config.profiles.iter().any(|p| p.id == id));
         app.closed = session.closed.iter().filter(known).cloned().collect();
+        app.closed_panes = session.closed_panes.clone();
         app.window = session.window;
         app.restore_tabs(&session.tabs, session.active);
         // The other windows, where they were.
@@ -894,13 +932,14 @@ impl App {
     /// Shells start lazily: see `Tab::pending`.
     fn open_tab(&mut self, state: &TabState, profile: Option<Uuid>) {
         let (mut cwds, mut histories) = (HashMap::new(), HashMap::new());
-        let mut names = HashMap::new();
-        let layout = self.build(&state.layout, &mut cwds, &mut histories, &mut names);
+        let (mut names, mut startup) = (HashMap::new(), HashMap::new());
+        let layout = self.build(&state.layout, &mut cwds, &mut histories, &mut names, &mut startup);
         let mut tab = Tab::new(layout, HashMap::new());
         tab.pending = tab.layout.leaves();
         tab.cwds = cwds;
         tab.histories = histories;
         tab.names = names;
+        tab.startup = startup;
         if let Some(id) = tab.layout.leaves().get(state.focused) {
             tab.focused = *id;
         }
@@ -913,9 +952,9 @@ impl App {
     }
 
     /// Turns a saved layout into a tree with fresh pane ids, collecting each pane's directory.
-    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>, names: &mut HashMap<PaneId, String>) -> Node {
+    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>, names: &mut HashMap<PaneId, String>, startup: &mut HashMap<PaneId, String>) -> Node {
         match layout {
-            Layout::Pane { cwd, history, name } => {
+            Layout::Pane { cwd, history, name, startup: commands } => {
                 let id = self.next_pane;
                 self.next_pane += 1;
                 if let Some(cwd) = cwd {
@@ -927,13 +966,16 @@ impl App {
                 if let Some(name) = name {
                     names.insert(id, name.clone());
                 }
+                if let Some(commands) = commands {
+                    startup.insert(id, commands.clone());
+                }
                 Node::Leaf(id)
             }
             Layout::Split { axis, ratio, a, b } => Node::Split {
                 axis: *axis,
                 ratio: ratio.clamp(0.1, 0.9),
-                a: Box::new(self.build(a, cwds, histories, names)),
-                b: Box::new(self.build(b, cwds, histories, names)),
+                a: Box::new(self.build(a, cwds, histories, names, startup)),
+                b: Box::new(self.build(b, cwds, histories, names, startup)),
             },
         }
     }
@@ -948,6 +990,9 @@ impl App {
         }
         for c in &self.closed {
             c.tab.layout.histories(&mut keep);
+        }
+        for p in &self.closed_panes {
+            p.histories(&mut keep);
         }
         crate::shell::forget_others(&keep.into_iter().collect());
     }
@@ -974,6 +1019,9 @@ impl App {
             match Terminal::local(ctx, tab.cwds.get(&id).map(PathBuf::as_path), launch.as_ref(), history.as_deref(), restore.as_deref()) {
                 Ok(term) => {
                     tab.panes.insert(id, term);
+                    if tab.startup.contains_key(&id) {
+                        tab.startup_due.insert(id, Instant::now());
+                    }
                 }
                 Err(e) => self.error = Some(format!("{e:#}")),
             }
@@ -984,7 +1032,7 @@ impl App {
     /// Lets the ssh processes of tab `index` get their host's saved password from the askpass helper.
     fn allow_ssh_panes(&self, index: usize) {
         #[cfg(unix)]
-        if let Some((tab, host)) = self.tabs.get(index).and_then(|t| Some((t, t.ssh?))) {
+        if let Some((tab, host)) = self.tabs.get(index).and_then(|t| Some((t, self.config.ssh.iter().find(|h| Some(h.id) == t.ssh)?))) {
             for term in tab.panes.values() {
                 if let Some(pid) = term.pid() {
                     self.askpass.allow(pid, host);
@@ -1009,6 +1057,27 @@ impl App {
                 }
                 Err(e) => self.error = Some(format!("{e:#}")),
             }
+        }
+        self.allow_ssh_panes(index);
+        self.focus_terminal = true;
+    }
+
+    /// Starts pane `id` again (a fresh shell, where it was) and types its startup commands once ready.
+    fn relaunch(&mut self, ctx: &egui::Context, index: usize, id: PaneId) {
+        let launch = self.launch_for(index);
+        let Some(tab) = self.tabs.get_mut(index) else { return };
+        let cwd = tab.panes.get(&id).and_then(Terminal::cwd).or_else(|| tab.cwds.get(&id).cloned());
+        let history = tab.history_path(id);
+        match Terminal::local(ctx, cwd.as_deref(), launch.as_ref(), history.as_deref(), None) {
+            Ok(term) => {
+                tab.panes.insert(id, term);
+                tab.dead.remove(&id);
+                tab.pending.retain(|p| *p != id);
+                tab.git.remove(&id);
+                tab.startup_due.insert(id, Instant::now());
+                tab.focused = id;
+            }
+            Err(e) => self.error = Some(format!("{e:#}")),
         }
         self.allow_ssh_panes(index);
         self.focus_terminal = true;
@@ -1055,11 +1124,12 @@ impl App {
             let tunnel = host.as_ref().map(|h| (h.tunnel_command(), h.name.clone()));
             Box::new(dbview::DbView::new(ui.ctx(), &conn, password, tunnel))
         });
+        view.confirm_changes = self.config.settings.db_confirm_changes;
         let dbview::DbAction::None = view.ui(ui, rect, &self.theme, t);
         // A new SSH forward (opened, or opened again): its prompts are answered in the window.
         if let (Some(pid), Some(h)) = (view.take_tunnel_pid(), &host) {
             #[cfg(unix)]
-            self.askpass.allow_interactive(pid, h.id, &h.name, h.uses_saved_password());
+            self.askpass.allow_interactive(pid, h);
             #[cfg(not(unix))]
             let _ = (pid, h);
         }
@@ -1262,7 +1332,7 @@ impl App {
             if slot.viewport == egui::ViewportId::ROOT { main = Some(w) } else { windows.push(w) }
         }
         let main = main.unwrap_or_default();
-        let session = Session { tabs: main.tabs, active: main.active, closed: self.closed.clone(), window: main.window, windows };
+        let session = Session { tabs: main.tabs, active: main.active, closed: self.closed.clone(), closed_panes: self.closed_panes.clone(), window: main.window, windows };
 
         if self.read_only {
             return;
@@ -1587,12 +1657,53 @@ impl App {
     }
 
     fn close_pane(&mut self, index: usize, pane: PaneId) {
+        // Named: kept to be reopened, with what it showed (the last pane: see `close_tab`).
+        if self.tabs.get(index).is_some_and(|t| t.layout.leaves().len() > 1) {
+            self.save_scrollbacks(Some(index), false);
+            if let Some(state) = self.tabs.get_mut(index).and_then(|t| t.closed_pane(pane)) {
+                self.remember_closed_pane(state);
+            }
+        }
         let Some(tab) = self.tabs.get_mut(index) else { return };
         if !tab.remove_pane(pane) {
             self.close_tab(index);
         } else if index == self.active {
             self.focus_terminal = true;
         }
+    }
+
+    /// Keeps a closed pane to be reopened (one of that name replaces an older one).
+    fn remember_closed_pane(&mut self, state: Layout) {
+        let name = |l: &Layout| match l {
+            Layout::Pane { name, .. } => name.clone(),
+            Layout::Split { .. } => None,
+        };
+        let new = name(&state);
+        self.closed_panes.retain(|p| new.is_none() || name(p) != new);
+        self.closed_panes.push(state);
+        if self.closed_panes.len() > config::MAX_CLOSED_PANES {
+            self.closed_panes.remove(0);
+        }
+    }
+
+    /// Opens closed pane `k` again, right of pane `at` of tab `index`.
+    fn reopen_pane(&mut self, ctx: &egui::Context, index: usize, at: PaneId, k: usize) {
+        if k >= self.closed_panes.len() || index >= self.tabs.len() {
+            return;
+        }
+        let state = self.closed_panes.remove(k);
+        let (mut cwds, mut histories, mut names, mut startup) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+        let Node::Leaf(id) = self.build(&state, &mut cwds, &mut histories, &mut names, &mut startup) else { return };
+        let tab = &mut self.tabs[index];
+        tab.layout.split(at, id, Direction::Right);
+        tab.cwds.extend(cwds);
+        tab.histories.extend(histories);
+        tab.names.extend(names);
+        tab.startup.extend(startup);
+        tab.pending.push(id);
+        tab.focused = id;
+        self.start_pending(ctx, index);
+        self.focus_terminal = true;
     }
 
     fn focus_neighbor(&mut self, dir: Direction) {
@@ -1614,7 +1725,15 @@ impl App {
         if let Some(p) = self.config.profiles.iter_mut().find(|p| Some(p.id) == tab.profile) {
             p.tab = state.clone();
         }
-        // Only profiles are worth reopening; a plain terminal is just a new tab.
+        // Only profiles are worth reopening; a plain terminal is just a new tab (its named panes can be
+        // reopened one by one).
+        if tab.profile.is_none() {
+            for id in tab.layout.leaves() {
+                if let Some(state) = tab.closed_pane(id) {
+                    self.remember_closed_pane(state);
+                }
+            }
+        }
         if tab.profile.is_some() {
             self.closed.retain(|c| c.profile != tab.profile);
             self.closed.push(SessionTab { profile: tab.profile, ssh: None, db: None, tab: state });
@@ -2004,12 +2123,17 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, wa
 /// What was clicked in a pane's header strip.
 #[derive(Default)]
 struct HeaderClicks {
+    /// The ⚙ button: the pane's menu (the right-click one) opens under it.
+    gear: Option<egui::Response>,
     /// The strip itself: focus the pane.
     focus: bool,
     reconnect: bool,
+    /// Start the pane again with its startup commands.
+    relaunch: bool,
     search: bool,
     commands: bool,
     files: bool,
+    git: bool,
     /// The strip is being dragged (to move the pane onto another).
     drag_started: bool,
     close: bool,
@@ -2019,9 +2143,9 @@ struct HeaderClicks {
 
 /// What the strip above a pane shows.
 enum Header<'a> {
-    /// A local pane: its working directory (when known and shown), and the local servers announced by
-    /// its program.
-    Local(Option<&'a Path>, &'a [LocalUrl]),
+    /// A local pane: its working directory (when known and shown), the local servers announced by its
+    /// program, and whether it is in a git repository (Some: whether its changes are shown).
+    Local(Option<&'a Path>, &'a [LocalUrl], Option<bool>),
     /// An SSH pane: the host, with a reconnect button.
     Ssh(&'a str),
 }
@@ -2030,7 +2154,7 @@ enum Header<'a> {
 /// host with reconnect (↻) and file manager (📁) icons, plus the saved commands (⚡) and, for local panes,
 /// history search.
 #[allow(clippy::too_many_arguments)]
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
@@ -2061,8 +2185,22 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     }
     right -= 30.0;
     max_w -= 30.0;
+    // The pane's options, for those who don't think of right-clicking.
+    {
+        let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+        let button = egui::Button::new(egui::RichText::new("⚙").size(14.0).color(color)).frame_when_inactive(false).corner_radius(5.0);
+        clicks.gear = Some(ui.put(at, button).on_hover_text(t.pane_options).on_hover_cursor(egui::CursorIcon::PointingHand));
+    }
+    right -= 30.0;
+    max_w -= 30.0;
+    // Startup commands: run again (in a fresh shell).
+    if startup {
+        clicks.relaunch = icon(ui, right, "▶", t.startup_relaunch.to_owned());
+        right -= 30.0;
+        max_w -= 30.0;
+    }
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
-    if let Header::Local(_, urls) = header {
+    if let Header::Local(_, urls, git) = header {
         clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label()));
         right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
@@ -2071,6 +2209,18 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
         right -= 30.0;
         max_w -= 96.0;
+        // In a repository: its changes, in place of the terminal (drawn: no font has a branch).
+        if let Some(open) = git {
+            let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+            let resp = ui.interact(at, egui::Id::new(("pane-git", id)), Sense::click());
+            if open || resp.hovered() {
+                ui.painter().rect_filled(at, 5.0, if open { theme.tab_active } else { theme.tab_hover });
+            }
+            git::paint_branch_icon(ui.painter(), Rect::from_center_size(at.center(), Vec2::splat(15.0)), if open { theme.accent } else { color });
+            clicks.git = resp.on_hover_text(if open { t.git_back } else { t.git_open }).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+            right -= 30.0;
+            max_w -= 30.0;
+        }
         right -= 4.0;
         for url in urls.iter().rev() {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
@@ -2099,12 +2249,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
 
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
-        Header::Local(None, _) if name.is_none() => {
+        Header::Local(None, _, _) if name.is_none() => {
             clicks.focus = resp.clicked();
             return clicks;
         }
-        Header::Local(None, _) => (String::new(), None),
-        Header::Local(Some(cwd), _) => {
+        Header::Local(None, _, _) => (String::new(), None),
+        Header::Local(Some(cwd), _, _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
                 Some(rest) => ("~", rest),
@@ -2293,10 +2443,17 @@ enum PaneAction {
     Insert(PaneId, String),
     /// Open the saved commands menu.
     Commands(PaneId),
+    /// Edit the commands typed when the pane starts.
+    Startup(PaneId),
+    /// Start the pane again, with its startup commands.
+    Relaunch(PaneId),
+    /// Open closed pane k (see `App::closed_panes`) next to this one.
+    Reopen(PaneId, usize),
 }
 
 /// Right-click menu of a terminal pane.
-fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, commands: &[String], action: &mut Option<PaneAction>) {
+#[allow(clippy::too_many_arguments)]
+fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[String], action: &mut Option<PaneAction>) {
     ui.set_min_width(180.0);
     let shortcut = |mac: &str, other: &str| if cfg!(target_os = "macos") { mac.to_owned() } else { other.to_owned() };
     let mut item = |ui: &mut Ui, enabled: bool, label: &str, hint: String, a: PaneAction| {
@@ -2315,6 +2472,23 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     item(ui, true, t.split_left, String::new(), PaneAction::Split(id, Direction::Left));
     ui.separator();
     item(ui, true, t.rename_pane, String::new(), PaneAction::Rename(id));
+    item(ui, true, &format!("▶  {}", t.startup_menu), String::new(), PaneAction::Startup(id));
+    if startup {
+        item(ui, true, t.startup_relaunch, String::new(), PaneAction::Relaunch(id));
+    }
+    // Named panes closed, the latest first.
+    let mut reopen = None;
+    if !closed.is_empty() {
+        ui.menu_button(format!("↺  {}", t.reopen_pane), |ui| {
+            ui.set_min_width(200.0);
+            for (k, name) in closed.iter().enumerate().rev() {
+                if ui.button(name).clicked() {
+                    reopen = Some(PaneAction::Reopen(id, k));
+                    ui.close();
+                }
+            }
+        });
+    }
     if local {
         // An SSH pane's directory is on the server.
         item(ui, true, t.open_location, String::new(), PaneAction::Reveal(id));
@@ -2345,8 +2519,8 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     });
     ui.separator();
     item(ui, true, t.close_pane, shortcuts.close_pane.label(), PaneAction::Close(id));
-    if picked.is_some() {
-        *action = picked;
+    if picked.is_some() || reopen.is_some() {
+        *action = picked.or(reopen);
     }
 }
 
@@ -2474,6 +2648,16 @@ impl App {
                 // SSH host whose saved password can answer prompts in this tab (sudo...).
                 let password_host = self.tabs.get(self.active).and_then(|t| t.ssh).filter(|id| self.config.ssh.iter().any(|h| h.id == *id && h.uses_saved_password()));
                 let saved_commands = self.saved_commands(self.active);
+                // Named panes closed, to reopen in this tab (a local one).
+                let closed_panes: Vec<String> = if self.tabs.get(self.active).is_some_and(|t| t.ssh.is_none() && t.db.is_none()) {
+                    self.closed_panes.iter().map(|p| match p {
+                        Layout::Pane { name: Some(n), .. } => n.clone(),
+                        Layout::Pane { cwd, .. } => cwd.as_ref().and_then(|c| c.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Terminal".into()),
+                        Layout::Split { .. } => String::new(),
+                    }).collect()
+                } else {
+                    Vec::new()
+                };
                 let Some(tab) = self.tabs.get_mut(self.active) else {
                     self.empty_state(ui, rect);
                     return;
@@ -2502,12 +2686,14 @@ impl App {
                 let ssh_label = host.map(|h| format!("{}  ·  {}", h.name, h.address())).unwrap_or_default();
                 let mut pane_action = None;
                 let mut reconnect: Option<Vec<PaneId>> = None;
+                let mut relaunch: Option<PaneId> = None;
+                let mut reopen: Option<(PaneId, usize)> = None;
                 let mut close_dead = None;
                 let mut open_search = None;
                 let mut open_commands = None;
                 let mut open_files = false;
-                // Path suggestions (→ takes one, Alt+↑ ↓ picks): at a local zsh prompt (the shell tells
-                // what is typed), or at a server's usual prompt (read from the screen; the server's files
+                // Path suggestions (→ takes one, Alt+↑ ↓ picks): at a local prompt (zsh tells what is typed,
+                // bash's prompt is read from the screen), or at a server's usual prompt (read from the screen; the server's files
                 // come through a background SFTP session). Checked before the panes handle keys, so these
                 // don't reach the terminal.
                 let mut suggest: Option<(String, String, Vec<(String, bool)>)> = None;
@@ -2620,19 +2806,39 @@ impl App {
                     && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)));
                 for &(id, r) in &rects {
                     let Some(term) = tab.panes.get_mut(&id) else { continue };
+                    // Startup commands, typed once the shell shows its prompt.
+                    if let Some(since) = tab.startup_due.get(&id).copied() {
+                        if term.ready_for_commands(since.elapsed(), local) {
+                            let commands: String = tab.startup.get(&id).map(|c| c.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| format!("{l}\r")).collect()).unwrap_or_default();
+                            term.type_text(&commands);
+                            tab.startup_due.remove(&id);
+                        } else if since.elapsed() > Duration::from_secs(60) {
+                            tab.startup_due.remove(&id);
+                        } else {
+                            ui.ctx().request_repaint_after(Duration::from_millis(100));
+                        }
+                    }
                     // Local panes show their directory (optional); SSH panes their host and a reconnect button.
                     // The strip also appears, even with directories hidden, when the program announced a local server.
                     let urls = if local { term.local_urls(ui.ctx()).to_vec() } else { Vec::new() };
+                    // The repository of a local pane's folder, if any.
+                    let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::repo_root) } else { None };
+                    let git_open = tab.git.contains_key(&id);
                     // Split: always a strip, to drag the pane by.
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split {
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
-                        let header = if local { Header::Local(cwd.as_deref(), &urls) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
+                        let git_state = (repo.is_some() || git_open).then_some(git_open);
+                        let header = if local { Header::Local(cwd.as_deref(), &urls, git_state) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.rename {
                             self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
+                        }
+                        if let Some(gear) = &clicks.gear {
+                            let (can_copy, startup) = (term.has_selection(), tab.startup.contains_key(&id));
+                            egui::Popup::menu(gear).show(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, &mut pane_action));
                         }
                         // Renaming: the name is typed in the strip itself.
                         if let Some((_, text, fresh)) = self.pane_rename.as_mut().filter(|(p, _, _)| *p == id) {
@@ -2674,25 +2880,46 @@ impl App {
                         if clicks.files {
                             open_files = true;
                         }
+                        if clicks.git {
+                            if git_open {
+                                tab.git.remove(&id);
+                                self.focus_terminal = true;
+                            } else if let Some(root) = repo.clone() {
+                                tab.git.insert(id, Box::new(git::GitView::new(root)));
+                            }
+                        }
                         if clicks.focus {
                             term.request_focus(ui);
                         }
                         if clicks.reconnect {
                             reconnect = Some(vec![id]);
                         }
+                        if clicks.relaunch {
+                            relaunch = Some(id);
+                        }
                         body
                     } else {
                         r
                     };
-                    let resp = term.ui(ui, body, &self.theme, &self.fonts);
-                    if resp.secondary_clicked() {
-                        resp.request_focus();
+                    if let Some(view) = tab.git.get_mut(&id) {
+                        // The repository's changes, in place of the terminal.
+                        if view.ui(ui, body, &self.theme, strings) {
+                            tab.git.remove(&id);
+                            self.focus_terminal = true;
+                            tab.focused = id;
+                        }
+                    } else {
+                        let resp = term.ui(ui, body, &self.theme, &self.fonts);
+                        if resp.secondary_clicked() {
+                            resp.request_focus();
+                        }
+                        if resp.has_focus() {
+                            tab.focused = id;
+                        }
+                        let can_copy = term.has_selection();
+                        let startup = tab.startup.contains_key(&id);
+                        resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, &mut pane_action));
                     }
-                    if resp.has_focus() {
-                        tab.focused = id;
-                    }
-                    let can_copy = term.has_selection();
-                    resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, &saved_commands, &mut pane_action));
                     if tab.dead.contains(&id) {
                         let (again, close) = closed_banner(ui, r, &self.theme, strings);
                         if again {
@@ -2714,6 +2941,9 @@ impl App {
                     }
                 }
                 tab.rects = rects;
+                // Views of panes closed meanwhile.
+                let panes = &tab.panes;
+                tab.git.retain(|id, _| panes.contains_key(id));
 
                 // A pane dragged by its strip: the one under the pointer lights up, and they swap places
                 // on release.
@@ -2839,6 +3069,11 @@ impl App {
                         self.focus_terminal = true;
                     }
                     Some(PaneAction::Commands(id)) => open_commands = Some(id),
+                    Some(PaneAction::Startup(id)) => {
+                        self.startup_edit = Some((self.viewport, self.active, id, tab.startup.get(&id).cloned().unwrap_or_default()));
+                    }
+                    Some(PaneAction::Relaunch(id)) => relaunch = Some(id),
+                    Some(PaneAction::Reopen(id, k)) => reopen = Some((id, k)),
                     Some(PaneAction::Reveal(id)) => {
                         if let Some(dir) = tab.panes.get(&id).and_then(Terminal::cwd) {
                             config::open_folder(&dir);
@@ -2862,6 +3097,12 @@ impl App {
                 }
                 if let Some(panes) = reconnect {
                     self.reconnect(ui.ctx(), self.active, &panes);
+                }
+                if let Some(id) = relaunch {
+                    self.relaunch(ui.ctx(), self.active, id);
+                }
+                if let Some((id, k)) = reopen {
+                    self.reopen_pane(ui.ctx(), self.active, id, k);
                 }
             });
 
@@ -2909,6 +3150,7 @@ impl App {
         self.confirm_close_window(ui.ctx());
         self.paste_confirm_window(ui.ctx());
         self.guard_window(ui.ctx());
+        self.startup_window(ui.ctx());
         if dialogs_here {
             self.confirm_reset_window(ui.ctx());
             self.link_confirm_window(ui.ctx());

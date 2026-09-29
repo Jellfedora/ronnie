@@ -3,7 +3,9 @@
 //!
 //! zsh: ZDOTDIR points to Ronnie's startup files, which load the user's usual ones (~/.zshenv,
 //! ~/.zprofile, ~/.zshrc, ~/.zlogin) and then switch HISTFILE to the terminal's file.
-//! bash: HISTFILE is set in the environment (kept unless ~/.bashrc overrides it).
+//! bash: started with Ronnie's startup file (--rcfile), which loads the user's usual ones as the
+//! system's terminal does (~/.bashrc on Linux, the login files on macOS), then switches HISTFILE to the
+//! terminal's file and marks commands (OSC 133).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -61,11 +63,11 @@ fn user_shell() -> Option<String> {
 }
 
 /// Makes the shell started by `cmd` keep its history in `history`.
-pub fn use_history(cmd: &mut CommandBuilder, history: &Path) {
+fn use_history(cmd: &mut CommandBuilder, history: &Path) {
     match user_shell().as_deref() {
         Some("zsh") => {
             let Some(dir) = crate::config::config_dir().map(|d| d.join("shell").join("zsh")) else { return };
-            if write_files(&dir).is_err() {
+            if write_files(&dir, &ZSH_FILES).is_err() {
                 return;
             }
             let user_dir = std::env::var_os("ZDOTDIR").or_else(|| std::env::var_os("HOME")).unwrap_or_default();
@@ -78,10 +80,37 @@ pub fn use_history(cmd: &mut CommandBuilder, history: &Path) {
     }
 }
 
-/// Writes the zsh startup files, only when they changed.
-fn write_files(dir: &Path) -> std::io::Result<()> {
+const BASH_FILES: [(&str, &str); 1] = [("bashrc", include_str!("bashrc"))];
+
+/// The command starting a local terminal's shell: the user's shell, with Ronnie's integration for zsh
+/// and bash, and its own history in `history`.
+pub fn local_command(history: Option<&Path>) -> CommandBuilder {
+    if user_shell().as_deref() == Some("bash") {
+        if let (Some(dir), Ok(shell)) = (crate::config::config_dir().map(|d| d.join("shell").join("bash")), std::env::var("SHELL")) {
+            if write_files(&dir, &BASH_FILES).is_ok() {
+                let mut cmd = CommandBuilder::new(shell);
+                cmd.args([std::ffi::OsStr::new("--rcfile"), dir.join("bashrc").as_os_str(), std::ffi::OsStr::new("-i")]);
+                if cfg!(target_os = "macos") {
+                    cmd.env("RONNIE_BASH_LOGIN", "1");
+                }
+                if let Some(history) = history {
+                    cmd.env("RONNIE_HISTFILE", history);
+                }
+                return cmd;
+            }
+        }
+    }
+    let mut cmd = CommandBuilder::new_default_prog();
+    if let Some(history) = history {
+        use_history(&mut cmd, history);
+    }
+    cmd
+}
+
+/// Writes startup files, only when they changed.
+fn write_files(dir: &Path, files: &[(&str, &str)]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    for (name, content) in ZSH_FILES {
+    for &(name, content) in files {
         let path = dir.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(content) {
             std::fs::write(&path, content)?;

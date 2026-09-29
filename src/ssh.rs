@@ -24,6 +24,9 @@ const ASKPASS_SAVED_ENV: &str = "RONNIE_ASKPASS_SAVED";
 /// A random id per connection, naming its "already tried" marker (Windows).
 #[cfg(windows)]
 const ASKPASS_NONCE_ENV: &str = "RONNIE_ASKPASS_NONCE";
+/// Set when the host logs in with a key file: the saved password is also its passphrase (Windows).
+#[cfg(windows)]
+const ASKPASS_KEY_ENV: &str = "RONNIE_ASKPASS_KEY";
 pub const CONNECT_TIMEOUT_SECS: u32 = 10;
 
 /// How ssh logs in to a host.
@@ -38,7 +41,8 @@ pub enum SshAuth {
     Ask,
     /// The server's questions (one-time code, two-factor...), answered at each connection.
     Interactive,
-    /// A private key file (and, optionally, a saved password for servers that also ask for one).
+    /// A private key file (and, optionally, a saved password: the key's passphrase, or for servers that
+    /// also ask for one).
     Key,
 }
 
@@ -217,6 +221,10 @@ impl SshHost {
                 env.push((ASKPASS_NONCE_ENV.to_owned(), Uuid::new_v4().to_string()));
                 #[cfg(windows)]
                 env.push((ASKPASS_SAVED_ENV.to_owned(), "1".to_owned()));
+                #[cfg(windows)]
+                if self.auth_method() == SshAuth::Key {
+                    env.push((ASKPASS_KEY_ENV.to_owned(), "1".to_owned()));
+                }
             }
         }
         Launch { program: "ssh".to_owned(), args, env }
@@ -237,6 +245,8 @@ impl SshHost {
         }
         launch.args.extend(["-T".to_owned(), "-s".to_owned(), "--".to_owned(), self.host.clone(), "sftp".to_owned()]);
         if let Ok(exe) = std::env::current_exe() {
+            #[cfg(windows)]
+            let key = launch.env.iter().any(|(k, _)| k == ASKPASS_KEY_ENV);
             launch.env.retain(|(k, _)| !k.starts_with("SSH_ASKPASS") && !k.starts_with("RONNIE_ASKPASS"));
             launch.env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
             launch.env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
@@ -253,6 +263,10 @@ impl SshHost {
             #[cfg(windows)]
             if self.uses_saved_password() {
                 launch.env.push((ASKPASS_SAVED_ENV.to_owned(), "1".to_owned()));
+            }
+            #[cfg(windows)]
+            if key {
+                launch.env.push((ASKPASS_KEY_ENV.to_owned(), "1".to_owned()));
             }
         }
         launch
@@ -577,8 +591,9 @@ pub fn saved_password_ids() -> Option<std::collections::HashSet<Uuid>> {
 // Askpass helper.
 
 /// When ssh runs ronnie as its askpass helper, answers the prompt and returns true (the process should
-/// then exit). The saved password answers the first password prompt; anything else (host key
-/// confirmation, a retry after a wrong password, a key passphrase) is asked on the terminal.
+/// then exit). The saved password answers the first password prompt, and with a key file the first
+/// passphrase prompt; anything else (host key confirmation, a retry after a wrong password) is asked on
+/// the terminal.
 pub fn run_askpass() -> bool {
     let Ok(id) = std::env::var(ASKPASS_ENV) else { return false };
     let prompt = std::env::args().nth(1).unwrap_or_default();
@@ -606,14 +621,20 @@ fn saved_answer(id: &str, prompt: &str) -> Option<String> {
     let id: Uuid = id.parse().ok()?;
     std::env::var_os(ASKPASS_SAVED_ENV)?;
     let lower = prompt.to_lowercase();
-    if !lower.contains("password") || lower.contains("passphrase") {
+    let passphrase = is_key_passphrase_prompt(prompt) && std::env::var_os(ASKPASS_KEY_ENV).is_some();
+    if !passphrase && (!lower.contains("password") || lower.contains("passphrase")) {
         return None;
     }
     let nonce: Uuid = std::env::var(ASKPASS_NONCE_ENV).ok()?.parse().ok()?;
-    let marker = std::env::temp_dir().join(format!("ronnie-askpass-{nonce}"));
+    let marker = std::env::temp_dir().join(format!("ronnie-askpass-{nonce}{}", if passphrase { "-key" } else { "" }));
     // create_new: fails if it exists (already tried) and never follows a planted link.
     std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).ok()?;
     load_password(id)
+}
+
+/// ssh's own question to unlock a key file ("Enter passphrase for key '…': "), not a server's.
+pub fn is_key_passphrase_prompt(prompt: &str) -> bool {
+    prompt.trim_start().to_lowercase().starts_with("enter passphrase for key")
 }
 
 #[cfg(unix)]

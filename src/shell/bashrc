@@ -1,0 +1,82 @@
+# Ronnie shell integration for bash (generated, overwritten at each start). bash reads this file instead
+# of its usual ones: it loads them first, as the system's terminal would, then gives this terminal its
+# own history and marks its commands.
+if [[ -n $RONNIE_BASH_LOGIN ]]; then
+  # macOS: terminals start login shells.
+  unset RONNIE_BASH_LOGIN
+  [[ -r /etc/profile ]] && . /etc/profile
+  for _ronnie_f in ~/.bash_profile ~/.bash_login ~/.profile; do
+    [[ -r $_ronnie_f ]] && { . "$_ronnie_f"; break; }
+  done
+  unset _ronnie_f
+else
+  # Linux: like the desktop's terminal, an interactive shell (the colored prompt, ls --color... are
+  # set up in ~/.bashrc).
+  [[ -r /etc/bash.bashrc ]] && . /etc/bash.bashrc
+  [[ -r ~/.bashrc ]] && . ~/.bashrc
+fi
+
+# This terminal's own history, kept across restarts. A new terminal starts from the usual history.
+if [[ -n $RONNIE_HISTFILE ]]; then
+  RONNIE_GLOBAL_HISTFILE=${HISTFILE:-~/.bash_history}
+  if [[ ! -e $RONNIE_HISTFILE ]]; then
+    mkdir -m 700 -p "${RONNIE_HISTFILE%/*}"
+    if [[ -r $RONNIE_GLOBAL_HISTFILE ]]; then cp "$RONNIE_GLOBAL_HISTFILE" "$RONNIE_HISTFILE"; else : > "$RONNIE_HISTFILE"; fi
+    # Commands can hold secrets: readable by the user only.
+    chmod 600 "$RONNIE_HISTFILE"
+  fi
+  (( HISTFILESIZE >= 1000 )) 2>/dev/null || HISTFILESIZE=10000
+  (( HISTSIZE >= 1000 )) 2>/dev/null || HISTSIZE=10000
+  history -c
+  HISTFILE=$RONNIE_HISTFILE
+  history -r
+  # The last command already there isn't copied to the usual history again.
+  _ronnie_last=$(HISTTIMEFORMAT= builtin history 1)
+  _ronnie_last=${_ronnie_last#*[0-9] }
+  _ronnie_last=${_ronnie_last# }
+  shopt -s histappend
+fi
+
+# The command line as a URL component (OSC 133 needs no ; nor control characters in it).
+_ronnie_url() {
+  local LC_ALL=C s=${1:0:200} url= c i
+  for (( i = 0; i < ${#s}; i++ )); do
+    c=${s:i:1}
+    if [[ $c == [A-Za-z0-9._~/-] ]]; then url+=$c; else printf -v c '%%%02X' "'$c"; url+=$c; fi
+  done
+  printf '%s' "$url"
+}
+# Command marks (OSC 133): Ronnie sees when a command starts, with its command line, and ends, with
+# its exit status (to notify the end of long commands).
+_ronnie_started() {
+  local line
+  line=$(HISTTIMEFORMAT= builtin history 1)
+  line=${line#*[0-9] }
+  printf '\e]133;C;cmdline_url=%s\a' "$(_ronnie_url "${line# }")"
+}
+_ronnie_prompt() {
+  local status=$?
+  printf '\e]133;D;%s\a\e]133;A\a' "$status"
+  if [[ -n $RONNIE_HISTFILE ]]; then
+    # Written as commands run (nothing lost if the terminal is closed), and also to the usual history,
+    # for other terminals.
+    builtin history -a
+    if [[ $RONNIE_GLOBAL_HISTFILE != "$HISTFILE" ]]; then
+      local last
+      last=$(HISTTIMEFORMAT= builtin history 1)
+      last=${last#*[0-9] }
+      last=${last# }
+      [[ -n ${last//[[:space:]]/} && $last != "$_ronnie_last" ]] && printf '%s\n' "$last" >> "$RONNIE_GLOBAL_HISTFILE"
+      _ronnie_last=$last
+    fi
+  fi
+  return $status
+}
+# First, to get the command's status; the user's own prompt commands follow.
+if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+  PROMPT_COMMAND=(_ronnie_prompt "${PROMPT_COMMAND[@]}")
+else
+  PROMPT_COMMAND="_ronnie_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+fi
+# PS0 (bash 4.4+) is shown once a command line is read, before it runs.
+PS0='$(_ronnie_started)'"$PS0"

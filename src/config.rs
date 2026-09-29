@@ -14,6 +14,8 @@ use crate::pane::Axis;
 
 /// How many closed tabs are remembered.
 pub const MAX_CLOSED: usize = 15;
+/// Named panes closed, kept to be reopened.
+pub const MAX_CLOSED_PANES: usize = 20;
 
 /// A tab's split layout, with what each pane runs.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -28,6 +30,9 @@ pub enum Layout {
         /// Name given to the pane (shown in its strip).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Commands typed in the pane when it starts (one a line), and again when relaunched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        startup: Option<String>,
     },
     Split {
         axis: Axis,
@@ -87,7 +92,7 @@ impl Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout::Pane { cwd: None, history: None, name: None }
+        Layout::Pane { cwd: None, history: None, name: None, startup: None }
     }
 }
 
@@ -388,6 +393,9 @@ pub struct Session {
     /// Most recently closed last.
     #[serde(default)]
     pub closed: Vec<SessionTab>,
+    /// Named panes closed (or with startup commands), most recent last: each a `Layout::Pane`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_panes: Vec<Layout>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
     /// The other windows, with their own tabs.
@@ -477,6 +485,9 @@ pub struct Settings {
     /// Ask before running a well-known destructive command (see `app::guard`).
     #[serde(default = "default_true")]
     pub metal_guard: bool,
+    /// Show the SQL of a change made through the database view (a cell, a row, a column...) before it runs.
+    #[serde(default = "default_true")]
+    pub db_confirm_changes: bool,
 }
 
 pub const NOTIFY_AFTER_SECS: std::ops::RangeInclusive<u64> = 3..=600;
@@ -683,7 +694,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true }
     }
 }
 
@@ -979,8 +990,8 @@ mod tests {
                 layout: Layout::Split {
                     axis: Axis::Horizontal,
                     ratio: 0.3,
-                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()), name: Some("api".into()) }),
-                    b: Box::new(Layout::Pane { cwd: None, history: None, name: None }),
+                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()), name: Some("api".into()), startup: Some("cd /tmp\nnpm run dev".into()) }),
+                    b: Box::new(Layout::Pane { cwd: None, history: None, name: None, startup: None }),
                 },
                 focused: 1,
             },

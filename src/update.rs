@@ -142,18 +142,49 @@ impl Updater {
     /// Starts the (updated) app again; the caller then closes this instance.
     pub fn relaunch(&self) -> Result<()> {
         if let Some(file) = &self.appimage {
-            Command::new(file).spawn()?;
-            return Ok(());
+            return start_after_exit(file, &[]);
         }
         let exe = self.exe.as_deref().context("unknown executable path")?;
         #[cfg(target_os = "macos")]
         if let Some(bundle) = app_bundle(exe) {
-            Command::new("open").arg("-n").arg(bundle).spawn()?;
-            return Ok(());
+            return start_after_exit(Path::new("/usr/bin/open"), &[std::ffi::OsStr::new("-n"), bundle.as_os_str()]);
         }
-        Command::new(exe).spawn()?;
-        Ok(())
+        start_after_exit(exe, &[])
     }
+}
+
+/// Starts `program` once this process has quit (or after 10 s, if it lingers): started while this one
+/// still runs, the new instance could be taken for it (macOS just brings the quitting app forward) or
+/// find its files still in use.
+#[cfg(unix)]
+fn start_after_exit(program: &Path, args: &[&std::ffi::OsStr]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    // Also notes in ronnie.log when it starts the new instance, and how long the old one took to quit.
+    const SCRIPT: &str = r#"pid=$1; log=$2; shift 2; i=0
+while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+[ -n "$log" ] && echo "$(date +%s) INFO restart: starting the new instance after $((i / 10)).$((i % 10)) s" >> "$log"
+exec "$@""#;
+    crate::log::info(&format!("restart: {} will start once this instance quits", program.display()));
+    let log = crate::log::log_path().unwrap_or_default();
+    Command::new("/bin/sh")
+        .args(["-c", SCRIPT, "sh", &std::process::id().to_string()])
+        .arg(log)
+        .arg(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        // Its own process group: a signal to this app's group (its terminal closing...) spares it.
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("cannot start {}", program.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn start_after_exit(program: &Path, args: &[&std::ffi::OsStr]) -> Result<()> {
+    Command::new(program).args(args).spawn()?;
+    Ok(())
 }
 
 /// The latest release, if it is newer than this build and has an archive for this platform.

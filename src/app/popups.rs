@@ -344,8 +344,10 @@ impl App {
         self._instance_lock = None;
         match self.updater.relaunch() {
             Ok(()) => {
+                // The main window, even when asked from another one: closing only that one would leave
+                // this instance running.
                 self.close_confirmed = true;
-                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+                self.ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
             }
             Err(e) => self.error = Some(format!("{} : {e:#}", self.t().update_failed)),
         }
@@ -425,6 +427,72 @@ impl App {
                 self.ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
             }
             CloseRequest::Restart => self.restart(),
+        }
+    }
+
+    /// The commands a pane types when it starts: one a line, saved with the pane (session, profile).
+    pub(super) fn startup_window(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let Some((viewport, index, id, text)) = &mut self.startup_edit else { return };
+        if *viewport != self.viewport {
+            return;
+        }
+        let (index, id) = (*index, *id);
+        // Some(true): save and run, Some(false): save, None: nothing yet; `cancel`: closed as it was.
+        let mut answer = None;
+        let mut cancel = false;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("pane-startup")).frame(frame).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.label(egui::RichText::new(t.startup_title).size(17.0).strong());
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t.startup_hint).size(13.0).color(theme.text_muted));
+            ui.add_space(10.0);
+            Frame::NONE.fill(theme.bg).corner_radius(6.0).inner_margin(8.0).stroke(Stroke::new(1.0, theme.tab_hover)).show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .font(FontId::monospace(13.0))
+                        .frame(Frame::NONE)
+                        .hint_text(t.startup_placeholder)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(6),
+                );
+            });
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let run = egui::Button::new(egui::RichText::new(format!("▶  {}", t.startup_save_run)).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                    if ui.add(run).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.save).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
+                        answer = Some(false);
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+        if cancel || modal.should_close() {
+            self.startup_edit = None;
+            self.focus_terminal = true;
+            return;
+        }
+        let Some(run) = answer else { return };
+        let Some((_, _, _, text)) = self.startup_edit.take() else { return };
+        let commands = text.trim().to_owned();
+        if let Some(tab) = self.tabs.get_mut(index) {
+            if commands.is_empty() {
+                tab.startup.remove(&id);
+            } else {
+                tab.startup.insert(id, commands.clone());
+            }
+        }
+        self.focus_terminal = true;
+        if run && !commands.is_empty() {
+            self.relaunch(ctx, index, id);
         }
     }
 
@@ -647,8 +715,10 @@ impl App {
         self._instance_lock = None;
         match self.updater.relaunch() {
             Ok(()) => {
+                // The main window, even when asked from another one: closing only that one would leave
+                // this instance running.
                 self.close_confirmed = true;
-                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+                self.ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
             }
             Err(e) => self.error = Some(format!("{e:#}")),
         }

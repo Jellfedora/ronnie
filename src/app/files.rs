@@ -329,7 +329,7 @@ impl FileManager {
             Ok(conn) => {
                 #[cfg(unix)]
                 if let Some(pid) = conn.pid {
-                    askpass.allow_interactive(pid, host.id, &host.name, host.uses_saved_password());
+                    askpass.allow_interactive(pid, host);
                 }
                 self.conn = Some(conn);
                 self.status = Status::Connecting;
@@ -827,7 +827,7 @@ impl FileManager {
                         Ok(child) => {
                             #[cfg(unix)]
                             if let Some(askpass) = &askpass {
-                                askpass.allow_interactive(child.id(), host.id, &host.name, host.uses_saved_password());
+                                askpass.allow_interactive(child.id(), &host);
                             }
                             match child.wait_with_output() {
                                 Ok(o) if o.status.success() => Ok(()),
