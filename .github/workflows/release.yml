@@ -16,7 +16,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
+          # The newest image: the app still runs from macOS 11 (LSMinimumSystemVersion).
+          - os: macos-latest
           # Oldest supported runner: the binary then works on older glibc versions too.
           - os: ubuntu-22.04
           - os: windows-latest
