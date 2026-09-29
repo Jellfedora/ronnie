@@ -24,6 +24,7 @@ mod editor;
 mod files;
 mod git;
 mod guard;
+mod issues;
 mod perms;
 mod sql;
 mod popups;
@@ -196,6 +197,45 @@ struct Rename {
 
 /// What belongs to one window: its tabs and what is going on in them. The window being drawn has its
 /// own in `App` itself; the other windows' wait in `App::others`, and are swapped in to be drawn.
+/// A git view or a file manager in a window of its own.
+struct ToolWindow {
+    viewport: egui::ViewportId,
+    title: String,
+    tool: Tool,
+    /// Closing asked while it would interrupt these (transfers, a file being edited): confirm first.
+    confirm: Option<Vec<String>>,
+}
+
+enum Tool {
+    Git(Box<git::GitView>),
+    /// With the SSH host it browses (None: this computer).
+    Files(Box<files::FileManager>, Option<Uuid>),
+}
+
+impl ToolWindow {
+    fn new(title: String, tool: Tool) -> Self {
+        Self { viewport: egui::ViewportId::from_hash_of(("tool-window", Uuid::new_v4())), title: format!("{title} — {APP_TITLE}"), tool, confirm: None }
+    }
+
+    /// What closing it would interrupt.
+    fn busy(&self, t: &Strings) -> Vec<String> {
+        let Tool::Files(fm, _) = &self.tool else { return Vec::new() };
+        let mut busy = Vec::new();
+        if fm.busy() {
+            busy.push(t.files_transfers.to_lowercase());
+        }
+        if fm.editor.as_ref().is_some_and(|e| e.is_dirty()) {
+            busy.push(t.editor_open_tab.to_owned());
+        }
+        busy
+    }
+
+    fn git(view: Box<git::GitView>) -> Self {
+        let repo = view.root().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        Self::new(format!("{repo} · git"), Tool::Git(view))
+    }
+}
+
 #[derive(Default)]
 struct WindowSlot {
     viewport: egui::ViewportId,
@@ -338,6 +378,8 @@ pub struct App {
     /// The window being drawn (the main one is ROOT), and the other windows (see `WindowSlot`).
     viewport: egui::ViewportId,
     others: Vec<WindowSlot>,
+    /// Git views and file managers opened in windows of their own (shared by all the windows).
+    tool_windows: Vec<ToolWindow>,
     /// Windows opened this frame, shown from the next one.
     new_windows: Vec<WindowSlot>,
     /// Where the app-wide dialogs (settings...) show: the window last in front.
@@ -641,6 +683,7 @@ enum SettingsTab {
     ConfigFile,
     Logs,
     Shortcuts,
+    Features,
     About,
 }
 
@@ -794,6 +837,7 @@ impl App {
             ssh_prompt: None,
             viewport: egui::ViewportId::ROOT,
             others: Vec::new(),
+            tool_windows: Vec::new(),
             new_windows: Vec::new(),
             dialog_viewport: egui::ViewportId::ROOT,
             opened_at: None,
@@ -2134,6 +2178,9 @@ struct HeaderClicks {
     commands: bool,
     files: bool,
     git: bool,
+    /// The git view or the file manager, in a window of its own (right click on their button).
+    git_window: bool,
+    files_window: bool,
     /// The strip is being dragged (to move the pane onto another).
     drag_started: bool,
     close: bool,
@@ -2166,7 +2213,16 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     let icon = |ui: &mut Ui, right: f32, text: &str, tip: String| {
         let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
         let button = egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0);
-        ui.put(at, button).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        ui.put(at, button).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
+    };
+    // Right click on the files button: in a window of its own.
+    let files_menu = |resp: &egui::Response, clicks: &mut HeaderClicks| {
+        resp.context_menu(|ui| {
+            if ui.button(t.new_window_open).clicked() {
+                clicks.files_window = true;
+                ui.close();
+            }
+        });
     };
     let mut right = rect.max.x - 4.0;
     // Close, rightmost (it asks first when a program runs in the pane).
@@ -2195,18 +2251,20 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     max_w -= 30.0;
     // Startup commands: run again (in a fresh shell).
     if startup {
-        clicks.relaunch = icon(ui, right, "▶", t.startup_relaunch.to_owned());
+        clicks.relaunch = icon(ui, right, "▶", t.startup_relaunch.to_owned()).clicked();
         right -= 30.0;
         max_w -= 30.0;
     }
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls, git) = header {
-        clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label()));
+        clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label())).clicked();
         right -= 30.0;
-        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
+        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
         right -= 30.0;
         // This folder's files, with the editor.
-        clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
+        let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
+        clicks.files = resp.clicked();
+        files_menu(&resp, &mut clicks);
         right -= 30.0;
         max_w -= 96.0;
         // In a repository: its changes, in place of the terminal (drawn: no font has a branch).
@@ -2217,7 +2275,18 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
                 ui.painter().rect_filled(at, 5.0, if open { theme.tab_active } else { theme.tab_hover });
             }
             git::paint_branch_icon(ui.painter(), Rect::from_center_size(at.center(), Vec2::splat(15.0)), if open { theme.accent } else { color });
-            clicks.git = resp.on_hover_text(if open { t.git_back } else { t.git_open }).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+            let resp = resp.on_hover_text(if open { t.git_back } else { t.git_open }).on_hover_cursor(egui::CursorIcon::PointingHand);
+            clicks.git = resp.clicked();
+            resp.context_menu(|ui| {
+                if ui.button(t.new_window_open).clicked() {
+                    clicks.git_window = true;
+                    ui.close();
+                }
+                if open && ui.button(t.git_back).clicked() {
+                    clicks.git = true;
+                    ui.close();
+                }
+            });
             right -= 30.0;
             max_w -= 30.0;
         }
@@ -2238,12 +2307,14 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         }
     }
     if let Header::Ssh(_) = header {
-        clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned());
+        clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned()).clicked();
         right -= 30.0;
-        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned());
+        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
         right -= 30.0;
         // The server's files, FileZilla style.
-        clicks.files = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
+        let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
+        clicks.files = resp.clicked();
+        files_menu(&resp, &mut clicks);
         max_w -= 96.0;
     }
 
@@ -2466,40 +2537,23 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     item(ui, can_copy, t.copy, shortcut("⌘ C", "Ctrl+Shift+C"), PaneAction::Copy(id));
     item(ui, true, t.paste, shortcut("⌘ V", "Ctrl+Shift+V"), PaneAction::Paste(id));
     ui.separator();
-    item(ui, true, t.split_up, String::new(), PaneAction::Split(id, Direction::Up));
+    // The splits with a shortcut first.
     item(ui, true, t.split_right, shortcuts.split_right.label(), PaneAction::Split(id, Direction::Right));
     item(ui, true, t.split_down, shortcuts.split_down.label(), PaneAction::Split(id, Direction::Down));
     item(ui, true, t.split_left, String::new(), PaneAction::Split(id, Direction::Left));
+    item(ui, true, t.split_up, String::new(), PaneAction::Split(id, Direction::Up));
     ui.separator();
-    item(ui, true, t.rename_pane, String::new(), PaneAction::Rename(id));
-    item(ui, true, &format!("▶  {}", t.startup_menu), String::new(), PaneAction::Startup(id));
-    if startup {
-        item(ui, true, t.startup_relaunch, String::new(), PaneAction::Relaunch(id));
-    }
-    // Named panes closed, the latest first.
-    let mut reopen = None;
-    if !closed.is_empty() {
-        ui.menu_button(format!("↺  {}", t.reopen_pane), |ui| {
-            ui.set_min_width(200.0);
-            for (k, name) in closed.iter().enumerate().rev() {
-                if ui.button(name).clicked() {
-                    reopen = Some(PaneAction::Reopen(id, k));
-                    ui.close();
-                }
-            }
-        });
-    }
     if local {
+        item(ui, true, t.files_open_here, shortcuts.toggle_files.label(), PaneAction::Files(id));
         // An SSH pane's directory is on the server.
         item(ui, true, t.open_location, String::new(), PaneAction::Reveal(id));
-        item(ui, true, &format!("📁  {}", t.files_open_here), shortcuts.toggle_files.label(), PaneAction::Files(id));
     } else {
+        item(ui, true, t.files_open, shortcuts.toggle_files.label(), PaneAction::Files(id));
         item(ui, true, t.reconnect, String::new(), PaneAction::Reconnect(id));
-        item(ui, true, &format!("📁  {}", t.files_open), shortcuts.toggle_files.label(), PaneAction::Files(id));
     }
     ui.separator();
     let mut picked = None;
-    ui.menu_button(format!("⚡  {}", t.commands), |ui| {
+    ui.menu_button(t.commands, |ui| {
         ui.set_min_width(220.0);
         if commands.is_empty() {
             ui.label(egui::RichText::new(t.commands_empty).color(ui.visuals().weak_text_color()));
@@ -2517,7 +2571,25 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
             ui.close();
         }
     });
+    item(ui, true, t.startup_menu, String::new(), PaneAction::Startup(id));
+    if startup {
+        item(ui, true, t.startup_relaunch, String::new(), PaneAction::Relaunch(id));
+    }
     ui.separator();
+    item(ui, true, t.rename_pane, String::new(), PaneAction::Rename(id));
+    // Named panes closed, the latest first.
+    let mut reopen = None;
+    if !closed.is_empty() {
+        ui.menu_button(t.reopen_pane, |ui| {
+            ui.set_min_width(200.0);
+            for (k, name) in closed.iter().enumerate().rev() {
+                if ui.button(name).clicked() {
+                    reopen = Some(PaneAction::Reopen(id, k));
+                    ui.close();
+                }
+            }
+        });
+    }
     item(ui, true, t.close_pane, shortcuts.close_pane.label(), PaneAction::Close(id));
     if picked.is_some() || reopen.is_some() {
         *action = picked.or(reopen);
@@ -2527,6 +2599,90 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
 impl App {
     /// Draws the other windows, each with its state swapped in; closes those that were closed, and adds
     /// those opened meanwhile.
+    /// Draws the git views and file managers opened in windows of their own; closes those closed.
+    fn tool_windows_ui(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let mut k = 0;
+        while k < self.tool_windows.len() {
+            let w = &mut self.tool_windows[k];
+            let builder = egui::ViewportBuilder::default().with_title(w.title.clone()).with_min_inner_size([520.0, 320.0]).with_inner_size([1100.0, 720.0]);
+            let (mut close, mut reconnect) = (false, None);
+            ctx.show_viewport_immediate(w.viewport, builder, |ui, _| {
+                let rect = ui.max_rect();
+                ui.painter().rect_filled(rect, 0.0, theme.bg);
+                match &mut w.tool {
+                    Tool::Git(view) => close = matches!(view.ui(ui, rect, &theme, t, true), Some(git::Exit::Back)),
+                    Tool::Files(fm, host) => match fm.ui(ui, rect, &theme, t, &w.title) {
+                        files::FilesAction::ShowTerminal => close = true,
+                        files::FilesAction::Reconnect => reconnect = *host,
+                        files::FilesAction::None => {}
+                    },
+                }
+                if ui.input(|i| i.viewport().close_requested()) {
+                    close = true;
+                }
+                // Transfers or unsaved changes: "Close anyway?" first.
+                if close && w.confirm.is_none() {
+                    let busy = w.busy(t);
+                    if !busy.is_empty() {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
+                        w.confirm = Some(busy);
+                        close = false;
+                    }
+                } else if close {
+                    // Asked again while the question shows: it stays open until answered.
+                    ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
+                    close = false;
+                }
+                if let Some(busy) = &w.confirm {
+                    let mut answer = None;
+                    let frame = Frame::popup(&ui.ctx().global_style()).inner_margin(20.0).fill(theme.chrome_bg);
+                    let modal = egui::Modal::new(egui::Id::new("tool-close")).frame(frame).show(ui.ctx(), |ui| {
+                        ui.set_width(380.0);
+                        ui.label(egui::RichText::new(t.close_anyway_title).size(17.0).strong());
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(t.close_anyway_body).size(13.5).color(theme.text_muted));
+                        ui.add_space(6.0);
+                        for item in busy {
+                            ui.label(egui::RichText::new(format!("•  {item}")).size(13.0).monospace());
+                        }
+                        ui.add_space(14.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let close = egui::Button::new(egui::RichText::new(t.close).size(13.5).color(Color32::WHITE)).fill(theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0));
+                            if ui.add(close).clicked() {
+                                answer = Some(true);
+                            }
+                            let cancel = ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0)));
+                            cancel.request_focus();
+                            if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                                answer = Some(false);
+                            }
+                        });
+                    });
+                    if modal.should_close() {
+                        answer = Some(false);
+                    }
+                    match answer {
+                        Some(true) => close = true,
+                        Some(false) => w.confirm = None,
+                        None => {}
+                    }
+                }
+            });
+            if let Some(host) = reconnect.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned() {
+                if let Tool::Files(fm, _) = &mut self.tool_windows[k].tool {
+                    fm.connect(&self.ctx, &host, #[cfg(unix)] &self.askpass);
+                }
+            }
+            if close {
+                self.tool_windows.remove(k);
+            } else {
+                k += 1;
+            }
+        }
+    }
+
     fn other_windows(&mut self, ctx: &egui::Context) {
         let mut k = 0;
         while k < self.others.len() {
@@ -2692,6 +2848,7 @@ impl App {
                 let mut open_search = None;
                 let mut open_commands = None;
                 let mut open_files = false;
+                let mut open_files_window = None;
                 // Path suggestions (→ takes one, Alt+↑ ↓ picks): at a local prompt (zsh tells what is typed,
                 // bash's prompt is read from the screen), or at a server's usual prompt (read from the screen; the server's files
                 // come through a background SFTP session). Checked before the panes handle keys, so these
@@ -2880,6 +3037,15 @@ impl App {
                         if clicks.files {
                             open_files = true;
                         }
+                        if clicks.git_window {
+                            // The view shown in the pane moves there, as it was.
+                            if let Some(view) = tab.git.remove(&id).or_else(|| repo.clone().map(|root| Box::new(git::GitView::new(root)))) {
+                                self.tool_windows.push(ToolWindow::git(view));
+                            }
+                        }
+                        if clicks.files_window {
+                            open_files_window = Some(id);
+                        }
                         if clicks.git {
                             if git_open {
                                 tab.git.remove(&id);
@@ -2903,10 +3069,18 @@ impl App {
                     };
                     if let Some(view) = tab.git.get_mut(&id) {
                         // The repository's changes, in place of the terminal.
-                        if view.ui(ui, body, &self.theme, strings) {
-                            tab.git.remove(&id);
-                            self.focus_terminal = true;
-                            tab.focused = id;
+                        match view.ui(ui, body, &self.theme, strings, false) {
+                            Some(git::Exit::Back) => {
+                                tab.git.remove(&id);
+                                self.focus_terminal = true;
+                                tab.focused = id;
+                            }
+                            Some(git::Exit::Window) => {
+                                if let Some(view) = tab.git.remove(&id) {
+                                    self.tool_windows.push(ToolWindow::git(view));
+                                }
+                            }
+                            None => {}
                         }
                     } else {
                         let resp = term.ui(ui, body, &self.theme, &self.fonts);
@@ -3090,6 +3264,9 @@ impl App {
                 if open_files {
                     self.toggle_files(self.active, true);
                 }
+                if let Some(id) = open_files_window {
+                    self.files_window(self.active, id);
+                }
                 if let Some(id) = open_commands {
                     // One popup at a time: the ⚡ menu replaces the search.
                     self.close_search();
@@ -3198,6 +3375,7 @@ impl eframe::App for App {
         }
         self.window_ui(ui);
         self.other_windows(ui.ctx());
+        self.tool_windows_ui(ui.ctx());
 
         // Errors shown to the user also go to ronnie.log, to diagnose them later.
         if self.error != self.logged_error {

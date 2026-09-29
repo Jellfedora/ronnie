@@ -1072,11 +1072,14 @@ impl App {
                         self.settings_tab = tab;
                     }
                 }
-                // "About" at the bottom, apart.
+                // "Features" and "About" at the bottom, apart (drawn upwards: About last).
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(4.0);
                     if nav_item(ui, &theme, "i", t.about, self.settings_tab == SettingsTab::About) {
                         self.settings_tab = SettingsTab::About;
+                    }
+                    if nav_item(ui, &theme, "★", t.features_nav, self.settings_tab == SettingsTab::Features) {
+                        self.settings_tab = SettingsTab::Features;
                     }
                 });
             });
@@ -1092,6 +1095,7 @@ impl App {
                     SettingsTab::Ssh => (t.ssh_tab, t.sub_ssh),
                     SettingsTab::ConfigFile => (t.config_file, t.sub_config),
                     SettingsTab::Logs => (t.logs_nav, t.sub_logs),
+                    SettingsTab::Features => (t.features_nav, t.sub_features),
                     SettingsTab::About => (t.about, t.sub_about),
                 };
                 // Title and subtitle, with the close button at the right.
@@ -1120,6 +1124,9 @@ impl App {
                             });
                         }
                         SettingsTab::Shortcuts => self.shortcuts_ui(ui, t, &mut picked),
+                        SettingsTab::Features => {
+                            egui::ScrollArea::vertical().id_salt("settings-features").max_height(height).auto_shrink([false, false]).show(ui, |ui| features_page(ui, t, &theme));
+                        }
                         SettingsTab::General => {
                             egui::ScrollArea::vertical().id_salt("settings-general").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.general_page(ui, t, &theme, &mut picked));
                         }
@@ -1618,6 +1625,16 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
     if icon == "i" {
         ui.painter().circle_stroke(at, 7.0, Stroke::new(1.3, icon_color));
         ui.painter().text(at + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, "i", FontId::proportional(11.0), icon_color);
+    } else if icon == "★" {
+        // "Features": a five-pointed star, drawn (the font may lack ★).
+        let points = (0..10)
+            .map(|k| {
+                let angle = std::f32::consts::PI * (k as f32 / 5.0 - 0.5);
+                let r = if k % 2 == 0 { 7.5 } else { 3.2 };
+                at + Vec2::new(angle.cos(), angle.sin()) * r + Vec2::new(0.0, 0.5)
+            })
+            .collect();
+        ui.painter().add(egui::Shape::closed_line(points, Stroke::new(1.3, icon_color)));
     } else {
         ui.painter().text(at, Align2::CENTER_CENTER, icon, FontId::proportional(14.0), icon_color);
     }
@@ -1645,6 +1662,25 @@ fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut U
         add(ui);
     });
     ui.add_space(26.0);
+}
+
+/// "Features" page: what Ronnie does, a card per theme, a line per feature.
+fn features_page(ui: &mut Ui, t: &Strings, theme: &Theme) {
+    ui.set_width(ui.available_width() - 12.0);
+    for (title, features) in t.features {
+        card(ui, theme, Some(title), |ui| {
+            for (k, (name, what)) in features.iter().enumerate() {
+                if k > 0 {
+                    divider(ui, theme);
+                }
+                ui.add_space(9.0);
+                ui.label(egui::RichText::new(*name).size(14.0).color(theme.text));
+                ui.add_space(1.0);
+                ui.add(egui::Label::new(egui::RichText::new(*what).size(12.0).color(theme.text_muted)).wrap());
+                ui.add_space(9.0);
+            }
+        });
+    }
 }
 
 /// Thin line between two settings of a card.

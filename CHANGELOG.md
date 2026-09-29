@@ -2,6 +2,26 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.11.0] - 2026-09-29
+
+### Nouveautés
+
+- **Vue git plus complète** :
+  - onglet **Historique** : les commits de la branche (branches et tags en pastilles, auteur, date), avec une recherche ; un commit ouvert montre son message et ses fichiers, chacun comparé côte à côte avec la version d'avant ;
+  - **changer de branche** depuis le nom de la branche en haut de la vue : branches locales et distantes filtrables, création d'une nouvelle branche ;
+  - commits à pousser et à récupérer (↑ ↓) et bouton **fetch** ;
+  - onglet **Issues** GitHub (via le CLI `gh`) : liste ouvertes / fermées / toutes avec recherche, une issue avec ses commentaires, **créer une issue**, commenter, fermer ou rouvrir.
+- **Ouvrir dans une nouvelle fenêtre** (clic droit sur le bouton git ou 📁 d'un panneau) : la vue git ou le gestionnaire de fichiers dans une fenêtre à part, sans restreindre la taille du panneau.
+- Paramètres > **Fonctionnalités** : tout ce que Ronnie sait faire, regroupé par thème.
+
+### Changements
+
+- Menu du clic droit d'un terminal réorganisé : copier-coller, divisions, dossier, commandes, puis le panneau lui-même.
+
+### Corrections
+
+- Fermer un panneau termine tout ce qui y tournait (programme au premier plan comme tâches en arrière-plan), comme la fermeture d'une fenêtre de terminal ; en quittant Ronnie, ce qui n'est pas encore arrêté l'est aussi.
+
 ## [0.10.0] - 2026-09-29
 
 ### Nouveautés

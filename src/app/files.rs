@@ -1886,12 +1886,40 @@ impl App {
         }
     }
 
-    /// Lets every file manager handle its events (transfers go on in background tabs), and remembers
-    /// each host's folders.
+    /// A file manager in a window of its own, opened where pane `pane` of tab `index` is: this computer's
+    /// files, or its server's.
+    pub(super) fn files_window(&mut self, index: usize, pane: PaneId) {
+        let Some(tab) = self.tabs.get(index) else { return };
+        let term = tab.panes.get(&pane);
+        let window = match tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned() {
+            None => {
+                let home = directories::BaseDirs::new().map(|d| d.home_dir().display().to_string()).unwrap_or_else(|| "/".into());
+                let dir = term.and_then(Terminal::cwd).map(|d| d.display().to_string()).unwrap_or(home);
+                let name = Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
+                let mut fm = Box::new(FileManager::local(&dir));
+                fm.ctx = Some(self.ctx.clone());
+                super::ToolWindow::new(name, super::Tool::Files(fm, None))
+            }
+            Some(host) => {
+                let mut fm = Box::new(FileManager::new(&host));
+                fm.connect(&self.ctx, &host, #[cfg(unix)] &self.askpass);
+                fm.follow_terminal(term.and_then(Terminal::reported_cwd));
+                super::ToolWindow::new(host.name.clone(), super::Tool::Files(fm, Some(host.id)))
+            }
+        };
+        self.tool_windows.push(window);
+    }
+
+    /// Lets every file manager handle its events (transfers go on in background tabs and windows), and
+    /// remembers each host's folders.
     pub(super) fn poll_files(&mut self) {
         let t = self.t();
-        for tab in &mut self.tabs {
-            let Some(fm) = &mut tab.files else { continue };
+        let in_tabs = self.tabs.iter_mut().filter_map(|tab| tab.files.as_deref_mut());
+        let in_windows = self.tool_windows.iter_mut().filter_map(|w| match &mut w.tool {
+            super::Tool::Files(fm, _) => Some(&mut **fm),
+            super::Tool::Git(_) => None,
+        });
+        for fm in in_tabs.chain(in_windows) {
             fm.poll(t);
             let (local, remote) = fm.folders();
             if let Some(host) = self.config.ssh.iter_mut().find(|h| Some(h.id) == fm.host) {
