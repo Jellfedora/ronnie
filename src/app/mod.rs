@@ -20,11 +20,15 @@ use crate::update::{self, Updater};
 mod bigtext;
 mod complete;
 mod dbview;
+mod easter;
 mod editor;
 mod files;
+mod game;
 mod git;
 mod guard;
 mod issues;
+mod loading;
+mod motion;
 mod perms;
 mod sql;
 mod popups;
@@ -259,6 +263,10 @@ struct WindowSlot {
     pane_rename: Option<(PaneId, String, bool)>,
     toasts: Vec<Toast>,
     toast_rects: Vec<Rect>,
+    home: Option<String>,
+    game: game::Game,
+    ronnie_show: Option<(PaneId, f64)>,
+    game_folded: bool,
 }
 
 pub struct App {
@@ -394,6 +402,14 @@ pub struct App {
     pane_drag: Option<PaneId>,
     /// Pane being renamed: its id, the name typed, whether the field was just opened.
     pane_rename: Option<(PaneId, String, bool)>,
+    /// The home page (its typing game) is shown instead of the active tab: after a tab closed (with a
+    /// line about it), or from the logo.
+    home: Option<String>,
+    game: game::Game,
+    /// "ronnie" was typed in this pane: its show, since when (see `easter`).
+    ronnie_show: Option<(PaneId, f64)>,
+    /// The sidebar was folded for a round of the game: unfolded after it.
+    game_folded: bool,
     /// A pane's startup commands being edited: in which window and tab, and the text typed.
     startup_edit: Option<(egui::ViewportId, usize, PaneId, String)>,
     /// Notices in the window's corner, and where they were drawn (for the hover).
@@ -846,6 +862,10 @@ impl App {
             pane_drag: None,
             pane_rename: None,
             startup_edit: None,
+            home: None,
+            game: game::Game::default(),
+            ronnie_show: None,
+            game_folded: false,
             toasts: Vec::new(),
             toast_rects: Vec::new(),
             path_cache: HashMap::new(),
@@ -992,6 +1012,7 @@ impl App {
         tab.profile = profile.filter(|id| self.config.profiles.iter().any(|p| p.id == *id));
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
+        self.home = None;
         self.focus_terminal = true;
     }
 
@@ -1153,6 +1174,7 @@ impl App {
         tab.color = color;
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
+        self.home = None;
     }
 
     /// The active tab's database view, filling `rect` (connecting it the first time).
@@ -1198,6 +1220,7 @@ impl App {
         tab.color = color;
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
+        self.home = None;
         self.focus_terminal = true;
     }
 
@@ -1416,16 +1439,25 @@ impl App {
         swap(&mut self.pane_rename, &mut slot.pane_rename);
         swap(&mut self.toasts, &mut slot.toasts);
         swap(&mut self.toast_rects, &mut slot.toast_rects);
+        swap(&mut self.home, &mut slot.home);
+        swap(&mut self.game, &mut slot.game);
+        swap(&mut self.ronnie_show, &mut slot.ronnie_show);
+        swap(&mut self.game_folded, &mut slot.game_folded);
     }
 
     fn save_config(&mut self) {
-        if !self.config_writable || self.config == self.saved_config {
+        // The sidebar folded for a round of the game is saved as it was before.
+        let mut config = self.config.clone();
+        if self.game_folded {
+            config.settings.sidebar_folded = false;
+        }
+        if !self.config_writable || config == self.saved_config {
             return;
         }
         let Some(path) = config::config_path() else { return };
-        match config::save_config_file(&path, &self.config) {
+        match config::save_config_file(&path, &config) {
             Ok(()) => {
-                self.saved_config = self.config.clone();
+                self.saved_config = config;
                 self.config_mtime = config::modified(&path);
             }
             Err(e) => {
@@ -1500,7 +1532,7 @@ impl App {
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         let mut notified = false;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            let shown = i == self.active && !tab.show_files;
+            let shown = i == self.active && self.home.is_none() && !tab.show_files;
             // Taken even when disabled, not to report old commands once enabled.
             let finished: Vec<Finished> = tab.panes.values_mut().flat_map(|term| term.take_finished(ctx)).collect();
             let long = finished.into_iter().filter(|f| settings.notify_commands && f.duration.as_secs() >= settings.notify_after).last();
@@ -1671,6 +1703,8 @@ impl App {
             tab.histories.insert(id, history);
             self.tabs.push(tab);
             self.active = self.tabs.len() - 1;
+            self.home = None;
+        self.home = None;
             self.focus_terminal = true;
         }
     }
@@ -1816,14 +1850,34 @@ impl App {
         if self.active > index || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
         }
+        // Not a neighbour picked at random: the home page, saying what closed.
+        self.go_home(Some(tab.title()));
         self.focus_terminal = true;
     }
 
     fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active = index;
+            self.home = None;
             self.focus_terminal = true;
         }
+    }
+
+    /// The tab shown: none on the home page.
+    fn shown_tab(&self) -> Option<usize> {
+        (self.home.is_none() && self.active < self.tabs.len()).then_some(self.active)
+    }
+
+    /// The home page, with a line about what just closed (none: empty).
+    fn go_home(&mut self, closed: Option<&str>) {
+        let t = self.t();
+        let line = closed.filter(|n| !n.is_empty()).map(|name| {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+            t.home_quips[nanos as usize % t.home_quips.len()].replace("{name}", name)
+        });
+        self.home = Some(line.unwrap_or_default());
+        // The keys go to the game, not to a terminal no longer shown.
+        self.ctx.memory_mut(|m| m.stop_text_input());
     }
 
     fn handle_shortcuts(&mut self, ui: &Ui) {
@@ -1852,6 +1906,10 @@ impl App {
         let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files || (t.db.is_some() && t.show_db));
         let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane);
         // A file open in the file manager's editor: ⌘ F searches it, ⌘ W closes it.
+        // The home page: the tab behind it isn't shown, nothing may act on it.
+        if self.home.is_some() {
+            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar));
+        }
         if let Some(viewer) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.viewer.as_mut()) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
@@ -2016,11 +2074,9 @@ fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, _highlight: Color32)
 
 /// Shown in an SSH pane until the server answers.
 fn paint_connecting(ui: &Ui, pane: Rect, theme: &Theme, t: &Strings, text: &str) {
-    let painter = ui.painter();
-    let dots = ".".repeat(1 + (ui.input(|i| i.time) * 2.5) as usize % 3);
-    let center = pane.center() - Vec2::new(0.0, 20.0);
-    painter.text(center, Align2::CENTER_CENTER, format!("{text}{dots}"), FontId::proportional(15.0), theme.text);
-    painter.text(center + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, t.connecting_hint, FontId::proportional(13.0), theme.text_muted);
+    // Over what the pane showed last time (restored), so that it reads.
+    ui.painter().rect_filled(pane, 0.0, theme.bg.gamma_multiply(0.94));
+    loading::screen(ui, pane, theme, text, None, Some(t.connecting_hint));
 }
 
 /// Wakes the (otherwise idle) UI when config.json is edited in another program, so that the change is
@@ -2109,7 +2165,8 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
 
 /// Startup splash, `t` seconds in: the letters of "Ronnie" drop in one by one, an accent line and the
 /// version appear, then everything fades out. Returns false once it is over.
-fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, warning: &str) -> bool {
+fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, strings: &Strings) -> bool {
+    let warning = strings.alpha_warning;
     const LETTERS: f32 = 0.13; // delay between two letters
     const DROP: f32 = 0.55; // duration of a letter's fall
     const FADE_START: f32 = 3.0;
@@ -2161,7 +2218,41 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, wa
         painter.rect_stroke(box_rect, 8.0, Stroke::new(1.0, theme.ansi[3].gamma_multiply(0.45 * alpha)), egui::StrokeKind::Inside);
         painter.galley(box_rect.center() - galley.size() / 2.0, galley, theme.ansi[3].gamma_multiply(alpha));
     }
+
+    // At the bottom: made with love, the heart beating.
+    let credit = ((t - 1.8) / 0.5).clamp(0.0, 1.0) * fade;
+    if credit > 0.0 {
+        let font = FontId::proportional(11.5);
+        let color = theme.text_muted.gamma_multiply(credit);
+        // Spaced out, like a credit.
+        let spaced = |text: &str| {
+            let mut format = egui::TextFormat::simple(font.clone(), color);
+            format.extra_letter_spacing = 2.0;
+            painter.layout_job(egui::text::LayoutJob::single_section(text.to_owned(), format))
+        };
+        let (before, after) = (spaced(strings.splash_made_with), spaced(strings.splash_by));
+        let heart_w = 14.0;
+        let gap = 7.0;
+        let total = before.size().x + gap + heart_w + gap + after.size().x;
+        let y = screen.max.y - 34.0;
+        let mut x = screen.center().x - total / 2.0;
+        painter.galley(Pos2::new(x, y - before.size().y / 2.0), before.clone(), color);
+        x += before.size().x + gap;
+        let beat = 1.0 + 0.18 * ((t * 7.0).sin().max(0.0)).powi(2);
+        paint_heart(painter, Pos2::new(x + heart_w / 2.0, y), 6.0 * beat, theme.ansi[1].gamma_multiply(credit));
+        x += heart_w + gap;
+        painter.galley(Pos2::new(x, y - after.size().y / 2.0), after, color);
+    }
     true
+}
+
+/// ❤, drawn (the fonts may lack it): two round lobes on a point.
+fn paint_heart(painter: &egui::Painter, c: Pos2, r: f32, color: Color32) {
+    let lobe = r * 0.55;
+    painter.circle_filled(c + Vec2::new(-lobe * 0.9, -r * 0.25), lobe, color);
+    painter.circle_filled(c + Vec2::new(lobe * 0.9, -r * 0.25), lobe, color);
+    let points = vec![c + Vec2::new(-lobe * 1.85, -r * 0.05), c + Vec2::new(lobe * 1.85, -r * 0.05), c + Vec2::new(0.0, r * 1.05)];
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
 
 /// What was clicked in a pane's header strip.
@@ -2735,7 +2826,7 @@ impl App {
                 term.set_allow_clipboard(self.config.settings.clipboard_from_programs);
                 term.process_events(ui.ctx(), &self.theme);
                 // Panes behind the file manager aren't on screen either.
-                term.set_visible(i == self.active && !tab.show_files);
+                term.set_visible(i == self.active && self.home.is_none() && !tab.show_files);
             }
         }
         self.finished_commands(ui.ctx());
@@ -2776,12 +2867,35 @@ impl App {
             ui.ctx().request_repaint_after(Duration::from_secs_f64(SYNC_INTERVAL));
         }
 
+        // Folding and unfolding glide: the width eases between the rail and the sidebar, the sidebar
+        // sliding under the edge, a light running along it.
         let folded = self.config.settings.sidebar_folded;
+        let open = ui.ctx().animate_bool_with_time_and_easing(egui::Id::new("sidebar-open"), !folded, 0.38, motion::in_out_cubic);
+        let width = RAIL_WIDTH + (SIDEBAR_WIDTH - RAIL_WIDTH) * open;
+        let theme = self.theme.clone();
         egui::Panel::left("sidebar")
-            .exact_size(if folded { RAIL_WIDTH } else { SIDEBAR_WIDTH })
+            .exact_size(width)
             .resizable(false)
             .frame(Frame::NONE)
-            .show(ui, |ui| if folded { self.sidebar_rail(ui) } else { self.sidebar(ui) });
+            .show(ui, |ui| {
+                if open <= 0.001 {
+                    return self.sidebar_rail(ui);
+                }
+                if open >= 0.999 {
+                    return self.sidebar(ui);
+                }
+                let panel = ui.max_rect();
+                let full = Rect::from_min_size(Pos2::new(panel.min.x - (SIDEBAR_WIDTH - width) * 0.6, panel.min.y), Vec2::new(SIDEBAR_WIDTH, panel.height()));
+                let mut moving = ui.new_child(egui::UiBuilder::new().max_rect(full).layout(egui::Layout::top_down(egui::Align::Min)));
+                moving.set_clip_rect(panel);
+                self.sidebar(&mut moving);
+                // Darker as it folds, and a streak of light on its edge, brightest mid-way.
+                ui.painter().rect_filled(panel, 0.0, theme.bg.gamma_multiply(0.55 * (1.0 - open)));
+                let glow = 1.0 - (2.0 * open - 1.0).abs();
+                for (w, a) in [(8.0, 0.08), (4.0, 0.18), (1.5, 0.9)] {
+                    ui.painter().vline(panel.max.x - 1.0, panel.y_range(), Stroke::new(w, theme.accent.gamma_multiply(a * glow)));
+                }
+            });
 
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(self.theme.bg))
@@ -2790,6 +2904,13 @@ impl App {
                     ui.colored_label(Color32::from_rgb(0xf7, 0x76, 0x8e), err);
                 }
                 let rect = ui.available_rect_before_wrap();
+                if self.shown_tab().is_none() {
+                    self.home_page(ui, rect);
+                    return;
+                }
+                // Away from the home page: its game stops, music included, and the sidebar comes back.
+                self.game.leave();
+                self.fold_for_game(false);
                 // An SSH tab showing its file manager.
                 if self.tabs.get(self.active).is_some_and(|t| t.show_files) {
                     self.files_view(ui, rect);
@@ -2815,7 +2936,7 @@ impl App {
                     Vec::new()
                 };
                 let Some(tab) = self.tabs.get_mut(self.active) else {
-                    self.empty_state(ui, rect);
+                    self.home_page(ui, rect);
                     return;
                 };
                 // Given once the click that asked for it (in the sidebar...) is over: during that frame, egui
@@ -2914,6 +3035,19 @@ impl App {
                     // The session or the listing arrives in the background.
                     if waiting {
                         ui.ctx().request_repaint_after(Duration::from_millis(150));
+                    }
+                }
+                // "ronnie" + Enter: not for the shell. The line is erased, the pane puts on a show and the
+                // video opens in the browser.
+                if self.guard_confirm.is_none() && !modal {
+                    if let Some(term) = tab.panes.get_mut(&tab.focused).filter(|t| !t.scrolled_back() && t.has_focus(ui)) {
+                        let line = if local { term.typed_input() } else { term.guess_prompt_input() }.map(|(l, _)| l);
+                        if line.is_some_and(|l| easter::called(&l)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+                            // Ctrl+U: the line typed, gone.
+                            term.type_text("\x15");
+                            self.ronnie_show = Some((tab.focused, ui.input(|i| i.time)));
+                            crate::terminal::open_url(easter::VIDEO);
+                        }
                     }
                 }
                 // The metal guard: Enter on a destructive command waits for a confirmation.
@@ -3094,6 +3228,14 @@ impl App {
                         let startup = tab.startup.contains_key(&id);
                         resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, &mut pane_action));
                     }
+                    if let Some((_, since)) = self.ronnie_show.filter(|(p, _)| *p == id) {
+                        let hand = self.metal_hand.get_or_insert_with(|| load_png(ui.ctx(), "metal-hand", include_bytes!("../../assets/icon/metal-hand.png"))).clone();
+                        let time = (ui.input(|i| i.time) - since) as f32;
+                        if easter::show(ui, r, &self.theme, strings, time, &hand) {
+                            self.ronnie_show = None;
+                            self.focus_terminal = true;
+                        }
+                    }
                     if tab.dead.contains(&id) {
                         let (again, close) = closed_banner(ui, r, &self.theme, strings);
                         if again {
@@ -3104,8 +3246,8 @@ impl App {
                         }
                     } else if !local && !term.has_output() {
                         paint_connecting(ui, r, &self.theme, strings, &connecting);
-                        // Keep the animated dots moving while nothing else repaints.
-                        ui.ctx().request_repaint_after(Duration::from_millis(400));
+                        // Keep the spinner turning while nothing else repaints (only while connecting).
+                        ui.ctx().request_repaint_after(Duration::from_millis(30));
                     }
                     // Dim inactive panes and frame the focused one so it stands out.
                     if split && id != tab.focused {
@@ -3343,7 +3485,7 @@ impl App {
             self.splash = Some(start);
             let skip = ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("splash")));
-            if skip || !paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32, self.t().alpha_warning) {
+            if skip || !paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32, self.t()) {
                 self.splash = None;
             }
             ui.ctx().request_repaint();

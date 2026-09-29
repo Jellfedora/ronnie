@@ -911,6 +911,7 @@ impl GitView {
             return exit;
         }
         if !self.loaded {
+            super::loading::screen(ui, body, theme, t.git_loading, Some(&self.root.display().to_string()), None);
             return exit;
         }
 
@@ -999,7 +1000,7 @@ impl GitView {
             ui.add_space(4.0);
             let branches = match &self.branches {
                 None => {
-                    ui.add(egui::Spinner::new().size(16.0));
+                    super::loading::inline(ui, theme, t.git_loading_branches);
                     return;
                 }
                 Some(Err(e)) => {
@@ -1120,7 +1121,7 @@ impl GitView {
         panel.add(egui::TextEdit::singleline(&mut self.search).hint_text(t.git_search_commits).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 4.0)));
         panel.add_space(4.0);
         if !self.log_loaded {
-            panel.add(egui::Spinner::new().size(16.0));
+            super::loading::inline(&mut panel, theme, t.git_loading_history);
         } else if let Some(e) = &self.log_error {
             panel.add(egui::Label::new(egui::RichText::new(e).size(12.0).color(theme.ansi[1])).wrap());
         } else if self.commits.is_empty() {
@@ -1198,9 +1199,7 @@ impl GitView {
             ui.add_space(6.0);
             ui.separator();
             match &open.detail {
-                None => {
-                    ui.add(egui::Spinner::new().size(16.0));
-                }
+                None => super::loading::inline(ui, theme, t.git_loading_commit),
                 Some(Err(e)) => {
                     ui.add(egui::Label::new(egui::RichText::new(e).size(12.0).color(theme.ansi[1])).wrap());
                 }
@@ -1228,9 +1227,7 @@ impl GitView {
         let Some(open) = &self.commit else { return };
         let Some(path) = open.file.clone() else {
             return match &open.detail {
-                None => {
-                    ui.put(Rect::from_center_size(view.center(), Vec2::splat(20.0)), egui::Spinner::new().size(20.0));
-                }
+                None => super::loading::screen(ui, view, theme, t.git_loading_commit, Some(&open.commit.short), None),
                 Some(_) => centered_text(ui, view, t.git_pick, theme),
             };
         };
@@ -1254,7 +1251,7 @@ impl GitView {
     fn diff_ui(&mut self, ui: &mut Ui, view: Rect, key: DiffKey, status: Option<Status>, labels: (String, String), theme: &Theme, t: &Strings) {
         let path = key.1.clone();
         let Some((_, diff)) = self.diff.as_ref().filter(|(k, _)| *k == key) else {
-            ui.put(Rect::from_center_size(view.center(), Vec2::splat(20.0)), egui::Spinner::new().size(20.0));
+            super::loading::screen(ui, view, theme, t.git_loading_diff, Some(&path), None);
             return;
         };
         let (rows, hunks, added, removed, widest) = match diff {

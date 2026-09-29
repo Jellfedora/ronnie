@@ -910,6 +910,9 @@ impl DbView {
                 ui.label(egui::RichText::new(format!("🔒 {}", t.db_through.replace("{h}", via))).size(12.0).color(theme.text_muted));
             }
             ui.add_space(6.0);
+            if matches!(self.status, Status::Connecting) {
+                ui.add(egui::Spinner::new().size(13.0));
+            }
             let (text, color) = match &self.status {
                 Status::Connecting => (t.db_connecting.to_owned(), theme.text_muted),
                 Status::Ready(v) => (format!("● {}  ·  {v}", t.db_connected), theme.ansi[2]),
@@ -1090,6 +1093,9 @@ impl DbView {
                     }
                 }
             }
+            if matches!(self.status, Status::Connecting) {
+                super::loading::inline(ui, theme, t.files_connecting_server);
+            }
             if self.databases.is_empty() && matches!(self.status, Status::Ready(_)) {
                 ui.label(egui::RichText::new(t.db_no_databases).size(12.5).color(theme.text_muted));
             }
@@ -1132,6 +1138,13 @@ impl DbView {
 
     /// The right side: where we are, the page's tabs, the page.
     fn page_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings) {
+        // The server hasn't answered yet: a spinner, nothing to use.
+        if matches!(self.status, Status::Connecting) {
+            let target = format!("{}@{}", self.target.user, self.target.host);
+            let via = self.via.as_ref().map(|h| t.db_through.replace("{h}", h));
+            super::loading::screen(ui, rect, theme, &t.db_connecting_to.replace("{name}", &self.name), Some(&target), via.as_deref());
+            return;
+        }
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut ui;
         // Breadcrumb and page tabs.

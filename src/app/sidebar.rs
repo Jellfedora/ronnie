@@ -4,38 +4,55 @@ use super::*;
 
 impl App {
     /// Shown when every tab is closed: the app stays open.
-    pub(super) fn empty_state(&mut self, ui: &mut Ui, rect: Rect) {
+    /// The home page: what just closed, the typing game, tips scrolling below (the sidebar leads back
+    /// to the tabs).
+    pub(super) fn home_page(&mut self, ui: &mut Ui, rect: Rect) {
         let t = self.t();
-        let mut open = None;
-        let mut new = false;
-        let width = 260.0;
-        let area = Rect::from_center_size(rect.center(), Vec2::new(width, rect.height().min(420.0)));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
-            ui.label(egui::RichText::new(t.no_tabs).size(18.0).color(self.theme.text));
-            ui.add_space(12.0);
-            let hint = self.config.settings.shortcuts.new_tab.label();
-            if ui.add(egui::Button::new(t.new_terminal).shortcut_text(hint).min_size(Vec2::new(width, 32.0))).clicked() {
-                new = true;
-            }
-            if !self.config.profiles.is_empty() {
-                ui.add_space(18.0);
-                ui.label(egui::RichText::new(t.profiles).size(11.0).color(self.theme.text_muted));
-                ui.add_space(4.0);
-                for p in &self.config.profiles {
-                    let (dot, name) = (p.tab.color.unwrap_or(self.theme.text_muted), p.name(t.untitled));
-                    let resp = ui.add(egui::Button::new(format!("     {name}")).min_size(Vec2::new(width, 30.0)).truncate());
-                    ui.painter().circle_filled(Pos2::new(resp.rect.min.x + 14.0, resp.rect.center().y), 4.0, dot);
-                    if resp.clicked() {
-                        open = Some(p.id);
-                    }
-                }
-            }
-        });
-        if new {
-            self.new_tab(ui.ctx());
+        let now = ui.input(|i| i.time);
+        if let Some(line) = self.home.as_ref().filter(|l| !l.is_empty()) {
+            let a = self.game.entrance(now, 0.15) * (1.0 - self.game.focus(ui.ctx()));
+            ui.painter().text(Pos2::new(rect.center().x, rect.min.y + 22.0 - (1.0 - a) * 10.0), Align2::CENTER_CENTER, line, FontId::proportional(13.5), self.theme.text_muted.gamma_multiply(a));
         }
-        if let Some(id) = open {
-            self.open_profile(id);
+        let french = matches!(self.config.settings.language, Lang::Fr);
+        // At the bottom, tips about Ronnie scroll by; the game above. They rise in with the page, and
+        // sink away during a round (the game spreading over their room).
+        let focus = self.game.focus(ui.ctx());
+        let sunk = focus.max(1.0 - self.game.entrance(now, 0.5));
+        let game_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - 44.0 * (1.0 - focus)));
+        if sunk < 0.999 {
+            let ticker = Rect::from_min_size(Pos2::new(rect.min.x, rect.max.y - 44.0 + 44.0 * sunk), Vec2::new(rect.width(), 44.0));
+            tips_ticker(ui, ticker, &self.theme, t, &self.config.settings.shortcuts);
+        }
+        let out = self.game.ui(ui, game_rect, &self.theme, t, &self.config.settings.typing_scores, french, self.config.settings.game_sound);
+        // During a round the sidebar folds away, and unfolds after (if it was open).
+        self.fold_for_game(self.game.playing());
+        if let Some(on) = out.sound {
+            self.config.settings.game_sound = Some(on);
+            self.save_config();
+        }
+        if let Some(score) = out.finished {
+            // On the board, below the rounds it ties with (stable sort).
+            let scores = &mut self.config.settings.typing_scores;
+            scores.push(score);
+            scores.sort_by(|a, b| b.letters.cmp(&a.letters));
+            scores.truncate(config::TYPING_SCORES);
+            self.save_config();
+        }
+
+    }
+
+    /// Folds the sidebar for a round of the game (`playing`), unfolds it after if the game folded it.
+    pub(super) fn fold_for_game(&mut self, playing: bool) {
+        match (playing, self.game_folded) {
+            (true, false) if !self.config.settings.sidebar_folded => {
+                self.config.settings.sidebar_folded = true;
+                self.game_folded = true;
+            }
+            (false, true) => {
+                self.config.settings.sidebar_folded = false;
+                self.game_folded = false;
+            }
+            _ => {}
         }
     }
 
@@ -213,7 +230,7 @@ impl App {
             }
         }
         let hovered = resp.contains_pointer() && self.item_drag.is_none();
-        let active = item.open == Some(self.active);
+        let active = item.open == self.shown_tab();
         paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
         let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
         let live = item.open.and_then(|i| self.live.get(i).cloned().flatten());
@@ -339,7 +356,13 @@ impl App {
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
         let cx = bar.center().x;
         // The R of the logo, where the logo sits unfolded.
-        super::paint_metal(ui.painter(), Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0), Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
+        let r_at = Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0);
+        super::paint_metal(ui.painter(), r_at, Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
+        if ui.interact(Rect::from_center_size(r_at, Vec2::splat(34.0)), ui.id().with("rail-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            if self.home.is_none() {
+                self.go_home(None);
+            }
+        }
         let unfold = Rect::from_center_size(Pos2::new(cx, bar.min.y + top + LOGO_H + 10.0), Vec2::splat(26.0));
         if icon_button(ui, ui.painter(), unfold, "unfold-sidebar", &self.theme, paint_unfold).on_hover_text(format!("{}  ({})", t.unfold_sidebar, self.config.settings.shortcuts.toggle_sidebar.label())).clicked() {
             self.config.settings.sidebar_folded = false;
@@ -382,7 +405,7 @@ impl App {
                     y += 8.0;
                 }
                 // The section's icon (lit when the tab shown is in it), and its "+".
-                let here = entries.iter().any(|e| self.rail_open(*e) == Some(self.active));
+                let here = entries.iter().any(|e| self.rail_open(*e) == self.shown_tab());
                 let icon_rect = Rect::from_center_size(Pos2::new(cx - 11.0, y + 12.0), Vec2::splat(22.0));
                 let color = if here { self.theme.accent } else { self.theme.text_muted };
                 match section {
@@ -497,7 +520,7 @@ impl App {
             }
         };
         let resp = ui.interact(slot, ui.id().with(("rail", entry)), Sense::click());
-        let active = open == Some(self.active);
+        let active = open == self.shown_tab();
         if active {
             ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
             ui.painter().rect_filled(Rect::from_min_size(Pos2::new(left + 3.0, slot.min.y + 8.0), Vec2::new(3.0, slot.height() - 16.0)), 1.5, self.theme.accent);
@@ -587,7 +610,7 @@ impl App {
             *y += ROW_H + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("db-item", c.id)), Sense::click());
             let open = self.tabs.iter().position(|tab| tab.db == Some(c.id));
-            let active = open == Some(self.active);
+            let active = open == self.shown_tab();
             let hovered = resp.contains_pointer();
             paint_row_bg(&painter, slot, active, hovered, &self.theme);
             let dot = Pos2::new(slot.min.x + 17.0, slot.center().y);
@@ -904,6 +927,13 @@ impl App {
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
+        // The logo leads home (the typing game).
+        let logo_hit = Rect::from_center_size(logo_rect.center(), Vec2::new(150.0, logo_rect.height()));
+        if ui.interact(logo_hit, ui.id().with("logo-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            if self.home.is_none() {
+                self.go_home(None);
+            }
+        }
         // Dev builds say so, next to the logo: they don't share the installed app's profiles.
         if !config::OFFICIAL {
             let at = Pos2::new(logo_rect.center().x + 58.0, logo_rect.center().y - 12.0);
@@ -995,7 +1025,7 @@ impl App {
                 }
                 _ => (slot, base_painter.clone()),
             };
-            let active = i == self.active;
+            let active = Some(i) == self.shown_tab();
             let tab = &self.tabs[i];
             // Not `hovered()`: that turns false when the pointer is over the ✕ (another widget), which
             // would hide the ✕ as soon as the pointer reaches it.
@@ -1454,5 +1484,95 @@ pub(super) fn download_text((done, total): (u64, u64), t: &Strings) -> String {
         (0, _) => String::new(),
         (_, 0) => format!("{} {}", mb(done), t.unit_mb),
         _ => format!("{} %  ·  {} / {} {}", done * 100 / total, mb(done), mb(total), t.unit_mb),
+    }
+}
+
+/// Tips about Ronnie scrolling from right to left along `rect` (with the shortcuts as set), fading at
+/// both ends; the pointer over them holds them still.
+fn tips_ticker(ui: &mut Ui, rect: Rect, theme: &crate::theme::Theme, t: &Strings, shortcuts: &config::Shortcuts) {
+    const SPEED: f32 = 45.0; // points a second
+    const GAP: f32 = 56.0;
+    let painter = ui.painter_at(rect);
+    painter.hline(rect.x_range(), rect.min.y, Stroke::new(1.0, theme.tab_hover));
+    let keys = [
+        ("{split_right}", &shortcuts.split_right),
+        ("{split_down}", &shortcuts.split_down),
+        ("{find}", &shortcuts.find_text),
+        ("{find_commands}", &shortcuts.find_commands),
+        ("{reopen}", &shortcuts.reopen_tab),
+        ("{files}", &shortcuts.toggle_files),
+        ("{new_window}", &shortcuts.new_window),
+        ("{sidebar}", &shortcuts.toggle_sidebar),
+    ];
+    let with_keys = |text: &str| keys.iter().fold(text.to_owned(), |text, (key, shortcut)| text.replace(key, &shortcut.label()));
+    let tips: Vec<(&str, String)> = t.home_tips.iter().map(|(title, how)| (*title, with_keys(how))).collect();
+    if tips.is_empty() {
+        return;
+    }
+    let galleys: Vec<_> = tips
+        .iter()
+        .map(|(title, how)| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(title, 0.0, egui::TextFormat::simple(FontId::proportional(13.0), theme.accent));
+            job.append(&format!("   {how}"), 0.0, egui::TextFormat::simple(FontId::proportional(12.5), theme.text));
+            painter.layout_job(job)
+        })
+        .collect();
+    let total: f32 = galleys.iter().map(|g| g.size().x + GAP).sum();
+    // Where the strip is: moving on, or held under the pointer.
+    let id = ui.id().with("tips-ticker");
+    let hovered = ui.rect_contains_pointer(rect);
+    let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(0.1)));
+    let offset = ui.data_mut(|d| {
+        let offset = d.get_temp_mut_or_insert_with(id, || (now as f32 * 7.0) % total);
+        if !hovered {
+            *offset = (*offset + SPEED * dt) % total;
+        }
+        *offset
+    });
+    // Right to left: the strip drawn end to end, as often as needed, so that it never runs out.
+    let y = rect.center().y + 1.0;
+    let mut x = rect.min.x - offset;
+    while x < rect.max.x {
+        for g in &galleys {
+            let w = g.size().x;
+            if x + w > rect.min.x && x < rect.max.x {
+                painter.galley(Pos2::new(x, y - g.size().y / 2.0), g.clone(), theme.text);
+            }
+            // A small glowing diamond between two tips.
+            let d = Pos2::new(x + w + GAP / 2.0, y);
+            let pulse = ((now * 3.0 + (x as f64) * 0.01).sin() * 0.5 + 0.5) as f32;
+            painter.circle_filled(d, 6.0, theme.accent.gamma_multiply(0.08 + 0.1 * pulse));
+            let r = 3.2;
+            painter.add(egui::Shape::convex_polygon(vec![d + Vec2::new(0.0, -r), d + Vec2::new(r, 0.0), d + Vec2::new(0.0, r), d + Vec2::new(-r, 0.0)], theme.accent.gamma_multiply(0.6 + 0.4 * pulse), Stroke::NONE));
+            x += w + GAP;
+        }
+    }
+    // Both ends fade into the page.
+    let fade = 90.0_f32.min(rect.width() / 4.0);
+    let steps = 18;
+    for k in 0..steps {
+        let a = 1.0 - k as f32 / steps as f32;
+        let w = fade / steps as f32;
+        let color = theme.bg.gamma_multiply(a);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(rect.min.x + k as f32 * w, rect.min.y + 1.0), Vec2::new(w + 0.5, rect.height())), 0.0, color);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(rect.max.x - (k + 1) as f32 * w, rect.min.y + 1.0), Vec2::new(w + 0.5, rect.height())), 0.0, color);
+    }
+    // Smooth, and only while the home page shows.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+}
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tips_name_only_known_shortcuts() {
+        let known = ["{split_right}", "{split_down}", "{find}", "{find_commands}", "{reopen}", "{files}", "{new_window}", "{sidebar}"];
+        let (fr, en) = (crate::i18n::Lang::Fr.strings(), crate::i18n::Lang::En.strings());
+        assert_eq!(fr.home_tips.len(), en.home_tips.len());
+        for (_, how) in fr.home_tips.iter().chain(en.home_tips) {
+            let left = known.iter().fold(how.to_string(), |s, k| s.replace(k, ""));
+            assert!(!left.contains('{'), "unknown shortcut in: {how}");
+        }
     }
 }

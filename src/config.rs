@@ -488,7 +488,30 @@ pub struct Settings {
     /// Show the SQL of a change made through the database view (a cell, a row, a column...) before it runs.
     #[serde(default = "default_true")]
     pub db_confirm_changes: bool,
+    /// The home page's typing game: the best rounds, the best first.
+    #[serde(default)]
+    pub typing_scores: Vec<TypingScore>,
+    /// Its music: on or off (None: asked the first time).
+    #[serde(default)]
+    pub game_sound: Option<bool>,
 }
+
+/// A round of the home page's typing game.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct TypingScore {
+    /// Letters typed right in the minute: the score.
+    pub letters: u32,
+    pub words: u32,
+    pub wpm: u32,
+    /// Percent of the keys typed that were right.
+    pub accuracy: u32,
+    pub combo: u32,
+    /// When, in seconds since 1970.
+    pub at: i64,
+}
+
+/// Places kept on the leaderboard.
+pub const TYPING_SCORES: usize = 10;
 
 pub const NOTIFY_AFTER_SECS: std::ops::RangeInclusive<u64> = 3..=600;
 
@@ -694,7 +717,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, typing_scores: Vec::new(), game_sound: None }
     }
 }
 

@@ -350,7 +350,7 @@ impl Issues {
         panel.add_space(4.0);
         let issues = match &self.list {
             None => {
-                panel.add(egui::Spinner::new().size(16.0));
+                super::loading::inline(&mut panel, theme, t.issues_loading);
                 return;
             }
             Some(Err(e)) => {
@@ -421,7 +421,7 @@ impl Issues {
         };
         let detail = match self.detail.as_ref().filter(|(n, _)| *n == number) {
             None => {
-                ui.put(Rect::from_center_size(view.center(), Vec2::splat(20.0)), egui::Spinner::new().size(20.0));
+                super::loading::screen(ui, view, theme, &t.issues_loading_one.replace("{n}", &number.to_string()), None, None);
                 return;
             }
             Some((_, Err(e))) => {

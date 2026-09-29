@@ -1466,6 +1466,14 @@ impl App {
                 }
             });
         });
+        card(ui, &theme, Some(t.credits), |ui| {
+            setting_row(ui, &theme, t.credits_music, Some(t.game_music_credit), |ui| {
+                let pixabay = egui::Button::new(egui::RichText::new("Pixabay").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                if ui.add(pixabay).on_hover_text(super::game::MUSIC_CREDIT_URL).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    crate::terminal::open_url(super::game::MUSIC_CREDIT_URL);
+                }
+            });
+        });
     }
 
     /// The config file, editable as JSON. Saving validates it first: a mistake is reported, never written.

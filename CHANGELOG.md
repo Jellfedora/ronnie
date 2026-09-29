@@ -2,6 +2,23 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.12.0] - 2026-09-30
+
+### Nouveautés
+
+- **Page d'accueil** : fermer un onglet (profil, connexion SSH…) ne bascule plus sur un autre onglet pris au hasard. Ronnie affiche sa page d'accueil, qu'on retrouve aussi en cliquant sur le logo, avec des astuces qui défilent. Et une petite surprise pour patienter.
+- **Glisser-déposer depuis le Finder** (ou l'Explorateur) dans la vue fichiers : sur un dossier ou dans le panneau, les fichiers sont copiés en local ou envoyés sur le serveur ; un nom déjà pris propose Remplacer ou Ignorer.
+- **Écrans de chargement** : connexion SSH d'un terminal, SFTP, base de données, lecture d'un dépôt git, d'un diff ou des issues ont chacun leur écran d'attente animé.
+
+### Changements
+
+- La barre latérale se replie et se déplie en glissant.
+- Écran de démarrage : « Fait avec ❤ par Jellfedora ».
+
+### Corrections
+
+- Gestionnaire de fichiers : « Connexion au serveur en cours… » s'affiche pendant la connexion SFTP, au lieu de « Pas connecté au serveur ».
+
 ## [0.11.0] - 2026-09-29
 
 ### Nouveautés

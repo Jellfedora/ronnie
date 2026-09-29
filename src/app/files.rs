@@ -140,6 +140,8 @@ enum Dialog {
     Conflict { from: Side, names: Vec<String>, target: String, existing: Vec<String> },
     /// Some of the items moved into folder `dir` (a path) already exist there; `from`: their paths.
     MoveConflict { side: Side, from: Vec<String>, dir: String, existing: Vec<String> },
+    /// Files dragged from the Finder onto a folder where some names exist.
+    ImportConflict { side: Side, paths: Vec<std::path::PathBuf>, dir: String, existing: Vec<String> },
 }
 
 /// The answer to "already exists" kept for the rest of the session, when asked to: 0 none, 1 replace,
@@ -219,6 +221,8 @@ pub(super) enum FilesAction {
 pub(super) struct FileManager {
     /// The SSH host; None: a local terminal's file manager (this computer only, one panel).
     pub host: Option<Uuid>,
+    /// "name · user@address", shown while connecting.
+    host_label: Option<String>,
     conn: Option<sftp::Connection>,
     status: Status,
     local: Panel,
@@ -266,6 +270,7 @@ impl FileManager {
         let local = host.sftp_local.as_ref().filter(|p| std::path::Path::new(p).is_dir()).cloned().unwrap_or(home);
         let mut fm = Self {
             host: Some(host.id),
+            host_label: Some(format!("{}  ·  {}", host.name, host.address())),
             conn: None,
             status: Status::Connecting,
             local: Panel::new(local),
@@ -300,6 +305,7 @@ impl FileManager {
     pub fn local(dir: &str) -> Self {
         let mut fm = Self::new(&SshHost::new());
         fm.host = None;
+        fm.host_label = None;
         fm.local = Panel::new(dir.to_owned());
         fm.active = Side::Local;
         fm.terminal_dir = Some(dir.to_owned());
@@ -867,6 +873,11 @@ impl FileManager {
                     Ok(()) => TransferState::Done(0),
                     Err(e) => TransferState::Failed(e),
                 };
+            } else if let Err(e) = &result {
+                // A job without a line in the queue (files copied from the Finder).
+                if !e.is_empty() {
+                    self.error = Some(e.clone());
+                }
             }
             match side {
                 Side::Local => self.read_local(),
@@ -942,6 +953,77 @@ impl FileManager {
 
     /// Moves `names` (in the panel's folder) into folder `dir` (a path: a subfolder, or the one above);
     /// what already exists there is asked about first (unless answered for the session).
+    /// Files dragged from the Finder (or another app) and dropped into `dir`: copied there on this
+    /// computer, sent there on the server. Names already there: replace or skip, asked.
+    fn import(&mut self, side: Side, paths: Vec<std::path::PathBuf>, dir: String) {
+        if side == Side::Remote && self.conn.is_none() {
+            return;
+        }
+        let names: Vec<String> = paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+        let existing: Vec<String> = match side {
+            Side::Local => names.iter().filter(|n| std::path::Path::new(&dir).join(n).symlink_metadata().is_ok()).cloned().collect(),
+            // Known for the folder shown; elsewhere the server skips or replaces as answered.
+            Side::Remote if dir == self.remote.path => {
+                let there: HashSet<&str> = self.remote.entries.iter().map(|e| e.name.as_str()).collect();
+                names.iter().filter(|n| there.contains(n.as_str())).cloned().collect()
+            }
+            Side::Remote => Vec::new(),
+        };
+        match (existing.is_empty(), session_choice()) {
+            (true, choice) => self.import_now(side, paths, dir, choice.unwrap_or(false)),
+            (false, Some(overwrite)) => self.import_now(side, paths, dir, overwrite),
+            (false, None) => self.dialog = Some(Dialog::ImportConflict { side, paths, dir, existing }),
+        }
+    }
+
+    fn import_now(&mut self, side: Side, paths: Vec<std::path::PathBuf>, dir: String, overwrite: bool) {
+        match side {
+            // In the background: a big folder doesn't freeze the window.
+            Side::Local => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = self.ctx.clone();
+                std::thread::spawn(move || {
+                    let result = (|| {
+                        for from in &paths {
+                            let Some(name) = from.file_name() else { continue };
+                            let to = std::path::Path::new(&dir).join(name);
+                            // Onto itself (dropped where it already is): nothing to do.
+                            if to == *from {
+                                continue;
+                            }
+                            if to.symlink_metadata().is_ok() {
+                                if !overwrite {
+                                    continue;
+                                }
+                                let gone = if to.is_dir() && !to.is_symlink() { std::fs::remove_dir_all(&to) } else { std::fs::remove_file(&to) };
+                                gone.map_err(|e| format!("{} : {e}", to.display()))?;
+                            }
+                            copy_local(from, &to).map_err(|e| format!("{} : {e}", from.display()))?;
+                        }
+                        Ok(())
+                    })();
+                    let _ = tx.send(result);
+                    if let Some(ctx) = ctx {
+                        ctx.request_repaint();
+                    }
+                });
+                self.zips.push((id, Side::Local, rx));
+            }
+            // One line per item in the queue, as a transfer from the local panel.
+            Side::Remote => {
+                for path in paths {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.send(Request::Upload { id, local: vec![path], remote_dir: dir.clone(), overwrite });
+                    self.transfers.push(Transfer { id, upload: true, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+                }
+            }
+        }
+    }
+
     fn move_into(&mut self, side: Side, names: &[String], dir: &str) {
         let from: Vec<String> = names.iter().map(|n| self.path_of(side, n)).filter(|p| p != dir).collect();
         let dir = dir.to_owned();
@@ -1217,11 +1299,18 @@ impl FileManager {
         panel.ensure_order(show_hidden);
         let (count, loading) = (panel.order.len(), panel.loading);
         let drag_payload = egui::DragAndDrop::payload::<FilesDrag>(ui.ctx());
-        let pointer = ui.input(|i| i.pointer.interact_pos());
+        // Files dragged from the Finder (or another app): where they would land, and those let go.
+        let (os_hover, os_dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
+        let from_os = (os_hover || !os_dropped.is_empty()) && !(side == Side::Remote && !connected);
+        let pointer = if os_hover || !os_dropped.is_empty() { drag_pointer(ui.ctx()) } else { ui.input(|i| i.pointer.interact_pos()) };
+        if os_hover {
+            // The system doesn't move the pointer during such a drag: asked again each frame.
+            ui.ctx().request_repaint();
+        }
         let mut drop_up = false;
         if has_parent {
             let resp = ui.interact(up_row, ui.id().with(("files-up", side as u8)), Sense::click());
-            drop_up = drag_payload.is_some() && pointer.is_some_and(|p| up_row.contains(p));
+            drop_up = (drag_payload.is_some() || from_os) && pointer.is_some_and(|p| up_row.contains(p));
             let fill = if drop_up { theme.accent.gamma_multiply(0.35) } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
             ui.painter().rect_filled(up_row, 3.0, fill);
             paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(up_row.min.x + 13.0, up_row.center().y), Vec2::splat(15.0)), "..", true, false, None, theme);
@@ -1260,7 +1349,10 @@ impl FileManager {
             }
         });
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
-        if side == Side::Remote && !connected {
+        if side == Side::Remote && !connected && self.connecting() {
+            // The server hasn't answered yet: not "not connected".
+            super::loading::screen(&list_ui, list, theme, t.files_connecting_server, self.host_label.as_deref(), None);
+        } else if side == Side::Remote && !connected {
             list_ui.label(egui::RichText::new(t.files_not_connected).size(12.5).color(theme.text_muted));
         } else if count == 0 {
             list_ui.label(egui::RichText::new(if loading { t.files_loading } else { t.files_empty }).size(12.5).color(theme.text_muted));
@@ -1284,7 +1376,8 @@ impl FileManager {
                 let selected = panel.selected.contains(&entry.name);
                 // A folder under a drag: drop into it (from the other panel, or moved within this one; not
                 // into one of the folders dragged).
-                let drop_target = entry.is_dir && drag_payload.as_ref().is_some_and(|p| p.from != side || !p.names.contains(&entry.name)) && pointer.is_some_and(|p| row.contains(p));
+                let dragged_here = from_os || drag_payload.as_ref().is_some_and(|p| p.from != side || !p.names.contains(&entry.name));
+                let drop_target = entry.is_dir && dragged_here && pointer.is_some_and(|p| row.contains(p));
                 if drop_target {
                     drop_into = Some(entry.name.clone());
                 }
@@ -1490,8 +1583,22 @@ impl FileManager {
             egui::DragAndDrop::clear_payload(ui.ctx());
             out.moved = Some((payload.names.clone(), dir.clone()));
         }
-        // Drop from the other panel: into the folder under the pointer, or this panel's folder.
         let over = pointer.is_some_and(|p| rect.contains(p));
+        // From the Finder: into the folder under the pointer, or this panel's folder.
+        if from_os && over {
+            if drop_into.is_none() && !drop_up {
+                ui.painter().rect_stroke(rect, 6.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
+            }
+            if !os_dropped.is_empty() {
+                let target = match (&drop_into, drop_up) {
+                    (_, true) => parent.clone(),
+                    (Some(dir), false) => self.path_of(side, dir),
+                    (None, false) => self.panel(side).path.clone(),
+                };
+                out.imported = Some((os_dropped.clone(), target));
+            }
+        }
+        // Drop from the other panel: into the folder under the pointer, or this panel's folder.
         if let Some(payload) = drag_payload.as_ref().filter(|p| p.from != side && over) {
             if drop_into.is_none() && !drop_up {
                 ui.painter().rect_stroke(rect, 6.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
@@ -1547,6 +1654,9 @@ impl FileManager {
         }
         if let Some(names) = out.compress {
             self.compress(side, names, t);
+        }
+        if let Some((paths, dir)) = out.imported {
+            self.import(side, paths, dir);
         }
         if let Some(names) = out.duplicate {
             self.duplicate(side, &names, t);
@@ -1711,7 +1821,7 @@ impl FileManager {
                     title(ui, t.files_permissions.trim_end_matches('…'));
                     perm_ui(ui, edit, theme, t);
                 }
-                Dialog::Conflict { existing, .. } | Dialog::MoveConflict { existing, .. } => {
+                Dialog::Conflict { existing, .. } | Dialog::MoveConflict { existing, .. } | Dialog::ImportConflict { existing, .. } => {
                     title(ui, &t.files_conflict_title.replace("{n}", &existing.len().to_string()));
                     list(ui, existing);
                     if matches!(dialog, Dialog::MoveConflict { .. }) {
@@ -1734,7 +1844,7 @@ impl FileManager {
                     }
                 };
                 match dialog {
-                    Dialog::Conflict { .. } | Dialog::MoveConflict { .. } => {
+                    Dialog::Conflict { .. } | Dialog::MoveConflict { .. } | Dialog::ImportConflict { .. } => {
                         if ui.add(button(t.files_overwrite, Some(theme.accent))).clicked() {
                             outcome = Some(Outcome::Confirm);
                         }
@@ -1818,6 +1928,10 @@ impl FileManager {
             (Dialog::MoveConflict { side, from, dir, .. }, outcome) => {
                 self.remember(outcome);
                 self.move_now(side, from, dir, outcome == Outcome::Confirm);
+            }
+            (Dialog::ImportConflict { side, paths, dir, .. }, outcome) => {
+                self.remember(outcome);
+                self.import_now(side, paths, dir, outcome == Outcome::Confirm);
             }
         }
     }
@@ -2036,6 +2150,8 @@ struct PanelOut {
     duplicate: Option<Vec<String>>,
     view: Option<String>,
     compress: Option<Vec<String>>,
+    /// Files from the Finder, and the folder they were dropped into.
+    imported: Option<(Vec<std::path::PathBuf>, String)>,
 }
 
 /// Column positions of a panel of `width`: narrow panels drop the date, then the permissions.
@@ -2151,6 +2267,70 @@ fn copy_local(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<(
         std::fs::set_permissions(to, meta.permissions())
     } else {
         std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Where the pointer is, in this window's points, while files are dragged from another app. macOS
+/// doesn't tell the window during such a drag: the system is asked.
+fn drag_pointer(ctx: &egui::Context) -> Option<Pos2> {
+    #[cfg(target_os = "macos")]
+    {
+        let inner = ctx.input(|i| i.viewport().inner_rect)?;
+        let (x, y) = macos_cursor()?;
+        // The system counts in its points; egui's are zoomed.
+        let zoom = ctx.zoom_factor();
+        Some(Pos2::new(x as f32 / zoom, y as f32 / zoom) - inner.min.to_vec2())
+    }
+    #[cfg(not(target_os = "macos"))]
+    ctx.input(|i| i.pointer.latest_pos())
+}
+
+/// The mouse on screen, in points from the top left of the main screen (as the windows are placed).
+#[cfg(target_os = "macos")]
+fn macos_cursor() -> Option<(f64, f64)> {
+    use objc2::encode::{Encode, Encoding};
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+    // SAFETY: the layout of CGPoint, CGSize and CGRect (two f64s; a point and a size).
+    unsafe impl Encode for Point {
+        const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct Size {
+        width: f64,
+        height: f64,
+    }
+    unsafe impl Encode for Size {
+        const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct Frame {
+        origin: Point,
+        size: Size,
+    }
+    unsafe impl Encode for Frame {
+        const ENCODING: Encoding = Encoding::Struct("CGRect", &[Point::ENCODING, Size::ENCODING]);
+    }
+    // SAFETY: AppKit class methods and properties, read on the main thread (the UI's).
+    unsafe {
+        let mouse: Point = msg_send![AnyClass::get(c"NSEvent")?, mouseLocation];
+        // The system counts from the bottom of the main screen (the first one).
+        let screens: *mut AnyObject = msg_send![AnyClass::get(c"NSScreen")?, screens];
+        let main: *mut AnyObject = msg_send![screens, firstObject];
+        let main = main.as_ref()?;
+        let frame: Frame = msg_send![main, frame];
+        Some((mouse.x, frame.size.height - mouse.y))
     }
 }
 
@@ -2432,6 +2612,15 @@ fn display_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Needs a screen (not in CI).
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn reads_the_mouse_from_the_system() {
+        let (x, y) = macos_cursor().expect("mouse location");
+        assert!(x.is_finite() && y.is_finite());
+    }
 
     #[test]
     fn formats_modes_and_sizes() {
