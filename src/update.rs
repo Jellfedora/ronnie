@@ -96,8 +96,11 @@ pub fn integrate_appimage() {
         return;
     }
     let quoted = format!("\"{}\"", file.replace('\\', "\\\\").replace('"', "\\\"").replace('`', "\\`").replace('$', "\\$").replace('%', "%%"));
-    let entry = include_str!("../packaging/linux/ronnie.desktop").replace("Exec=ronnie", &format!("Exec={quoted}"));
     let icon = data.join("icons/hicolor/512x512/apps").join(format!("{APP_ID}.png"));
+    // The icon by its path, not its name: some docks (Deepin) don't look for it in ~/.local/share/icons.
+    let entry = include_str!("../packaging/linux/ronnie.desktop")
+        .replace("Exec=ronnie", &format!("Exec={quoted}"))
+        .replace("Icon=ronnie", &format!("Icon={}", icon.display()));
     let write = |path: &Path, bytes: &[u8]| -> std::io::Result<()> {
         if std::fs::read(path).is_ok_and(|old| old == bytes) {
             return Ok(());
@@ -200,19 +203,37 @@ while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1))
 exec "$@""#;
     crate::log::info(&format!("restart: {} will start once this instance quits", program.display()));
     let log = crate::log::log_path().unwrap_or_default();
-    Command::new("/bin/sh")
-        .args(["-c", SCRIPT, "sh", &std::process::id().to_string()])
-        .arg(log)
-        .arg(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        // Its own process group: a signal to this app's group (its terminal closing...) spares it.
-        .process_group(0)
-        .spawn()
-        .with_context(|| format!("cannot start {}", program.display()))?;
+    let start = |launcher: &[&str]| {
+        Command::new(launcher[0])
+            .args(&launcher[1..])
+            .args(["-c", SCRIPT, "sh", &std::process::id().to_string()])
+            .arg(&log)
+            .arg(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            // Its own process group: a signal to this app's group (its terminal closing...) spares it.
+            .process_group(0)
+            .spawn()
+    };
+    // Started as a systemd service (Deepin's launcher does so), every process left in it is killed when
+    // this one quits, the waiting script too: it runs in a scope of its own.
+    #[cfg(target_os = "linux")]
+    if in_systemd_service() {
+        match start(&["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", "/bin/sh"]) {
+            Ok(_) => return Ok(()),
+            Err(e) => crate::log::info(&format!("restart: systemd-run not started ({e}), plain sh instead")),
+        }
+    }
+    start(&["/bin/sh"]).with_context(|| format!("cannot start {}", program.display()))?;
     Ok(())
+}
+
+/// Whether this process runs in a systemd service (its cgroup, in /proc/self/cgroup, is a .service).
+#[cfg(target_os = "linux")]
+fn in_systemd_service() -> bool {
+    std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|text| text.lines().any(|line| line.trim_end().ends_with(".service")))
 }
 
 #[cfg(not(unix))]

@@ -953,8 +953,9 @@ impl App {
             app.ssh_prompts = receiver;
         }
         app.saved_session = session;
+        // No tab left open last time (or a first launch): the home page, not a new terminal.
         if app.tabs.is_empty() {
-            app.new_tab(&cc.egui_ctx);
+            app.home = Some(String::new());
         }
         if app.read_only {
             app.config_writable = false;
@@ -1703,7 +1704,6 @@ impl App {
             self.tabs.push(tab);
             self.active = self.tabs.len() - 1;
             self.home = None;
-        self.home = None;
             self.focus_terminal = true;
         }
     }
