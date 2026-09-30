@@ -360,6 +360,10 @@ impl Viewer {
     /// Lines on screen: (start offset, bytes).
     fn visible(&self, rows: usize) -> Vec<(u64, &[u8])> {
         let mut out = Vec::with_capacity(rows);
+        // Jumped before the part read (scroll bar): nothing until it's there.
+        if self.top < self.win_start {
+            return out;
+        }
         let mut at = self.top;
         while out.len() < rows && at <= self.win_end() {
             let i = (at - self.win_start) as usize;
@@ -722,6 +726,22 @@ mod tests {
         serve(&mut v, &file);
         let lines = v.visible(10);
         assert_eq!(lines.last().unwrap().1, b"line 399999");
+    }
+
+    #[test]
+    fn jumps_back_before_the_part_read() {
+        let file = big_file();
+        let mut v = Viewer::new(false, "x".into(), "x.log".into(), file.len() as u64);
+        v.rows = 10;
+        v.at_end = true;
+        v.want = Some(Want::Tail);
+        serve(&mut v, &file);
+        assert!(v.win_start > 0);
+        // The scroll bar's top: nothing shown until the start of the file is read.
+        v.jump(0, Align::Next);
+        assert!(v.visible(10).is_empty());
+        serve(&mut v, &file);
+        assert_eq!(v.visible(1)[0].1, b"line 000000");
     }
 
     #[test]

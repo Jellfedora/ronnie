@@ -92,35 +92,53 @@ impl Entry {
     }
 }
 
-/// Passwords given to accounts (IDENTIFIED BY '…') aren't written to the history file.
+/// Passwords aren't written to the history file: in a statement, every quoted value after IDENTIFIED or
+/// PASSWORD (IDENTIFIED WITH plugin BY '…', SET PASSWORD FOR u = '…', PASSWORD('…')) is hidden.
 fn hide_passwords(sql: &str) -> String {
-    // ASCII only: the same byte offsets as `sql`.
-    let upper = sql.to_ascii_uppercase();
-    let mut out = String::new();
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    // Up to where `sql` was copied to `out`.
     let mut rest = 0;
-    let key = "IDENTIFIED BY ";
-    let mut from = 0;
-    while let Some(i) = upper[from..].find(key).map(|i| i + from) {
-        let start = i + key.len();
-        if !sql[start..].starts_with('\'') {
-            from = start;
-            continue;
-        }
-        // The literal's end: a quote not doubled nor escaped.
-        let bytes = sql.as_bytes();
-        let mut j = start + 1;
-        while j < bytes.len() {
-            match bytes[j] {
-                b'\\' => j += 2,
-                b'\'' if bytes.get(j + 1) == Some(&b'\'') => j += 2,
-                b'\'' => break,
-                _ => j += 1,
+    let mut secret = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'\'' | b'"' | b'`') => {
+                // The literal's end: a quote not doubled nor escaped.
+                let mut j = i + 1;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'\\' if quote != b'`' => j += 2,
+                        b if b == quote && bytes.get(j + 1) == Some(&quote) => j += 2,
+                        b if b == quote => break,
+                        _ => j += 1,
+                    }
+                }
+                let end = (j + 1).min(bytes.len());
+                // Names in backquotes are no secret.
+                if secret && quote != b'`' {
+                    out.push_str(&sql[rest..i]);
+                    out.push(quote as char);
+                    out.push('…');
+                    out.push(quote as char);
+                    rest = end;
+                }
+                i = end;
             }
+            b';' => {
+                secret = false;
+                i += 1;
+            }
+            b if b.is_ascii_alphabetic() || b == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let word = &sql[start..i];
+                secret |= word.eq_ignore_ascii_case("IDENTIFIED") || word.eq_ignore_ascii_case("PASSWORD");
+            }
+            _ => i += 1,
         }
-        out.push_str(&sql[rest..start]);
-        out.push_str("'…'");
-        rest = (j + 1).min(sql.len());
-        from = rest;
     }
     out.push_str(&sql[rest..]);
     out
@@ -273,6 +291,15 @@ mod tests {
         assert_eq!(hide_passwords("CREATE USER 'a'@'%' IDENTIFIED BY 'p''w\\'d'; GRANT ALL"), "CREATE USER 'a'@'%' IDENTIFIED BY '…'; GRANT ALL");
         assert_eq!(hide_passwords("alter user 'a'@'%' identified by 'x'"), "alter user 'a'@'%' identified by '…'");
         assert_eq!(hide_passwords("SELECT 1"), "SELECT 1");
+        assert_eq!(
+            hide_passwords("CREATE USER 'a'@'%' IDENTIFIED WITH caching_sha2_password BY \"x\"; SELECT 'b'"),
+            "CREATE USER 'a'@'%' IDENTIFIED WITH caching_sha2_password BY \"…\"; SELECT 'b'"
+        );
+        assert_eq!(hide_passwords("ALTER USER a IDENTIFIED\n  BY 'x'"), "ALTER USER a IDENTIFIED\n  BY '…'");
+        assert_eq!(hide_passwords("SET PASSWORD FOR `a`@`%` = 'x'"), "SET PASSWORD FOR `a`@`%` = '…'");
+        assert_eq!(hide_passwords("SELECT PASSWORD('x'), 'é'"), "SELECT PASSWORD('…'), '…'");
+        // A column named like it isn't the keyword.
+        assert_eq!(hide_passwords("SELECT password_hash FROM u WHERE n = 'x'"), "SELECT password_hash FROM u WHERE n = 'x'");
     }
 
     #[test]

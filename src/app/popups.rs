@@ -349,7 +349,14 @@ impl App {
                 self.close_confirmed = true;
                 self.ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
             }
-            Err(e) => self.error = Some(format!("{} : {e:#}", self.t().update_failed)),
+            Err(e) => {
+                // Still running: saving again, unless another instance took the lock meanwhile.
+                if let Ok(lock) = config::lock_instance() {
+                    self._instance_lock = lock;
+                    self.read_only = false;
+                }
+                self.error = Some(format!("{} : {e:#}", self.t().update_failed));
+            }
         }
     }
 

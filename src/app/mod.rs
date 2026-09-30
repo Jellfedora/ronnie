@@ -1797,6 +1797,7 @@ impl App {
         }
         // Its profile shows it again when reopened.
         self.save_scrollbacks(Some(index), false);
+        let shown = self.shown_tab() == Some(index);
         let mut tab = self.tabs.remove(index);
         let state = tab.state();
         if let Some(p) = self.config.profiles.iter_mut().find(|p| Some(p.id) == tab.profile) {
@@ -1849,9 +1850,12 @@ impl App {
         if self.active > index || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
         }
-        // Not a neighbour picked at random: the home page, saying what closed.
-        self.go_home(Some(tab.title()));
-        self.focus_terminal = true;
+        // Not a neighbour picked at random: the home page, saying what closed. A tab closed in the
+        // background leaves the one shown in place.
+        if shown || (self.home.is_none() && self.tabs.is_empty()) {
+            self.go_home(Some(tab.title()));
+            self.focus_terminal = true;
+        }
     }
 
     fn select(&mut self, index: usize) {

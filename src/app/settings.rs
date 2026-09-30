@@ -15,7 +15,7 @@ impl App {
     pub(super) fn rename_profile(&mut self, id: Uuid, name: &str) -> Result<(), &'static str> {
         let name = name.trim();
         if name.is_empty() {
-            return Err(self.t().host_required);
+            return Err(self.t().name_required);
         }
         if self.config.profiles.iter().any(|p| p.id != id && p.tab.name.as_deref() == Some(name)) {
             return Err(self.t().name_taken);

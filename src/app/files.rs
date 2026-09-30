@@ -947,7 +947,7 @@ impl FileManager {
     /// what already exists there is asked about first (unless answered for the session).
     /// Files dragged from the Finder (or another app) and dropped into `dir`: copied there on this
     /// computer, sent there on the server. Names already there: replace or skip, asked.
-    fn import(&mut self, side: Side, paths: Vec<std::path::PathBuf>, dir: String) {
+    fn import(&mut self, side: Side, paths: Vec<std::path::PathBuf>, dir: String, t: &Strings) {
         if side == Side::Remote && self.conn.is_none() {
             return;
         }
@@ -962,13 +962,13 @@ impl FileManager {
             Side::Remote => Vec::new(),
         };
         match (existing.is_empty(), session_choice()) {
-            (true, choice) => self.import_now(side, paths, dir, choice.unwrap_or(false)),
-            (false, Some(overwrite)) => self.import_now(side, paths, dir, overwrite),
+            (true, choice) => self.import_now(side, paths, dir, choice.unwrap_or(false), t),
+            (false, Some(overwrite)) => self.import_now(side, paths, dir, overwrite, t),
             (false, None) => self.dialog = Some(Dialog::ImportConflict { side, paths, dir, existing }),
         }
     }
 
-    fn import_now(&mut self, side: Side, paths: Vec<std::path::PathBuf>, dir: String, overwrite: bool) {
+    fn import_now(&mut self, side: Side, paths: Vec<std::path::PathBuf>, dir: String, overwrite: bool, t: &Strings) {
         match side {
             // In the background: a big folder doesn't freeze the window.
             Side::Local => {
@@ -976,6 +976,7 @@ impl FileManager {
                 self.next_id += 1;
                 let (tx, rx) = std::sync::mpsc::channel();
                 let ctx = self.ctx.clone();
+                let into_itself = t.files_into_itself;
                 std::thread::spawn(move || {
                     let result = (|| {
                         for from in &paths {
@@ -984,6 +985,10 @@ impl FileManager {
                             // Onto itself (dropped where it already is): nothing to do.
                             if to == *from {
                                 continue;
+                            }
+                            // Into one of its own folders: the copy would go on copying itself.
+                            if from.is_dir() && !from.is_symlink() && to.starts_with(from) {
+                                return Err(format!("{} : {into_itself}", from.display()));
                             }
                             if to.symlink_metadata().is_ok() {
                                 if !overwrite {
@@ -1648,7 +1653,7 @@ impl FileManager {
             self.compress(side, names, t);
         }
         if let Some((paths, dir)) = out.imported {
-            self.import(side, paths, dir);
+            self.import(side, paths, dir, t);
         }
         if let Some(names) = out.duplicate {
             self.duplicate(side, &names, t);
@@ -1923,7 +1928,7 @@ impl FileManager {
             }
             (Dialog::ImportConflict { side, paths, dir, .. }, outcome) => {
                 self.remember(outcome);
-                self.import_now(side, paths, dir, outcome == Outcome::Confirm);
+                self.import_now(side, paths, dir, outcome == Outcome::Confirm, t);
             }
         }
     }

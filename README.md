@@ -47,7 +47,7 @@ cargo run
 scripts/release.sh 0.2.0
 ```
 
-Le script met à jour la version dans `Cargo.toml`, commit, crée le tag `v0.2.0` et pousse. GitHub Actions compile alors pour macOS (app universelle), Linux (archive et AppImage) et Windows, puis publie la release avec les archives. Les Ronnie installés la proposent à leurs utilisateurs à leur prochaine vérification (au lancement puis toutes les 6 h).
+Le script met à jour la version dans `Cargo.toml`, commit, crée le tag `v0.2.0` et pousse. GitHub Actions compile alors pour macOS (Apple Silicon), Linux (AppImage) et Windows, puis publie la release avec les archives. Les Ronnie installés la proposent à leurs utilisateurs à leur prochaine vérification (au lancement puis toutes les 6 h).
 
 `scripts/package.sh` produit localement l'archive du système courant dans `dist/`.
 
