@@ -15,18 +15,8 @@ use crate::config::hex_color;
 const ASKPASS_ENV: &str = "RONNIE_ASKPASS";
 /// Set for ssh without terminal (SFTP): the helper never asks on a terminal.
 const ASKPASS_NO_TTY_ENV: &str = "RONNIE_ASKPASS_NO_TTY";
-/// Where the window listens for the askpass helper (Unix).
-#[cfg(unix)]
+/// Where the window listens for the askpass helper (a socket; a named pipe on Windows).
 const ASKPASS_SOCKET_ENV: &str = "RONNIE_ASKPASS_SOCKET";
-/// Set when the helper may answer with the saved password (Windows: the helper reads it itself).
-#[cfg(windows)]
-const ASKPASS_SAVED_ENV: &str = "RONNIE_ASKPASS_SAVED";
-/// A random id per connection, naming its "already tried" marker (Windows).
-#[cfg(windows)]
-const ASKPASS_NONCE_ENV: &str = "RONNIE_ASKPASS_NONCE";
-/// Set when the host logs in with a key file: the saved password is also its passphrase (Windows).
-#[cfg(windows)]
-const ASKPASS_KEY_ENV: &str = "RONNIE_ASKPASS_KEY";
 pub const CONNECT_TIMEOUT_SECS: u32 = 10;
 
 /// How ssh logs in to a host.
@@ -211,19 +201,9 @@ impl SshHost {
                 env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
                 env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
                 env.push((ASKPASS_ENV.to_owned(), self.id.to_string()));
-                // Unix: the helper asks the window, which checks who is asking (see askpass.rs).
-                #[cfg(unix)]
+                // The helper asks the window, which checks who is asking (see askpass.rs).
                 if let Some(socket) = crate::askpass::socket_path() {
                     env.push((ASKPASS_SOCKET_ENV.to_owned(), socket.display().to_string()));
-                }
-                // Windows: identifies this connection, for its single automatic try.
-                #[cfg(windows)]
-                env.push((ASKPASS_NONCE_ENV.to_owned(), Uuid::new_v4().to_string()));
-                #[cfg(windows)]
-                env.push((ASKPASS_SAVED_ENV.to_owned(), "1".to_owned()));
-                #[cfg(windows)]
-                if self.auth_method() == SshAuth::Key {
-                    env.push((ASKPASS_KEY_ENV.to_owned(), "1".to_owned()));
                 }
             }
         }
@@ -245,8 +225,6 @@ impl SshHost {
         }
         launch.args.extend(["-T".to_owned(), "-s".to_owned(), "--".to_owned(), self.host.clone(), "sftp".to_owned()]);
         if let Ok(exe) = std::env::current_exe() {
-            #[cfg(windows)]
-            let key = launch.env.iter().any(|(k, _)| k == ASKPASS_KEY_ENV);
             launch.env.retain(|(k, _)| !k.starts_with("SSH_ASKPASS") && !k.starts_with("RONNIE_ASKPASS"));
             launch.env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
             launch.env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
@@ -254,19 +232,8 @@ impl SshHost {
             // Only the window answers: no terminal to fall back to (or a wrong one, if Ronnie was
             // started from a terminal).
             launch.env.push((ASKPASS_NO_TTY_ENV.to_owned(), "1".to_owned()));
-            #[cfg(unix)]
             if let Some(socket) = crate::askpass::socket_path() {
                 launch.env.push((ASKPASS_SOCKET_ENV.to_owned(), socket.display().to_string()));
-            }
-            #[cfg(windows)]
-            launch.env.push((ASKPASS_NONCE_ENV.to_owned(), Uuid::new_v4().to_string()));
-            #[cfg(windows)]
-            if self.uses_saved_password() {
-                launch.env.push((ASKPASS_SAVED_ENV.to_owned(), "1".to_owned()));
-            }
-            #[cfg(windows)]
-            if key {
-                launch.env.push((ASKPASS_KEY_ENV.to_owned(), "1".to_owned()));
             }
         }
         launch
@@ -595,15 +562,13 @@ pub fn saved_password_ids() -> Option<std::collections::HashSet<Uuid>> {
 /// passphrase prompt; anything else (host key confirmation, a retry after a wrong password) is asked on
 /// the terminal.
 pub fn run_askpass() -> bool {
-    let Ok(id) = std::env::var(ASKPASS_ENV) else { return false };
+    if std::env::var_os(ASKPASS_ENV).is_none() {
+        return false;
+    }
     let prompt = std::env::args().nth(1).unwrap_or_default();
-    // Unix: only the window may hand out the password, after checking that this helper belongs to an ssh
-    // it started. Without it (older window, no socket), the user types the password.
-    #[cfg(unix)]
+    // Only the window may hand out the password, after checking that this helper belongs to an ssh it
+    // started. Without it (older window, no socket), the user types the password.
     let saved = std::env::var_os(ASKPASS_SOCKET_ENV).and_then(|socket| crate::askpass::ask_window(std::path::Path::new(&socket), &prompt));
-    #[cfg(not(unix))]
-    let saved = saved_answer(&id, &prompt);
-    let _ = &id;
     let terminal = std::env::var_os(ASKPASS_NO_TTY_ENV).is_none();
     let answer = saved.or_else(|| terminal.then(|| ask_on_terminal(&prompt)).flatten());
     match answer {
@@ -613,23 +578,6 @@ pub fn run_askpass() -> bool {
         }
         None => std::process::exit(1),
     }
-}
-
-/// Windows: the saved password, once per connection (a marker file named after the connection's id).
-#[cfg(not(unix))]
-fn saved_answer(id: &str, prompt: &str) -> Option<String> {
-    let id: Uuid = id.parse().ok()?;
-    std::env::var_os(ASKPASS_SAVED_ENV)?;
-    let lower = prompt.to_lowercase();
-    let passphrase = is_key_passphrase_prompt(prompt) && std::env::var_os(ASKPASS_KEY_ENV).is_some();
-    if !passphrase && (!lower.contains("password") || lower.contains("passphrase")) {
-        return None;
-    }
-    let nonce: Uuid = std::env::var(ASKPASS_NONCE_ENV).ok()?.parse().ok()?;
-    let marker = std::env::temp_dir().join(format!("ronnie-askpass-{nonce}{}", if passphrase { "-key" } else { "" }));
-    // create_new: fails if it exists (already tried) and never follows a planted link.
-    std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).ok()?;
-    load_password(id)
 }
 
 /// ssh's own question to unlock a key file ("Enter passphrase for key '…': "), not a server's.
@@ -664,9 +612,36 @@ fn ask_on_terminal(prompt: &str) -> Option<String> {
     Some(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
-#[cfg(not(unix))]
-fn ask_on_terminal(_prompt: &str) -> Option<String> {
-    None
+/// Windows: on the console of the ssh that started this helper (the pane's), echo off for secrets.
+#[cfg(windows)]
+fn ask_on_terminal(prompt: &str) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, CONSOLE_MODE, ENABLE_ECHO_INPUT, GetConsoleMode, SetConsoleMode};
+    // A release build has no console of its own: use ssh's. (A debug build shares it already.)
+    // SAFETY: plain call; failing only means a console is already attached, or there is none.
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    let input = std::fs::OpenOptions::new().read(true).write(true).open("CONIN$").ok()?;
+    let mut out = std::fs::OpenOptions::new().write(true).open("CONOUT$").ok()?;
+    let secret = !prompt.to_lowercase().contains("yes/no");
+    let handle = input.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let mut saved: CONSOLE_MODE = 0;
+    // SAFETY: `handle` is the open console input; `saved` is valid for writing.
+    let hide = secret && unsafe { GetConsoleMode(handle, &mut saved) } != 0;
+    if hide {
+        // SAFETY: as above.
+        unsafe { SetConsoleMode(handle, saved & !ENABLE_ECHO_INPUT) };
+    }
+    let _ = write!(out, "{prompt}");
+    let _ = out.flush();
+    let mut line = String::new();
+    let read = std::io::BufReader::new(&input).read_line(&mut line);
+    if hide {
+        // SAFETY: as above.
+        unsafe { SetConsoleMode(handle, saved) };
+        let _ = writeln!(out);
+    }
+    read.ok()?;
+    Some(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
 // ~/.ssh/config import.

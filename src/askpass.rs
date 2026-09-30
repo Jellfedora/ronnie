@@ -5,10 +5,12 @@
 //! password — and only once per connection: after a wrong password, ssh asks again and the user types.
 //! With a key file, the saved password also unlocks the key (ssh's own passphrase prompt), once too.
 //!
-//! Unix only; on Windows the helper reads the saved password itself (see `ssh::run_askpass`).
+//! Unix: a socket file only the user can open, the asking process told by the kernel. Windows: a named
+//! pipe (local clients only), the asking process told by the system the same way.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -16,7 +18,8 @@ use std::thread;
 
 use uuid::Uuid;
 
-/// Socket the helper connects to, set once the window listens (passed to ssh in its environment).
+/// Socket (Windows: pipe) the helper connects to, set once the window listens (passed to ssh in its
+/// environment).
 static SOCKET: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn socket_path() -> Option<&'static Path> {
@@ -84,6 +87,7 @@ impl Server {
     }
 
     /// Starts listening in the background. Without a socket, helpers ask on the terminal.
+    #[cfg(unix)]
     pub fn start() -> Self {
         let server = Self::default();
         let Some(path) = pick_path() else { return server };
@@ -99,7 +103,69 @@ impl Server {
             // One thread per request: a question waiting for the user mustn't hold the others.
             for stream in listener.incoming().flatten() {
                 let state = state.clone();
-                let _ = thread::Builder::new().name("askpass-request".into()).spawn(move || answer(stream, &state));
+                let _ = thread::Builder::new().name("askpass-request".into()).spawn(move || {
+                    // An idle connection doesn't hold a thread for long.
+                    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+                    answer(&stream, peer_pid(&stream), &state)
+                });
+            }
+        });
+        server
+    }
+
+    /// Starts listening in the background, on a named pipe. Without it, helpers ask on the terminal.
+    #[cfg(windows)]
+    pub fn start() -> Self {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers, PIPE_ACCESS_DUPLEX};
+        use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT};
+
+        let server = Self::default();
+        // A random name: another program can't have created it first to listen instead (and the first
+        // instance is required to be new).
+        let path = PathBuf::from(format!(r"\\.\pipe\ronnie-askpass-{}-{}", std::process::id(), Uuid::new_v4()));
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `name` is NUL-terminated UTF-16; no security attributes (the default: the user only
+        // may write to it).
+        let create = move |first: bool| unsafe {
+            let mode = PIPE_ACCESS_DUPLEX | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
+            CreateNamedPipeW(name.as_ptr(), mode, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, std::ptr::null())
+        };
+        let first = create(true);
+        if first == INVALID_HANDLE_VALUE {
+            return server;
+        }
+        let _ = SOCKET.set(path);
+        let state = server.state.clone();
+        // Handles as numbers: raw pointers can't cross threads.
+        let first = first as usize;
+        let _ = thread::Builder::new().name("askpass".into()).spawn(move || {
+            let mut next = first as windows_sys::Win32::Foundation::HANDLE;
+            loop {
+                // SAFETY: `next` is a pipe instance we created and own.
+                let connected = unsafe { ConnectNamedPipe(next, std::ptr::null_mut()) } != 0 || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+                let mut helper = 0u32;
+                // SAFETY: as above; `helper` is valid for writing.
+                let known = connected && unsafe { GetNamedPipeClientProcessId(next, &mut helper) } != 0 && helper != 0;
+                // SAFETY: the handle is ours and is closed by the File from now on.
+                let pipe = unsafe { std::fs::File::from_raw_handle(next as _) };
+                // The next helper connects to a new instance while this one is answered.
+                next = create(false);
+                if connected {
+                    let state = state.clone();
+                    let _ = thread::Builder::new().name("askpass-request".into()).spawn(move || {
+                        let result = answer(&pipe, known.then_some(helper), &state);
+                        // The helper reads the whole answer before the pipe closes.
+                        // SAFETY: the handle is open for as long as `pipe` lives.
+                        unsafe { FlushFileBuffers(pipe.as_raw_handle() as _) };
+                        result
+                    });
+                }
+                if next == INVALID_HANDLE_VALUE {
+                    break;
+                }
             }
         });
         server
@@ -122,13 +188,15 @@ impl Server {
     }
 }
 
-/// Removes the socket file (on quit).
+/// Removes the socket file (on quit; a pipe goes away by itself).
 pub fn cleanup() {
+    #[cfg(unix)]
     if let Some(path) = SOCKET.get() {
         let _ = std::fs::remove_file(path);
     }
 }
 
+#[cfg(unix)]
 /// A short path (socket paths are limited to about 100 bytes) in a directory only the user can read.
 fn pick_path() -> Option<PathBuf> {
     let name = format!("ronnie-askpass-{}.sock", std::process::id());
@@ -142,18 +210,15 @@ fn pick_path() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join(name))
 }
 
-/// One helper request: a prompt line in, "OK\n<password>\n" or "NO\n" out.
-fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
-    let helper = peer_pid(&stream);
-    // An idle connection doesn't hold a thread for long.
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+/// One helper request from process `helper`: a prompt line in, "OK\n<password>\n" or "NO\n" out.
+fn answer<S: Read + Write>(mut stream: S, helper: Option<u32>, state: &Mutex<State>) -> std::io::Result<()> {
     let mut prompt = String::new();
     // Read even when the answer will be no: closing with unread data would reset the connection
     // (the helper would see an error instead of the answer).
-    BufReader::new((&stream).take(4096)).read_line(&mut prompt)?;
+    BufReader::new((&mut stream).take(4096)).read_line(&mut prompt)?;
     // Who asks is checked before anything else is looked up or shown.
     if helper.and_then(parent_pid).is_none_or(|ssh| !state.lock().unwrap().allowed.contains_key(&ssh)) {
-        return (&stream).write_all(b"NO\n");
+        return stream.write_all(b"NO\n");
     }
     let prompt = prompt.trim_end_matches(['\r', '\n']).to_owned();
     let ssh = helper.and_then(parent_pid);
@@ -161,7 +226,7 @@ fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
         let mut state = state.lock().unwrap();
         let Some(ssh) = ssh.filter(|ssh| state.allowed.contains_key(ssh)) else {
             drop(state);
-            return (&stream).write_all(b"NO\n");
+            return stream.write_all(b"NO\n");
         };
         // One automatic try per connection, and only for a password prompt, or with a key file for
         // ssh's own passphrase prompt (not a server's question that would merely mention a passphrase).
@@ -189,16 +254,32 @@ fn answer(stream: UnixStream, state: &Mutex<State>) -> std::io::Result<()> {
         }
         answer
     });
-    let mut out = &stream;
     match answer {
-        Some(answer) => write!(out, "OK\n{answer}\n"),
-        None => out.write_all(b"NO\n"),
+        Some(answer) => write!(stream, "OK\n{answer}\n"),
+        None => stream.write_all(b"NO\n"),
     }
 }
 
 /// The helper's side: asks the window. None when it has no answer (then ask on the terminal).
 pub fn ask_window(socket: &Path, prompt: &str) -> Option<String> {
+    #[cfg(unix)]
     let mut stream = UnixStream::connect(socket).ok()?;
+    #[cfg(windows)]
+    let mut stream = {
+        // Every instance busy (another helper asking right now): wait a moment for a free one.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let mut tries = 0;
+        loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(socket) {
+                Ok(pipe) => break pipe,
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 40 => {
+                    tries += 1;
+                    thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(_) => return None,
+            }
+        }
+    };
     writeln!(stream, "{}", prompt.replace('\n', " ")).ok()?;
     let mut reader = BufReader::new(stream);
     let mut status = String::new();
@@ -211,6 +292,11 @@ pub fn ask_window(socket: &Path, prompt: &str) -> Option<String> {
     Some(password.trim_end_matches(['\r', '\n']).to_owned())
 }
 
+#[cfg(windows)]
+fn parent_pid(pid: u32) -> Option<u32> {
+    crate::winproc::parent_pid(pid)
+}
+
 #[cfg(target_os = "macos")]
 fn peer_pid(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
@@ -221,7 +307,7 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
     (ok && pid > 0).then_some(pid as u32)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn peer_pid(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
@@ -240,14 +326,14 @@ fn parent_pid(pid: u32) -> Option<u32> {
     (n == size).then_some(info.pbi_ppid)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn parent_pid(pid: u32) -> Option<u32> {
     // /proc/<pid>/stat: "pid (comm) state ppid ...", comm may hold spaces and parentheses.
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -265,7 +351,8 @@ mod tests {
         state.lock().unwrap().allowed.insert(unsafe { libc::getppid() } as u32, Uuid::new_v4());
         let mut helper = theirs;
         writeln!(helper, "demo@host's password: ").unwrap();
-        answer(ours, &state).unwrap();
+        answer(&ours, peer_pid(&ours), &state).unwrap();
+        drop(ours);
         let mut reply = String::new();
         helper.read_to_string(&mut reply).unwrap();
         assert_eq!(reply, "NO\n");
@@ -274,7 +361,8 @@ mod tests {
         let (ours, mut helper) = UnixStream::pair().unwrap();
         state.lock().unwrap().allowed.clear();
         writeln!(helper, "password: ").unwrap();
-        answer(ours, &state).unwrap();
+        answer(&ours, peer_pid(&ours), &state).unwrap();
+        drop(ours);
         let mut reply = String::new();
         helper.read_to_string(&mut reply).unwrap();
         assert_eq!(reply, "NO\n", "a process no pane started gets nothing");
@@ -286,7 +374,7 @@ mod tests {
         let ask = |state: &Arc<Mutex<State>>, prompt: &str| {
             let (ours, mut helper) = UnixStream::pair().unwrap();
             writeln!(helper, "{prompt}").unwrap();
-            answer(ours, state).unwrap();
+            answer(&ours, peer_pid(&ours), state).unwrap();
         };
         let prompt = "Enter passphrase for key '/home/demo/.ssh/id_ed25519': ";
         let state = Arc::new(Mutex::new(State::default()));

@@ -409,10 +409,11 @@ impl App {
     /// Closes right away, or asks first when that would interrupt running programs.
     pub(super) fn request_close(&mut self, request: CloseRequest) {
         let busy = self.busy_for(request);
-        if busy.is_empty() {
+        let skip = matches!(request, CloseRequest::Pane(..) | CloseRequest::Tab(_)) && !self.config.settings.confirm_close_busy;
+        if busy.is_empty() || skip {
             self.do_close(request);
         } else {
-            self.confirm_close = Some(ConfirmClose { request, busy });
+            self.confirm_close = Some(ConfirmClose { request, busy, dont_ask: false });
         }
     }
 
@@ -726,25 +727,31 @@ impl App {
 
     /// "Close anyway?" dialog listing the programs that would be stopped.
     pub(super) fn confirm_close_window(&mut self, ctx: &egui::Context) {
-        let Some(confirm) = &self.confirm_close else { return };
         let t = self.t();
+        let theme = &self.theme;
+        let Some(confirm) = &mut self.confirm_close else { return };
         let mut answer = None;
-        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
         let modal = egui::Modal::new(egui::Id::new("confirm-close")).frame(frame).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.label(egui::RichText::new(t.close_anyway_title).size(17.0).strong());
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(t.close_anyway_body).size(13.5).color(self.theme.text_muted));
+            ui.label(egui::RichText::new(t.close_anyway_body).size(13.5).color(theme.text_muted));
             ui.add_space(6.0);
             for item in confirm.busy.iter().take(8) {
                 ui.label(egui::RichText::new(format!("•  {item}")).size(13.0).monospace());
             }
             if confirm.busy.len() > 8 {
-                ui.label(egui::RichText::new(format!("…  +{}", confirm.busy.len() - 8)).size(13.0).color(self.theme.text_muted));
+                ui.label(egui::RichText::new(format!("…  +{}", confirm.busy.len() - 8)).size(13.0).color(theme.text_muted));
+            }
+            // A tab or a pane only: quitting the app always asks.
+            if matches!(confirm.request, CloseRequest::Pane(..) | CloseRequest::Tab(_)) {
+                ui.add_space(10.0);
+                ui.checkbox(&mut confirm.dont_ask, egui::RichText::new(t.close_dont_ask).size(13.0));
             }
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let close = egui::Button::new(egui::RichText::new(t.close).size(13.5).color(Color32::WHITE)).fill(self.theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0));
+                let close = egui::Button::new(egui::RichText::new(t.close).size(13.5).color(Color32::WHITE)).fill(theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0));
                 if ui.add(close).clicked() {
                     answer = Some(true);
                 }
@@ -762,6 +769,10 @@ impl App {
         match answer {
             Some(true) => {
                 let request = confirm.request;
+                if confirm.dont_ask {
+                    self.config.settings.confirm_close_busy = false;
+                    self.save_config();
+                }
                 self.confirm_close = None;
                 self.do_close(request);
             }

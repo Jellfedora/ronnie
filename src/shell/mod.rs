@@ -6,6 +6,9 @@
 //! bash: started with Ronnie's startup file (--rcfile), which loads the user's usual ones as the
 //! system's terminal does (~/.bashrc on Linux, the login files on macOS), then switches HISTFILE to the
 //! terminal's file and marks commands (OSC 133).
+//! Windows: PowerShell (7 when installed, else the system's 5.1), which runs Ronnie's script after the
+//! user's profile: its own history (PSReadLine), command marks, and the folder (OSC 7) — Windows doesn't
+//! tell another process's folder.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -13,6 +16,7 @@ use std::path::{Path, PathBuf};
 use portable_pty::CommandBuilder;
 use uuid::Uuid;
 
+#[cfg(not(windows))]
 const ZSH_FILES: [(&str, &str); 4] = [
     (".zshenv", include_str!("zshenv")),
     (".zprofile", include_str!("zprofile")),
@@ -56,12 +60,14 @@ pub fn forget_scrollbacks() {
     }
 }
 
+#[cfg(not(windows))]
 /// The user's login shell, as the pseudo-terminal starts it.
 fn user_shell() -> Option<String> {
     let shell = std::env::var("SHELL").ok()?;
     Path::new(&shell).file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
+#[cfg(not(windows))]
 /// Makes the shell started by `cmd` keep its history in `history`.
 fn use_history(cmd: &mut CommandBuilder, history: &Path) {
     match user_shell().as_deref() {
@@ -80,11 +86,47 @@ fn use_history(cmd: &mut CommandBuilder, history: &Path) {
     }
 }
 
+#[cfg(not(windows))]
 const BASH_FILES: [(&str, &str); 1] = [("bashrc", include_str!("bashrc"))];
+#[cfg(windows)]
+const POWERSHELL_FILES: [(&str, &str); 1] = [("ronnie.ps1", include_str!("ronnie.ps1"))];
+
+/// PowerShell 7 if found in the PATH, else Windows PowerShell (always there).
+#[cfg(windows)]
+fn powershell() -> std::ffi::OsString {
+    let found = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("pwsh.exe")).find(|p| p.is_file()));
+    found.map_or_else(|| "powershell.exe".into(), PathBuf::into_os_string)
+}
+
+/// Windows: PowerShell with Ronnie's integration (without it if the script can't be written).
+#[cfg(windows)]
+fn powershell_command(history: Option<&Path>) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(powershell());
+    cmd.arg("-NoLogo");
+    let dir = crate::config::config_dir().map(|d| d.join("shell").join("powershell"));
+    if let Some(dir) = dir.filter(|d| write_files(d, &POWERSHELL_FILES).is_ok()) {
+        // Read and run as a script block: not a script file, which the execution policy may forbid
+        // (Windows' default one does).
+        cmd.args(["-NoExit", "-Command", ". ([ScriptBlock]::Create([IO.File]::ReadAllText($env:RONNIE_PS_INIT)))"]);
+        cmd.env("RONNIE_PS_INIT", dir.join("ronnie.ps1"));
+        if let Some(history) = history {
+            cmd.env("RONNIE_HISTFILE", history);
+        }
+    }
+    cmd
+}
 
 /// The command starting a local terminal's shell: the user's shell, with Ronnie's integration for zsh
 /// and bash, and its own history in `history`.
 pub fn local_command(history: Option<&Path>) -> CommandBuilder {
+    #[cfg(windows)]
+    return powershell_command(history);
+    #[cfg(not(windows))]
+    local_unix_command(history)
+}
+
+#[cfg(not(windows))]
+fn local_unix_command(history: Option<&Path>) -> CommandBuilder {
     if user_shell().as_deref() == Some("bash") {
         if let (Some(dir), Ok(shell)) = (crate::config::config_dir().map(|d| d.join("shell").join("bash")), std::env::var("SHELL")) {
             if write_files(&dir, &BASH_FILES).is_ok() {

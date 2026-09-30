@@ -254,7 +254,6 @@ pub(super) struct FileManager {
     /// The host, for commands run on the server (compressing), and what wakes the window up.
     ssh_host: Option<SshHost>,
     ctx: Option<egui::Context>,
-    #[cfg(unix)]
     askpass: Option<crate::askpass::Server>,
     /// Folder names for path completion, by side and folder (remote ones asked for in the background).
     dir_cache: HashMap<(bool, String), (Instant, Vec<(String, bool)>)>,
@@ -291,7 +290,6 @@ impl FileManager {
             viewer: None,
             ssh_host: None,
             ctx: None,
-            #[cfg(unix)]
             askpass: None,
             zips: Vec::new(),
             dir_cache: HashMap::new(),
@@ -323,17 +321,13 @@ impl FileManager {
     }
 
     /// Opens the SFTP session; ssh's questions (password, host key) go to the askpass prompter.
-    pub fn connect(&mut self, ctx: &egui::Context, host: &SshHost, #[cfg(unix)] askpass: &crate::askpass::Server) {
+    pub fn connect(&mut self, ctx: &egui::Context, host: &SshHost, askpass: &crate::askpass::Server) {
         self.ssh_host = Some(host.clone());
         self.ctx = Some(ctx.clone());
-        #[cfg(unix)]
-        {
-            self.askpass = Some(askpass.clone());
-        }
+        self.askpass = Some(askpass.clone());
         let launch = host.sftp_command();
         match sftp::Connection::open(ctx, &launch.program, &launch.args, &launch.env) {
             Ok(conn) => {
-                #[cfg(unix)]
                 if let Some(pid) = conn.pid {
                     askpass.allow_interactive(pid, host);
                 }
@@ -818,7 +812,6 @@ impl FileManager {
             Side::Remote => {
                 let Some(host) = self.ssh_host.clone() else { return };
                 let launch = host.exec_command(&format!("sh -c {}", sh_quote(&zip_script(&dir, &names, &out))));
-                #[cfg(unix)]
                 let askpass = self.askpass.clone();
                 let no_zip = t.files_no_zip;
                 std::thread::spawn(move || {
@@ -831,7 +824,6 @@ impl FileManager {
                     }
                     let result = match cmd.spawn() {
                         Ok(child) => {
-                            #[cfg(unix)]
                             if let Some(askpass) = &askpass {
                                 askpass.allow_interactive(child.id(), &host);
                             }
@@ -1979,13 +1971,12 @@ impl App {
         }
         let Some(host) = self.tabs.get(index).and_then(|t| t.ssh).and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned() else { return };
         let ctx = self.ctx.clone();
-        #[cfg(unix)]
         let askpass = self.askpass.clone();
         let tab = &mut self.tabs[index];
         tab.show_files = show;
         if show && tab.files.is_none() {
             let mut fm = Box::new(FileManager::new(&host));
-            fm.connect(&ctx, &host, #[cfg(unix)] &askpass);
+            fm.connect(&ctx, &host, &askpass);
             tab.files = Some(fm);
         }
         // The server side opens where the terminal is (when its shell tells).
@@ -2016,7 +2007,7 @@ impl App {
             }
             Some(host) => {
                 let mut fm = Box::new(FileManager::new(&host));
-                fm.connect(&self.ctx, &host, #[cfg(unix)] &self.askpass);
+                fm.connect(&self.ctx, &host, &self.askpass);
                 fm.follow_terminal(term.and_then(Terminal::reported_cwd));
                 super::ToolWindow::new(host.name.clone(), super::Tool::Files(fm, Some(host.id)))
             }
@@ -2059,10 +2050,9 @@ impl App {
             FilesAction::ShowTerminal => self.toggle_files(index, false),
             FilesAction::Reconnect => {
                 if let Some(host) = self.config.ssh.iter().find(|h| Some(h.id) == self.tabs[index].ssh).cloned() {
-                    #[cfg(unix)]
                     let askpass = self.askpass.clone();
                     if let Some(fm) = &mut self.tabs[index].files {
-                        fm.connect(&self.ctx, &host, #[cfg(unix)] &askpass);
+                        fm.connect(&self.ctx, &host, &askpass);
                     }
                 }
             }
@@ -2071,60 +2061,55 @@ impl App {
 
     /// A question from an ssh without terminal (SFTP): password or new host key, answered here.
     pub(super) fn ssh_prompt_window(&mut self, ctx: &egui::Context) {
-        #[cfg(unix)]
-        {
-            if self.ssh_prompt.is_none() {
-                self.ssh_prompt = self.ssh_prompts.try_recv().ok().map(|p| (p, String::new()));
-            }
-            let Some((prompt, answer)) = &mut self.ssh_prompt else { return };
-            let t = self.config.settings.language.strings();
-            let mut done: Option<Option<String>> = None;
-            let yes_no = !prompt.secret;
-            let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
-            let modal = egui::Modal::new(egui::Id::new("ssh-prompt")).frame(frame).show(ctx, |ui| {
-                ui.set_width(460.0);
-                ui.label(egui::RichText::new(t.ssh_prompt_title.replace("{host}", &prompt.host)).size(16.0).strong());
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(egui::RichText::new(&prompt.text).monospace().size(12.5)).wrap());
-                ui.add_space(10.0);
-                if yes_no {
-                    ui.horizontal(|ui| {
-                        if ui.button(egui::RichText::new("yes").monospace()).clicked() {
-                            done = Some(Some("yes".into()));
-                        }
-                        if ui.button(egui::RichText::new("no").monospace()).clicked() {
-                            done = Some(Some("no".into()));
-                        }
-                    });
-                } else {
-                    let edit = ui.add(egui::TextEdit::singleline(answer).password(true).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
-                    // Focus is taken back every frame, so lost_focus() never fires: check Enter itself.
-                    edit.request_focus();
-                    if ui.input(|i| i.key_pressed(Key::Enter)) {
-                        done = Some(Some(answer.clone()));
+        if self.ssh_prompt.is_none() {
+            self.ssh_prompt = self.ssh_prompts.try_recv().ok().map(|p| (p, String::new()));
+        }
+        let Some((prompt, answer)) = &mut self.ssh_prompt else { return };
+        let t = self.config.settings.language.strings();
+        let mut done: Option<Option<String>> = None;
+        let yes_no = !prompt.secret;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("ssh-prompt")).frame(frame).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(egui::RichText::new(t.ssh_prompt_title.replace("{host}", &prompt.host)).size(16.0).strong());
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(egui::RichText::new(&prompt.text).monospace().size(12.5)).wrap());
+            ui.add_space(10.0);
+            if yes_no {
+                ui.horizontal(|ui| {
+                    if ui.button(egui::RichText::new("yes").monospace()).clicked() {
+                        done = Some(Some("yes".into()));
                     }
-                }
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !yes_no && ui.button(t.confirm).clicked() {
-                        done = Some(Some(answer.clone()));
-                    }
-                    if ui.button(t.cancel).clicked() {
-                        done = Some(None);
+                    if ui.button(egui::RichText::new("no").monospace()).clicked() {
+                        done = Some(Some("no".into()));
                     }
                 });
-            });
-            if modal.should_close() {
-                done.get_or_insert(None);
-            }
-            if let Some(reply) = done {
-                if let Some((prompt, _)) = self.ssh_prompt.take() {
-                    let _ = prompt.reply.send(reply);
+            } else {
+                let edit = ui.add(egui::TextEdit::singleline(answer).password(true).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
+                // Focus is taken back every frame, so lost_focus() never fires: check Enter itself.
+                edit.request_focus();
+                if ui.input(|i| i.key_pressed(Key::Enter)) {
+                    done = Some(Some(answer.clone()));
                 }
             }
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !yes_no && ui.button(t.confirm).clicked() {
+                    done = Some(Some(answer.clone()));
+                }
+                if ui.button(t.cancel).clicked() {
+                    done = Some(None);
+                }
+            });
+        });
+        if modal.should_close() {
+            done.get_or_insert(None);
         }
-        #[cfg(not(unix))]
-        let _ = ctx;
+        if let Some(reply) = done {
+            if let Some((prompt, _)) = self.ssh_prompt.take() {
+                let _ = prompt.reply.send(reply);
+            }
+        }
     }
 }
 

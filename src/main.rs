@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-#[cfg(unix)]
 mod askpass;
 mod config;
 mod db;
@@ -17,6 +16,8 @@ mod ssh;
 mod terminal;
 mod theme;
 mod update;
+#[cfg(windows)]
+mod winproc;
 
 use std::sync::Arc;
 
@@ -135,12 +136,16 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     log::install_panic_hook();
+    #[cfg(target_os = "linux")]
+    update::integrate_appimage();
     log::info(&format!("start {}{}", update::VERSION, if config::OFFICIAL { "" } else { " dev" }));
     let (session, session_error) = config::load_session();
     let config = config::load_config();
     let theme = theme::Preset::find(config.as_ref().map_or(theme::DEFAULT_THEME, |c| &c.settings.theme)).theme();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(if config::OFFICIAL { "Ronnie" } else { "Ronnie (dev)" })
+        // Linux: what ties the window to ronnie.desktop (its icon in the dock), Wayland and X11.
+        .with_app_id(update::APP_ID)
         .with_inner_size([1100.0, 700.0])
         .with_min_inner_size([400.0, 240.0]);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/icon.png")) {

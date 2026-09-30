@@ -77,6 +77,40 @@ pub fn appimage() -> Option<PathBuf> {
     exe.starts_with(&dir).then(|| PathBuf::from(file))
 }
 
+/// Linux: the window's app id (Wayland) and class (X11), the name of Ronnie's .desktop file and icon.
+pub const APP_ID: &str = "ronnie";
+
+/// Run from an AppImage nothing integrated (AppImageLauncher, Gear Lever... do): its menu entry and
+/// icon in ~/.local/share, so the desktop shows Ronnie's icon for its windows, not another app's.
+/// Written again when the AppImage moved; left alone when already there.
+#[cfg(target_os = "linux")]
+pub fn integrate_appimage() {
+    let Some(file) = appimage() else { return };
+    let Some(data) = directories::BaseDirs::new().map(|d| d.data_dir().to_path_buf()) else { return };
+    let apps = data.join("applications");
+    let file = file.display().to_string();
+    // Another integration of this AppImage (its own .desktop pointing at it): nothing to add.
+    let ours = apps.join(format!("{APP_ID}.desktop"));
+    let others = std::fs::read_dir(&apps).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| *p != ours && p.extension().is_some_and(|x| x == "desktop"));
+    if others.filter_map(|p| std::fs::read_to_string(p).ok()).any(|text| text.contains(&file)) {
+        return;
+    }
+    let quoted = format!("\"{}\"", file.replace('\\', "\\\\").replace('"', "\\\"").replace('`', "\\`").replace('$', "\\$").replace('%', "%%"));
+    let entry = include_str!("../packaging/linux/ronnie.desktop").replace("Exec=ronnie", &format!("Exec={quoted}"));
+    let icon = data.join("icons/hicolor/512x512/apps").join(format!("{APP_ID}.png"));
+    let write = |path: &Path, bytes: &[u8]| -> std::io::Result<()> {
+        if std::fs::read(path).is_ok_and(|old| old == bytes) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))?;
+        std::fs::write(path, bytes)
+    };
+    let done = write(&icon, include_bytes!("../assets/icon/icon.png")).and_then(|()| write(&ours, entry.as_bytes()));
+    if let Err(e) = done {
+        crate::log::info(&format!("AppImage menu entry not written: {e}"));
+    }
+}
+
 /// Release file for this platform: an AppImage replaces an AppImage, the archive the other installs.
 fn asset_name(appimage: bool) -> String {
     if appimage { format!("Ronnie-{}.AppImage", std::env::consts::ARCH) } else { format!("ronnie-{TARGET}.{ARCHIVE_EXT}") }

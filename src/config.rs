@@ -488,6 +488,20 @@ pub struct Settings {
     /// Show the SQL of a change made through the database view (a cell, a row, a column...) before it runs.
     #[serde(default = "default_true")]
     pub db_confirm_changes: bool,
+    /// Ask before closing a tab or a pane whose programs are still running.
+    #[serde(default = "default_true")]
+    pub confirm_close_busy: bool,
+    /// Show the animated "Ronnie" logo when the app starts.
+    #[serde(default = "default_true")]
+    pub splash: bool,
+    /// Tips about Ronnie scrolling by at the bottom of the home page.
+    #[serde(default = "default_true")]
+    pub home_tips: bool,
+    /// The home page's cards of SSH hosts and of database connections.
+    #[serde(default = "default_true")]
+    pub home_hosts: bool,
+    #[serde(default = "default_true")]
+    pub home_databases: bool,
     /// The home page's typing game: the best rounds, the best first.
     #[serde(default)]
     pub typing_scores: Vec<TypingScore>,
@@ -717,7 +731,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, typing_scores: Vec::new(), game_sound: None }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, home_hosts: true, home_databases: true, typing_scores: Vec::new(), game_sound: None }
     }
 }
 

@@ -301,6 +301,25 @@ impl Change {
     }
 }
 
+/// What a query gave: its results, how long it took, the error it stopped on.
+type QueryOut = (Vec<QueryResult>, Duration, Option<String>);
+
+/// A tab of the SQL page: its query, and the results of the last run.
+#[derive(Default)]
+struct SqlTab {
+    id: u32,
+    sql: String,
+    out: Option<QueryOut>,
+    colors: Option<(String, egui::text::LayoutJob)>,
+    complete: super::sqlcomplete::Completer,
+}
+
+impl SqlTab {
+    fn new(id: u32) -> Self {
+        Self { id, ..Default::default() }
+    }
+}
+
 pub(super) enum DbAction {
     None,
 }
@@ -321,11 +340,19 @@ pub(super) struct DbView {
     rows_loading: bool,
     limit: u64,
     structure: Option<(String, String, Structure)>,
-    sql: String,
-    sql_out: Option<(Vec<QueryResult>, Duration, Option<String>)>,
+    /// The SQL page's tabs (never empty), the one shown, the id of the next one.
+    sql_tabs: Vec<SqlTab>,
+    sql_tab: usize,
+    next_sql_tab: u32,
     sql_running: bool,
-    /// The query field above a table's content, and whether its result is shown instead of the rows.
+    /// Where the result of the query sent goes: a SQL tab (by id), else the query above a table.
+    query_for: Option<u32>,
+    /// The query field above a table's content, its result, and whether it is shown instead of the rows.
     table_sql: String,
+    /// The query that read the rows shown, put in `table_sql`: replaced by the next one while it is
+    /// left as it is.
+    table_sql_auto: String,
+    table_out: Option<QueryOut>,
     table_query: bool,
     editing: Option<CellEdit>,
     /// An export or import going on (what, how far, on what), then how it ended.
@@ -358,9 +385,13 @@ pub(super) struct DbView {
     /// The history entry of the query running, and of each change sent (by tag), with when it left.
     running_entry: Option<(u64, Instant)>,
     exec_entries: HashMap<u32, (u64, Instant)>,
-    /// Colors of the SQL typed (on the SQL page, above a table), rebuilt when it changes.
-    sql_colors: Option<(String, egui::text::LayoutJob)>,
+    /// Colors of the SQL typed above a table, rebuilt when it changes.
     table_sql_colors: Option<(String, egui::text::LayoutJob)>,
+    /// Columns of each database's tables (to complete the SQL typed), asked for once per database
+    /// until the structure may have changed; the suggestions of the SQL field above a table.
+    columns: HashMap<String, HashMap<String, Vec<(String, String)>>>,
+    columns_asked: HashSet<String>,
+    table_sql_complete: super::sqlcomplete::Completer,
     /// Show the SQL of a change made through the interface before it runs (a setting).
     pub confirm_changes: bool,
     /// Set when a change is done (the texts come with the next frame), and a table to open then.
@@ -421,10 +452,14 @@ impl DbView {
             rows_loading: false,
             limit: 100,
             structure: None,
-            sql: String::new(),
-            sql_out: None,
+            sql_tabs: vec![SqlTab::new(0)],
+            sql_tab: 0,
+            next_sql_tab: 1,
             sql_running: false,
+            query_for: None,
             table_sql: String::new(),
+            table_sql_auto: String::new(),
+            table_out: None,
             table_query: false,
             editing: None,
             transfer: None,
@@ -447,8 +482,10 @@ impl DbView {
             history_filter: String::new(),
             running_entry: None,
             exec_entries: HashMap::new(),
-            sql_colors: None,
             table_sql_colors: None,
+            columns: HashMap::new(),
+            columns_asked: HashSet::new(),
+            table_sql_complete: Default::default(),
             confirm_changes: true,
             pending_notice: None,
             open_after: None,
@@ -537,6 +574,7 @@ impl DbView {
             match event {
                 Event::Connected { version } => {
                     self.status = Status::Ready(version);
+                    self.columns_asked.clear();
                     self.send(Request::Databases);
                     for d in self.expanded.clone() {
                         self.send(Request::Tables(d));
@@ -549,8 +587,15 @@ impl DbView {
                 Event::Tables { db, tables } => {
                     self.tables.insert(db, tables);
                 }
+                Event::Columns { db, columns } => {
+                    self.columns.insert(db, columns);
+                }
                 Event::Structure { db, table, structure } => self.structure = Some((db, table, structure)),
-                Event::Rows { db, table, offset, result, total, exact } => {
+                Event::Rows { db, table, offset, result, total, exact, sql } => {
+                    if self.db.as_deref() == Some(&db) && self.table.as_deref() == Some(&table) && (self.table_sql.trim().is_empty() || self.table_sql == self.table_sql_auto) {
+                        self.table_sql_auto = super::sql::format(&sql);
+                        self.table_sql = self.table_sql_auto.clone();
+                    }
                     let order = self.rows.as_ref().filter(|r| r.db == db && r.table == table).and_then(|r| r.order.clone());
                     self.rows = Some(RowsView { db, table, offset, order, result, total, exact });
                     self.rows_loading = false;
@@ -568,15 +613,31 @@ impl DbView {
                     }
                     // A change typed above a table (UPDATE, DELETE...): its rows are reloaded.
                     let changed = error.is_none() && results.iter().all(|r| r.columns.is_empty());
-                    self.sql_out = Some((results, elapsed, error));
+                    let out = Some((results, elapsed, error));
+                    let from_table = match self.query_for.take() {
+                        // A tab closed meanwhile: the result has nowhere to go.
+                        Some(id) => {
+                            if let Some(tab) = self.sql_tabs.iter_mut().find(|tab| tab.id == id) {
+                                tab.out = out;
+                            }
+                            false
+                        }
+                        None => {
+                            self.table_out = out;
+                            true
+                        }
+                    };
                     self.sql_running = false;
-                    if self.table_query && changed {
+                    if from_table && self.table_query && changed {
                         if let Some(r) = &self.rows {
                             let (d, tb, o, order) = (r.db.clone(), r.table.clone(), r.offset, r.order.clone());
                             self.load_rows(d, tb, o, order);
                         }
                     }
-                    // A query may have changed what is listed.
+                    // A query may have changed what is listed (and the columns, if it changed something).
+                    if changed {
+                        self.columns_asked.clear();
+                    }
                     self.refresh_lists();
                 }
                 Event::Progress { fraction, text } => {
@@ -597,6 +658,7 @@ impl DbView {
                     self.rows_loading = false;
                 }
                 Event::Done { affected, tag } => {
+                    self.columns_asked.clear();
                     if let Some((id, since)) = self.exec_entries.remove(&tag) {
                         self.finish_entry(id, since, super::sql::Outcome::Affected(affected));
                     }
@@ -650,6 +712,15 @@ impl DbView {
         }
     }
 
+    /// The columns of the selected database, asked for once a SQL field is typed in.
+    fn want_columns(&mut self) {
+        if let (Some(d), Status::Ready(_)) = (&self.db, &self.status) {
+            if self.columns_asked.insert(d.clone()) {
+                self.send(Request::Columns(d.clone()));
+            }
+        }
+    }
+
     fn refresh_lists(&mut self) {
         self.send(Request::Databases);
         for d in self.expanded.clone() {
@@ -687,6 +758,7 @@ impl DbView {
         self.detail = None;
         if other {
             self.table_sql.clear();
+            self.table_sql_auto.clear();
             self.search.clear();
             self.search_typed.clear();
         }
@@ -855,9 +927,11 @@ impl DbView {
         self.send(Request::Query { db, sql });
     }
 
-    /// Runs the SQL typed (on the SQL page, or `sql` above a table), asking first when it destroys a lot.
+    /// Runs the SQL typed in the SQL tab shown, asking first when it destroys a lot.
     fn run_sql(&mut self, t: &Strings) {
-        let sql = self.sql.trim().to_owned();
+        let tab = &self.sql_tabs[self.sql_tab];
+        let sql = tab.sql.trim().to_owned();
+        self.query_for = Some(tab.id);
         self.run_query(sql, t);
     }
 
@@ -1414,18 +1488,38 @@ impl DbView {
         let mut run = false;
         Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, if ui.memory(|m| m.has_focus(egui::Id::new(("table-sql", &d, &tb)))) { theme.accent.gamma_multiply(0.7) } else { theme.tab_hover })).corner_radius(8.0).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
+                ui.add_space(0.0);
                 ui.label(egui::RichText::new("SQL").size(11.5).strong().color(theme.accent));
                 let hint = format!("SELECT * FROM {} WHERE …", db::ident(&tb));
-                let edit = {
-                    let mut layouter = super::sql::layouter(theme, FontId::monospace(13.0), &mut self.table_sql_colors);
-                    ui.add(egui::TextEdit::singleline(&mut self.table_sql).id(egui::Id::new(("table-sql", &d, &tb))).hint_text(hint).frame(Frame::NONE).font(FontId::monospace(13.0)).layouter(&mut layouter).desired_width(ui.available_width() - 72.0))
-                };
-                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                let id = egui::Id::new(("table-sql", &d, &tb));
+                // Several lines: ⌘ Enter runs (Enter goes to the next line).
+                if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter))) {
                     run = true;
                 }
+                self.table_sql_complete.keys(ui, id, &mut self.table_sql);
+                let width = ui.available_width() - 72.0;
+                // The same suggestions as on the SQL page (tables, this table's columns first, keywords).
+                egui::ScrollArea::vertical().id_salt(("table-sql-editor", &d, &tb)).max_height(160.0).max_width(width).show(ui, |ui| {
+                    let out = {
+                        let mut layouter = super::sql::layouter(theme, FontId::monospace(13.0), &mut self.table_sql_colors);
+                        egui::TextEdit::multiline(&mut self.table_sql).id(id).code_editor().hint_text(hint).frame(Frame::NONE).font(FontId::monospace(13.0)).layouter(&mut layouter).desired_width(width).desired_rows(4).show(ui)
+                    };
+                    let schema = super::sqlcomplete::Schema {
+                        db: self.db.as_deref(),
+                        databases: self.databases.iter().map(|d| d.name.as_str()).collect(),
+                        tables: &self.tables,
+                        columns: self.db.as_ref().and_then(|d| self.columns.get(d)),
+                        table: self.table.as_deref(),
+                    };
+                    self.table_sql_complete.show(ui, id, &out, &mut self.table_sql, &schema, theme, t);
+                });
+                if ui.memory(|m| m.has_focus(id)) {
+                    self.want_columns();
+                }
                 let play = egui::Button::new(egui::RichText::new("▶").size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(28.0, 24.0));
-                if ui.add_enabled(!self.sql_running && !self.table_sql.trim().is_empty(), play).on_hover_text(t.db_run).clicked() {
+                let run_hint = format!("{}  ({})", t.db_run, if cfg!(target_os = "macos") { "⌘ ↩" } else { "Ctrl+↩" });
+                if ui.add_enabled(!self.sql_running && !self.table_sql.trim().is_empty(), play).on_hover_text(run_hint).clicked() {
                     run = true;
                 }
                 match super::sql::history_menu(ui, &self.history, &mut self.history_filter, theme, t) {
@@ -1438,6 +1532,7 @@ impl DbView {
         ui.add_space(8.0);
         if run && !self.sql_running && !self.table_sql.trim().is_empty() {
             self.table_query = true;
+            self.query_for = None;
             let sql = self.table_sql.trim().to_owned();
             self.run_query(sql, t);
         }
@@ -1460,7 +1555,7 @@ impl DbView {
             ui.add_space(6.0);
             if self.table_query {
                 let height = ui.available_height();
-                self.results_ui(ui, theme, t, height);
+                self.results_ui(ui, theme, t, height, None);
                 return;
             }
         }
@@ -1724,24 +1819,45 @@ impl DbView {
     fn sql_page(&mut self, ui: &mut Ui, theme: &Theme, t: &Strings) {
         let run_key = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)));
         let format_key = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)));
+        self.sql_tabs_ui(ui, theme, t);
+        ui.add_space(6.0);
         let editor_h = 220.0_f32.min(ui.available_height() * 0.45);
+        let k = self.sql_tab;
         Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(8.0).inner_margin(8.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical().id_salt("db-sql-editor").max_height(editor_h).show(ui, |ui| {
-                let mut layouter = super::sql::layouter(theme, FontId::monospace(13.0), &mut self.sql_colors);
-                ui.add(egui::TextEdit::multiline(&mut self.sql).code_editor().frame(Frame::NONE).desired_width(f32::INFINITY).desired_rows(6).hint_text(t.db_sql_hint).font(FontId::monospace(13.0)).layouter(&mut layouter));
+            let tab = &mut self.sql_tabs[k];
+            // Each tab its own editor (cursor, undo).
+            let id = egui::Id::new(("db-sql", self.id, tab.id));
+            tab.complete.keys(ui, id, &mut tab.sql);
+            egui::ScrollArea::vertical().id_salt(("db-sql-editor", tab.id)).max_height(editor_h).show(ui, |ui| {
+                let out = {
+                    let mut layouter = super::sql::layouter(theme, FontId::monospace(13.0), &mut tab.colors);
+                    egui::TextEdit::multiline(&mut tab.sql).id(id).code_editor().frame(Frame::NONE).desired_width(f32::INFINITY).desired_rows(6).hint_text(t.db_sql_hint).font(FontId::monospace(13.0)).layouter(&mut layouter).show(ui)
+                };
+                let schema = super::sqlcomplete::Schema {
+                    db: self.db.as_deref(),
+                    databases: self.databases.iter().map(|d| d.name.as_str()).collect(),
+                    tables: &self.tables,
+                    columns: self.db.as_ref().and_then(|d| self.columns.get(d)),
+                    table: self.table.as_deref(),
+                };
+                tab.complete.show(ui, id, &out, &mut tab.sql, &schema, theme, t);
             });
+            if ui.memory(|m| m.has_focus(id)) {
+                self.want_columns();
+            }
         });
         let mut format = format_key;
         ui.add_space(8.0);
         let mut run = run_key;
+        let running_here = self.sql_running && self.query_for == Some(self.sql_tabs[k].id);
         ui.horizontal(|ui| {
             let hint = if cfg!(target_os = "macos") { "⌘ ↩" } else { "Ctrl+↩" };
             let button = egui::Button::new(egui::RichText::new(format!("▶  {}   {hint}", t.db_run)).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
             if ui.add_enabled(!self.sql_running && matches!(self.status, Status::Ready(_)), button).clicked() {
                 run = true;
             }
-            if self.sql_running {
+            if running_here {
                 ui.spinner();
                 if ui.button(format!("■  {}", t.db_stop)).on_hover_text(t.db_stop_hint).clicked() {
                     self.cancel_query();
@@ -1749,7 +1865,7 @@ impl DbView {
             }
             let shortcut = if cfg!(target_os = "macos") { "⌘ ⇧ F" } else { "Ctrl+Shift+F" };
             let tidy = egui::Button::new(egui::RichText::new(format!("{}   {shortcut}", t.db_format)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-            if ui.add_enabled(!self.sql.trim().is_empty(), tidy).on_hover_text(t.db_format_hint).clicked() {
+            if ui.add_enabled(!self.sql_tabs[k].sql.trim().is_empty(), tidy).on_hover_text(t.db_format_hint).clicked() {
                 format = true;
             }
             if let Some(d) = &self.db {
@@ -1757,27 +1873,105 @@ impl DbView {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 match super::sql::history_menu(ui, &self.history, &mut self.history_filter, theme, t) {
-                    Some(super::sql::Pick::Load(q)) => self.sql = q,
+                    Some(super::sql::Pick::Load(q)) => self.sql_tabs[k].sql = q,
                     Some(super::sql::Pick::Clear) => self.clear_history(),
                     None => {}
                 }
             });
         });
-        if format && !self.sql.trim().is_empty() {
-            self.sql = super::sql::format(&self.sql);
+        let tab = &mut self.sql_tabs[k];
+        if format && !tab.sql.trim().is_empty() {
+            tab.sql = super::sql::format(&tab.sql);
         }
         if run && !self.sql_running {
             self.run_sql(t);
         }
         ui.add_space(10.0);
         let height = ui.available_height();
-        self.results_ui(ui, theme, t, height);
+        self.results_ui(ui, theme, t, height, Some(k));
+    }
+
+    /// The SQL page's tabs, each its query and its results (to compare them), and "+" for a new one.
+    fn sql_tabs_ui(&mut self, ui: &mut Ui, theme: &Theme, t: &Strings) {
+        let mut close = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let several = self.sql_tabs.len() > 1;
+            let font = FontId::proportional(12.5);
+            for (i, tab) in self.sql_tabs.iter().enumerate() {
+                let selected = i == self.sql_tab;
+                let running = self.sql_running && self.query_for == Some(tab.id);
+                let label = t.db_sql_tab.replace("{n}", &(tab.id + 1).to_string());
+                // The slot on the right is always kept (the ✕, or the dot of a query running): hovering
+                // shows the ✕ in it, nothing moves.
+                let slot = if several || running { 18.0 } else { 0.0 };
+                let galley = ui.painter().layout_no_wrap(label, font.clone(), if selected { theme.text } else { theme.text_muted });
+                let size = Vec2::new(12.0 + galley.size().x + slot + if slot > 0.0 { 4.0 } else { 12.0 }, 26.0);
+                let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+                let hovered = resp.hovered();
+                let fill = if selected { theme.tab_active } else if hovered { theme.tab_hover } else { Color32::TRANSPARENT };
+                ui.painter().rect_filled(rect, 6.0, fill);
+                if selected {
+                    ui.painter().hline(rect.min.x + 8.0..=rect.max.x - 8.0, rect.max.y - 1.0, Stroke::new(2.0, theme.accent));
+                }
+                ui.painter().galley(Pos2::new(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0), galley, theme.text);
+                let x_rect = Rect::from_center_size(Pos2::new(rect.max.x - 4.0 - slot / 2.0, rect.center().y), Vec2::splat(16.0));
+                let over_x = several && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| x_rect.contains(p));
+                if several && (hovered || selected) && !(running && !hovered) {
+                    if over_x {
+                        ui.painter().rect_filled(x_rect, 4.0, theme.text_muted.gamma_multiply(0.25));
+                    }
+                    let color = if over_x { theme.text } else { theme.text_muted.gamma_multiply(if hovered { 1.0 } else { 0.6 }) };
+                    let (c, r) = (x_rect.center(), 3.5);
+                    for (a, b) in [(Vec2::new(-r, -r), Vec2::new(r, r)), (Vec2::new(-r, r), Vec2::new(r, -r))] {
+                        ui.painter().line_segment([c + a, c + b], Stroke::new(1.3, color));
+                    }
+                } else if running {
+                    let pulse = (ui.input(|i| i.time) * 4.0).sin() as f32 * 0.35 + 0.65;
+                    ui.painter().circle_filled(x_rect.center(), 3.5, theme.accent.gamma_multiply(pulse));
+                    ui.ctx().request_repaint();
+                }
+                let resp = if over_x {
+                    resp.on_hover_text(t.db_sql_tab_close)
+                } else if tab.sql.trim().is_empty() {
+                    resp
+                } else {
+                    resp.on_hover_text(egui::RichText::new(tab.sql.trim()).monospace().size(12.0))
+                };
+                if several && (resp.middle_clicked() || (resp.clicked() && over_x)) {
+                    close = Some(i);
+                } else if resp.clicked() {
+                    self.sql_tab = i;
+                }
+            }
+            let add = ui.add(egui::Button::new(egui::RichText::new("+").size(15.0)).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::new(26.0, 26.0))).on_hover_text(t.db_sql_tab_new);
+            if add.clicked() {
+                self.sql_tabs.push(SqlTab::new(self.next_sql_tab));
+                self.next_sql_tab += 1;
+                self.sql_tab = self.sql_tabs.len() - 1;
+            }
+        });
+        if let Some(i) = close {
+            self.sql_tabs.remove(i);
+            if self.sql_tabs.is_empty() {
+                self.sql_tabs.push(SqlTab::new(self.next_sql_tab));
+                self.next_sql_tab += 1;
+            }
+            if self.sql_tab > i || self.sql_tab >= self.sql_tabs.len() {
+                self.sql_tab = self.sql_tab.saturating_sub(1);
+            }
+        }
     }
 
     /// The last query's results: a grid per result with rows, a count of the rows changed otherwise,
     /// or the error.
-    fn results_ui(&mut self, ui: &mut Ui, theme: &Theme, t: &Strings, height: f32) {
-        let Some((results, elapsed, error)) = &self.sql_out else { return };
+    /// Those of a SQL tab (by index), else of the query above a table.
+    fn results_ui(&mut self, ui: &mut Ui, theme: &Theme, t: &Strings, height: f32, tab: Option<usize>) {
+        let (out, salt) = match tab {
+            Some(k) => (&self.sql_tabs[k].out, Some(self.sql_tabs[k].id)),
+            None => (&self.table_out, None),
+        };
+        let Some((results, elapsed, error)) = out else { return };
         let (results, elapsed, error) = (results.clone(), *elapsed, error.clone());
         if let Some(e) = &error {
             Frame::NONE.fill(theme.ansi[1].gamma_multiply(0.12)).stroke(Stroke::new(1.0, theme.ansi[1].gamma_multiply(0.5))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
@@ -1788,7 +1982,7 @@ impl DbView {
         }
         let ms = elapsed.as_secs_f64() * 1000.0;
         let mut csv = None;
-        egui::ScrollArea::vertical().id_salt("db-sql-results").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("db-sql-results", salt)).max_height(height).auto_shrink([false, false]).show(ui, |ui| {
             for (i, r) in results.iter().enumerate() {
                 let head = if r.columns.is_empty() {
                     t.db_affected.replace("{n}", &r.affected.to_string())
@@ -1808,7 +2002,7 @@ impl DbView {
                 if !r.columns.is_empty() && !r.rows.is_empty() {
                     ui.add_space(4.0);
                     let h = ((r.rows.len() as f32 + 1.0) * 26.0 + 20.0).min(360.0);
-                    let out = grid(ui, egui::Id::new(("db-sql", i)), theme, &r.columns, &r.rows, None, h);
+                    let out = grid(ui, egui::Id::new(("db-sql", salt, i)), theme, &r.columns, &r.rows, None, h);
                     if let Some((row, c)) = out.clicked {
                         self.detail = Some((r.columns[c].clone(), r.rows[row][c].text()));
                     }

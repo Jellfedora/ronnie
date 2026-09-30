@@ -94,8 +94,10 @@ impl Backend for LocalPty {
             let shell = self.child.process_id()? as libc::pid_t;
             (leader != shell).then(|| process_name(leader).unwrap_or_else(|| leader.to_string()))
         }
-        #[cfg(not(unix))]
-        None
+        #[cfg(windows)]
+        {
+            crate::winproc::foreground(self.child.process_id()?)
+        }
     }
 }
 
@@ -141,6 +143,8 @@ impl Drop for LocalPty {
             end_session(shell as libc::pid_t);
             return;
         }
+        // Windows: closing the pseudo console (the master, dropped next) ends every console program
+        // attached to it; windows opened from the pane (an editor...) stay, as on the other systems.
         let _ = self.child.kill();
     }
 }

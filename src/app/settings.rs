@@ -522,7 +522,6 @@ impl App {
             editor.testing = Some(rx);
             editor.test_pid = pid;
             // The forward's ssh may ask for the host's password or key: in the window.
-            #[cfg(unix)]
             if let (Some(pid), Some(h)) = (pid, &host) {
                 self.askpass.allow_interactive(pid, h);
             }
@@ -1174,6 +1173,22 @@ impl App {
                     }
                 }
             });
+            divider(ui, theme);
+            setting_row(ui, theme, t.splash_setting, Some(t.splash_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.splash);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.home_tips_setting, Some(t.home_tips_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.home_tips);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.home_hosts_setting, Some(t.home_hosts_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.home_hosts);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.home_databases_setting, Some(t.home_databases_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.home_databases);
+            });
         });
         card(ui, theme, Some(t.set_terminal), |ui| {
             setting_row(ui, theme, t.show_cwd, Some(t.show_cwd_desc), |ui| {
@@ -1201,6 +1216,10 @@ impl App {
             divider(ui, theme);
             setting_row(ui, theme, t.metal_guard, Some(t.metal_guard_desc), |ui| {
                 toggle(ui, theme, &mut picked.metal_guard);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.confirm_close_busy, Some(t.confirm_close_busy_desc), |ui| {
+                toggle(ui, theme, &mut picked.confirm_close_busy);
             });
         });
         card(ui, theme, Some(t.set_databases), |ui| {

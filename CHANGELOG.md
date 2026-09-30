@@ -2,6 +2,26 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.13.0] - 2026-09-30
+
+### Nouveautés
+
+- **Autocomplétion SQL** dans la vue base de données (page SQL et requête au-dessus d'une table) : noms des tables après `FROM`, `JOIN`, `UPDATE`…, colonnes des tables de la requête avec leur type (alias compris : `u.` après `FROM users u`), mots-clés et fonctions MySQL / MariaDB. Tab complète, ↑ ↓ puis Entrée choisit, Échap ferme, ⌃ Espace ouvre la liste.
+- **Windows : PowerShell** (7 s'il est installé, sinon celui du système) remplace cmd.exe, avec l'intégration de Ronnie : historique propre à chaque terminal, dossier courant suivi (split dans le même dossier, vue fichiers qui suit le terminal), suggestions de chemins, fin des longues commandes signalée.
+- **Nouvelle page d'accueil**, affichée au lancement et quand on ferme l'onglet affiché : bonjour, nouveau terminal / hôte SSH / base de données en un clic, les onglets ouverts pour y revenir, et les profils, serveurs SSH et bases de données en cartes. Le jeu Speed Metal se cache désormais derrière trois clics sur le logo.
+- **Onglets de requêtes** dans la page SQL d'une base : plusieurs requêtes côte à côte, chacune avec son résultat, pour comparer sans effacer la précédente. Le résultat d'une requête revient à son onglet même si on en a changé entre-temps, et la requête au-dessus d'une table garde son propre résultat.
+- **Champ SQL au-dessus d'une table** : il montre la requête qui a lu les lignes affichées (tri, recherche et page compris), à modifier puis relancer. Il est plus haut, sur plusieurs lignes : ⌘ ↩ exécute, et l'autocomplétion est la même que dans la page SQL.
+- **Réglages de l'accueil** (Réglages › Général) : écran de démarrage, astuces, cartes des serveurs SSH et des bases de données, chacun désactivable.
+- **« Ne plus me le demander »** dans l'avertissement avant de fermer un onglet ou un pane où un programme tourne encore. Le réglage « Confirmer la fermeture d'un onglet actif » le réactive. Quitter Ronnie demande toujours.
+
+### Corrections
+
+- Linux (AppImage) : les fenêtres de Ronnie prenaient l'icône d'une autre application dans le dock. Elles portent maintenant l'identifiant « ronnie », et l'AppImage installe son entrée de menu et son icône dans `~/.local/share` quand rien ne l'a intégré (AppImageLauncher, Gear Lever…).
+- Au lancement, les éléments de la barre latérale qui n'étaient pas ouverts apparaissaient surlignés comme l'onglet actif.
+- Windows : Ronnie sait quel programme tourne dans un pane (avertissement avant de le fermer, badge).
+- Windows : les questions de ssh sans terminal (vue fichiers SFTP, tunnels de la vue base de données) — mot de passe non enregistré, nouvelle clé d'hôte — s'affichent dans la fenêtre au lieu de faire échouer la connexion, et dans un terminal SSH elles se posent dans le terminal.
+- Windows : le mot de passe enregistré n'est donné qu'à un ssh lancé par Ronnie, vérifié par la fenêtre comme sur macOS et Linux.
+
 ## [0.12.0] - 2026-09-30
 
 ### Nouveautés

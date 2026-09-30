@@ -110,6 +110,8 @@ pub struct UserInfo {
 pub enum Request {
     Databases,
     Tables(String),
+    /// Every column of a database's tables and views (to complete the SQL typed).
+    Columns(String),
     Structure { db: String, table: String },
     /// Rows of a table; `search`: only those where one of these columns contains this text. Without
     /// `order`, in the order of the primary key (pages would otherwise overlap).
@@ -137,8 +139,11 @@ pub enum Event {
     Connected { version: String },
     Databases(Vec<DatabaseInfo>),
     Tables { db: String, tables: Vec<TableInfo> },
+    /// By table: its columns' names and types, in order.
+    Columns { db: String, columns: std::collections::HashMap<String, Vec<(String, String)>> },
     Structure { db: String, table: String, structure: Structure },
-    Rows { db: String, table: String, offset: u64, result: QueryResult, total: u64, exact: bool },
+    /// `sql`: the query that read them, as it can be run again in `db`.
+    Rows { db: String, table: String, offset: u64, result: QueryResult, total: u64, exact: bool, sql: String },
     Query { results: Vec<QueryResult>, elapsed: Duration, error: Option<String> },
     /// A change went through; it changed this many rows. `tag`: the Exec's (0 after an import).
     Done { affected: u64, tag: u32 },
@@ -1001,6 +1006,18 @@ async fn handle(conn: &mut Conn, request: Request, emit: &Emitter) -> mysql_asyn
                 .collect();
             emit.send(Event::Tables { db, tables });
         }
+        Request::Columns(db) => {
+            let sql = format!(
+                "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = {} ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 50000",
+                literal(&db)
+            );
+            let rows: Vec<Row> = conn.query(sql).await?;
+            let mut columns: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
+            for r in &rows {
+                columns.entry(text(r, 0)).or_default().push((text(r, 1), text(r, 2)));
+            }
+            emit.send(Event::Columns { db, columns });
+        }
         Request::Structure { db, table } => {
             let columns = run(
                 conn,
@@ -1072,7 +1089,8 @@ async fn handle(conn: &mut Conn, request: Request, emit: &Emitter) -> mysql_asyn
             } else {
                 (estimate, false)
             };
-            emit.send(Event::Rows { db, table, offset, result, total, exact });
+            let sql = format!("SELECT * FROM {}{filter_sql}{order_by} LIMIT {offset}, {limit}", ident(&table));
+            emit.send(Event::Rows { db, table, offset, result, total, exact, sql });
         }
         Request::Query { db, sql } => {
             if let Some(db) = db.filter(|d| !d.is_empty()) {

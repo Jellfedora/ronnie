@@ -194,6 +194,19 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A Windows path from an OSC 7 URL's path ("/C:/Users/me" → "C:\\Users\\me").
+pub fn windows_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':';
+    let path = if drive { &path[1..] } else { path };
+    let mut out = path.replace('/', "\\");
+    // "C:" alone is the drive's current directory, not its root.
+    if out.len() == 2 && drive {
+        out.push('\\');
+    }
+    out
+}
+
 /// Working directory shown in a window title of the form `user@host: path` (the default prompt of
 /// Debian and Ubuntu's bash sets it so), for shells that don't send OSC 7.
 pub fn title_path(title: &str) -> Option<&str> {
@@ -214,6 +227,13 @@ mod tests {
             scanner.scan(chunk, &mut shell);
         }
         shell
+    }
+
+    #[test]
+    fn reads_windows_paths() {
+        assert_eq!(windows_path("/C:/Users/Jo%20B"), "C:\\Users\\Jo%20B");
+        assert_eq!(windows_path("/D:"), "D:\\");
+        assert_eq!(scan(&[b"\x1b]7;file://PC/C:/Users/Jo%20B\x07"]).cwd.as_deref().map(windows_path).as_deref(), Some("C:\\Users\\Jo B"));
     }
 
     #[test]

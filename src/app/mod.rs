@@ -25,12 +25,14 @@ mod editor;
 mod files;
 mod game;
 mod git;
+mod home;
 mod guard;
 mod issues;
 mod loading;
 mod motion;
 mod perms;
 mod sql;
+mod sqlcomplete;
 mod popups;
 mod viewer;
 mod settings;
@@ -264,6 +266,7 @@ struct WindowSlot {
     toasts: Vec<Toast>,
     toast_rects: Vec<Rect>,
     home: Option<String>,
+    home_game: bool,
     game: game::Game,
     ronnie_show: Option<(PaneId, f64)>,
     game_folded: bool,
@@ -362,13 +365,10 @@ pub struct App {
     /// "Reset everything?" dialog shown.
     confirm_reset: bool,
     /// Hands saved SSH passwords to the ssh processes of this window's panes (Unix).
-    #[cfg(unix)]
     askpass: crate::askpass::Server,
     /// Questions from ssh processes without a terminal (SFTP): password, new host key.
-    #[cfg(unix)]
     ssh_prompts: std::sync::mpsc::Receiver<crate::askpass::Prompt>,
     /// The one being answered, and what is typed.
-    #[cfg(unix)]
     ssh_prompt: Option<(crate::askpass::Prompt, String)>,
     /// Path suggestions in terminals: folders listed lately, and the line and suggestion picked.
     path_cache: HashMap<PathBuf, (std::time::Instant, Vec<(String, bool)>)>,
@@ -402,9 +402,11 @@ pub struct App {
     pane_drag: Option<PaneId>,
     /// Pane being renamed: its id, the name typed, whether the field was just opened.
     pane_rename: Option<(PaneId, String, bool)>,
-    /// The home page (its typing game) is shown instead of the active tab: after a tab closed (with a
-    /// line about it), or from the logo.
+    /// The home page is shown instead of the active tab: at launch, after a tab closed (with a line
+    /// about it), or from the logo.
     home: Option<String>,
+    /// The home page shows the typing game (three clicks on the logo).
+    home_game: bool,
     game: game::Game,
     /// "ronnie" was typed in this pane: its show, since when (see `easter`).
     ronnie_show: Option<(PaneId, f64)>,
@@ -623,6 +625,8 @@ enum CloseRequest {
 struct ConfirmClose {
     request: CloseRequest,
     busy: Vec<String>,
+    /// "Don't ask again" ticked (offered for a tab or a pane only).
+    dont_ask: bool,
 }
 
 struct ItemRename {
@@ -845,11 +849,8 @@ impl App {
             update_attempted: false,
             live: Vec::new(),
             _instance_lock: None,
-            #[cfg(unix)]
             askpass: crate::askpass::Server::start(),
-            #[cfg(unix)]
             ssh_prompts: std::sync::mpsc::channel().1,
-            #[cfg(unix)]
             ssh_prompt: None,
             viewport: egui::ViewportId::ROOT,
             others: Vec::new(),
@@ -863,6 +864,7 @@ impl App {
             pane_rename: None,
             startup_edit: None,
             home: None,
+            home_game: false,
             game: game::Game::default(),
             ronnie_show: None,
             game_folded: false,
@@ -945,7 +947,6 @@ impl App {
         watch_config(&cc.egui_ctx);
         // Ronnie handles Cmd +/- itself (the zoom is saved in the settings).
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        #[cfg(unix)]
         {
             let (prompts, receiver) = std::sync::mpsc::channel();
             app.askpass.set_prompter(prompts, &cc.egui_ctx);
@@ -963,6 +964,9 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             app.menu = crate::menu::MenuBar::install(&cc.egui_ctx, app.t(), &app.config.settings.shortcuts.open_settings, &app.config.settings.shortcuts.new_window);
+        }
+        if !app.config.settings.splash {
+            app.splash = None;
         }
         // Development: open the settings on a page right away (to look at them).
         if cfg!(debug_assertions) {
@@ -1096,7 +1100,6 @@ impl App {
 
     /// Lets the ssh processes of tab `index` get their host's saved password from the askpass helper.
     fn allow_ssh_panes(&self, index: usize) {
-        #[cfg(unix)]
         if let Some((tab, host)) = self.tabs.get(index).and_then(|t| Some((t, self.config.ssh.iter().find(|h| Some(h.id) == t.ssh)?))) {
             for term in tab.panes.values() {
                 if let Some(pid) = term.pid() {
@@ -1104,8 +1107,6 @@ impl App {
                 }
             }
         }
-        #[cfg(not(unix))]
-        let _ = index;
     }
 
     /// Restarts panes of a tab (a new ssh session replaces the old or ended one).
@@ -1194,10 +1195,7 @@ impl App {
         let dbview::DbAction::None = view.ui(ui, rect, &self.theme, t);
         // A new SSH forward (opened, or opened again): its prompts are answered in the window.
         if let (Some(pid), Some(h)) = (view.take_tunnel_pid(), &host) {
-            #[cfg(unix)]
             self.askpass.allow_interactive(pid, h);
-            #[cfg(not(unix))]
-            let _ = (pid, h);
         }
     }
 
@@ -1440,6 +1438,7 @@ impl App {
         swap(&mut self.toasts, &mut slot.toasts);
         swap(&mut self.toast_rects, &mut slot.toast_rects);
         swap(&mut self.home, &mut slot.home);
+        swap(&mut self.home_game, &mut slot.home_game);
         swap(&mut self.game, &mut slot.game);
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
         swap(&mut self.game_folded, &mut slot.game_folded);
@@ -1876,6 +1875,7 @@ impl App {
             t.home_quips[nanos as usize % t.home_quips.len()].replace("{name}", name)
         });
         self.home = Some(line.unwrap_or_default());
+        self.home_game = false;
         // The keys go to the game, not to a terminal no longer shown.
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
@@ -2540,6 +2540,7 @@ fn menu_item<A>(ui: &mut Ui, label: &str, a: A, action: &mut Option<A>) {
     }
 }
 
+#[derive(Clone)]
 enum TabAction {
     Select(usize),
     Close(usize),
@@ -2697,7 +2698,7 @@ impl App {
         let mut k = 0;
         while k < self.tool_windows.len() {
             let w = &mut self.tool_windows[k];
-            let builder = egui::ViewportBuilder::default().with_title(w.title.clone()).with_min_inner_size([520.0, 320.0]).with_inner_size([1100.0, 720.0]);
+            let builder = egui::ViewportBuilder::default().with_title(w.title.clone()).with_app_id(crate::update::APP_ID).with_min_inner_size([520.0, 320.0]).with_inner_size([1100.0, 720.0]);
             let (mut close, mut reconnect) = (false, None);
             ctx.show_viewport_immediate(w.viewport, builder, |ui, _| {
                 let rect = ui.max_rect();
@@ -2763,7 +2764,7 @@ impl App {
             });
             if let Some(host) = reconnect.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned() {
                 if let Tool::Files(fm, _) = &mut self.tool_windows[k].tool {
-                    fm.connect(&self.ctx, &host, #[cfg(unix)] &self.askpass);
+                    fm.connect(&self.ctx, &host, &self.askpass);
                 }
             }
             if close {
@@ -2781,7 +2782,7 @@ impl App {
             self.swap_window(&mut slot);
             // While it is drawn, `others` holds every other window (the main one included).
             self.others[k] = slot;
-            let mut builder = egui::ViewportBuilder::default().with_title(APP_TITLE).with_min_inner_size([520.0, 320.0]);
+            let mut builder = egui::ViewportBuilder::default().with_title(APP_TITLE).with_app_id(crate::update::APP_ID).with_min_inner_size([520.0, 320.0]);
             match self.opened_at {
                 Some(w) => builder = builder.with_position([w.x, w.y]).with_inner_size([w.width, w.height]),
                 None => builder = builder.with_inner_size([1100.0, 720.0]),
@@ -2986,7 +2987,7 @@ impl App {
                             }
                             let cwd = term.cwd()?;
                             let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
-                            let wanted = complete::parse(&line, &cwd, &home)?;
+                            let wanted = if cfg!(windows) { complete::parse_windows(&line, &cwd, &home) } else { complete::parse(&line, &cwd, &home) }?;
                             let listed = self.path_cache.get(&wanted.dir).is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(2));
                             if !listed {
                                 if self.path_cache.len() > 64 {
@@ -2994,7 +2995,7 @@ impl App {
                                 }
                                 self.path_cache.insert(wanted.dir.clone(), (std::time::Instant::now(), complete::list(&wanted.dir)));
                             }
-                            let items: Vec<(String, bool)> = complete::matching(&self.path_cache[&wanted.dir].1, &wanted.prefix, 6).into_iter().cloned().collect();
+                            let items: Vec<(String, bool)> = complete::matching(&self.path_cache[&wanted.dir].1, &wanted.prefix, 6, cfg!(windows)).into_iter().cloned().collect();
                             (!items.is_empty()).then_some((line, wanted.prefix, items))
                         })();
                     } else if let Some((line, true)) = term.guess_prompt_input() {
@@ -3010,7 +3011,7 @@ impl App {
                 if let (Some((line, cwd)), Some(host)) = (remote_query, quiet_host) {
                     if tab.files.is_none() {
                         let mut fm = Box::new(files::FileManager::new(&host));
-                        fm.connect(&self.ctx, &host, #[cfg(unix)] &self.askpass);
+                        fm.connect(&self.ctx, &host, &self.askpass);
                         tab.files = Some(fm);
                     }
                     let mut waiting;
@@ -3026,7 +3027,7 @@ impl App {
                             let (dir, prefix) = complete::parse_remote(&line, &cwd, &home)?;
                             let entries = fm.remote_entries(&dir);
                             waiting = entries.is_none();
-                            let items: Vec<(String, bool)> = complete::matching(&entries?, &prefix, 6).into_iter().cloned().collect();
+                            let items: Vec<(String, bool)> = complete::matching(&entries?, &prefix, 6, false).into_iter().cloned().collect();
                             (!items.is_empty()).then_some((line, prefix, items))
                         })();
                     } else {
@@ -3308,7 +3309,9 @@ impl App {
                     });
                     if let Some(i) = take_suggestion {
                         let (name, is_dir) = &items[i];
-                        term.type_text(&complete::completion(name, prefix, *is_dir));
+                        // PowerShell's escapes on Windows (a server's shell has the usual ones).
+                        let text = if local && cfg!(windows) { complete::completion_windows(name, prefix, *is_dir) } else { complete::completion(name, prefix, *is_dir) };
+                        term.type_text(&text);
                         self.focus_terminal = true;
                     }
                 }
@@ -3459,7 +3462,7 @@ impl App {
             let busy = self.busy_for(CloseRequest::Window);
             if !busy.is_empty() {
                 ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
-                self.confirm_close = Some(ConfirmClose { request: CloseRequest::Window, busy });
+                self.confirm_close = Some(ConfirmClose { request: CloseRequest::Window, busy, dont_ask: false });
             } else if !main_window {
                 self.window_closing = true;
             }
@@ -3541,7 +3544,6 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.save_scrollbacks(None, false);
         self.sync();
-        #[cfg(unix)]
         crate::askpass::cleanup();
     }
 

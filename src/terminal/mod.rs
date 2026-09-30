@@ -167,6 +167,8 @@ pub struct Terminal {
     grid_origin: Pos2,
     /// Last looked-up working directory and when, so painting every frame stays cheap.
     cwd_cache: Option<(Instant, Option<PathBuf>, u64)>,
+    /// A shell on this machine (not ssh): the directory it reports is a local one.
+    local_shell: bool,
 }
 
 impl Terminal {
@@ -176,7 +178,9 @@ impl Terminal {
     pub fn local(ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Option<&Path>, restore: Option<&[u8]>) -> Result<Self> {
         let size = GridSize { cols: 80, rows: 24 };
         let (backend, reader) = pty::LocalPty::spawn(size.cols as u16, size.rows as u16, cwd, launch, history)?;
-        Ok(Self::start(ctx, Box::new(backend), reader, size, restore))
+        let mut term = Self::start(ctx, Box::new(backend), reader, size, restore);
+        term.local_shell = launch.is_none();
+        Ok(term)
     }
 
     fn start(ctx: &egui::Context, backend: Box<dyn Backend>, mut reader: Box<dyn Read + Send>, size: GridSize, restore: Option<&[u8]>) -> Self {
@@ -260,6 +264,7 @@ impl Terminal {
             allow_clipboard: true,
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
+            local_shell: false,
         }
     }
 
@@ -282,7 +287,17 @@ impl Terminal {
     }
 
     pub fn cwd(&self) -> Option<PathBuf> {
-        self.backend.cwd()
+        self.backend.cwd().or_else(|| self.shell_cwd())
+    }
+
+    /// Windows, where another process's directory can't be read: the one the local shell reports
+    /// (OSC 7, sent by Ronnie's PowerShell integration).
+    fn shell_cwd(&self) -> Option<PathBuf> {
+        if !cfg!(windows) || !self.local_shell {
+            return None;
+        }
+        let path = self.shell.lock().ok()?.cwd.clone()?;
+        Some(PathBuf::from(osc::windows_path(&path)))
     }
 
     /// Refreshes the foreground program and the local servers it announced (dropped once it stops).
@@ -387,7 +402,7 @@ impl Terminal {
             Some((_, _, seen)) if *seen == seq => {}
             // Changed very recently: look once the throttle allows.
             Some((at, _, _)) if now.duration_since(*at) < CWD_TTL => ctx.request_repaint_after(CWD_TTL - now.duration_since(*at)),
-            _ => self.cwd_cache = Some((now, self.backend.cwd(), seq)),
+            _ => self.cwd_cache = Some((now, self.cwd(), seq)),
         }
         self.cwd_cache.as_ref().and_then(|(_, cwd, _)| cwd.as_deref())
     }
@@ -1019,6 +1034,11 @@ fn dump_term<L: EventListener>(term: &Term<L>, max_lines: usize) -> Vec<u8> {
 /// What follows a usual shell prompt at the start of `line`: "user@host", then anything without
 /// spaces or with a few words ("~ ", a folder...), then "# ", "$ " or "% ".
 fn prompt_input(line: &str) -> Option<&str> {
+    // PowerShell's usual prompt: "PS C:\\Users\\me> ".
+    if let Some(rest) = line.trim_start().strip_prefix("PS ") {
+        let end = rest.find("> ")?;
+        return (end <= 200).then(|| &rest[end + 2..]);
+    }
     let at = line.find('@')?;
     // The user name: no spaces (a prompt starts the line, possibly after "(venv) " or "[...]").
     if line[..at].trim_start().split_whitespace().last().is_none_or(|u| u.is_empty()) {
@@ -1086,6 +1106,8 @@ mod tests {
         assert_eq!(prompt_input("(venv) bob@box:~/x$ "), Some(""));
         assert_eq!(prompt_input("total 28"), None);
         assert_eq!(prompt_input("mysql> select"), None);
+        assert_eq!(prompt_input("PS C:\\Users\\Jo> cd Doc"), Some("cd Doc"), "PowerShell");
+        assert_eq!(prompt_input("PS C:\\> "), Some(""));
     }
 
     #[test]

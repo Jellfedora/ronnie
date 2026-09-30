@@ -1,5 +1,6 @@
 //! Path suggestions in local terminals: the word being typed at the zsh prompt (sent by Ronnie's shell
-//! integration) is completed from the files and folders it names, shown under the cursor.
+//! integration) is completed from the files and folders it names, shown under the cursor. On Windows,
+//! the line typed at PowerShell's prompt (read on the screen), with its paths and escapes.
 
 use std::path::{Path, PathBuf};
 
@@ -81,6 +82,66 @@ pub(super) fn parse(line: &str, cwd: &Path, home: &Path) -> Option<Suggestions> 
     Some(Suggestions { dir, prefix: prefix.to_owned() })
 }
 
+/// The last word of a PowerShell `line`, unescaped (` escapes), if it looks like a path to complete
+/// (as `last_word`).
+fn last_word_windows(line: &str) -> Option<String> {
+    let mut words = 0;
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => {
+                word.push(chars.next()?);
+                in_word = true;
+            }
+            ' ' | '\t' => {
+                if in_word {
+                    words += 1;
+                    word.clear();
+                    in_word = false;
+                }
+            }
+            ';' | '|' | '&' | '(' | ')' | '{' | '}' => {
+                word.clear();
+                in_word = false;
+                words = 0;
+            }
+            '\'' | '"' | '$' | '*' | '?' | '[' => return None,
+            c => {
+                word.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if !in_word || word.is_empty() || word.starts_with('-') {
+        return None;
+    }
+    // A command name: only a path to a program (.\script.ps1).
+    if words == 0 && !word.contains(['\\', '/']) {
+        return None;
+    }
+    Some(word)
+}
+
+/// Like `parse`, for PowerShell on Windows (folders separated by "\" or "/").
+pub(super) fn parse_windows(line: &str, cwd: &Path, home: &Path) -> Option<Suggestions> {
+    let word = last_word_windows(line)?;
+    let (head, prefix) = match word.rfind(['\\', '/']) {
+        Some(i) => (&word[..=i], &word[i + 1..]),
+        None => ("", word.as_str()),
+    };
+    let dir = if let Some(rest) = head.strip_prefix("~\\").or_else(|| head.strip_prefix("~/")) {
+        home.join(rest)
+    } else if head.is_empty() && prefix == "~" {
+        return None;
+    } else {
+        // An absolute path ("C:\", "\") replaces the folder it is joined to.
+        cwd.join(head)
+    };
+    Some(Suggestions { dir, prefix: prefix.to_owned() })
+}
+
 /// Like `parse`, for a server (paths with "/", whatever this computer uses): the folder to list,
 /// and the name's start. `cwd` and `home` are the server's.
 pub(super) fn parse_remote(line: &str, cwd: &str, home: &str) -> Option<(String, String)> {
@@ -104,10 +165,14 @@ pub(super) fn parse_remote(line: &str, cwd: &str, home: &str) -> Option<(String,
 
 /// Names of `entries` (name, is a folder) completing `prefix`: hidden ones only when asked for with a
 /// ".", folders first, at most `max`. A file already typed in full is not suggested.
-pub(super) fn matching<'a>(entries: &'a [(String, bool)], prefix: &str, max: usize) -> Vec<&'a (String, bool)> {
+/// `ignore_case`: on Windows, whose names don't tell cases apart.
+pub(super) fn matching<'a>(entries: &'a [(String, bool)], prefix: &str, max: usize, ignore_case: bool) -> Vec<&'a (String, bool)> {
+    let lower = prefix.to_lowercase();
+    let starts = |name: &str| if ignore_case { name.to_lowercase().starts_with(&lower) } else { name.starts_with(prefix) };
+    let same = |name: &str| if ignore_case { name.to_lowercase() == lower } else { name == prefix };
     let mut out: Vec<&(String, bool)> = entries
         .iter()
-        .filter(|(name, is_dir)| name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.')) && (*is_dir || name != prefix) && !name.chars().any(char::is_control))
+        .filter(|(name, is_dir)| starts(name) && (prefix.starts_with('.') || !name.starts_with('.')) && (*is_dir || !same(name)) && !name.chars().any(char::is_control))
         .collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
     out.truncate(max);
@@ -127,6 +192,21 @@ pub(super) fn completion(name: &str, prefix: &str, is_dir: bool) -> String {
     }
     if is_dir {
         out.push('/');
+    }
+    out
+}
+
+/// Like `completion`, for PowerShell: special characters escaped with "`", and a "\\" for folders.
+pub(super) fn completion_windows(name: &str, prefix: &str, is_dir: bool) -> String {
+    let mut out = String::new();
+    for c in name.chars().skip(prefix.chars().count()) {
+        if c.is_whitespace() || "`'\"$(){}[];,&|@#".contains(c) {
+            out.push('`');
+        }
+        out.push(c);
+    }
+    if is_dir {
+        out.push('\\');
     }
     out
 }
@@ -174,11 +254,30 @@ mod tests {
     #[test]
     fn suggests_and_escapes() {
         let entries = vec![("Documents".to_owned(), true), ("Doc 2.txt".to_owned(), false), (".config".to_owned(), true), ("Do".to_owned(), false)];
-        let names: Vec<&str> = matching(&entries, "Do", 6).iter().map(|e| e.0.as_str()).collect();
+        let names: Vec<&str> = matching(&entries, "Do", 6, false).iter().map(|e| e.0.as_str()).collect();
         assert_eq!(names, ["Documents", "Doc 2.txt"]);
-        assert_eq!(matching(&entries, ".c", 6).len(), 1);
+        assert_eq!(matching(&entries, ".c", 6, false).len(), 1);
+        assert!(matching(&entries, "do", 6, false).is_empty());
+        assert_eq!(matching(&entries, "do", 6, true).len(), 2, "Windows: any case");
         assert_eq!(completion("Doc 2.txt", "Do", false), "c\\ 2.txt");
         assert_eq!(completion("Documents", "Do", true), "cuments/");
         assert_eq!(completion("l'été (1)", "", false), "l\\'été\\ \\(1\\)");
+        assert_eq!(completion_windows("My Documents", "my", true), "` Documents\\");
+        assert_eq!(completion_windows("l'été (1).txt", "l", false), "`'été` `(1`).txt");
+    }
+
+    #[test]
+    fn finds_the_powershell_word() {
+        let (cwd, home) = (Path::new("/work"), Path::new("/home/me"));
+        let s = |line: &str| parse_windows(line, cwd, home);
+        assert_eq!(s("cd Doc"), Some(Suggestions { dir: "/work/".into(), prefix: "Doc".into() }));
+        assert_eq!(s("cd src\\ap"), Some(Suggestions { dir: "/work/src\\".into(), prefix: "ap".into() }));
+        assert_eq!(s("ls ~\\Proj"), Some(Suggestions { dir: "/home/me/".into(), prefix: "Proj".into() }));
+        assert_eq!(s("cd My` Doc"), Some(Suggestions { dir: "/work/".into(), prefix: "My Doc".into() }));
+        assert_eq!(s(".\\scr"), Some(Suggestions { dir: "/work/.\\".into(), prefix: "scr".into() }));
+        assert_eq!(s("git"), None);
+        assert_eq!(s("ls -Force"), None);
+        assert_eq!(s("cd $HOME\\x"), None);
+        assert_eq!(s("cd 'a b"), None);
     }
 }

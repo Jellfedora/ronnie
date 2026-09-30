@@ -7,6 +7,12 @@ impl App {
     /// The home page: what just closed, the typing game, tips scrolling below (the sidebar leads back
     /// to the tabs).
     pub(super) fn home_page(&mut self, ui: &mut Ui, rect: Rect) {
+        if !self.home_game {
+            self.game.leave();
+            self.fold_for_game(false);
+            self.home_dashboard(ui, rect);
+            return;
+        }
         let t = self.t();
         let now = ui.input(|i| i.time);
         if let Some(line) = self.home.as_ref().filter(|l| !l.is_empty()) {
@@ -18,8 +24,9 @@ impl App {
         // sink away during a round (the game spreading over their room).
         let focus = self.game.focus(ui.ctx());
         let sunk = focus.max(1.0 - self.game.entrance(now, 0.5));
-        let game_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - 44.0 * (1.0 - focus)));
-        if sunk < 0.999 {
+        let tips_h = if self.config.settings.home_tips { 44.0 } else { 0.0 };
+        let game_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - tips_h * (1.0 - focus)));
+        if sunk < 0.999 && self.config.settings.home_tips {
             let ticker = Rect::from_min_size(Pos2::new(rect.min.x, rect.max.y - 44.0 + 44.0 * sunk), Vec2::new(rect.width(), 44.0));
             tips_ticker(ui, ticker, &self.theme, t, &self.config.settings.shortcuts);
         }
@@ -38,7 +45,27 @@ impl App {
             scores.truncate(config::TYPING_SCORES);
             self.save_config();
         }
+        // Back to the home page, out of a round.
+        if !self.game.playing() {
+            let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(0.0, 0.0));
+            let resp = ui.put(Rect::from_min_size(back.min, Vec2::new(110.0, 28.0)), egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0));
+            if resp.clicked() {
+                self.home_game = false;
+            }
+        }
 
+    }
+
+    /// The logo leads to the home page; three clicks, to the typing game.
+    fn logo_clicked(&mut self, logo: &egui::Response) {
+        if logo.triple_clicked() {
+            if self.home.is_none() {
+                self.go_home(None);
+            }
+            self.home_game = true;
+        } else if logo.clicked() && (self.home.is_none() || self.home_game) && !logo.double_clicked() {
+            self.go_home(None);
+        }
     }
 
     /// Folds the sidebar for a round of the game (`playing`), unfolds it after if the game folded it.
@@ -230,7 +257,7 @@ impl App {
             }
         }
         let hovered = resp.contains_pointer() && self.item_drag.is_none();
-        let active = item.open == self.shown_tab();
+        let active = item.open.is_some() && item.open == self.shown_tab();
         paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
         let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
         let live = item.open.and_then(|i| self.live.get(i).cloned().flatten());
@@ -358,11 +385,8 @@ impl App {
         // The R of the logo, where the logo sits unfolded.
         let r_at = Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0);
         super::paint_metal(ui.painter(), r_at, Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
-        if ui.interact(Rect::from_center_size(r_at, Vec2::splat(34.0)), ui.id().with("rail-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            if self.home.is_none() {
-                self.go_home(None);
-            }
-        }
+        let logo = ui.interact(Rect::from_center_size(r_at, Vec2::splat(34.0)), ui.id().with("rail-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+        self.logo_clicked(&logo);
         let unfold = Rect::from_center_size(Pos2::new(cx, bar.min.y + top + LOGO_H + 10.0), Vec2::splat(26.0));
         if icon_button(ui, ui.painter(), unfold, "unfold-sidebar", &self.theme, paint_unfold).on_hover_text(format!("{}  ({})", t.unfold_sidebar, self.config.settings.shortcuts.toggle_sidebar.label())).clicked() {
             self.config.settings.sidebar_folded = false;
@@ -405,7 +429,7 @@ impl App {
                     y += 8.0;
                 }
                 // The section's icon (lit when the tab shown is in it), and its "+".
-                let here = entries.iter().any(|e| self.rail_open(*e) == self.shown_tab());
+                let here = self.shown_tab().is_some() && entries.iter().any(|e| self.rail_open(*e) == self.shown_tab());
                 let icon_rect = Rect::from_center_size(Pos2::new(cx - 11.0, y + 12.0), Vec2::splat(22.0));
                 let color = if here { self.theme.accent } else { self.theme.text_muted };
                 match section {
@@ -520,7 +544,7 @@ impl App {
             }
         };
         let resp = ui.interact(slot, ui.id().with(("rail", entry)), Sense::click());
-        let active = open == self.shown_tab();
+        let active = open.is_some() && open == self.shown_tab();
         if active {
             ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
             ui.painter().rect_filled(Rect::from_min_size(Pos2::new(left + 3.0, slot.min.y + 8.0), Vec2::new(3.0, slot.height() - 16.0)), 1.5, self.theme.accent);
@@ -610,7 +634,7 @@ impl App {
             *y += ROW_H + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("db-item", c.id)), Sense::click());
             let open = self.tabs.iter().position(|tab| tab.db == Some(c.id));
-            let active = open == self.shown_tab();
+            let active = open.is_some() && open == self.shown_tab();
             let hovered = resp.contains_pointer();
             paint_row_bg(&painter, slot, active, hovered, &self.theme);
             let dot = Pos2::new(slot.min.x + 17.0, slot.center().y);
@@ -812,20 +836,23 @@ impl App {
         let t = self.t();
         let (title, detail) = match self.updater.state() {
             update::State::Available(a) if !self.update_dismissed => (t.update_available.replace("{v}", &a.version), None),
-            update::State::Installing(v) => (format!("{}  {}", t.installing.replace("{v}", &v), download_text(self.updater.progress(), t)), None),
+            // The progress on its own line, under.
+            update::State::Installing(v) => (t.installing.replace("{v}", &v), None),
             update::State::Installed(v) => (t.update_installed.replace("{v}", &v), None),
             update::State::Failed(e) if self.update_attempted => (t.update_failed.to_owned(), Some(e)),
             _ => return area.max.y,
         };
         let state = self.updater.state();
         let buttons = !matches!(state, update::State::Installing(_));
-        let h = if buttons { 78.0 } else { 44.0 };
+        let installing = matches!(state, update::State::Installing(_));
+        let h = if buttons { 78.0 } else { 58.0 };
         let card = Rect::from_min_max(Pos2::new(area.min.x, area.max.y - h - 6.0), Pos2::new(area.max.x, area.max.y - 6.0));
         let painter = ui.painter();
         painter.rect_filled(card, 8.0, self.theme.tab_active);
         painter.rect_stroke(card, 8.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
         let mut job = egui::text::LayoutJob::simple_singleline(title, FontId::proportional(13.0), self.theme.text);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(card.width() - 24.0);
+        // Room kept for the spinner on the right while installing.
+        job.wrap = egui::text::TextWrapping::truncate_at_width(card.width() - if installing { 52.0 } else { 24.0 });
         painter.galley(card.min + Vec2::new(12.0, 11.0), painter.layout_job(job), self.theme.text);
         let hover = ui.interact(card, ui.id().with("update-card"), Sense::hover());
         if let Some(e) = &detail {
@@ -833,7 +860,13 @@ impl App {
         }
         if matches!(state, update::State::Installing(_)) {
             ui.put(Rect::from_center_size(Pos2::new(card.max.x - 20.0, card.min.y + 20.0), Vec2::splat(14.0)), egui::Spinner::new().size(14.0));
-            // How much has arrived.
+            // How much has arrived: in words, and a bar.
+            let progress = download_text(self.updater.progress(), t);
+            if !progress.is_empty() {
+                let mut job = egui::text::LayoutJob::simple_singleline(progress, FontId::proportional(11.5), self.theme.text_muted);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(card.width() - 24.0);
+                ui.painter().galley(Pos2::new(card.min.x + 12.0, card.min.y + 30.0), ui.painter().layout_job(job), self.theme.text_muted);
+            }
             let (done, total) = self.updater.progress();
             if total > 0 {
                 let bar = Rect::from_min_max(Pos2::new(card.min.x + 12.0, card.max.y - 10.0), Pos2::new(card.max.x - 12.0, card.max.y - 7.0));
@@ -929,11 +962,8 @@ impl App {
         paint_logo(ui.painter(), logo_rect, &self.theme);
         // The logo leads home (the typing game).
         let logo_hit = Rect::from_center_size(logo_rect.center(), Vec2::new(150.0, logo_rect.height()));
-        if ui.interact(logo_hit, ui.id().with("logo-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            if self.home.is_none() {
-                self.go_home(None);
-            }
-        }
+        let logo = ui.interact(logo_hit, ui.id().with("logo-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+        self.logo_clicked(&logo);
         // Dev builds say so, next to the logo: they don't share the installed app's profiles.
         if !config::OFFICIAL {
             let at = Pos2::new(logo_rect.center().x + 58.0, logo_rect.center().y - 12.0);
@@ -1158,7 +1188,7 @@ impl App {
 
     /// Carries out what was clicked in the sidebar (folded or not). `tab_rects`: the slots of the
     /// local tabs, for a tab dragged over them.
-    fn apply_tab_action(&mut self, ui: &Ui, action: Option<TabAction>, tab_rects: &[(usize, Rect)]) {
+    pub(super) fn apply_tab_action(&mut self, ui: &Ui, action: Option<TabAction>, tab_rects: &[(usize, Rect)]) {
         let t = self.t();
         match action {
             Some(TabAction::Select(i)) => self.select(i),
@@ -1489,7 +1519,7 @@ pub(super) fn download_text((done, total): (u64, u64), t: &Strings) -> String {
 
 /// Tips about Ronnie scrolling from right to left along `rect` (with the shortcuts as set), fading at
 /// both ends; the pointer over them holds them still.
-fn tips_ticker(ui: &mut Ui, rect: Rect, theme: &crate::theme::Theme, t: &Strings, shortcuts: &config::Shortcuts) {
+pub(super) fn tips_ticker(ui: &mut Ui, rect: Rect, theme: &crate::theme::Theme, t: &Strings, shortcuts: &config::Shortcuts) {
     const SPEED: f32 = 45.0; // points a second
     const GAP: f32 = 56.0;
     let painter = ui.painter_at(rect);
