@@ -163,12 +163,46 @@ pub struct Config {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// A MariaDB / MySQL server to browse.
+/// What kind of server a database connection talks to.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    /// MariaDB or MySQL.
+    #[default]
+    Mysql,
+    /// Microsoft SQL Server.
+    Sqlserver,
+}
+
+impl Engine {
+    pub fn is_mysql(&self) -> bool {
+        *self == Engine::Mysql
+    }
+
+    pub fn default_port(self) -> u16 {
+        match self {
+            Engine::Mysql => 3306,
+            Engine::Sqlserver => 1433,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::Mysql => "MariaDB / MySQL",
+            Engine::Sqlserver => "SQL Server",
+        }
+    }
+}
+
+/// A MariaDB / MySQL or SQL Server server to browse.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct DbConnection {
     pub id: Uuid,
     pub name: String,
-    /// Address or name; "localhost" goes through the local socket, as for the mysql client.
+    #[serde(default, skip_serializing_if = "Engine::is_mysql")]
+    pub engine: Engine,
+    /// Address or name; "localhost" goes through the local socket, as for the mysql client. SQL Server:
+    /// `server\instance` for a named instance (found through the SQL Server Browser unless a port is given).
     pub host: String,
     #[serde(default = "default_db_port")]
     pub port: u16,
@@ -183,6 +217,9 @@ pub struct DbConnection {
     /// Reached through this SSH host (a port forward): `host` and `port` are then as seen from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<Uuid>,
+    /// SQL Server: accept the server's certificate without checking it (often self-signed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trust_cert: bool,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -193,12 +230,12 @@ fn default_db_port() -> u16 {
 
 impl DbConnection {
     pub fn new() -> Self {
-        Self { id: Uuid::new_v4(), name: String::new(), host: "localhost".into(), port: 3306, user: String::new(), database: None, color: None, password_saved: false, ssh: None, extra: Default::default() }
+        Self { id: Uuid::new_v4(), name: String::new(), engine: Engine::Mysql, host: "localhost".into(), port: 3306, user: String::new(), database: None, color: None, password_saved: false, ssh: None, trust_cert: false, extra: Default::default() }
     }
 
     /// `user@host:port`, for display.
     pub fn address(&self) -> String {
-        if self.port == 3306 { format!("{}@{}", self.user, self.host) } else { format!("{}@{}:{}", self.user, self.host, self.port) }
+        if self.port == self.engine.default_port() { format!("{}@{}", self.user, self.host) } else { format!("{}@{}:{}", self.user, self.host, self.port) }
     }
 }
 
@@ -502,6 +539,13 @@ pub struct Settings {
     pub home_hosts: bool,
     #[serde(default = "default_true")]
     pub home_databases: bool,
+    /// Claude's plan usage in the strip of the panes where Claude Code runs.
+    #[serde(default = "default_true")]
+    pub claude_usage: bool,
+    /// Ronnie sets itself as Claude Code's status line command at launch (to get the usage); off once
+    /// the user removed it.
+    #[serde(default = "default_true")]
+    pub claude_statusline: bool,
     /// The home page's typing game: the best rounds, the best first.
     #[serde(default)]
     pub typing_scores: Vec<TypingScore>,
@@ -731,7 +775,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, home_hosts: true, home_databases: true, typing_scores: Vec::new(), game_sound: None }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None }
     }
 }
 

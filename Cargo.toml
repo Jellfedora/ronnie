@@ -15,6 +15,7 @@ directories = "6"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 egui = "0.36"
 flate2 = "1.1.10"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust"] }
 portable-pty = "0.9"
 rfd = "0.17"
@@ -22,15 +23,21 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "m
 russh-sftp = "3"
 self-replace = "1.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
 similar = "3.2.0"
 sqlformat = "0.5.0"
 tar = "0.4.46"
+tokio-util = { version = "0.7", features = ["compat"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "process", "io-util", "sync", "fs", "time", "macros"] }
 ureq = { version = "3.4.2", features = ["json"] }
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+# SQL Server: rustls (macOS's TLS refuses the self-signed certificates SQL Server makes, even when told to
+# accept them; no OpenSSL to ship on Linux), and the system's TLS on Windows, as SSMS (below).
+[target.'cfg(not(windows))'.dependencies]
+tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "chrono", "sql-browser-tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -39,13 +46,14 @@ libc = "0.2"
 block2 = "0.6"
 muda = { version = "0.20.0", default-features = false }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSColor", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSColor", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSNull", "NSString"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "block2"] }
 raw-window-handle = "0.6"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "chrono", "sql-browser-tokio"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target."cfg(windows)".build-dependencies]
 winresource = "0.1"

@@ -71,6 +71,8 @@ pub(super) struct Completion {
 
 /// What can be completed: the databases, the tables listed, the columns of the selected database.
 pub(super) struct Schema<'a> {
+    /// Names are quoted [like this] (SQL Server), and tables are listed as schema.table.
+    pub brackets: bool,
     pub db: Option<&'a str>,
     pub databases: Vec<&'a str>,
     /// Tables listed, by database.
@@ -292,12 +294,20 @@ fn qualifier(sql: &str, at: usize) -> Option<(String, usize)> {
 }
 
 /// A name as written in SQL: in backticks when it has to be (or `in_quotes`: closing the one opened).
-fn written(name: &str, in_quotes: bool) -> String {
+/// `brackets` (SQL Server): [quoted] instead, and a `schema.table` written as two names.
+fn written(name: &str, in_quotes: bool, brackets: bool) -> String {
     if in_quotes {
         return format!("{}`", name.replace('`', "``"));
     }
-    let plain = name.chars().all(is_ident) && !name.starts_with(|c: char| c.is_ascii_digit()) && !is_keyword(name);
-    if plain && !name.is_empty() { name.to_owned() } else { crate::db::ident(name) }
+    let plain = |n: &str| n.chars().all(is_ident) && !n.starts_with(|c: char| c.is_ascii_digit()) && !is_keyword(n) && !n.is_empty();
+    if brackets {
+        let part = |n: &str| if plain(n) { n.to_owned() } else { crate::mssql::ident(n) };
+        return match name.split_once('.') {
+            Some((schema, table)) => format!("{}.{}", part(schema), part(table)),
+            None => part(name),
+        };
+    }
+    if plain(name) { name.to_owned() } else { crate::db::ident(name) }
 }
 
 fn find<'a, V>(map: &'a HashMap<String, V>, name: &str) -> Option<(&'a String, &'a V)> {
@@ -358,14 +368,15 @@ pub(super) fn complete(sql: &str, cursor: usize, schema: &Schema, forced: bool) 
     let add_tables = |add: &mut dyn FnMut(u8, bool, &str, String, usize, String, Kind), group: u8, list: Option<&Vec<TableInfo>>| {
         if let Some(list) = list {
             for tb in list {
-                add(group, true, &tb.name, written(&tb.name, in_quotes), 0, String::new(), if tb.view { Kind::View } else { Kind::Table });
+                add(group, true, &tb.name, written(&tb.name, in_quotes, schema.brackets), 0, String::new(), if tb.view { Kind::View } else { Kind::Table });
             }
         } else if let Some(columns) = columns {
             // Tables not listed yet: those whose columns came.
-            let mut names: Vec<&String> = columns.keys().collect();
+            // SQL Server: once each, as schema.table (they also come by name alone).
+            let mut names: Vec<&String> = columns.keys().filter(|n| !schema.brackets || n.contains('.')).collect();
             names.sort();
             for name in names {
-                add(group, true, name, written(name, in_quotes), 0, String::new(), Kind::Table);
+                add(group, true, name, written(name, in_quotes, schema.brackets), 0, String::new(), Kind::Table);
             }
         }
     };
@@ -374,14 +385,14 @@ pub(super) fn complete(sql: &str, cursor: usize, schema: &Schema, forced: bool) 
     match &context {
         Context::Databases => {
             for d in &schema.databases {
-                add(0, true, d, written(d, in_quotes), 0, String::new(), Kind::Database);
+                add(0, true, d, written(d, in_quotes, schema.brackets), 0, String::new(), Kind::Database);
             }
         }
         Context::Tables => {
             add_tables(&mut add, 0, tables);
             if !in_quotes {
                 for d in &schema.databases {
-                    add(1, false, d, written(d, false), 0, String::new(), Kind::Database);
+                    add(1, false, d, written(d, false, schema.brackets), 0, String::new(), Kind::Database);
                 }
                 for k in KEYWORDS {
                     add(2, false, k, case(k), 0, String::new(), Kind::Keyword);
@@ -395,7 +406,7 @@ pub(super) fn complete(sql: &str, cursor: usize, schema: &Schema, forced: bool) 
             match columns.and_then(|c| find(c, table)).filter(|_| this_db) {
                 Some((_, cols)) => {
                     for (name, kind) in cols {
-                        add(0, true, name, written(name, in_quotes), 0, kind.clone(), Kind::Column);
+                        add(0, true, name, written(name, in_quotes, schema.brackets), 0, kind.clone(), Kind::Column);
                     }
                 }
                 // A database's tables.
@@ -416,7 +427,7 @@ pub(super) fn complete(sql: &str, cursor: usize, schema: &Schema, forced: bool) 
                     for (name, kind) in cols {
                         if !seen.contains(name) {
                             seen.push(name.clone());
-                            add(0, true, name, written(name, in_quotes), 0, if several { format!("{kind} · {tb}") } else { kind.clone() }, Kind::Column);
+                            add(0, true, name, written(name, in_quotes, schema.brackets), 0, if several { format!("{kind} · {tb}") } else { kind.clone() }, Kind::Column);
                         }
                     }
                 }
@@ -438,7 +449,7 @@ pub(super) fn complete(sql: &str, cursor: usize, schema: &Schema, forced: bool) 
                     for (name, kind) in cols {
                         if !seen.contains(name) {
                             seen.push(name.clone());
-                            add(4, true, name, written(name, in_quotes), 0, format!("{kind} · {tb}"), Kind::Column);
+                            add(4, true, name, written(name, in_quotes, schema.brackets), 0, format!("{kind} · {tb}"), Kind::Column);
                         }
                     }
                 }
@@ -639,7 +650,7 @@ mod tests {
     use super::*;
 
     fn schema<'a>(tables: &'a HashMap<String, Vec<TableInfo>>, columns: &'a HashMap<String, Vec<(String, String)>>) -> Schema<'a> {
-        Schema { db: Some("shop"), databases: vec!["shop", "blog"], tables, columns: Some(columns), table: None }
+        Schema { brackets: false, db: Some("shop"), databases: vec!["shop", "blog"], tables, columns: Some(columns), table: None }
     }
 
     fn fixtures() -> (HashMap<String, Vec<TableInfo>>, HashMap<String, Vec<(String, String)>>) {

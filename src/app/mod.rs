@@ -314,6 +314,10 @@ pub struct App {
     host_editor: Option<HostEditor>,
     /// Database connection being created or edited.
     db_editor: Option<DbEditor>,
+    /// Claude's plan usage, shown above the panes where Claude Code runs.
+    claude: ClaudeUsage,
+    /// Why setting up Claude's usage failed.
+    claude_error: Option<String>,
     /// A MariaDB / MySQL server runs on this machine (offered in the sidebar while none is set up).
     local_db: bool,
     /// Profile or group being dragged in the sidebar.
@@ -442,6 +446,24 @@ fn sync_tabs(tabs: &mut [Tab], config: &mut Config) -> Vec<SessionTab> {
         out.push(SessionTab { profile: tab.profile, ssh: tab.ssh, db: tab.db, tab: state });
     }
     out
+}
+
+/// The usage Claude Code last told (see claude.rs), read again every few seconds while shown.
+#[derive(Default)]
+struct ClaudeUsage {
+    usage: Option<crate::claude::Usage>,
+    read: Option<Instant>,
+}
+
+impl ClaudeUsage {
+    fn current(&mut self) -> Option<&crate::claude::Usage> {
+        if self.read.is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
+            self.read = Some(Instant::now());
+            // Usage told more than a week ago says nothing any more.
+            self.usage = crate::claude::read_usage().filter(|u| crate::claude::now() - u.updated < 7 * 24 * 3600);
+        }
+        self.usage.as_ref()
+    }
 }
 
 /// The database connection editor's state.
@@ -836,6 +858,8 @@ impl App {
             logs: None,
             host_editor: None,
             db_editor: None,
+            claude: ClaudeUsage::default(),
+            claude_error: None,
             local_db: crate::db::local_server(),
             item_drag: None,
             group_rename: None,
@@ -936,7 +960,7 @@ impl App {
         app.restore_tabs(&session.tabs, session.active);
         // The other windows, where they were.
         for w in &session.windows {
-            let mut slot = WindowSlot { viewport: egui::ViewportId::from_hash_of(("window", Uuid::new_v4())), opened_at: w.window, window: w.window, ..Default::default() };
+            let mut slot = WindowSlot { viewport: egui::ViewportId::from_hash_of(("window", Uuid::new_v4())), opened_at: w.window.filter(crate::screens::on_screen), window: w.window, ..Default::default() };
             app.swap_window(&mut slot);
             app.restore_tabs(&w.tabs, w.active);
             app.swap_window(&mut slot);
@@ -968,6 +992,12 @@ impl App {
         }
         if !app.config.settings.splash {
             app.splash = None;
+        }
+        // Claude's usage on by default (an installed Ronnie: a dev build's path mustn't stay there).
+        if config::OFFICIAL && app.config.settings.claude_statusline && !app.read_only {
+            if let Err(e) = crate::claude::ensure_connected() {
+                crate::log::error(&format!("claude: {e}"));
+            }
         }
         // Development: open the settings on a page right away (to look at them).
         if cfg!(debug_assertions) {
@@ -2281,6 +2311,52 @@ struct HeaderClicks {
     close: bool,
     /// Double click: rename the pane.
     rename: bool,
+    /// The Claude usage badge, before Ronnie gets the usage: how to set it up.
+    claude_setup: bool,
+}
+
+/// The badge of Claude's plan usage in a pane's strip, ending at `right`: its width, if it fits.
+#[allow(clippy::too_many_arguments)]
+fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, usage: Option<&crate::claude::Usage>, theme: &Theme, t: &Strings, clicks: &mut HeaderClicks) -> Option<f32> {
+    let now = crate::claude::now();
+    let (text, color, tip) = match usage {
+        Some(u) => {
+            let worst = [u.five_hour, u.seven_day].iter().flatten().map(|w| w.used_now(now)).fold(0.0, f32::max);
+            let color = if worst >= 95.0 { theme.ansi[1] } else if worst >= 80.0 { theme.ansi[3] } else { theme.accent };
+            let when = |at: i64| {
+                let at = chrono::DateTime::from_timestamp(at, 0).map(|d| d.with_timezone(&chrono::Local));
+                let Some(at) = at else { return String::new() };
+                let time = at.format("%H:%M").to_string();
+                if at.date_naive() == chrono::Local::now().date_naive() { t.claude_at.replace("{t}", &time) } else { t.claude_on.replace("{d}", &at.format(t.claude_date).to_string()).replace("{t}", &time) }
+            };
+            let mut tip = vec![t.claude_usage_title.to_owned()];
+            if let Some(w) = u.five_hour {
+                tip.push(t.claude_session.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
+            }
+            if let Some(w) = u.seven_day {
+                tip.push(t.claude_week.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
+            }
+            tip.push(t.claude_updated.replace("{n}", &((now - u.updated).max(0) / 60).to_string()));
+            (crate::claude::usage_text(u, now), color, tip.join("\n"))
+        }
+        None => (t.claude_usage_short.to_owned(), theme.text_muted, t.claude_setup_tip.to_owned()),
+    };
+    let font = FontId::monospace(12.0);
+    let galley = ui.painter().layout_no_wrap(text, font, color);
+    let w = galley.size().x + 16.0;
+    if right - w < rect.min.x + rect.width() / 3.0 {
+        return None;
+    }
+    let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
+    let resp = ui.interact(at, egui::Id::new(("pane-claude", id)), Sense::click());
+    ui.painter().rect_filled(at, 4.0, if resp.hovered() { theme.tab_hover } else { theme.tab_active });
+    ui.painter().rect_stroke(at, 4.0, Stroke::new(1.0, color.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+    ui.painter().galley(Pos2::new(at.min.x + 8.0, at.center().y - galley.size().y / 2.0), galley, color);
+    let resp = resp.on_hover_text(tip);
+    if usage.is_none() {
+        clicks.claude_setup = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    }
+    Some(w)
 }
 
 /// What the strip above a pane shows.
@@ -2296,7 +2372,8 @@ enum Header<'a> {
 /// host with reconnect (↻) and file manager (📁) icons, plus the saved commands (⚡) and, for local panes,
 /// history search.
 #[allow(clippy::too_many_arguments)]
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+/// `claude`: Claude Code runs in the pane, with the plan's usage if Ronnie gets it.
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<Option<&crate::claude::Usage>>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
@@ -2399,6 +2476,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             }
             right -= w + 6.0;
             max_w = right - rect.min.x - 16.0;
+        }
+        if let Some(usage) = claude {
+            if let Some(w) = claude_badge(ui, rect, right, id, usage, theme, t, &mut clicks) {
+                right -= w + 6.0;
+                max_w = right - rect.min.x - 16.0;
+            }
         }
     }
     if let Header::Ssh(_) = header {
@@ -3120,15 +3203,22 @@ impl App {
                     // The repository of a local pane's folder, if any.
                     let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::repo_root) } else { None };
                     let git_open = tab.git.contains_key(&id);
+                    // Claude Code in the foreground: its plan's usage in the strip.
+                    let claude_here = local && self.config.settings.claude_usage && term.live_program(ui.ctx()).is_some_and(crate::claude::is_claude);
+                    let claude = claude_here.then(|| self.claude.current().cloned());
                     // Split: always a strip, to drag the pane by.
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open {
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open || claude.is_some() {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let git_state = (repo.is_some() || git_open).then_some(git_open);
                         let header = if local { Header::Local(cwd.as_deref(), &urls, git_state) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, &self.theme, strings, &self.config.settings.shortcuts);
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref().map(Option::as_ref), &self.theme, strings, &self.config.settings.shortcuts);
+                        if clicks.claude_setup {
+                            self.settings_dialog = true;
+                            self.settings_tab = SettingsTab::General;
+                        }
                         if clicks.rename {
                             self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
                         }

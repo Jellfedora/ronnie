@@ -2,6 +2,33 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.14.0] - 2026-10-01
+
+### Nouveautés
+
+- **SQL Server** dans la partie bases de données, à côté de MariaDB et MySQL : choisir « SQL Server » dans l'éditeur de connexion (port 1433 par défaut).
+  - Instances nommées (`serveur\INSTANCE`) : avec le port 1433, son port est demandé au service SQL Server Browser, sinon le port indiqué est utilisé. À travers un hôte SSH comme pour MySQL.
+  - Option « Faire confiance au certificat du serveur » pour les certificats auto-signés (le cas par défaut de SQL Server), proposée par le message d'erreur quand il le faut.
+  - Tables en `schéma.table`, avec lignes, taille et description ; structure (colonnes, clés, index, `CREATE TABLE` reconstruit) ; contenu paginé, triable et cherchable ; cellules, ajout et suppression de lignes ; création, renommage, vidage et suppression de tables ; ajout, modification et suppression de colonnes.
+  - Page SQL avec ses onglets, son historique et l'autocomplétion (noms entre crochets) ; les lignes `GO` séparent les lots comme dans SSMS ; ■ Stop arrête une requête sans couper la connexion.
+  - Export d'une table en CSV et exécution d'un script `.sql`, même enregistré en UTF-16 par SSMS.
+- **Usage de Claude** dans la barre d'un pane où Claude Code tourne : session de 5 h et semaine (`5 h 24 % · 7 j 41 %`), en jaune à partir de 80 %, en rouge à partir de 95 %, avec l'heure de remise à zéro au survol. Pour les forfaits Pro et Max : Ronnie devient la commande de barre de statut de Claude Code, d'office au lancement ; celle que tu avais continue de s'afficher. Réglages › Général › Claude Code pour la retirer ou masquer l'usage.
+
+### Changements
+
+- Une page d'accueil au premier lancement, et quand aucun onglet n'était ouvert, au lieu d'un nouveau terminal.
+
+### Corrections
+
+- Une fenêtre enregistrée sur un écran débranché depuis s'ouvre sur un écran visible (macOS, Windows).
+- Fermer un onglet en arrière-plan n'affiche plus la page d'accueil.
+- Visionneuse de fichiers : plus de plantage en sautant (barre de défilement) avant la partie lue.
+- Historique SQL : les mots de passe sont masqués sous toutes leurs formes (`IDENTIFIED WITH … BY`, `SET PASSWORD`, `PASSWORD()`, guillemets doubles).
+- Gestionnaire de fichiers : un dossier ne peut plus être copié dans l'un de ses sous-dossiers.
+- Après une mise à jour, une relance ratée enregistre de nouveau au lieu de rester en lecture seule ; lancé comme service systemd, le redémarrage après une mise à jour se fait.
+- Renommer un profil avec un nom vide affiche son propre message.
+- Linux (Deepin) : l'icône de Ronnie dans le dock.
+
 ## [0.13.0] - 2026-09-30
 
 ### Nouveautés

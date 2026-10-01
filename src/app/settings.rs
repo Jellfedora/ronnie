@@ -409,17 +409,38 @@ impl App {
                 ui.add(egui::TextEdit::singleline(value).hint_text(hint).password(password).desired_width(f32::INFINITY).margin(Vec2::new(8.0, 6.0)))
             };
             egui::Grid::new("db-editor-grid").num_columns(2).spacing([16.0, 12.0]).min_col_width(130.0).show(ui, |ui| {
+                ui.label(egui::RichText::new(t.db_engine).color(theme.text_muted));
+                ui.horizontal(|ui| {
+                    for engine in [config::Engine::Mysql, config::Engine::Sqlserver] {
+                        let before = d.engine;
+                        if ui.selectable_value(&mut d.engine, engine, engine.label()).changed() {
+                            // The other server's usual port follows.
+                            if editor.port.trim().is_empty() || editor.port.trim() == before.default_port().to_string() {
+                                editor.port = engine.default_port().to_string();
+                            }
+                            editor.tested = None;
+                        }
+                    }
+                });
+                ui.end_row();
+                let mssql = d.engine == config::Engine::Sqlserver;
                 ui.label(egui::RichText::new(t.db_name).color(theme.text_muted));
                 field(ui, &mut d.name, &d.host.clone(), false);
                 ui.end_row();
                 ui.label(egui::RichText::new(format!("{}  ·  {}", t.db_host, t.db_port)).color(theme.text_muted));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut d.host).hint_text(t.db_host_hint).desired_width(ui.available_width() - 90.0).margin(Vec2::new(8.0, 6.0)));
-                    ui.add(egui::TextEdit::singleline(&mut editor.port).hint_text("3306").desired_width(80.0).margin(Vec2::new(8.0, 6.0)));
+                    let hint = if mssql { t.db_mssql_host_hint } else { t.db_host_hint };
+                    ui.add(egui::TextEdit::singleline(&mut d.host).hint_text(hint).desired_width(ui.available_width() - 90.0).margin(Vec2::new(8.0, 6.0)));
+                    ui.add(egui::TextEdit::singleline(&mut editor.port).hint_text(d.engine.default_port().to_string()).desired_width(80.0).margin(Vec2::new(8.0, 6.0)));
                 });
                 ui.end_row();
                 ui.label("");
-                ui.label(egui::RichText::new(if d.ssh.is_some() { t.db_via_ssh_hint } else { t.db_localhost_hint }).size(11.5).color(theme.text_muted));
+                let hint = match (d.ssh.is_some(), mssql) {
+                    (true, _) => t.db_via_ssh_hint,
+                    (false, true) => t.db_mssql_hint,
+                    (false, false) => t.db_localhost_hint,
+                };
+                ui.add(egui::Label::new(egui::RichText::new(hint).size(11.5).color(theme.text_muted)).wrap());
                 ui.end_row();
                 // Through an SSH host: for servers that only listen on their own machine.
                 ui.label(egui::RichText::new(t.db_via_ssh).color(theme.text_muted));
@@ -432,7 +453,7 @@ impl App {
                 });
                 ui.end_row();
                 ui.label(egui::RichText::new(t.db_user).color(theme.text_muted));
-                field(ui, &mut d.user, "root", false);
+                field(ui, &mut d.user, if mssql { "sa" } else { "root" }, false);
                 ui.end_row();
                 ui.label(egui::RichText::new(t.db_password).color(theme.text_muted));
                 ui.horizontal(|ui| {
@@ -446,6 +467,11 @@ impl App {
                     }
                 });
                 ui.end_row();
+                if mssql {
+                    ui.label("");
+                    ui.checkbox(&mut d.trust_cert, t.db_trust_cert).on_hover_text(t.db_trust_cert_hint);
+                    ui.end_row();
+                }
                 ui.label(egui::RichText::new(t.db_default_db).color(theme.text_muted));
                 let mut database = d.database.clone().unwrap_or_default();
                 field(ui, &mut database, t.optional, false);
@@ -469,6 +495,7 @@ impl App {
             });
             ui.add_space(14.0);
             // Test the connection with what is typed.
+            let (d_engine_mssql, d_trust) = (editor.draft.engine == config::Engine::Sqlserver, editor.draft.trust_cert);
             ui.horizontal(|ui| {
                 if ui.add_enabled(editor.testing.is_none(), egui::Button::new(egui::RichText::new(format!("⚡  {}", t.db_test)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
                     test = true;
@@ -482,7 +509,10 @@ impl App {
                         ui.label(egui::RichText::new(format!("✓  {}", t.db_test_ok.replace("{v}", v))).size(12.5).color(theme.ansi[2]));
                     }
                     (None, Some(Err(e))) => {
-                        ui.add(egui::Label::new(egui::RichText::new(format!("✗  {e}")).size(12.5).color(theme.ansi[1])).wrap());
+                        // A self-signed certificate refused: say what to tick.
+                        let cert = d_engine_mssql && !d_trust && e.to_lowercase().contains("certificat");
+                        let text = if cert { format!("✗  {e}\n{}", t.db_cert_refused) } else { format!("✗  {e}") };
+                        ui.add(egui::Label::new(egui::RichText::new(text).size(12.5).color(theme.ansi[1])).wrap());
                     }
                     _ => {}
                 }
@@ -516,7 +546,7 @@ impl App {
             let password = if editor.password_changed || !editor.draft.password_saved { Some(editor.password.clone()).filter(|p| !p.is_empty()) } else { ssh::load_password(editor.draft.id) };
             let host = editor.draft.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned();
             let tunnel = host.as_ref().map(|h| h.tunnel_command());
-            let target = crate::db::Target { host: editor.draft.host.trim().to_owned(), port: port.unwrap_or(3306), user: editor.draft.user.trim().to_owned(), password, database: editor.draft.database.clone(), tunnel };
+            let target = crate::db::Target { host: editor.draft.host.trim().to_owned(), port: port.unwrap_or(editor.draft.engine.default_port()), user: editor.draft.user.trim().to_owned(), password, database: editor.draft.database.clone(), tunnel, engine: editor.draft.engine, trust_cert: editor.draft.trust_cert };
             editor.tested = None;
             let (rx, pid) = crate::db::test(ctx, target);
             editor.testing = Some(rx);
@@ -1225,6 +1255,31 @@ impl App {
         card(ui, theme, Some(t.set_databases), |ui| {
             setting_row(ui, theme, t.db_confirm_changes, Some(t.db_confirm_changes_desc), |ui| {
                 toggle(ui, theme, &mut picked.db_confirm_changes);
+            });
+        });
+        card(ui, theme, Some(t.set_claude), |ui| {
+            // Read each time the page is drawn: Claude Code's settings may change elsewhere.
+            let connected = crate::claude::connected();
+            setting_row(ui, theme, t.claude_usage_row, Some(t.claude_usage_desc), |ui| {
+                let label = if connected { t.claude_disconnect } else { t.claude_connect };
+                if ui.add(egui::Button::new(egui::RichText::new(label).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    let done = if connected { crate::claude::disconnect() } else { crate::claude::connect() };
+                    // Removed: not set again at the next launch.
+                    if done.is_ok() {
+                        picked.claude_statusline = !connected;
+                    }
+                    self.claude_error = done.err();
+                }
+                if connected {
+                    ui.label(egui::RichText::new(format!("✓  {}", t.claude_connected_label)).size(12.5).color(theme.ansi[2]));
+                }
+            });
+            if let Some(e) = &self.claude_error {
+                ui.label(egui::RichText::new(e).size(12.0).color(theme.ansi[1]));
+            }
+            divider(ui, theme);
+            setting_row(ui, theme, t.claude_show_row, Some(t.claude_show_desc), |ui| {
+                toggle(ui, theme, &mut picked.claude_usage);
             });
         });
         card(ui, theme, Some(t.set_notifications), |ui| {

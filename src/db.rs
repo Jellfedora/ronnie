@@ -2,7 +2,8 @@
 //! view sends requests (databases, tables, structure, rows, SQL) and gets events back, and never waits
 //! on the server. Exports and imports get a connection of their own (the view stays usable meanwhile),
 //! and a query running too long can be stopped (KILL QUERY, from yet another connection). A server that
-//! only listens on its own machine is reached through an SSH port forward.
+//! only listens on its own machine is reached through an SSH port forward. SQL Server has its own
+//! client (mssql.rs), behind the same requests and events.
 
 use std::io::{Read, Write as _};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -23,7 +24,7 @@ pub const CANCELLED: &str = "\u{1}cancelled";
 /// How long to wait for an SSH forward to open (a password may have to be typed first).
 const TUNNEL_WAIT: Duration = Duration::from_secs(180);
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("db").enable_all().build().expect("tokio runtime"))
 }
@@ -39,6 +40,21 @@ pub struct Target {
     pub database: Option<String>,
     /// The ssh command reaching the server's machine (it ends with "--", host); none: direct.
     pub tunnel: Option<crate::ssh::Launch>,
+    pub engine: crate::config::Engine,
+    /// SQL Server: the certificate is accepted unchecked.
+    pub trust_cert: bool,
+}
+
+impl Target {
+    /// The machine, without a SQL Server instance name (`server\instance`).
+    pub(crate) fn machine(&self) -> &str {
+        self.host.split('\\').next().unwrap_or(&self.host)
+    }
+
+    /// The SQL Server instance named after the machine, if any.
+    pub(crate) fn instance(&self) -> Option<&str> {
+        self.host.split_once('\\').map(|(_, i)| i).filter(|i| !i.is_empty())
+    }
 }
 
 /// A value as shown in a grid.
@@ -162,16 +178,18 @@ pub enum Event {
 
 /// An open connection. Dropping it closes it (and its SSH forward).
 pub struct Connection {
-    requests: tmpsc::UnboundedSender<Request>,
-    events: Receiver<Event>,
-    stop: Arc<tokio::sync::Notify>,
-    stop_tunnel: Arc<tokio::sync::Notify>,
+    pub(crate) requests: tmpsc::UnboundedSender<Request>,
+    pub(crate) events: Receiver<Event>,
+    pub(crate) stop: Arc<tokio::sync::Notify>,
+    pub(crate) stop_tunnel: Arc<tokio::sync::Notify>,
     /// How to reach the server from here (through the forward when there is one).
-    direct: Target,
+    pub(crate) direct: Target,
     /// Server-side ids of the view's connection and of the transfer's, for KILL QUERY.
-    thread: Arc<AtomicU32>,
-    transfer_thread: Arc<AtomicU32>,
-    cancel_transfer: Arc<AtomicBool>,
+    pub(crate) thread: Arc<AtomicU32>,
+    pub(crate) transfer_thread: Arc<AtomicU32>,
+    pub(crate) cancel_transfer: Arc<AtomicBool>,
+    /// SQL Server: tells the view's connection to stop its query (it does so itself).
+    pub(crate) cancel_signal: Option<Arc<tokio::sync::Notify>>,
     /// The ssh process of the forward: the askpass helper answers it (see askpass.rs).
     pub tunnel_pid: Option<u32>,
 }
@@ -185,13 +203,13 @@ impl Drop for Connection {
 }
 
 #[derive(Clone)]
-struct Emitter {
-    tx: Sender<Event>,
-    ctx: egui::Context,
+pub(crate) struct Emitter {
+    pub(crate) tx: Sender<Event>,
+    pub(crate) ctx: egui::Context,
 }
 
 impl Emitter {
-    fn send(&self, e: Event) {
+    pub(crate) fn send(&self, e: Event) {
         let _ = self.tx.send(e);
         self.ctx.request_repaint();
     }
@@ -232,18 +250,19 @@ async fn connect(target: &Target) -> Result<Conn, String> {
 }
 
 /// An SSH port forward being set up: ssh started, listening here on `port` once logged in.
-struct Forward {
-    child: tokio::process::Child,
+pub(crate) struct Forward {
+    pub(crate) child: tokio::process::Child,
     port: u16,
     /// ssh's error output, for when it fails.
-    stderr: Arc<Mutex<String>>,
+    pub(crate) stderr: Arc<Mutex<String>>,
 }
 
 /// Starts ssh forwarding a free local port to the server (`target.host`, `target.port`, as seen from
 /// the SSH host). Must be called within the runtime.
-fn start_forward(target: &Target, launch: &crate::ssh::Launch) -> Result<Forward, String> {
+pub(crate) fn start_forward(target: &Target, launch: &crate::ssh::Launch) -> Result<Forward, String> {
     let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map_err(|e| e.to_string())?.port();
-    let host = if target.host.contains(':') { format!("[{}]", target.host) } else { target.host.clone() };
+    let machine = target.machine();
+    let host = if machine.contains(':') { format!("[{machine}]") } else { machine.to_owned() };
     let mut args = launch.args.clone();
     // The command ends with "--", host.
     let at = args.len().saturating_sub(2);
@@ -277,7 +296,7 @@ fn start_forward(target: &Target, launch: &crate::ssh::Launch) -> Result<Forward
 
 impl Forward {
     /// Waits until the forward accepts connections, or ssh gives up.
-    async fn ready(&mut self) -> Result<(), String> {
+    pub(crate) async fn ready(&mut self) -> Result<(), String> {
         let start = Instant::now();
         loop {
             if let Ok(Some(_)) = self.child.try_wait() {
@@ -297,7 +316,7 @@ impl Forward {
 }
 
 /// Where to connect once the forward (if any) is up.
-fn direct(target: &Target, forward: Option<&Forward>) -> Target {
+pub(crate) fn direct(target: &Target, forward: Option<&Forward>) -> Target {
     match forward {
         Some(f) => Target { host: "127.0.0.1".into(), port: f.port, tunnel: None, ..target.clone() },
         None => target.clone(),
@@ -306,6 +325,9 @@ fn direct(target: &Target, forward: Option<&Forward>) -> Target {
 
 /// Tries to connect: the server's version, or why not; and the ssh process of the forward, if any.
 pub fn test(ctx: &egui::Context, target: Target) -> (Receiver<Result<String, String>>, Option<u32>) {
+    if target.engine == crate::config::Engine::Sqlserver {
+        return crate::mssql::test(ctx, target);
+    }
     let (tx, rx) = mpsc::channel();
     let ctx = ctx.clone();
     let _guard = runtime().enter();
@@ -348,6 +370,36 @@ pub fn ident(name: &str) -> String {
 /// `text` as a string literal.
 pub fn literal(text: &str) -> String {
     format!("'{}'", text.replace('\\', "\\\\").replace('\'', "''"))
+}
+
+/// How a server writes names and values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Dialect(pub crate::config::Engine);
+
+impl Dialect {
+    pub fn mssql(self) -> bool {
+        self.0 == crate::config::Engine::Sqlserver
+    }
+
+    /// `name` quoted as an identifier: `name` or [name].
+    pub fn ident(self, name: &str) -> String {
+        if self.mssql() { crate::mssql::ident(name) } else { ident(name) }
+    }
+
+    /// `text` as a string literal (SQL Server: Unicode, backslashes as they are).
+    pub fn literal(self, text: &str) -> String {
+        if self.mssql() { crate::mssql::literal(text) } else { literal(text) }
+    }
+
+    /// A table of a database, fully named. On SQL Server tables are listed as `schema.table`.
+    pub fn table(self, db: &str, table: &str) -> String {
+        if self.mssql() { crate::mssql::table(db, table) } else { format!("{}.{}", ident(db), ident(table)) }
+    }
+
+    /// A table named within its database (the current one).
+    pub fn local_table(self, table: &str) -> String {
+        if self.mssql() { crate::mssql::local_table(table) } else { ident(table) }
+    }
 }
 
 /// An account, as `'user'@'host'`.
@@ -453,7 +505,7 @@ fn strip_definer(sql: &str) -> String {
 }
 
 /// Where an export writes: a file, compressed for .gz.
-fn export_writer(path: &std::path::Path) -> Result<Box<dyn std::io::Write + Send>, String> {
+pub(crate) fn export_writer(path: &std::path::Path) -> Result<Box<dyn std::io::Write + Send>, String> {
     let file = std::fs::File::create(path).map_err(|e| format!("{} : {e}", path.display()))?;
     let gz = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gz"));
     Ok(if gz { Box::new(flate2::write::GzEncoder::new(std::io::BufWriter::new(file), flate2::Compression::default())) } else { Box::new(std::io::BufWriter::with_capacity(1 << 20, file)) })
@@ -598,7 +650,7 @@ async fn export(conn: &mut Conn, db: &str, only: Option<&[String]>, path: &std::
 }
 
 /// A value in a CSV file: quoted when it has to be.
-fn csv_field(text: &str) -> String {
+pub(crate) fn csv_field(text: &str) -> String {
     if text.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\""))
     } else {
@@ -1134,6 +1186,9 @@ fn is_lost(e: &mysql_async::Error) -> bool {
 
 impl Connection {
     pub fn open(ctx: &egui::Context, target: Target) -> Self {
+        if target.engine == crate::config::Engine::Sqlserver {
+            return crate::mssql::open(ctx, target);
+        }
         let (requests, mut incoming) = tmpsc::unbounded_channel::<Request>();
         let (tx, events) = mpsc::channel();
         let emit = Emitter { tx, ctx: ctx.clone() };
@@ -1221,7 +1276,7 @@ impl Connection {
             }
             let _ = conn.disconnect().await;
         });
-        Self { requests, events, stop, stop_tunnel, direct, thread, transfer_thread, cancel_transfer, tunnel_pid }
+        Self { requests, events, stop, stop_tunnel, direct, thread, transfer_thread, cancel_transfer, cancel_signal: None, tunnel_pid }
     }
 
     pub fn send(&self, request: Request) {
@@ -1234,13 +1289,18 @@ impl Connection {
 
     /// Stops the query the view's connection runs (from another connection: that one is busy).
     pub fn cancel_query(&self) {
+        if let Some(signal) = &self.cancel_signal {
+            return signal.notify_one();
+        }
         kill(self.direct.clone(), self.thread.load(Ordering::Relaxed));
     }
 
     /// Stops the export or import going on.
     pub fn cancel_transfer(&self) {
         self.cancel_transfer.store(true, Ordering::Relaxed);
-        kill(self.direct.clone(), self.transfer_thread.load(Ordering::Relaxed));
+        if self.cancel_signal.is_none() {
+            kill(self.direct.clone(), self.transfer_thread.load(Ordering::Relaxed));
+        }
     }
 }
 
@@ -1340,7 +1400,7 @@ mod tests {
     #[test]
     #[ignore]
     fn local_server() {
-        let target = Target { host: "localhost".into(), port: 3306, user: std::env::var("USER").unwrap_or_default(), password: None, database: None, tunnel: None };
+        let target = Target { host: "localhost".into(), port: 3306, user: std::env::var("USER").unwrap_or_default(), password: None, database: None, tunnel: None, engine: Default::default(), trust_cert: false };
         let ctx = egui::Context::default();
         let (rx, _) = test(&ctx, target.clone());
         let version = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
@@ -1375,7 +1435,7 @@ mod tests {
     #[test]
     #[ignore]
     fn refused_change_tells_its_tag() {
-        let target = Target { host: "localhost".into(), port: 3306, user: std::env::var("USER").unwrap_or_default(), password: None, database: None, tunnel: None };
+        let target = Target { host: "localhost".into(), port: 3306, user: std::env::var("USER").unwrap_or_default(), password: None, database: None, tunnel: None, engine: Default::default(), trust_cert: false };
         let ctx = egui::Context::default();
         let conn = Connection::open(&ctx, target);
         conn.send(Request::Exec { db: None, sql: "UPDATE no_such_db.no_such_table SET a = 1".into(), tag: 7 });

@@ -1,12 +1,13 @@
-//! The database view of a MariaDB / MySQL tab, phpMyAdmin style: the databases and their tables on the
-//! left; on the right a database's tables, a table's content (paged, sortable) and structure, and a SQL
-//! editor. Changes that destroy (dropping, emptying) are asked for first.
+//! The database view of a MariaDB / MySQL or SQL Server tab, phpMyAdmin style: the databases and their
+//! tables on the left; on the right a database's tables, a table's content (paged, sortable) and
+//! structure, and a SQL editor. Changes that destroy (dropping, emptying) are asked for first. The SQL
+//! written for the changes follows the server's dialect.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::db::{self, Cell, DatabaseInfo, Event, QueryResult, Request, Structure, TableInfo, UserInfo};
+use crate::db::{self, Cell, DatabaseInfo, Dialect, Event, QueryResult, Request, Structure, TableInfo, UserInfo};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -123,8 +124,13 @@ impl ColumnEdit {
         e.contains("VIRTUAL") || e.contains("STORED") || e.contains("PERSISTENT")
     }
 
-    /// The ALTER TABLE statement for it.
-    fn sql(&self, db_name: &str, table: &str) -> String {
+    /// The ALTER TABLE statement for it. SQL Server: the type, NULL and collation of an existing column
+    /// (renamed first if its name changed; its default and comment are left as they are), in the
+    /// database's context.
+    fn sql(&self, dialect: Dialect, db_name: &str, table: &str) -> String {
+        if dialect.mssql() {
+            return self.mssql(dialect, db_name, table);
+        }
         let mut def = format!("{} {}", db::ident(self.name.trim()), self.kind.trim());
         if textual(&self.kind) {
             if !self.charset.is_empty() {
@@ -156,10 +162,42 @@ impl ColumnEdit {
             None => format!("ALTER TABLE {table} ADD COLUMN {def}"),
         }
     }
+
+    fn mssql(&self, dialect: Dialect, db_name: &str, table: &str) -> String {
+        let q = |n: &str| dialect.ident(n);
+        let full = dialect.table(db_name, table);
+        let null = if self.nullable { " NULL" } else { " NOT NULL" };
+        let Some(old) = &self.original else {
+            let mut sql = format!("ALTER TABLE {full} ADD {} {}{null}", q(self.name.trim()), self.kind.trim());
+            let default = self.default.trim();
+            if !(self.default_null && self.nullable) && !default.is_empty() {
+                sql.push_str(&format!(" DEFAULT {}", if self.default_expr { default.to_owned() } else { dialect.literal(default) }));
+            }
+            return sql;
+        };
+        let collate = if textual(&self.kind) && !self.collation.is_empty() { format!(" COLLATE {}", self.collation) } else { String::new() };
+        let mut sql = format!("ALTER TABLE {full} ALTER COLUMN {} {}{collate}{null}", q(old), self.kind.trim());
+        let name = self.name.trim();
+        if name != old {
+            sql.push_str(&format!(";\nEXEC sp_rename {}, {}, 'COLUMN'", dialect.literal(&format!("{}.{}", dialect.local_table(table), q(old))), dialect.literal(name)));
+        }
+        sql
+    }
 }
 
 /// Column types offered (anything else can be typed).
 const COLUMN_TYPES: [&str; 14] = ["INT", "BIGINT", "TINYINT(1)", "SMALLINT", "DECIMAL(10,2)", "DOUBLE", "VARCHAR(255)", "CHAR(36)", "TEXT", "LONGTEXT", "DATE", "DATETIME", "TIMESTAMP", "JSON"];
+const MSSQL_COLUMN_TYPES: [&str; 14] = ["INT", "BIGINT", "BIT", "SMALLINT", "DECIMAL(10,2)", "FLOAT", "NVARCHAR(255)", "NVARCHAR(MAX)", "VARCHAR(255)", "UNIQUEIDENTIFIER", "DATE", "DATETIME2", "DATETIMEOFFSET", "VARBINARY(MAX)"];
+
+fn column_types(dialect: Dialect) -> &'static [&'static str] {
+    if dialect.mssql() { &MSSQL_COLUMN_TYPES } else { &COLUMN_TYPES }
+}
+
+/// A table name typed for SQL Server, in dbo unless a schema is given.
+fn with_schema(dialect: Dialect, name: &str) -> String {
+    let name = name.trim();
+    if dialect.mssql() && !name.contains('.') { format!("dbo.{name}") } else { name.to_owned() }
+}
 
 /// What a cell's right-click menu asked.
 #[derive(Clone, Copy, PartialEq)]
@@ -183,14 +221,17 @@ struct NewColumn {
 }
 
 impl NewColumn {
-    fn def(&self) -> String {
-        let mut def = format!("{} {}", db::ident(self.name.trim()), self.kind.trim());
+    fn def(&self, dialect: Dialect) -> String {
+        let mut def = format!("{} {}", dialect.ident(self.name.trim()), self.kind.trim());
+        if self.auto && dialect.mssql() {
+            def.push_str(" IDENTITY(1,1)");
+        }
         def.push_str(if self.nullable && !self.primary { " NULL" } else { " NOT NULL" });
         let default = self.default.trim();
         if !default.is_empty() && !self.auto {
-            def.push_str(&format!(" DEFAULT {}", if is_expression(default) { default.to_owned() } else { db::literal(default) }));
+            def.push_str(&format!(" DEFAULT {}", if is_expression(default) { default.to_owned() } else { dialect.literal(default) }));
         }
-        if self.auto {
+        if self.auto && !dialect.mssql() {
             def.push_str(" AUTO_INCREMENT");
         }
         def
@@ -198,11 +239,14 @@ impl NewColumn {
 }
 
 /// CREATE TABLE for `name` in `db_name`.
-fn create_table_sql(db_name: &str, name: &str, columns: &[NewColumn]) -> String {
-    let mut lines: Vec<String> = columns.iter().filter(|c| !c.name.trim().is_empty()).map(|c| format!("  {}", c.def())).collect();
-    let keys: Vec<String> = columns.iter().filter(|c| c.primary && !c.name.trim().is_empty()).map(|c| db::ident(c.name.trim())).collect();
+fn create_table_sql(dialect: Dialect, db_name: &str, name: &str, columns: &[NewColumn]) -> String {
+    let mut lines: Vec<String> = columns.iter().filter(|c| !c.name.trim().is_empty()).map(|c| format!("  {}", c.def(dialect))).collect();
+    let keys: Vec<String> = columns.iter().filter(|c| c.primary && !c.name.trim().is_empty()).map(|c| dialect.ident(c.name.trim())).collect();
     if !keys.is_empty() {
         lines.push(format!("  PRIMARY KEY ({})", keys.join(", ")));
+    }
+    if dialect.mssql() {
+        return format!("CREATE TABLE {} (\n{}\n)", dialect.table(db_name, &with_schema(dialect, name)), lines.join(",\n"));
     }
     format!("CREATE TABLE {}.{} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", db::ident(db_name), db::ident(name.trim()), lines.join(",\n"))
 }
@@ -226,11 +270,15 @@ struct InsertField {
 }
 
 /// INSERT of one row in `db_name`.`table`.
-fn insert_sql(db_name: &str, table: &str, fields: &[InsertField]) -> String {
+fn insert_sql(dialect: Dialect, db_name: &str, table: &str, fields: &[InsertField]) -> String {
     let given: Vec<&InsertField> = fields.iter().filter(|f| f.mode != FieldMode::Default).collect();
-    let columns: Vec<String> = given.iter().map(|f| db::ident(&f.name)).collect();
-    let values: Vec<String> = given.iter().map(|f| if f.mode == FieldMode::Null { "NULL".to_owned() } else { db::literal(&f.text) }).collect();
-    format!("INSERT INTO {}.{} ({}) VALUES ({})", db::ident(db_name), db::ident(table), columns.join(", "), values.join(", "))
+    let columns: Vec<String> = given.iter().map(|f| dialect.ident(&f.name)).collect();
+    let values: Vec<String> = given.iter().map(|f| if f.mode == FieldMode::Null { "NULL".to_owned() } else { dialect.literal(&f.text) }).collect();
+    // Every value left to its default.
+    if given.is_empty() && dialect.mssql() {
+        return format!("INSERT INTO {} DEFAULT VALUES", dialect.table(db_name, table));
+    }
+    format!("INSERT INTO {} ({}) VALUES ({})", dialect.table(db_name, table), columns.join(", "), values.join(", "))
 }
 
 /// What an account may do on a database (or all of them).
@@ -327,6 +375,8 @@ pub(super) enum DbAction {
 pub(super) struct DbView {
     name: String,
     target: db::Target,
+    /// How the server writes SQL.
+    dialect: Dialect,
     conn: Option<db::Connection>,
     status: Status,
     databases: Vec<DatabaseInfo>,
@@ -426,19 +476,23 @@ fn row_key(s: &Structure) -> Vec<String> {
 }
 
 /// Databases every server has: shown, but dimmed and last.
-fn system_db(name: &str) -> bool {
+fn system_db(dialect: Dialect, name: &str) -> bool {
+    if dialect.mssql() {
+        return crate::mssql::system_db(name);
+    }
     matches!(name, "information_schema" | "mysql" | "performance_schema" | "sys")
 }
 
 impl DbView {
     pub fn new(ctx: &egui::Context, conn: &config::DbConnection, password: Option<String>, tunnel: Option<(crate::ssh::Launch, String)>) -> Self {
         let via = tunnel.as_ref().map(|(_, name)| name.clone());
-        let target = db::Target { host: conn.host.clone(), port: conn.port, user: conn.user.clone(), password, database: conn.database.clone(), tunnel: tunnel.map(|(launch, _)| launch) };
+        let target = db::Target { host: conn.host.clone(), port: conn.port, user: conn.user.clone(), password, database: conn.database.clone(), tunnel: tunnel.map(|(launch, _)| launch), engine: conn.engine, trust_cert: conn.trust_cert };
         let connection = db::Connection::open(ctx, target.clone());
         let new_tunnel_pid = connection.tunnel_pid;
         let mut view = Self {
             name: conn.name.clone(),
             target,
+            dialect: Dialect(conn.engine),
             conn: Some(connection),
             status: Status::Connecting,
             databases: Vec::new(),
@@ -774,14 +828,24 @@ impl DbView {
         let values = rows.result.rows.get(row)?;
         let keys: Vec<String> = self.structure.as_ref().filter(|(a, b, _)| a == db_name && b == table).map(|(_, _, s)| row_key(s)).unwrap_or_default();
         let by_all = keys.is_empty();
+        let d = self.dialect;
+        // SQL Server can't compare these with "=".
+        let kind = |name: &str| self.structure.as_ref().and_then(|(_, _, s)| s.columns.iter().find(|c| c.first() == Some(&Cell::Text(name.to_owned())))).and_then(|c| match c.get(1) {
+            Some(Cell::Text(k)) => Some(k.to_lowercase()),
+            _ => None,
+        });
+        let uncomparable = |name: &str| d.mssql() && kind(name).is_some_and(|k| matches!(k.as_str(), "text" | "ntext" | "image" | "xml") || k.ends_with("(max)") && k.contains("binary"));
         let mut conditions = Vec::new();
         for (i, name) in rows.result.columns.iter().enumerate() {
             if !by_all && !keys.contains(name) {
                 continue;
             }
+            if by_all && uncomparable(name) {
+                continue;
+            }
             conditions.push(match &values[i] {
-                Cell::Null => format!("{} IS NULL", db::ident(name)),
-                Cell::Text(v) => format!("{} = {}", db::ident(name), db::literal(v)),
+                Cell::Null => format!("{} IS NULL", d.ident(name)),
+                Cell::Text(v) => format!("{} = {}", d.ident(name), d.literal(v)),
                 Cell::Bytes(_) if by_all => continue,
                 Cell::Bytes(_) => return None,
             });
@@ -801,14 +865,20 @@ impl DbView {
         let Some(condition) = self.row_condition(db_name, table, row) else { return };
         let Some(rows) = self.rows.as_ref() else { return };
         let Some(column) = rows.result.columns.get(col) else { return };
-        let new_value = value.map_or_else(|| "NULL".to_owned(), |v| db::literal(&v));
-        let sql = format!("UPDATE {}.{} SET {} = {new_value} WHERE {condition} LIMIT 1", db::ident(db_name), db::ident(table), db::ident(column));
+        let d = self.dialect;
+        let new_value = value.map_or_else(|| "NULL".to_owned(), |v| d.literal(&v));
+        let sql = if d.mssql() {
+            format!("UPDATE TOP (1) {} SET {} = {new_value} WHERE {condition}", d.table(db_name, table), d.ident(column))
+        } else {
+            format!("UPDATE {} SET {} = {new_value} WHERE {condition} LIMIT 1", d.table(db_name, table), d.ident(column))
+        };
         self.change(Change { reload: true, back, ..Change::new(sql, Some(Expect::Cell)) });
     }
 
     fn new_table_dialog(&mut self, d: &str) {
-        let id = NewColumn { name: "id".into(), kind: "INT UNSIGNED".into(), nullable: false, default: String::new(), primary: true, auto: true };
-        let empty = NewColumn { name: String::new(), kind: "VARCHAR(255)".into(), nullable: true, default: String::new(), primary: false, auto: false };
+        let (int, text) = if self.dialect.mssql() { ("INT", "NVARCHAR(255)") } else { ("INT UNSIGNED", "VARCHAR(255)") };
+        let id = NewColumn { name: "id".into(), kind: int.into(), nullable: false, default: String::new(), primary: true, auto: true };
+        let empty = NewColumn { name: String::new(), kind: text.into(), nullable: true, default: String::new(), primary: false, auto: false };
         self.dialog = Some(Dialog::NewTable { db: d.to_owned(), name: String::new(), columns: vec![id, empty], fresh: true });
     }
 
@@ -825,7 +895,9 @@ impl DbView {
             .map(|c| {
                 let nullable = text(c.get(2)) == "YES";
                 let has_default = matches!(c.get(4), Some(Cell::Text(_)));
-                let auto = text(c.get(5)).to_lowercase().contains("auto_increment") || text(c.get(5)).to_uppercase().contains("GENERATED");
+                let extra = text(c.get(5)).to_uppercase();
+                // Filled by the server: AUTO_INCREMENT, generated (MySQL), IDENTITY, computed, rowversion (SQL Server).
+                let auto = ["AUTO_INCREMENT", "GENERATED", "IDENTITY", "COMPUTED", "ROWVERSION"].iter().any(|k| extra.contains(k));
                 let mode = if auto || has_default { FieldMode::Default } else if nullable { FieldMode::Null } else { FieldMode::Value };
                 InsertField { name: text(c.first()), kind: text(c.get(1)), mode, text: String::new(), nullable }
             })
@@ -841,7 +913,12 @@ impl DbView {
         if conditions.is_empty() {
             return;
         }
-        let sql = format!("DELETE FROM {}.{} WHERE {} LIMIT {}", db::ident(db_name), db::ident(table), conditions.join(" OR "), conditions.len());
+        let (d, n) = (self.dialect, conditions.len());
+        let sql = if d.mssql() {
+            format!("DELETE TOP ({n}) FROM {} WHERE {}", d.table(db_name, table), conditions.join(" OR "))
+        } else {
+            format!("DELETE FROM {} WHERE {} LIMIT {n}", d.table(db_name, table), conditions.join(" OR "))
+        };
         self.dialog = Some(Dialog::Confirm { sql, db: None, reason: t.db_delete_rows_reason.to_owned(), query: false, expect: Some(Expect::Delete) });
     }
 
@@ -1004,7 +1081,8 @@ impl DbView {
                     self.refresh();
                 }
                 let users = egui::Button::selectable(self.page == Page::Users, egui::RichText::new(format!("👤  {}", t.db_users)).size(12.5));
-                if ui.add_enabled(matches!(self.status, Status::Ready(_)), users).clicked() {
+                // Accounts: MariaDB / MySQL only.
+                if !self.dialect.mssql() && ui.add_enabled(matches!(self.status, Status::Ready(_)), users).clicked() {
                     self.page = if self.page == Page::Users { Page::Database } else { Page::Users };
                 }
             });
@@ -1036,7 +1114,8 @@ impl DbView {
         let filter = self.filter.to_lowercase();
         let mut dbs: Vec<DatabaseInfo> = self.databases.clone();
         // The user's databases first, the system ones after.
-        dbs.sort_by_key(|d| (system_db(&d.name), d.name.to_lowercase()));
+        let dialect = self.dialect;
+        dbs.sort_by_key(|d| (system_db(dialect, &d.name), d.name.to_lowercase()));
         let mut select_db = None;
         let mut select_table = None;
         let mut toggle = None;
@@ -1060,7 +1139,7 @@ impl DbView {
                 } else if resp.hovered() {
                     ui.painter().rect_filled(r, 6.0, theme.tab_hover.gamma_multiply(0.7));
                 }
-                let dim = system_db(&d.name);
+                let dim = system_db(dialect, &d.name);
                 let color = if dim { theme.text_muted.gamma_multiply(0.8) } else { theme.text };
                 let chevron = Rect::from_center_size(Pos2::new(r.min.x + 10.0, r.center().y), Vec2::splat(16.0));
                 paint_chevron_small(ui.painter(), chevron.center(), open, theme.text_muted);
@@ -1088,18 +1167,21 @@ impl DbView {
                         ui.close();
                     }
                     ui.separator();
-                    if ui.button(format!("⤓  {}", t.db_export)).clicked() {
+                    // SQL Server: scripts run, no dump written.
+                    if !dialect.mssql() && ui.button(format!("⤓  {}", t.db_export)).clicked() {
                         export = Some(d.name.clone());
                         ui.close();
                     }
-                    if ui.button(format!("⤒  {}", t.db_import)).clicked() {
+                    if ui.button(format!("⤒  {}", if dialect.mssql() { t.db_run_script } else { t.db_import })).clicked() {
                         import = Some(d.name.clone());
                         ui.close();
                     }
-                    ui.checkbox(&mut self.check_fk, t.db_check_fk).on_hover_text(t.db_check_fk_hint);
+                    if !dialect.mssql() {
+                        ui.checkbox(&mut self.check_fk, t.db_check_fk).on_hover_text(t.db_check_fk_hint);
+                    }
                     ui.separator();
                     if ui.button(egui::RichText::new(t.db_drop_database).color(theme.ansi[1])).clicked() {
-                        confirm = Some(Dialog::Confirm { sql: format!("DROP DATABASE {}", db::ident(&d.name)), db: None, reason: t.guard_drop.to_owned(), query: false, expect: None });
+                        confirm = Some(Dialog::Confirm { sql: format!("DROP DATABASE {}", dialect.ident(&d.name)), db: None, reason: t.guard_drop.to_owned(), query: false, expect: None });
                         ui.close();
                     }
                 });
@@ -1143,7 +1225,7 @@ impl DbView {
                                     ui.close();
                                 }
                                 ui.separator();
-                                if ui.button(format!("⤓  {}", t.db_export_table)).clicked() {
+                                if !dialect.mssql() && ui.button(format!("⤓  {}", t.db_export_table)).clicked() {
                                     table_export = Some((d.name.clone(), tb.name.clone(), false));
                                     ui.close();
                                 }
@@ -1152,7 +1234,7 @@ impl DbView {
                                     ui.close();
                                 }
                                 ui.separator();
-                                let q = format!("{}.{}", db::ident(&d.name), db::ident(&tb.name));
+                                let q = dialect.table(&d.name, &tb.name);
                                 if !tb.view && ui.button(egui::RichText::new(t.db_truncate).color(theme.ansi[1])).clicked() {
                                     confirm = Some(Dialog::Confirm { sql: format!("TRUNCATE TABLE {q}"), db: None, reason: t.guard_table.to_owned(), query: false, expect: None });
                                     ui.close();
@@ -1428,14 +1510,18 @@ impl DbView {
             ui.label(egui::RichText::new(format!("{}  ·  {}", t.db_tables_count.replace("{n}", &tables.len().to_string()), format_size(size, t))).size(12.5).color(theme.text_muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let busy = self.transfer.is_some();
-                if ui.add_enabled(!busy, egui::Button::new(egui::RichText::new(format!("⤒  {}", t.db_import)).size(12.5)).corner_radius(6.0)).clicked() {
+                let mssql = self.dialect.mssql();
+                let import_label = if mssql { t.db_run_script } else { t.db_import };
+                if ui.add_enabled(!busy, egui::Button::new(egui::RichText::new(format!("⤒  {import_label}")).size(12.5)).corner_radius(6.0)).clicked() {
                     import = true;
                 }
-                if ui.add_enabled(!busy, egui::Button::new(egui::RichText::new(format!("⤓  {}", t.db_export)).size(12.5)).corner_radius(6.0)).clicked() {
-                    export = true;
+                if !mssql {
+                    if ui.add_enabled(!busy, egui::Button::new(egui::RichText::new(format!("⤓  {}", t.db_export)).size(12.5)).corner_radius(6.0)).clicked() {
+                        export = true;
+                    }
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut self.check_fk, egui::RichText::new(t.db_check_fk).size(12.5)).on_hover_text(t.db_check_fk_hint);
                 }
-                ui.add_space(6.0);
-                ui.checkbox(&mut self.check_fk, egui::RichText::new(t.db_check_fk).size(12.5)).on_hover_text(t.db_check_fk_hint);
                 ui.add_space(10.0);
                 let add = egui::Button::new(egui::RichText::new(format!("+  {}", t.db_new_table)).size(12.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0);
                 if ui.add(add).clicked() {
@@ -1491,7 +1577,7 @@ impl DbView {
             ui.horizontal_top(|ui| {
                 ui.add_space(0.0);
                 ui.label(egui::RichText::new("SQL").size(11.5).strong().color(theme.accent));
-                let hint = format!("SELECT * FROM {} WHERE …", db::ident(&tb));
+                let hint = format!("SELECT * FROM {} WHERE …", self.dialect.local_table(&tb));
                 let id = egui::Id::new(("table-sql", &d, &tb));
                 // Several lines: ⌘ Enter runs (Enter goes to the next line).
                 if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter))) {
@@ -1506,6 +1592,7 @@ impl DbView {
                         egui::TextEdit::multiline(&mut self.table_sql).id(id).code_editor().hint_text(hint).frame(Frame::NONE).font(FontId::monospace(13.0)).layouter(&mut layouter).desired_width(width).desired_rows(4).show(ui)
                     };
                     let schema = super::sqlcomplete::Schema {
+                        brackets: self.dialect.mssql(),
                         db: self.db.as_deref(),
                         databases: self.databases.iter().map(|d| d.name.as_str()).collect(),
                         tables: &self.tables,
@@ -1784,7 +1871,7 @@ impl DbView {
             self.dialog = Some(Dialog::Column(ColumnEdit {
                 original: None,
                 name: String::new(),
-                kind: "VARCHAR(255)".into(),
+                kind: if self.dialect.mssql() { "NVARCHAR(255)" } else { "VARCHAR(255)" }.into(),
                 nullable: true,
                 default: String::new(),
                 default_null: true,
@@ -1835,6 +1922,7 @@ impl DbView {
                     egui::TextEdit::multiline(&mut tab.sql).id(id).code_editor().frame(Frame::NONE).desired_width(f32::INFINITY).desired_rows(6).hint_text(t.db_sql_hint).font(FontId::monospace(13.0)).layouter(&mut layouter).show(ui)
                 };
                 let schema = super::sqlcomplete::Schema {
+                    brackets: self.dialect.mssql(),
                     db: self.db.as_deref(),
                     databases: self.databases.iter().map(|d| d.name.as_str()).collect(),
                     tables: &self.tables,
@@ -2017,6 +2105,7 @@ impl DbView {
     }
 
     fn dialog_ui(&mut self, ctx: &egui::Context, theme: &Theme, t: &Strings) {
+        let dialect = self.dialect;
         let Some(dialog) = &mut self.dialog else { return };
         let mut done: Option<bool> = None;
         let mut drop_column: Option<String> = None;
@@ -2040,7 +2129,7 @@ impl DbView {
                     let mut remove = None;
                     egui::ScrollArea::vertical().id_salt("db-new-table").max_height(300.0).show(ui, |ui| {
                         egui::Grid::new("db-new-table-grid").num_columns(7).spacing([8.0, 6.0]).show(ui, |ui| {
-                            for head in [t.db_col_name, t.db_col_type, "NULL", t.db_col_default, t.db_primary, "A_I", ""] {
+                            for head in [t.db_col_name, t.db_col_type, "NULL", t.db_col_default, t.db_primary, if dialect.mssql() { "IDENTITY" } else { "A_I" }, ""] {
                                 ui.label(egui::RichText::new(head).size(11.5).color(theme.text_muted));
                             }
                             ui.end_row();
@@ -2049,7 +2138,7 @@ impl DbView {
                                 ui.horizontal(|ui| {
                                     ui.add(egui::TextEdit::singleline(&mut c.kind).desired_width(120.0).font(FontId::monospace(12.5)));
                                     egui::ComboBox::from_id_salt(("db-new-type", i)).selected_text("").width(24.0).show_ui(ui, |ui| {
-                                        for kind in COLUMN_TYPES {
+                                        for &kind in column_types(dialect) {
                                             if ui.selectable_label(c.kind.eq_ignore_ascii_case(kind), egui::RichText::new(kind).monospace()).clicked() {
                                                 c.kind = kind.to_owned();
                                             }
@@ -2072,15 +2161,19 @@ impl DbView {
                     }
                     ui.add_space(6.0);
                     if ui.button(format!("+  {}", t.db_add_column)).clicked() {
-                        columns.push(NewColumn { name: String::new(), kind: "VARCHAR(255)".into(), nullable: true, default: String::new(), primary: false, auto: false });
+                        columns.push(NewColumn { name: String::new(), kind: if dialect.mssql() { "NVARCHAR(255)" } else { "VARCHAR(255)" }.into(), nullable: true, default: String::new(), primary: false, auto: false });
                     }
                     ui.add_space(10.0);
                     Frame::NONE.fill(theme.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.add(egui::Label::new(egui::RichText::new(create_table_sql(d, name, columns)).monospace().size(12.0).color(theme.text_muted)).wrap());
+                        ui.add(egui::Label::new(egui::RichText::new(create_table_sql(dialect, d, name, columns)).monospace().size(12.0).color(theme.text_muted)).wrap());
                     });
                 }
                 Dialog::RenameTable { old, name, fresh, .. } => {
+                    // SQL Server: renamed within its schema, the name typed alone.
+                    if dialect.mssql() && *fresh {
+                        *name = name.rsplit('.').next().unwrap_or(name).to_owned();
+                    }
                     ui.label(egui::RichText::new(format!("{}  ·  {old}", t.db_rename_table)).size(17.0).strong());
                     ui.add_space(10.0);
                     let edit = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).font(FontId::monospace(13.0)).margin(Vec2::new(8.0, 6.0)));
@@ -2175,8 +2268,10 @@ impl DbView {
                     if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         done = Some(true);
                     }
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("utf8mb4 · utf8mb4_unicode_ci").size(11.5).color(theme.text_muted));
+                    if !dialect.mssql() {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("utf8mb4 · utf8mb4_unicode_ci").size(11.5).color(theme.text_muted));
+                    }
                 }
                 Dialog::Column(c) => {
                     ui.label(egui::RichText::new(if c.original.is_some() { t.db_edit_column } else { t.db_add_column }).size(17.0).strong());
@@ -2189,7 +2284,7 @@ impl DbView {
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut c.kind).desired_width(180.0).font(FontId::monospace(13.0)).margin(Vec2::new(8.0, 5.0)));
                             egui::ComboBox::from_id_salt("db-column-type").selected_text("…").width(90.0).show_ui(ui, |ui| {
-                                for kind in COLUMN_TYPES {
+                                for &kind in column_types(dialect) {
                                     if ui.selectable_label(c.kind.eq_ignore_ascii_case(kind), egui::RichText::new(kind).monospace()).clicked() {
                                         c.kind = kind.to_owned();
                                     }
@@ -2200,6 +2295,9 @@ impl DbView {
                         ui.label(egui::RichText::new(t.db_col_null).color(theme.text_muted));
                         ui.checkbox(&mut c.nullable, t.db_nullable);
                         ui.end_row();
+                        // SQL Server keeps a column's default and comment apart: only set when it is added.
+                        let fixed = dialect.mssql() && c.original.is_some();
+                        if !fixed {
                         ui.label(egui::RichText::new(t.db_col_default).color(theme.text_muted));
                         ui.horizontal(|ui| {
                             let on = !(c.default_null && c.nullable);
@@ -2208,9 +2306,12 @@ impl DbView {
                             ui.add_enabled(on, egui::Checkbox::new(&mut c.default_expr, t.db_expression)).on_hover_text(t.db_expression_hint);
                         });
                         ui.end_row();
-                        ui.label(egui::RichText::new(t.db_col_comment).color(theme.text_muted));
-                        ui.add(egui::TextEdit::singleline(&mut c.comment).desired_width(280.0).margin(Vec2::new(8.0, 5.0)));
-                        ui.end_row();
+                        }
+                        if !dialect.mssql() {
+                            ui.label(egui::RichText::new(t.db_col_comment).color(theme.text_muted));
+                            ui.add(egui::TextEdit::singleline(&mut c.comment).desired_width(280.0).margin(Vec2::new(8.0, 5.0)));
+                            ui.end_row();
+                        }
                         if textual(&c.kind) && !c.collation.is_empty() {
                             ui.label(egui::RichText::new(t.db_col_collation).color(theme.text_muted));
                             ui.label(egui::RichText::new(&c.collation).monospace().size(12.5).color(theme.text_muted));
@@ -2225,7 +2326,7 @@ impl DbView {
                     let (d, tb) = (self.db.clone().unwrap_or_default(), self.table.clone().unwrap_or_default());
                     Frame::NONE.fill(theme.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.add(egui::Label::new(egui::RichText::new(c.sql(&d, &tb)).monospace().size(12.0).color(theme.text_muted)).wrap());
+                        ui.add(egui::Label::new(egui::RichText::new(c.sql(dialect, &d, &tb)).monospace().size(12.0).color(theme.text_muted)).wrap());
                     });
                     if let Some(old) = &c.original {
                         ui.add_space(8.0);
@@ -2276,7 +2377,7 @@ impl DbView {
         // Dropping a column: asked again, like any destruction.
         if let Some(column) = drop_column {
             let (d, tb) = (self.db.clone().unwrap_or_default(), self.table.clone().unwrap_or_default());
-            let sql = format!("ALTER TABLE {}.{} DROP COLUMN {}", db::ident(&d), db::ident(&tb), db::ident(&column));
+            let sql = format!("ALTER TABLE {} DROP COLUMN {}", dialect.table(&d, &tb), dialect.ident(&column));
             self.dialog = Some(Dialog::Confirm { sql, db: None, reason: t.db_drop_column_reason.to_owned(), query: false, expect: None });
             return;
         }
@@ -2296,25 +2397,36 @@ impl DbView {
             Dialog::Column(c) => {
                 let (d, tb) = (self.db.clone().unwrap_or_default(), self.table.clone().unwrap_or_default());
                 if !c.name.trim().is_empty() && !c.kind.trim().is_empty() && !c.generated() {
-                    self.change(Change { back, ..Change::new(c.sql(&d, &tb), None) });
+                    // sp_rename works in the table's database.
+                    let db = dialect.mssql().then(|| d.clone());
+                    self.change(Change { back, db, ..Change::new(c.sql(dialect, &d, &tb), None) });
                 }
             }
             Dialog::NewTable { db: d, name, columns, .. } => {
                 if !name.trim().is_empty() && columns.iter().any(|c| !c.name.trim().is_empty()) {
-                    let expect = Some(Expect::Open(d.clone(), name.trim().to_owned()));
-                    self.change(Change { back, ..Change::new(create_table_sql(&d, &name, &columns), expect) });
+                    let expect = Some(Expect::Open(d.clone(), with_schema(dialect, &name)));
+                    self.change(Change { back, ..Change::new(create_table_sql(dialect, &d, &name, &columns), expect) });
                 }
             }
             Dialog::RenameTable { db: d, old, name, .. } => {
                 let name = name.trim().to_owned();
                 if !name.is_empty() && name != old {
-                    let sql = format!("RENAME TABLE {0}.{1} TO {0}.{2}", db::ident(&d), db::ident(&old), db::ident(&name));
-                    self.change(Change { back, ..Change::new(sql, Some(Expect::Open(d, name))) });
+                    if dialect.mssql() {
+                        // The new name stays in the table's schema.
+                        let schema = old.split_once('.').map_or("dbo", |(s, _)| s);
+                        let bare = name.rsplit('.').next().unwrap_or(&name).to_owned();
+                        let sql = format!("EXEC sp_rename {}, {}", dialect.literal(&dialect.local_table(&old)), dialect.literal(&bare));
+                        let open = Expect::Open(d.clone(), format!("{schema}.{bare}"));
+                        self.change(Change { back, db: Some(d), ..Change::new(sql, Some(open)) });
+                    } else {
+                        let sql = format!("RENAME TABLE {0}.{1} TO {0}.{2}", db::ident(&d), db::ident(&old), db::ident(&name));
+                        self.change(Change { back, ..Change::new(sql, Some(Expect::Open(d, name))) });
+                    }
                 }
             }
             Dialog::Insert(fields) => {
                 if let (Some(d), Some(tb)) = (self.db.clone(), self.table.clone()) {
-                    self.change(Change { reload: true, back, ..Change::new(insert_sql(&d, &tb, &fields), Some(Expect::Insert)) });
+                    self.change(Change { reload: true, back, ..Change::new(insert_sql(dialect, &d, &tb, &fields), Some(Expect::Insert)) });
                 }
             }
             Dialog::Cell { row, col, text, .. } => {
@@ -2345,7 +2457,7 @@ impl DbView {
             Dialog::NewDatabase { name, .. } => {
                 let name = name.trim();
                 if !name.is_empty() {
-                    let sql = format!("CREATE DATABASE {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", db::ident(name));
+                    let sql = if dialect.mssql() { format!("CREATE DATABASE {}", dialect.ident(name)) } else { format!("CREATE DATABASE {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", db::ident(name)) };
                     self.change(Change { back, ..Change::new(sql, None) });
                 }
             }
@@ -2415,7 +2527,7 @@ fn access_picker(ui: &mut Ui, access: &mut Access, database: &mut String, databa
             let shown = if database.is_empty() { t.db_all_databases.to_owned() } else { database.clone() };
             egui::ComboBox::from_id_salt("db-access-db").selected_text(shown).width(240.0).show_ui(ui, |ui| {
                 ui.selectable_value(database, String::new(), t.db_all_databases);
-                for d in databases.iter().filter(|d| !system_db(&d.name)) {
+                for d in databases.iter().filter(|d| !system_db(Dialect(crate::config::Engine::Mysql), &d.name)) {
                     ui.selectable_value(database, d.name.clone(), &d.name);
                 }
             });
@@ -2675,6 +2787,9 @@ fn paint_chevron_small(painter: &egui::Painter, c: Pos2, open: bool, color: Colo
 mod tests {
     use super::*;
 
+    const MYSQL: Dialect = Dialect(crate::config::Engine::Mysql);
+    const MSSQL: Dialect = Dialect(crate::config::Engine::Sqlserver);
+
     #[test]
     fn writes_column_changes() {
         let column = |name: &str, kind: &str, default: &str, extra: &str| {
@@ -2686,22 +2801,40 @@ mod tests {
         c.charset = "latin1".into();
         c.collation = "latin1_swedish_ci".into();
         c.comment = "Nom d'usage".into();
-        assert_eq!(c.sql("app", "users"), "ALTER TABLE `app`.`users` CHANGE COLUMN `nom` `name` VARCHAR(100) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL DEFAULT 'x''y' COMMENT 'Nom d''usage'");
+        assert_eq!(c.sql(MYSQL, "app", "users"), "ALTER TABLE `app`.`users` CHANGE COLUMN `nom` `name` VARCHAR(100) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL DEFAULT 'x''y' COMMENT 'Nom d''usage'");
         c.original = None;
         c.nullable = true;
         c.default_null = true;
         c.kind = "INT".into();
         c.comment.clear();
-        assert_eq!(c.sql("app", "users"), "ALTER TABLE `app`.`users` ADD COLUMN `name` INT NULL DEFAULT NULL");
+        assert_eq!(c.sql(MYSQL, "app", "users"), "ALTER TABLE `app`.`users` ADD COLUMN `name` INT NULL DEFAULT NULL");
         let id = column("id", "int(11)", "", "auto_increment");
-        assert_eq!(id.sql("app", "users"), "ALTER TABLE `app`.`users` CHANGE COLUMN `id` `id` int(11) NOT NULL AUTO_INCREMENT");
+        assert_eq!(id.sql(MYSQL, "app", "users"), "ALTER TABLE `app`.`users` CHANGE COLUMN `id` `id` int(11) NOT NULL AUTO_INCREMENT");
         // MariaDB and MySQL spell expressions differently; both stay expressions.
         let ts = column("at", "TIMESTAMP(3)", "current_timestamp(3)", "on update current_timestamp(3)");
-        assert_eq!(ts.sql("a", "b"), "ALTER TABLE `a`.`b` CHANGE COLUMN `at` `at` TIMESTAMP(3) NOT NULL DEFAULT current_timestamp(3) ON UPDATE CURRENT_TIMESTAMP(3)");
+        assert_eq!(ts.sql(MYSQL, "a", "b"), "ALTER TABLE `a`.`b` CHANGE COLUMN `at` `at` TIMESTAMP(3) NOT NULL DEFAULT current_timestamp(3) ON UPDATE CURRENT_TIMESTAMP(3)");
         let mysql = column("at", "datetime", "CURRENT_TIMESTAMP", "DEFAULT_GENERATED");
-        assert_eq!(mysql.sql("a", "b"), "ALTER TABLE `a`.`b` CHANGE COLUMN `at` `at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP");
+        assert_eq!(mysql.sql(MYSQL, "a", "b"), "ALTER TABLE `a`.`b` CHANGE COLUMN `at` `at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP");
         let uuid = column("u", "char(36)", "uuid()", "");
         assert!(uuid.default_expr);
         assert!(column("g", "int", "", "VIRTUAL GENERATED").generated());
+    }
+
+    #[test]
+    fn writes_sql_server_changes() {
+        let mut c = ColumnEdit { original: Some("nom".into()), name: "name".into(), kind: "nvarchar(100)".into(), nullable: false, default: String::new(), default_null: false, default_expr: false, extra: String::new(), comment: String::new(), charset: String::new(), collation: "French_CI_AS".into() };
+        assert_eq!(c.sql(MSSQL, "app", "sales.users"), "ALTER TABLE [app].[sales].[users] ALTER COLUMN [nom] nvarchar(100) COLLATE French_CI_AS NOT NULL;\nEXEC sp_rename N'[sales].[users].[nom]', N'name', 'COLUMN'");
+        c.original = None;
+        c.nullable = true;
+        c.default = "x'y".into();
+        assert_eq!(c.sql(MSSQL, "app", "users"), "ALTER TABLE [app].[dbo].[users] ADD [name] nvarchar(100) NULL DEFAULT N'x''y'");
+        let id = NewColumn { name: "id".into(), kind: "INT".into(), nullable: false, default: String::new(), primary: true, auto: true };
+        let label = NewColumn { name: "label".into(), kind: "NVARCHAR(255)".into(), nullable: true, default: "a\\b".into(), primary: false, auto: false };
+        assert_eq!(create_table_sql(MSSQL, "app", "items", &[id, label]), "CREATE TABLE [app].[dbo].[items] (\n  [id] INT IDENTITY(1,1) NOT NULL,\n  [label] NVARCHAR(255) NULL DEFAULT N'a\\b',\n  PRIMARY KEY ([id])\n)");
+        let field = |name: &str, mode: FieldMode, text: &str| InsertField { name: name.into(), kind: String::new(), mode, text: text.into(), nullable: true };
+        assert_eq!(insert_sql(MSSQL, "app", "dbo.items", &[field("id", FieldMode::Default, ""), field("label", FieldMode::Value, "é"), field("n", FieldMode::Null, "")]), "INSERT INTO [app].[dbo].[items] ([label], [n]) VALUES (N'é', NULL)");
+        assert_eq!(insert_sql(MSSQL, "app", "dbo.items", &[field("id", FieldMode::Default, "")]), "INSERT INTO [app].[dbo].[items] DEFAULT VALUES");
+        assert_eq!(with_schema(MSSQL, "items"), "dbo.items");
+        assert_eq!(with_schema(MYSQL, "items"), "items");
     }
 }

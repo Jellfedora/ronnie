@@ -2,6 +2,7 @@
 
 mod app;
 mod askpass;
+mod claude;
 mod config;
 mod db;
 mod i18n;
@@ -9,7 +10,9 @@ mod log;
 mod notify;
 #[cfg(target_os = "macos")]
 mod menu;
+mod mssql;
 mod pane;
+mod screens;
 mod sftp;
 mod shell;
 mod ssh;
@@ -136,6 +139,11 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     log::install_panic_hook();
+    // Claude Code's status line command: keeps the plan's usage for the panes where Claude runs.
+    if std::env::args().nth(1).as_deref() == Some("claude-statusline") {
+        claude::run_statusline();
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     update::integrate_appimage();
     log::info(&format!("start {}{}", update::VERSION, if config::OFFICIAL { "" } else { " dev" }));
@@ -153,11 +161,11 @@ fn main() -> eframe::Result {
     }
     // Reopen the window where it was left.
     if let Some(w) = session.window {
-        viewport = viewport
-            .with_inner_size([w.width.max(400.0), w.height.max(240.0)])
-            .with_position([w.x, w.y])
-            .with_maximized(w.maximized)
-            .with_fullscreen(w.fullscreen);
+        viewport = viewport.with_inner_size([w.width.max(400.0), w.height.max(240.0)]).with_maximized(w.maximized).with_fullscreen(w.fullscreen);
+        // Left on a screen unplugged since: the system places it instead.
+        if screens::on_screen(&w) {
+            viewport = viewport.with_position([w.x, w.y]);
+        }
     }
     if cfg!(target_os = "macos") {
         // Merge the title bar into the tab bar, keeping the traffic lights.
