@@ -29,8 +29,10 @@ mod git;
 mod home;
 mod guard;
 mod issues;
+mod library;
 mod loading;
 mod motion;
+mod music;
 mod perms;
 mod sql;
 mod sqlcomplete;
@@ -273,6 +275,7 @@ struct WindowSlot {
     game: game::Game,
     ronnie_show: Option<(PaneId, f64)>,
     game_folded: bool,
+    music_page: bool,
 }
 
 pub struct App {
@@ -317,6 +320,12 @@ pub struct App {
     /// What was dictated was typed in that pane: Enter follows, a moment later (typed with the text,
     /// Claude Code would take it for a pasted line break).
     dictation_enter: Option<(PaneId, Instant)>,
+    /// The sentence being heard is the last one (the shortcut was let go of, or pressed again).
+    dictation_last: bool,
+    /// Characters typed by dictation but not sent yet ("nouvelle ligne"): what "annule" erases.
+    dictation_typed: usize,
+    /// The dictation shortcut is held down since then: let go of after a moment, listening stops.
+    dictation_hold: Option<Instant>,
     settings_tab: SettingsTab,
     /// Text of the config file editor while it is shown.
     editor: Option<ConfigEditor>,
@@ -330,6 +339,15 @@ pub struct App {
     claude: ClaudeUsage,
     /// Why setting up Claude's usage failed.
     claude_error: Option<String>,
+    /// The music server's form in the settings, while they are open.
+    subsonic_form: Option<SubsonicForm>,
+    /// The radio, and its volume changed since the config was last saved.
+    music: music::Music,
+    music_volume_changed: bool,
+    /// The music page: shown instead of the tabs (in this window), and what it holds (for all).
+    music_page: bool,
+    library: library::Library,
+    media_keys: crate::media_keys::MediaKeys,
     /// A MariaDB / MySQL server runs on this machine (offered in the sidebar while none is set up).
     local_db: bool,
     /// Profile or group being dragged in the sidebar.
@@ -344,6 +362,8 @@ pub struct App {
     /// "Delete imported hosts" was clicked once and waits for confirmation.
     confirm_delete_imported: bool,
     updater: Updater,
+    /// The leaderboards' server: its board, the sync running.
+    floor: crate::floor::Floor,
     /// When the last automatic update check started (app time, seconds).
     last_update_check: Option<f64>,
     /// "Later" was clicked on the update invitation: don't show it again this session.
@@ -499,6 +519,27 @@ struct DbEditor {
 impl DbEditor {
     fn new(draft: config::DbConnection, is_new: bool) -> Self {
         Self { port: draft.port.to_string(), draft, password: String::new(), password_changed: false, reveal: false, is_new, error: None, testing: None, tested: None, test_pid: None }
+    }
+}
+
+/// The music server's form, on the settings' "Music" page.
+struct SubsonicForm {
+    url: String,
+    user: String,
+    password: String,
+    password_changed: bool,
+    reveal: bool,
+    /// Saved: said under the buttons until something is typed again.
+    saved: bool,
+    error: Option<String>,
+    /// "Test the connection": waiting, then its outcome.
+    testing: Option<std::sync::mpsc::Receiver<Result<String, crate::subsonic::Failure>>>,
+    tested: Option<Result<String, crate::subsonic::Failure>>,
+}
+
+impl SubsonicForm {
+    fn new(server: &config::Subsonic) -> Self {
+        Self { url: server.url.clone(), user: server.user.clone(), password: String::new(), password_changed: false, reveal: false, saved: false, error: None, testing: None, tested: None }
     }
 }
 
@@ -794,6 +835,7 @@ enum SettingsTab {
     Appearance,
     Profiles,
     Ssh,
+    Music,
     ConfigFile,
     Logs,
     Shortcuts,
@@ -816,10 +858,11 @@ enum ShortcutAction {
     ToggleFiles,
     NewWindow,
     ToggleSidebar,
+    Dictate,
 }
 
 impl ShortcutAction {
-    const ALL: [ShortcutAction; 12] = [
+    const ALL: [ShortcutAction; 13] = [
         Self::NewTab,
         Self::ClosePane,
         Self::SplitRight,
@@ -832,6 +875,7 @@ impl ShortcutAction {
         Self::ToggleFiles,
         Self::NewWindow,
         Self::ToggleSidebar,
+        Self::Dictate,
     ];
 
     fn label(self, t: &Strings) -> &'static str {
@@ -848,6 +892,7 @@ impl ShortcutAction {
             Self::ToggleFiles => t.shortcut_toggle_files,
             Self::NewWindow => t.new_window,
             Self::ToggleSidebar => t.toggle_sidebar,
+            Self::Dictate => t.shortcut_dictate,
         }
     }
 
@@ -865,6 +910,7 @@ impl ShortcutAction {
             Self::ToggleFiles => &s.toggle_files,
             Self::NewWindow => &s.new_window,
             Self::ToggleSidebar => &s.toggle_sidebar,
+            Self::Dictate => &s.dictate,
         }
     }
 
@@ -882,6 +928,7 @@ impl ShortcutAction {
             Self::ToggleFiles => &mut s.toggle_files,
             Self::NewWindow => &mut s.new_window,
             Self::ToggleSidebar => &mut s.toggle_sidebar,
+            Self::Dictate => &mut s.dictate,
         }
     }
 }
@@ -935,6 +982,9 @@ impl App {
             backup: None,
             dictation: None,
             dictation_enter: None,
+            dictation_last: false,
+            dictation_typed: 0,
+            dictation_hold: None,
             settings_tab: SettingsTab::General,
             editor: None,
             logs: None,
@@ -942,6 +992,15 @@ impl App {
             db_editor: None,
             claude: ClaudeUsage::default(),
             claude_error: None,
+            subsonic_form: None,
+            music: music::Music::default(),
+            music_volume_changed: false,
+            music_page: false,
+            library: library::Library::default(),
+            media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {
+                use raw_window_handle::HasWindowHandle;
+                cc.window_handle().ok().map(|w| w.as_raw())
+            }),
             local_db: crate::db::local_server(),
             item_drag: None,
             group_rename: None,
@@ -950,6 +1009,7 @@ impl App {
             profile_error: None,
             confirm_delete_imported: false,
             updater: Updater::new(),
+            floor: Default::default(),
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
@@ -1099,6 +1159,7 @@ impl App {
                     "shortcuts" => SettingsTab::Shortcuts,
                     "profiles" => SettingsTab::Profiles,
                     "ssh" => SettingsTab::Ssh,
+                    "music" => SettingsTab::Music,
                     "config" => SettingsTab::ConfigFile,
                     "about" => SettingsTab::About,
                     _ => SettingsTab::General,
@@ -1559,6 +1620,7 @@ impl App {
         swap(&mut self.game, &mut slot.game);
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
         swap(&mut self.game_folded, &mut slot.game_folded);
+        swap(&mut self.music_page, &mut slot.music_page);
     }
 
     fn save_config(&mut self) {
@@ -1991,6 +2053,7 @@ impl App {
         if index < self.tabs.len() {
             self.active = index;
             self.home = None;
+            self.music_page = false;
             self.focus_terminal = true;
         }
     }
@@ -2009,8 +2072,37 @@ impl App {
         });
         self.home = Some(line.unwrap_or_default());
         self.home_game = false;
+        self.music_page = false;
         // The keys go to the game, not to a terminal no longer shown.
         self.ctx.memory_mut(|m| m.stop_text_input());
+    }
+
+    /// The dictation shortcut: starts listening in the focused pane when Claude Code runs there (held
+    /// down, until it is let go of); pressed again, what was heard goes and listening stops.
+    fn dictate_shortcut(&mut self, ctx: &egui::Context) {
+        // Held down: the key repeats.
+        if self.dictation_hold.is_some() {
+            return;
+        }
+        if self.dictation.is_some() {
+            self.finish_dictation();
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let pane = tab.focused;
+        let claude = tab.ssh.is_none() && tab.panes.get_mut(&pane).is_some_and(|term| term.live_program(ctx).is_some_and(crate::claude::is_claude));
+        if claude && crate::voice::supported() {
+            self.start_dictation(pane, ctx);
+            self.dictation_hold = Some(Instant::now());
+        }
+    }
+
+    /// What was heard goes, then listening stops.
+    fn finish_dictation(&mut self) {
+        if let Some((_, dictation)) = &mut self.dictation {
+            dictation.finish();
+            self.dictation_last = true;
+        }
     }
 
     fn handle_shortcuts(&mut self, ui: &Ui) {
@@ -2041,10 +2133,17 @@ impl App {
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         // The file manager hides the terminals: their actions would act on panes the user can't see.
         let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files || (t.db.is_some() && t.show_db));
-        let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane);
+        let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane | ShortcutAction::Dictate);
         // A file open in the file manager's editor: ⌘ F searches it, ⌘ W closes it.
         // The home page: the tab behind it isn't shown, nothing may act on it.
         if self.home.is_some() {
+            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar));
+        }
+        // The music page, likewise; its search takes ⌘ F.
+        if self.music_page {
+            if fired.contains(&ShortcutAction::FindText) {
+                self.library.focus_search();
+            }
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar));
         }
         if let Some(viewer) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.viewer.as_mut()) {
@@ -2110,11 +2209,27 @@ impl App {
                     let ctx = ui.ctx().clone();
                     self.new_window(|app| app.new_tab(&ctx));
                 }
+                ShortcutAction::Dictate => {
+                    self.dictate_shortcut(ui.ctx());
+                    eat_spaces(ui);
+                }
                 ShortcutAction::ToggleFiles => {
                     // A database tab has no terminal to switch to.
                     if let Some(show) = self.tabs.get(self.active).filter(|t| t.db.is_none()).map(|t| !t.show_files) {
                         self.toggle_files(self.active, show);
                     }
+                }
+            }
+        }
+        // The dictation shortcut held down: listening until it is let go of.
+        if let Some(since) = self.dictation_hold {
+            // Its repeats would type spaces in the terminal.
+            eat_spaces(ui);
+            let key = shortcuts.dictate.parse().map(|k| k.logical_key);
+            if !key.is_some_and(|key| ui.input(|i| i.key_down(key))) {
+                self.dictation_hold = None;
+                if since.elapsed() >= Duration::from_millis(400) {
+                    self.finish_dictation();
                 }
             }
         }
@@ -2404,6 +2519,12 @@ fn paint_heart(painter: &egui::Painter, c: Pos2, r: f32, color: Color32) {
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
 
+/// The spaces typed this frame: ⌥ Space (the dictation shortcut) also types one, a non-breaking one on
+/// macOS.
+fn eat_spaces(ui: &Ui) {
+    ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t.chars().all(char::is_whitespace))));
+}
+
 /// What was clicked in a pane's header strip.
 #[derive(Default)]
 struct HeaderClicks {
@@ -2433,7 +2554,7 @@ struct HeaderClicks {
 /// The microphone of a pane's strip, ending at `right` (`listening`: the sound level and what was heard
 /// so far, shown beside it): its width.
 #[allow(clippy::too_many_arguments)]
-fn mic_button(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, listening: Option<&(f32, String)>, theme: &Theme, t: &Strings, clicks: &mut HeaderClicks) -> f32 {
+fn mic_button(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, listening: Option<&(f32, String)>, theme: &Theme, t: &Strings, shortcut: &config::Shortcut, clicks: &mut HeaderClicks) -> f32 {
     let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
     let resp = ui.interact(at, egui::Id::new(("pane-mic", id)), Sense::click());
     let painter = ui.painter();
@@ -2463,7 +2584,7 @@ fn mic_button(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, listening: Option
     painter.add(egui::Shape::line(holder, stroke));
     painter.line_segment([c + Vec2::new(0.0, 3.5), c + Vec2::new(0.0, 6.0)], stroke);
     painter.line_segment([c + Vec2::new(-2.5, 6.0), c + Vec2::new(2.5, 6.0)], stroke);
-    let tip = if listening.is_some() { t.mic_listening } else { t.mic_tip };
+    let tip = if listening.is_some() { t.mic_listening.to_owned() } else { t.mic_tip.replace("{key}", &shortcut.label()) };
     clicks.mic = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
     // What was heard, beside it.
     let mut w = at.width();
@@ -2650,7 +2771,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             max_w = right - rect.min.x - 16.0;
         }
         if let Some(listening) = &mic {
-            let w = mic_button(ui, rect, right, id, listening.as_ref(), theme, t, &mut clicks);
+            let w = mic_button(ui, rect, right, id, listening.as_ref(), theme, t, &shortcuts.dictate, &mut clicks);
             right -= w + 4.0;
             max_w = right - rect.min.x - 16.0;
         }
@@ -3170,6 +3291,12 @@ impl App {
                     ui.colored_label(Color32::from_rgb(0xf7, 0x76, 0x8e), err);
                 }
                 let rect = ui.available_rect_before_wrap();
+                if self.music_page {
+                    self.game.leave();
+                    self.fold_for_game(false);
+                    self.library_ui(ui, rect);
+                    return;
+                }
                 if self.shown_tab().is_none() {
                     self.home_page(ui, rect);
                     return;
@@ -3387,6 +3514,11 @@ impl App {
                     let claude_here = claude_running && self.config.settings.claude_usage;
                     let claude = claude_here.then(|| self.claude.current().cloned()).flatten();
                     // Dictation to Claude, where the system can.
+                    // Claude Code quit: nobody to dictate to any more.
+                    if !claude_running && self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
+                        self.dictation = None;
+                        self.dictation_typed = 0;
+                    }
                     let mic = (claude_running && crate::voice::supported()).then(|| self.dictation.as_ref().filter(|(p, _)| *p == id).map(|(_, d)| (d.level(), d.text())));
                     // Split: always a strip, to drag the pane by.
                     let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open || claude.is_some() || mic.is_some() {
@@ -3401,13 +3533,9 @@ impl App {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
                                 // Dropped: stops listening, nothing sent.
                                 self.dictation = None;
+                                self.dictation_typed = 0;
                             } else {
-                                let language = match self.config.settings.language {
-                                    Lang::Fr => "fr-FR",
-                                    Lang::En => "en-US",
-                                };
-                                let ctx = ui.ctx().clone();
-                                self.dictation = Some((id, crate::voice::Dictation::start(language, std::sync::Arc::new(move || ctx.request_repaint()))));
+                                self.dictation = Some(popups::dictate(id, self.config.settings.language, ui.ctx()));
                             }
                         }
                         if clicks.rename {
@@ -3879,6 +4007,26 @@ impl eframe::App for App {
             }
             ui.ctx().request_repaint_after(Duration::from_secs_f64(UPDATE_INTERVAL));
         }
+        let t = self.t();
+        let volume = self.config.settings.subsonic.volume;
+        for command in self.media_keys.commands() {
+            self.music.command(command, volume);
+            if matches!(command, crate::media_keys::Command::Seek(_)) {
+                self.media_keys.moved();
+            }
+        }
+        self.music.tick(ui.ctx(), volume, t);
+        // The covers (the sidebar's card shows one), from the server the radio plays from.
+        if self.library.needs_server() && self.music.playing() {
+            self.library.open(music::configured_server(&self.config.settings), None);
+        }
+        self.library.poll(ui.ctx(), t);
+        // Between two songs, the last one stays shown (the keys aren't let go of).
+        if !self.music.playing() {
+            self.media_keys.show(None);
+        } else if let Some(now) = self.music.now_playing() {
+            self.media_keys.show(Some(now));
+        }
         self.window_ui(ui);
         self.other_windows(ui.ctx());
         self.tool_windows_ui(ui.ctx());
@@ -3893,6 +4041,10 @@ impl eframe::App for App {
         let now = ui.input(|i| i.time);
         if now - self.last_sync >= SYNC_INTERVAL {
             self.last_sync = now;
+            // The volume, saved once the wheel has settled.
+            if std::mem::take(&mut self.music_volume_changed) {
+                self.save_config();
+            }
             self.sync();
         }
         // Also saved now and then, so that a crash or a power cut loses little.

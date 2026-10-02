@@ -814,7 +814,7 @@ impl App {
     }
 
     /// Dictation to Claude: once the user stops talking, what they said is typed in the pane, then
-    /// Enter.
+    /// Enter, and listening starts again, until they say "stop micro" (or let go of the shortcut).
     pub(super) fn poll_dictation(&mut self, ctx: &egui::Context) {
         if let Some((pane, dictation)) = &mut self.dictation {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -822,15 +822,41 @@ impl App {
                 let pane = *pane;
                 self.dictation = None;
                 let t = self.t();
+                let last = std::mem::take(&mut self.dictation_last);
+                let mut again = !last && self.tabs.iter().any(|tab| tab.panes.contains_key(&pane));
                 match outcome {
                     crate::voice::Outcome::Text(text) => {
+                        let (text, order) = crate::voice::order(&text);
+                        again &= order != crate::voice::Order::Stop;
                         if let Some(term) = self.tabs.iter_mut().find_map(|tab| tab.panes.get_mut(&pane)) {
-                            term.type_text(&text);
-                            self.dictation_enter = Some((pane, Instant::now()));
+                            match order {
+                                crate::voice::Order::Send | crate::voice::Order::Stop => {
+                                    if text.contains('\n') {
+                                        term.paste_text(&text);
+                                    } else {
+                                        term.type_text(&text);
+                                    }
+                                    // Lines kept by "nouvelle ligne" are sent too.
+                                    if !text.is_empty() || self.dictation_typed > 0 {
+                                        self.dictation_enter = Some((pane, Instant::now()));
+                                    }
+                                    self.dictation_typed = 0;
+                                }
+                                // Pasted: typed, the line break would send the message.
+                                crate::voice::Order::Newline => {
+                                    term.paste_text(&format!("{text}\n"));
+                                    self.dictation_typed += text.chars().count() + 1;
+                                }
+                                crate::voice::Order::Cancel => {
+                                    term.type_text(&"\x7f".repeat(std::mem::take(&mut self.dictation_typed)));
+                                }
+                                crate::voice::Order::Escape => term.type_text("\x1b"),
+                            }
                         }
                     }
                     crate::voice::Outcome::Nothing => {}
                     crate::voice::Outcome::Failed(e) => {
+                        again = false;
                         self.error = Some(match e {
                             crate::voice::Error::Denied => if cfg!(windows) { t.voice_denied_windows } else { t.voice_denied }.to_owned(),
                             crate::voice::Error::Unavailable => t.voice_unavailable.to_owned(),
@@ -838,6 +864,11 @@ impl App {
                             crate::voice::Error::Other(e) => t.voice_failed.replace("{e}", &e),
                         });
                     }
+                }
+                if again {
+                    self.start_dictation(pane, ctx);
+                } else {
+                    self.dictation_typed = 0;
                 }
             }
         }
@@ -851,6 +882,11 @@ impl App {
                 ctx.request_repaint_after(Duration::from_millis(30));
             }
         }
+    }
+
+    /// Starts listening for that pane, in the interface's language.
+    pub(super) fn start_dictation(&mut self, pane: PaneId, ctx: &egui::Context) {
+        self.dictation = Some(dictate(pane, self.config.settings.language, ctx));
     }
 
     /// Restarts once the whole configuration was replaced (reset, import): nothing is saved before.
@@ -925,4 +961,14 @@ impl App {
             None => {}
         }
     }
+}
+
+/// Listening for that pane, in that language (a function: the panes' loop has `self` borrowed).
+pub(super) fn dictate(pane: PaneId, language: Lang, ctx: &egui::Context) -> (PaneId, crate::voice::Dictation) {
+    let language = match language {
+        Lang::Fr => "fr-FR",
+        Lang::En => "en-US",
+    };
+    let ctx = ctx.clone();
+    (pane, crate::voice::Dictation::start(language, std::sync::Arc::new(move || ctx.request_repaint())))
 }

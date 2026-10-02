@@ -30,7 +30,18 @@ impl App {
             let ticker = Rect::from_min_size(Pos2::new(rect.min.x, rect.max.y - 44.0 + 44.0 * sunk), Vec2::new(rect.width(), 44.0));
             tips_ticker(ui, ticker, &self.theme, t, &self.config.settings.shortcuts);
         }
-        let out = self.game.ui(ui, game_rect, &self.theme, t, &self.config.settings.typing_scores, french, self.config.settings.game_sound, &self.config.settings.player_name);
+        // floor's board, fetched again every minute out of a round; the player's line from here.
+        if let Some(account) = self.floor.poll() {
+            self.config.settings.floor = account;
+            self.save_config();
+        }
+        let settings = &self.config.settings;
+        if !self.game.playing() {
+            self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref(), &settings.player_name, settings.typing_scores.first());
+        }
+        let board = crate::floor::shown(self.floor.board(), &settings.typing_scores, &settings.player_name);
+        let best = settings.typing_scores.first().map_or(0, |s| s.letters);
+        let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, &settings.player_name);
         // During a round the sidebar folds away, and unfolds after (if it was open).
         self.fold_for_game(self.game.playing());
         if let Some(on) = out.sound {
@@ -40,6 +51,8 @@ impl App {
         if let Some(name) = out.player {
             self.config.settings.player_name = name;
             self.save_config();
+            let settings = &self.config.settings;
+            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name, settings.typing_scores.first());
         }
         if let Some(score) = out.finished {
             // On the board, below the rounds it ties with (stable sort).
@@ -50,6 +63,8 @@ impl App {
             scores.sort_by(|a, b| b.letters.cmp(&a.letters));
             scores.truncate(config::TYPING_SCORES);
             self.save_config();
+            let settings = &self.config.settings;
+            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name, settings.typing_scores.first());
             if unlocked {
                 self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now() });
             }
@@ -77,8 +92,11 @@ impl App {
         }
     }
 
-    /// Folds the sidebar for a round of the game (`playing`), unfolds it after if the game folded it.
+    /// Folds the sidebar for a round of the game (`playing`), unfolds it after if the game folded it;
+    /// the music pauses the same way.
     pub(super) fn fold_for_game(&mut self, playing: bool) {
+        // The music from the server pauses during the round.
+        self.music.hold(playing);
         match (playing, self.game_folded) {
             (true, false) if !self.config.settings.sidebar_folded => {
                 self.config.settings.sidebar_folded = true;
@@ -988,6 +1006,7 @@ impl App {
             self.config.settings.sidebar_folded = true;
         }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
+        let card_top = self.music_card(ui, left, row_w, card_top);
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
 
         // Footer: settings button, always visible.

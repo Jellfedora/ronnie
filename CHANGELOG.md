@@ -2,6 +2,25 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.17.0] - 2026-10-02
+
+### Nouveautés
+
+- **Musique**, depuis ton propre serveur Subsonic (Navidrome, Gonic, Airsonic, Ampache…), réglé dans Paramètres › Musique avec un test de connexion. Le mot de passe est chiffré sur l'ordinateur, et seul un jeton salé part vers le serveur.
+  - **La bibliothèque**, avec les pochettes, ouverte par « ♫ Musique » en bas de la barre latérale. L'accueil montre les albums ajoutés récemment, écoutés récemment, les plus écoutés et au hasard. On y trouve aussi tous les albums (avec 7 tris et un défilement infini), les artistes, les playlists, les coups de cœur et la recherche (⌘ F). Un album, un artiste ou une playlist s'ouvre dans la page et se joue à partir de n'importe quel morceau, dans l'ordre ou au hasard.
+  - **La radio** : des morceaux au hasard, d'un genre ou de tous, ou de tes coups de cœur.
+  - **Le lecteur**, en bas de la barre latérale : pochette, titre et artiste (un clic ouvre l'album), ♥, précédent, pause, suivant, barre de progression à cliquer ou à glisser, volume à la molette.
+  - **J'aime** sur un morceau ou un album, retrouvé dans les coups de cœur et partagé avec les autres applis du serveur. Les écoutes lui sont envoyées aussi.
+  - **Les touches multimédia** ⏯ ⏭ ⏮, même quand Ronnie est en arrière-plan, et le morceau affiché dans le Centre de contrôle (macOS) ou les contrôles multimédia (Windows).
+  - La lecture démarre dès les premières secondes reçues. Les formats qui ne se lisent pas progressivement (M4A, Opus…) sont convertis en MP3 par le serveur.
+- **Classement mondial** du Speed Metal : la meilleure partie de chaque joueur, sous son pseudo. Sans connexion, ce sont tes propres parties qui s'affichent, et elles sont envoyées une fois en ligne.
+- **Dicter à Claude** a son raccourci (⌥ Espace sur macOS, Ctrl+Maj+Espace ailleurs). Appuyé, il écoute jusqu'à « stop micro » ; maintenu, tant qu'on le tient. En fin de phrase : « nouvelle ligne », « annule », « Échap ».
+
+### Changements
+
+- La musique se met en pause pendant une partie de Speed Metal et reprend après.
+- « Vérifier maintenant » disparaît pendant qu'une mise à jour s'installe.
+
 ## [0.16.0] - 2026-10-02
 
 ### Nouveautés

@@ -1094,6 +1094,7 @@ impl App {
                     (SettingsTab::Shortcuts, "⌨", t.shortcuts),
                     (SettingsTab::Profiles, "▣", t.manage_profiles),
                     (SettingsTab::Ssh, "🖧", t.ssh_tab),
+                    (SettingsTab::Music, "♫", t.music_nav),
                     (SettingsTab::ConfigFile, "{ }", t.config_nav),
                     (SettingsTab::Logs, "☰", t.logs_nav),
                 ];
@@ -1123,6 +1124,7 @@ impl App {
                     SettingsTab::Shortcuts => (t.shortcuts, t.sub_shortcuts),
                     SettingsTab::Profiles => (t.manage_profiles, t.sub_profiles),
                     SettingsTab::Ssh => (t.ssh_tab, t.sub_ssh),
+                    SettingsTab::Music => (t.music_nav, t.sub_music),
                     SettingsTab::ConfigFile => (t.config_file, t.sub_config),
                     SettingsTab::Logs => (t.logs_nav, t.sub_logs),
                     SettingsTab::Features => (t.features_nav, t.sub_features),
@@ -1160,6 +1162,9 @@ impl App {
                         SettingsTab::General => {
                             egui::ScrollArea::vertical().id_salt("settings-general").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.general_page(ui, t, &theme, &mut picked));
                         }
+                        SettingsTab::Music => {
+                            egui::ScrollArea::vertical().id_salt("settings-music").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.music_page(ui, ctx, t, &theme, &mut picked));
+                        }
                         SettingsTab::Appearance => {
                             egui::ScrollArea::vertical().id_salt("settings-appearance").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.appearance_page(ui, t, &theme, &mut picked));
                         }
@@ -1178,11 +1183,15 @@ impl App {
         if self.settings_tab != SettingsTab::Logs {
             self.logs = None;
         }
+        if self.settings_tab != SettingsTab::Music {
+            self.subsonic_form = None;
+        }
         if close || modal.should_close() {
             self.settings_dialog = false;
             self.shortcut_capture = None;
             self.editor = None;
             self.logs = None;
+            self.subsonic_form = None;
             self.profile_names.clear();
             self.profile_error = None;
             self.focus_terminal = true;
@@ -1357,6 +1366,137 @@ impl App {
         }
     }
 
+    /// "Music" page: the Subsonic server (Navidrome…), its user and password, and a connection test.
+    fn music_page(&mut self, ui: &mut Ui, ctx: &egui::Context, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        ui.set_width(ui.available_width() - 12.0);
+        let form = self.subsonic_form.get_or_insert_with(|| SubsonicForm::new(&picked.subsonic));
+        if let Some(rx) = &form.testing {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    form.tested = Some(outcome);
+                    form.testing = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => form.testing = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let (mut test, mut save, mut forget) = (false, false, false);
+        let mut typed = false;
+        card(ui, theme, Some(t.subsonic_section), |ui| {
+            let field = |ui: &mut Ui, value: &mut String, hint: &str| ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(ui.available_width()).margin(Vec2::new(8.0, 6.0))).changed();
+            setting_row(ui, theme, t.subsonic_url, Some(t.subsonic_url_desc), |ui| {
+                typed |= field(ui, &mut form.url, "https://music.example.com");
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.db_user, None, |ui| {
+                typed |= field(ui, &mut form.user, "");
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.db_password, Some(t.subsonic_password_desc), |ui| {
+                if ui.add(egui::Button::new(if form.reveal { "🙈" } else { "👁" }).frame_when_inactive(false)).clicked() {
+                    form.reveal = !form.reveal;
+                }
+                let hint = if picked.subsonic.password_saved && !form.password_changed { t.password_saved } else { "" };
+                let edit = ui.add(egui::TextEdit::singleline(&mut form.password).hint_text(hint).password(!form.reveal).desired_width(ui.available_width()).margin(Vec2::new(8.0, 6.0)));
+                if edit.changed() {
+                    form.password_changed = true;
+                    typed = true;
+                }
+            });
+        });
+        if typed {
+            form.saved = false;
+            form.error = None;
+        }
+        let ready = !form.url.trim().is_empty() && !form.user.trim().is_empty();
+        ui.horizontal(|ui| {
+            let ok = egui::Button::new(egui::RichText::new(t.save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(110.0, 32.0));
+            if ui.add_enabled(ready, ok).clicked() {
+                save = true;
+            }
+            if ui.add_enabled(ready && form.testing.is_none(), egui::Button::new(egui::RichText::new(format!("⚡  {}", t.db_test)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 32.0))).clicked() {
+                test = true;
+            }
+            if !picked.subsonic.url.is_empty() && ui.add(ghost_button(t.subsonic_forget, theme.ansi[1])).clicked() {
+                forget = true;
+            }
+        });
+        ui.add_space(10.0);
+        match (&form.testing, &form.tested) {
+            (Some(_), _) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.db_testing).size(12.5).color(theme.text_muted));
+                });
+            }
+            (None, Some(Ok(server))) => {
+                ui.label(egui::RichText::new(format!("✓  {}", t.db_test_ok.replace("{v}", server))).size(12.5).color(theme.ansi[2]));
+            }
+            (None, Some(Err(failure))) => {
+                let text = match failure {
+                    crate::subsonic::Failure::Unreachable(e) => format!("{} : {e}", t.subsonic_unreachable),
+                    crate::subsonic::Failure::Refused => t.subsonic_refused.to_owned(),
+                    crate::subsonic::Failure::NotSubsonic => t.subsonic_not_subsonic.to_owned(),
+                    crate::subsonic::Failure::Server(e) => e.clone(),
+                    crate::subsonic::Failure::NoToken => t.subsonic_refused.to_owned(),
+                };
+                ui.add(egui::Label::new(egui::RichText::new(format!("✗  {text}")).size(12.5).color(theme.ansi[1])).wrap());
+            }
+            _ => {}
+        }
+        if let Some(e) = &form.error {
+            ui.label(egui::RichText::new(e).size(12.5).color(theme.ansi[1]));
+        } else if form.saved && form.testing.is_none() && form.tested.is_none() {
+            ui.label(egui::RichText::new(format!("✓  {}", t.subsonic_saved)).size(12.5).color(theme.text_muted));
+        }
+
+        if forget {
+            crate::ssh::delete_password(crate::subsonic::PASSWORD_ID);
+            picked.subsonic = config::Subsonic::default();
+            *form = SubsonicForm::new(&picked.subsonic);
+            self.music.stop();
+            return;
+        }
+        if save {
+            if form.password_changed {
+                let saved = if form.password.is_empty() {
+                    crate::ssh::delete_password(crate::subsonic::PASSWORD_ID);
+                    Ok(false)
+                } else {
+                    crate::ssh::save_password(crate::subsonic::PASSWORD_ID, &form.password).map(|()| true)
+                };
+                match saved {
+                    Ok(saved) => picked.subsonic.password_saved = saved,
+                    Err(e) => {
+                        form.error = Some(format!("{} : {e}", t.keychain_failed));
+                        return;
+                    }
+                }
+            }
+            form.url = crate::subsonic::normalize_url(&form.url);
+            form.user = form.user.trim().to_owned();
+            picked.subsonic.url = form.url.clone();
+            picked.subsonic.user = form.user.clone();
+            form.password.clear();
+            form.password_changed = false;
+            form.saved = true;
+            // Saved: tried at once.
+            test = form.testing.is_none();
+        }
+        if test {
+            let password = if form.password_changed || !picked.subsonic.password_saved { form.password.clone() } else { crate::ssh::load_password(crate::subsonic::PASSWORD_ID).unwrap_or_default() };
+            let (url, user) = (form.url.clone(), form.user.trim().to_owned());
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::subsonic::Server::new(&url, &user, &password).ping());
+                ctx.request_repaint();
+            });
+            form.tested = None;
+            form.testing = Some(rx);
+        }
+    }
+
     /// "Appearance" page: interface and text size, then the themes.
     fn appearance_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         ui.set_width(ui.available_width() - 12.0);
@@ -1505,7 +1645,9 @@ impl App {
         let theme = self.theme.clone();
         card(ui, &theme, Some(t.updates), |ui| {
             setting_row(ui, &theme, &t.version.replace("{v}", update::VERSION), None, |ui| {
-                if ui.add_enabled(!self.updater.busy(), egui::Button::new(egui::RichText::new(t.check_now).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                // Nothing left to check once an update is being or has been installed.
+                let installing = matches!(self.updater.state(), update::State::Installing(_) | update::State::Installed(_));
+                if !installing && ui.add_enabled(!self.updater.busy(), egui::Button::new(egui::RichText::new(t.check_now).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
                     self.update_dismissed = false;
                     self.updater.check(ctx);
                 }

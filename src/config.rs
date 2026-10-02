@@ -555,12 +555,36 @@ pub struct Settings {
     /// Its music: on or off (None: asked the first time).
     #[serde(default)]
     pub game_sound: Option<bool>,
-    /// The name put on the cards of its rounds, when shared.
+    /// The name put on the cards of its rounds, when shared, and on floor's board.
     #[serde(default)]
     pub player_name: String,
+    /// The player's account on floor, the leaderboards' server (see floor.rs): made with the first round sent.
+    #[serde(default)]
+    pub floor: Option<FloorAccount>,
     /// The activity simulator (see awake.rs).
     #[serde(default)]
     pub keep_active: KeepActive,
+    /// The music server.
+    #[serde(default)]
+    pub subsonic: Subsonic,
+}
+
+/// The music server (Navidrome, Gonic, Airsonic… any that speaks the Subsonic API); its password is
+/// saved apart (see subsonic.rs).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct Subsonic {
+    pub url: String,
+    pub user: String,
+    pub password_saved: bool,
+    /// The radio's volume, 0 to 1.
+    pub volume: f32,
+}
+
+impl Default for Subsonic {
+    fn default() -> Self {
+        Self { url: String::new(), user: String::new(), password_saved: false, volume: 0.7 }
+    }
 }
 
 /// The activity simulator: on or off, the days and the hours it acts.
@@ -593,6 +617,15 @@ pub struct TypingScore {
     pub combo: u32,
     /// When, in seconds since 1970.
     pub at: i64,
+}
+
+/// An account on floor.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct FloorAccount {
+    /// The floor it was made on.
+    pub url: String,
+    pub id: String,
+    pub token: String,
 }
 
 /// Places kept on the leaderboard.
@@ -695,6 +728,13 @@ pub struct Shortcuts {
     pub new_window: Shortcut,
     #[serde(default = "default_toggle_sidebar")]
     pub toggle_sidebar: Shortcut,
+    /// Dictation to Claude: pressed, listens until "stop micro"; held down, until let go of.
+    #[serde(default = "default_dictate")]
+    pub dictate: Shortcut,
+}
+
+fn default_dictate() -> Shortcut {
+    Shortcut(if cfg!(target_os = "macos") { "Alt+Space" } else { "Ctrl+Shift+Space" }.into())
 }
 
 fn default_toggle_sidebar() -> Shortcut {
@@ -721,6 +761,7 @@ impl Default for Shortcuts {
             toggle_files: Shortcut::command('E'),
             new_window: default_new_window(),
             toggle_sidebar: default_toggle_sidebar(),
+            dictate: default_dictate(),
         }
     }
 }
@@ -802,7 +843,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), keep_active: KeepActive::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default() }
     }
 }
 

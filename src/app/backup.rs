@@ -301,7 +301,7 @@ impl App {
         let default = format!("ronnie-config-{}.zip", chrono::Local::now().format("%Y%m%d"));
         let Some(out) = rfd::FileDialog::new().set_file_name(default).add_filter("zip", &["zip"]).save_file() else { return Ok(None) };
         let secrets = password.map(|_| {
-            let ids = self.config.ssh.iter().filter(|h| h.password_saved).map(|h| h.id).chain(self.config.databases.iter().filter(|d| d.password_saved).map(|d| d.id));
+            let ids = self.config.ssh.iter().filter(|h| h.password_saved).map(|h| h.id).chain(self.config.databases.iter().filter(|d| d.password_saved).map(|d| d.id)).chain(self.config.settings.subsonic.password_saved.then_some(crate::subsonic::PASSWORD_ID));
             let passwords = ids.filter_map(|id| Some((id, ssh::load_password(id)?))).collect();
             let keys = self
                 .config

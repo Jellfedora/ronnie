@@ -4,7 +4,8 @@
 
 use super::motion::{in_out_cubic, out_back, out_cubic, phase};
 use super::*;
-use crate::config::{TypingScore, TYPING_SCORES};
+use crate::config::TypingScore;
+use crate::floor::Entry;
 
 /// Length of a round, in seconds.
 const ROUND: f64 = 60.0;
@@ -130,6 +131,8 @@ pub(super) struct Game {
     record: bool,
     /// Its place on the board (from 0), when it made it.
     rank: Option<usize>,
+    /// When it was played: its line on the board.
+    played: Option<i64>,
     music: Option<Music>,
     /// When the home page (the game) appeared: its entrance plays from there.
     appeared: Option<f64>,
@@ -283,13 +286,12 @@ impl Game {
         }
     }
 
-    /// Draws the game in `rect`, with the board of `scores` (the best first); a round just finished,
-    /// to add to it.
+    /// Draws the game in `rect`, with the board (the best first; the player's rounds, or floor's best
+    /// round of each player) and the player's `best`; a round just finished, to add to it.
     /// `sound`: the music on or off (None: not asked yet).
     #[allow(clippy::too_many_arguments)]
-    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings, scores: &[TypingScore], french: bool, sound: Option<bool>, player: &str) -> GameOut {
+    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings, scores: &[Entry], best: u32, french: bool, sound: Option<bool>, player: &str) -> GameOut {
         let mut out = GameOut::default();
-        let best = scores.first().map_or(0, |s| s.letters);
         let now = ui.input(|i| i.time);
         // The entrance: each part comes in at its time.
         let appeared = *self.appeared.get_or_insert(now);
@@ -300,6 +302,10 @@ impl Game {
         // Wide enough: the board in a column on the right, else under Play. As a round starts it slides
         // away and the game spreads over its room; it comes back after.
         let focus = self.focus(ui.ctx());
+        // The round's line, once the board has it.
+        if matches!(self.state, State::Over(_)) {
+            self.rank = scores.iter().position(|r| r.me && Some(r.score.at) == self.played);
+        }
         let wide = rect.width() >= 980.0;
         let full = rect;
         let rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x - if wide { 390.0 * (1.0 - focus) } else { 0.0 }, rect.max.y));
@@ -339,8 +345,7 @@ impl Game {
                 self.state = State::Over(now);
                 let score = self.score();
                 // Below the rounds it ties with.
-                let place = scores.iter().filter(|s| s.letters >= score.letters).count();
-                self.rank = (score.letters > 0 && place < TYPING_SCORES).then_some(place);
+                self.played = Some(score.at);
                 if score.letters > 0 {
                     out.finished = Some(score);
                 }
@@ -751,26 +756,28 @@ fn paint_speaker(painter: &egui::Painter, c: Pos2, on: bool, color: Color32) {
     }
 }
 
-/// The leaderboard in `rect`: its best rounds, the podium in gold, silver and bronze, `highlight` (the
+/// The leaderboard in `rect`: its best rounds (floor's: the best of each player, named), the podium in gold, silver and bronze, `highlight` (the
 /// round just played) lit; `alpha`: dimmed while playing.
 #[allow(clippy::too_many_arguments)]
-fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[TypingScore], highlight: Option<usize>, theme: &Theme, t: &Strings, alpha: f32, now: f64) {
+fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[Entry], highlight: Option<usize>, theme: &Theme, t: &Strings, alpha: f32, now: f64) {
     let fade = |c: Color32| c.gamma_multiply(alpha);
     painter.rect_filled(rect, 12.0, fade(theme.chrome_bg));
     painter.rect_stroke(rect, 12.0, Stroke::new(1.0, fade(theme.tab_hover)), egui::StrokeKind::Inside);
     let inner = rect.shrink2(Vec2::new(16.0, 14.0));
-    painter.text(Pos2::new(inner.center().x, inner.min.y + 10.0), Align2::CENTER_CENTER, t.game_board, FontId::proportional(15.0), fade(theme.text));
+    let world = scores.iter().any(|r| !r.me);
+    painter.text(Pos2::new(inner.center().x, inner.min.y + 10.0), Align2::CENTER_CENTER, if world { t.game_board_world } else { t.game_board }, FontId::proportional(15.0), fade(theme.text));
     painter.hline(inner.center().x - 40.0..=inner.center().x + 40.0, inner.min.y + 26.0, Stroke::new(2.0, fade(theme.accent)));
     if scores.is_empty() {
         painter.text(Pos2::new(inner.center().x, inner.min.y + 58.0), Align2::CENTER_CENTER, t.game_board_empty, FontId::proportional(12.5), fade(theme.text_muted));
         return;
     }
-    // Columns: place, letters, per minute, accuracy, date. Laid out from the right, the date being
-    // the widest (measured), the numbers sharing what is left.
-    let date_w = painter.layout_no_wrap("00/00 00:00".to_owned(), FontId::monospace(11.0), theme.text).size().x;
-    let accuracy_x = inner.max.x - date_w - 38.0;
-    let letters_x = inner.min.x + 40.0;
-    let wpm_x = (letters_x + 44.0 + accuracy_x - 26.0) / 2.0;
+    // Columns: place, player, letters, per minute, accuracy, date. Laid out from the right, the date
+    // being the widest (measured), the numbers sharing what is left after the names.
+    let date_w = painter.layout_no_wrap("00/00".to_owned(), FontId::monospace(11.0), theme.text).size().x;
+    let accuracy_x = inner.max.x - date_w - 30.0;
+    let name_x = inner.min.x + 30.0;
+    let letters_x = name_x + 104.0;
+    let wpm_x = (letters_x + 40.0 + accuracy_x - 22.0) / 2.0;
     let cols = [inner.min.x + 12.0, letters_x, wpm_x, accuracy_x, inner.max.x];
     let head_y = inner.min.y + 46.0;
     let small = FontId::proportional(10.5);
@@ -779,7 +786,8 @@ fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[TypingScore], high
     }
     const ROW: f32 = 28.0;
     let bronze = Color32::from_rgb(0xcd, 0x7f, 0x32);
-    for (k, s) in scores.iter().enumerate() {
+    for (k, entry) in scores.iter().enumerate() {
+        let s = &entry.score;
         let y = head_y + 22.0 + k as f32 * ROW;
         if y + ROW / 2.0 > inner.max.y {
             break;
@@ -807,12 +815,16 @@ fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[TypingScore], high
                 painter.text(place, Align2::CENTER_CENTER, (k + 1).to_string(), FontId::monospace(12.0), fade(theme.text_muted));
             }
         }
+        let name = entry.name.as_deref().unwrap_or(if entry.me { t.game_you } else { t.game_anonymous });
+        let name: String = if name.chars().count() > 12 { name.chars().take(11).chain(['…']).collect() } else { name.to_owned() };
+        let name_color = if entry.me && world { theme.accent } else if entry.name.is_some() { theme.text } else { theme.text_muted };
+        painter.text(Pos2::new(name_x, y), Align2::LEFT_CENTER, name, FontId::proportional(12.5), fade(name_color));
         painter.text(Pos2::new(cols[1], y), Align2::LEFT_CENTER, s.letters.to_string(), FontId::monospace(15.0), fade(medal.unwrap_or(theme.text)));
         painter.text(Pos2::new(cols[2], y), Align2::CENTER_CENTER, s.wpm.to_string(), FontId::monospace(12.5), fade(theme.fg));
         painter.text(Pos2::new(cols[3], y), Align2::CENTER_CENTER, format!("{} %", s.accuracy), FontId::monospace(12.5), fade(theme.fg));
         let when = {
             use chrono::TimeZone as _;
-            chrono::Local.timestamp_opt(s.at, 0).single().map(|d| d.format("%d/%m %H:%M").to_string()).unwrap_or_default()
+            chrono::Local.timestamp_opt(s.at, 0).single().map(|d| d.format("%d/%m").to_string()).unwrap_or_default()
         };
         painter.text(Pos2::new(cols[4], y), Align2::RIGHT_CENTER, when, FontId::monospace(11.0), fade(theme.text_muted));
     }

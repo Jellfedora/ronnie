@@ -17,11 +17,12 @@ eframe = { version = "0.36", default-features = false, features = ["wgpu", "defa
 egui = "0.36"
 flate2 = "1.1.10"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust"] }
 portable-pty = "0.9"
 raw-window-handle = "0.6"
 rfd = "0.17"
-rodio = { version = "0.22", default-features = false, features = ["playback", "mp3"] }
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "vorbis", "wav", "mp4"] }
 russh-sftp = "3"
 self-replace = "1.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -35,6 +36,7 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "process", "io-util
 ureq = { version = "3.4.2", features = ["json"] }
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+md-5 = "0.11"
 
 # SQL Server: rustls (macOS's TLS refuses the self-signed certificates SQL Server makes, even when told to
 # accept them; no OpenSSL to ship on Linux), and the system's TLS on Windows, as SSMS (below).
@@ -57,11 +59,12 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSColor", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFilePromiseProvider", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSGeometry", "NSLocale", "NSNull", "NSOperation", "NSString", "NSURL", "NSValue"] }
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTime", "AVAudioTypes"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFErrors", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognitionTaskHint", "SFSpeechRecognizer", "SFTranscription"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "block2"] }
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62", features = ["Foundation", "Globalization", "Media_SpeechRecognition", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Foundation", "Globalization", "Media", "Media_SpeechRecognition", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "chrono", "sql-browser-tokio"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 

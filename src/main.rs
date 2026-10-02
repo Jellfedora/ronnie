@@ -7,12 +7,15 @@ mod claude;
 mod config;
 mod db;
 mod dragout;
+mod floor;
 mod i18n;
 mod log;
+mod media_keys;
 mod notify;
 #[cfg(target_os = "macos")]
 mod menu;
 mod mssql;
+mod subsonic;
 mod pane;
 mod screens;
 mod sftp;
