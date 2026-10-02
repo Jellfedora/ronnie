@@ -305,6 +305,8 @@ pub struct App {
     last_input: f64,
     window: Option<WindowState>,
     settings_dialog: bool,
+    /// The activity simulator's window, opened only by its shortcut (⌘ ⌥ ⇧ A).
+    keep_active_dialog: bool,
     settings_tab: SettingsTab,
     /// Text of the config file editor while it is shown.
     editor: Option<ConfigEditor>,
@@ -531,6 +533,64 @@ impl ItemDrag {
 enum Mark {
     Line(f32),
     Into(Rect),
+}
+
+/// Where a pane dragged by its strip would go.
+#[derive(Clone, Copy)]
+enum PaneDrop {
+    /// Swap places with that pane.
+    Swap(PaneId),
+    /// On that side of that pane (None: of the whole layout).
+    Beside(Option<PaneId>, Direction),
+}
+
+impl PaneDrop {
+    /// The part of the tab it would take, to light up.
+    fn area(self, layout: Rect, rects: &[(PaneId, Rect)]) -> Rect {
+        let (r, side) = match self {
+            PaneDrop::Swap(id) => return rects.iter().find(|(p, _)| *p == id).map_or(layout, |(_, r)| *r),
+            PaneDrop::Beside(Some(id), side) => (rects.iter().find(|(p, _)| *p == id).map_or(layout, |(_, r)| *r), side),
+            PaneDrop::Beside(None, side) => (layout, side),
+        };
+        let c = r.center();
+        match side {
+            Direction::Left => r.with_max_x(c.x),
+            Direction::Right => r.with_min_x(c.x),
+            Direction::Up => r.with_max_y(c.y),
+            Direction::Down => r.with_min_y(c.y),
+        }
+    }
+}
+
+/// Where pane `dragged` would go with the pointer at `p`: the tab's outer edges first (a thin band),
+/// then the pane under the pointer: its middle swaps, its edges (the outer quarter) put it beside.
+fn pane_drop(p: Pos2, dragged: PaneId, layout: Rect, rects: &[(PaneId, Rect)]) -> Option<PaneDrop> {
+    let band = 18.0;
+    let outer = [
+        (p.x - layout.min.x, Direction::Left),
+        (layout.max.x - p.x, Direction::Right),
+        (p.y - layout.min.y, Direction::Up),
+        (layout.max.y - p.y, Direction::Down),
+    ];
+    if layout.contains(p) && rects.len() > 1 {
+        if let Some(&(_, side)) = outer.iter().filter(|(d, _)| *d < band).min_by(|a, b| a.0.total_cmp(&b.0)) {
+            return Some(PaneDrop::Beside(None, side));
+        }
+    }
+    let (target, r) = rects.iter().find(|(id, r)| *id != dragged && r.contains(p))?;
+    // How far from the middle, from 0 (middle) to 1 (edge), on each axis.
+    let (dx, dy) = ((p.x - r.center().x) / (r.width() / 2.0), (p.y - r.center().y) / (r.height() / 2.0));
+    if dx.abs().max(dy.abs()) < 0.5 {
+        return Some(PaneDrop::Swap(*target));
+    }
+    let side = if dx.abs() >= dy.abs() {
+        if dx < 0.0 { Direction::Left } else { Direction::Right }
+    } else if dy < 0.0 {
+        Direction::Up
+    } else {
+        Direction::Down
+    };
+    Some(PaneDrop::Beside(Some(*target), side))
 }
 
 /// Where a dragged item or group would land at pointer position `p`.
@@ -829,6 +889,12 @@ impl ConfigEditor {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session, session_error: Option<String>, config: anyhow::Result<Config>, theme: Theme) -> Self {
+        {
+            use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+            if let (Ok(window), Ok(display)) = (cc.window_handle(), cc.display_handle()) {
+                crate::dragout::init(window.as_raw(), display.as_raw());
+            }
+        }
         let mut app = Self {
             tabs: Vec::new(),
             active: 0,
@@ -853,6 +919,7 @@ impl App {
             last_input: 0.0,
             window: None,
             settings_dialog: false,
+            keep_active_dialog: false,
             settings_tab: SettingsTab::General,
             editor: None,
             logs: None,
@@ -1919,6 +1986,10 @@ impl App {
         if self.shortcut_capture.is_some() {
             return;
         }
+        // Not in any menu: the activity simulator.
+        if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::A))) {
+            self.keep_active_dialog = !self.keep_active_dialog;
+        }
         // The configurable shortcuts (Settings > Shortcuts), the most specific first: consume_shortcut
         // ignores extra Shift / Alt, so Cmd+T would otherwise also take Cmd+Shift+T.
         let shortcuts = self.config.settings.shortcuts.clone();
@@ -1960,7 +2031,12 @@ impl App {
         if let Some(editor) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.editor.as_mut()) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
-                    editor.open_find(ui.ctx());
+                    // ⌘ ⌥ F (taken by ⌘ F, which ignores Alt): with the replace field.
+                    if ui.input(|i| i.modifiers.alt) {
+                        editor.open_replace(ui.ctx());
+                    } else {
+                        editor.open_find(ui.ctx());
+                    }
                     false
                 }
                 ShortcutAction::ClosePane => {
@@ -2311,36 +2387,29 @@ struct HeaderClicks {
     close: bool,
     /// Double click: rename the pane.
     rename: bool,
-    /// The Claude usage badge, before Ronnie gets the usage: how to set it up.
-    claude_setup: bool,
 }
 
 /// The badge of Claude's plan usage in a pane's strip, ending at `right`: its width, if it fits.
-#[allow(clippy::too_many_arguments)]
-fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, usage: Option<&crate::claude::Usage>, theme: &Theme, t: &Strings, clicks: &mut HeaderClicks) -> Option<f32> {
+fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, u: &crate::claude::Usage, theme: &Theme, t: &Strings) -> Option<f32> {
     let now = crate::claude::now();
-    let (text, color, tip) = match usage {
-        Some(u) => {
-            let worst = [u.five_hour, u.seven_day].iter().flatten().map(|w| w.used_now(now)).fold(0.0, f32::max);
-            let color = if worst >= 95.0 { theme.ansi[1] } else if worst >= 80.0 { theme.ansi[3] } else { theme.accent };
-            let when = |at: i64| {
-                let at = chrono::DateTime::from_timestamp(at, 0).map(|d| d.with_timezone(&chrono::Local));
-                let Some(at) = at else { return String::new() };
-                let time = at.format("%H:%M").to_string();
-                if at.date_naive() == chrono::Local::now().date_naive() { t.claude_at.replace("{t}", &time) } else { t.claude_on.replace("{d}", &at.format(t.claude_date).to_string()).replace("{t}", &time) }
-            };
-            let mut tip = vec![t.claude_usage_title.to_owned()];
-            if let Some(w) = u.five_hour {
-                tip.push(t.claude_session.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
-            }
-            if let Some(w) = u.seven_day {
-                tip.push(t.claude_week.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
-            }
-            tip.push(t.claude_updated.replace("{n}", &((now - u.updated).max(0) / 60).to_string()));
-            (crate::claude::usage_text(u, now), color, tip.join("\n"))
-        }
-        None => (t.claude_usage_short.to_owned(), theme.text_muted, t.claude_setup_tip.to_owned()),
+    let worst = [u.five_hour, u.seven_day].iter().flatten().map(|w| w.used_now(now)).fold(0.0, f32::max);
+    let color = if worst >= 95.0 { theme.ansi[1] } else if worst >= 80.0 { theme.ansi[3] } else { theme.accent };
+    let when = |at: i64| {
+        let at = chrono::DateTime::from_timestamp(at, 0).map(|d| d.with_timezone(&chrono::Local));
+        let Some(at) = at else { return String::new() };
+        let time = at.format("%H:%M").to_string();
+        if at.date_naive() == chrono::Local::now().date_naive() { t.claude_at.replace("{t}", &time) } else { t.claude_on.replace("{d}", &at.format(t.claude_date).to_string()).replace("{t}", &time) }
     };
+    let mut tip = vec![t.claude_usage_title.to_owned()];
+    if let Some(w) = u.five_hour {
+        tip.push(t.claude_session.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
+    }
+    if let Some(w) = u.seven_day {
+        tip.push(t.claude_week.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
+    }
+    tip.push(t.claude_updated.replace("{n}", &((now - u.updated).max(0) / 60).to_string()));
+    let tip = tip.join("\n");
+    let text = crate::claude::usage_text(u, now);
     let font = FontId::monospace(12.0);
     let galley = ui.painter().layout_no_wrap(text, font, color);
     let w = galley.size().x + 16.0;
@@ -2348,14 +2417,12 @@ fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, usage: Option<&
         return None;
     }
     let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
-    let resp = ui.interact(at, egui::Id::new(("pane-claude", id)), Sense::click());
-    ui.painter().rect_filled(at, 4.0, if resp.hovered() { theme.tab_hover } else { theme.tab_active });
+    // Not a button: hovered, it tells the details.
+    let resp = ui.interact(at, egui::Id::new(("pane-claude", id)), Sense::hover());
+    ui.painter().rect_filled(at, 4.0, theme.tab_active);
     ui.painter().rect_stroke(at, 4.0, Stroke::new(1.0, color.gamma_multiply(0.5)), egui::StrokeKind::Inside);
     ui.painter().galley(Pos2::new(at.min.x + 8.0, at.center().y - galley.size().y / 2.0), galley, color);
-    let resp = resp.on_hover_text(tip);
-    if usage.is_none() {
-        clicks.claude_setup = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-    }
+    resp.on_hover_text(tip);
     Some(w)
 }
 
@@ -2372,8 +2439,8 @@ enum Header<'a> {
 /// host with reconnect (↻) and file manager (📁) icons, plus the saved commands (⚡) and, for local panes,
 /// history search.
 #[allow(clippy::too_many_arguments)]
-/// `claude`: Claude Code runs in the pane, with the plan's usage if Ronnie gets it.
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<Option<&crate::claude::Usage>>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+/// `claude`: the plan's usage, when Claude Code runs in the pane and Ronnie gets it.
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
@@ -2478,7 +2545,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             max_w = right - rect.min.x - 16.0;
         }
         if let Some(usage) = claude {
-            if let Some(w) = claude_badge(ui, rect, right, id, usage, theme, t, &mut clicks) {
+            if let Some(w) = claude_badge(ui, rect, right, id, usage, theme, t) {
                 right -= w + 6.0;
                 max_w = right - rect.min.x - 16.0;
             }
@@ -3043,6 +3110,7 @@ impl App {
                 let mut rects = Vec::with_capacity(tab.panes.len());
                 let line = Stroke::new(1.0, self.theme.tab_hover);
                 tab.layout.show(ui, rect, ui.id().with("layout"), line, &mut rects);
+                let layout_rect = rect;
                 let split = rects.len() > 1;
                 let strings = self.config.settings.language.strings();
                 let local = tab.ssh.is_none();
@@ -3201,11 +3269,11 @@ impl App {
                     // The strip also appears, even with directories hidden, when the program announced a local server.
                     let urls = if local { term.local_urls(ui.ctx()).to_vec() } else { Vec::new() };
                     // The repository of a local pane's folder, if any.
-                    let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::repo_root) } else { None };
+                    let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::git_root) } else { None };
                     let git_open = tab.git.contains_key(&id);
-                    // Claude Code in the foreground: its plan's usage in the strip.
+                    // Claude Code in the foreground: its plan's usage in the strip, once known.
                     let claude_here = local && self.config.settings.claude_usage && term.live_program(ui.ctx()).is_some_and(crate::claude::is_claude);
-                    let claude = claude_here.then(|| self.claude.current().cloned());
+                    let claude = claude_here.then(|| self.claude.current().cloned()).flatten();
                     // Split: always a strip, to drag the pane by.
                     let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open || claude.is_some() {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
@@ -3214,11 +3282,7 @@ impl App {
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let git_state = (repo.is_some() || git_open).then_some(git_open);
                         let header = if local { Header::Local(cwd.as_deref(), &urls, git_state) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref().map(Option::as_ref), &self.theme, strings, &self.config.settings.shortcuts);
-                        if clicks.claude_setup {
-                            self.settings_dialog = true;
-                            self.settings_tab = SettingsTab::General;
-                        }
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.rename {
                             self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
                         }
@@ -3268,7 +3332,7 @@ impl App {
                         }
                         if clicks.git_window {
                             // The view shown in the pane moves there, as it was.
-                            if let Some(view) = tab.git.remove(&id).or_else(|| repo.clone().map(|root| Box::new(git::GitView::new(root)))) {
+                            if let Some(view) = tab.git.remove(&id).or_else(|| repo.clone().map(|root| Box::new(git::GitView::open(root)))) {
                                 self.tool_windows.push(ToolWindow::git(view));
                             }
                         }
@@ -3280,7 +3344,7 @@ impl App {
                                 tab.git.remove(&id);
                                 self.focus_terminal = true;
                             } else if let Some(root) = repo.clone() {
-                                tab.git.insert(id, Box::new(git::GitView::new(root)));
+                                tab.git.insert(id, Box::new(git::GitView::open(root)));
                             }
                         }
                         if clicks.focus {
@@ -3356,24 +3420,35 @@ impl App {
                 let panes = &tab.panes;
                 tab.git.retain(|id, _| panes.contains_key(id));
 
-                // A pane dragged by its strip: the one under the pointer lights up, and they swap places
-                // on release.
+                // A pane dragged by its strip: dropped in the middle of another, they swap places; near
+                // one of its edges, it goes on that side of it; near an edge of the whole tab, on that
+                // side of all the others. Where it would go lights up.
                 if let Some(dragged) = self.pane_drag {
                     let pointer = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
-                    let target = pointer.and_then(|p| tab.rects.iter().find(|(id, r)| *id != dragged && r.contains(p)).map(|(id, r)| (*id, *r)));
+                    let drop = pointer.and_then(|p| pane_drop(p, dragged, layout_rect, &tab.rects));
                     let layer = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pane-drag")));
                     if let Some((_, r)) = tab.rects.iter().find(|(id, _)| *id == dragged) {
                         layer.rect_filled(*r, 0.0, Color32::from_black_alpha(60));
                     }
-                    if let Some((_, r)) = target {
-                        layer.rect_filled(r.shrink(2.0), 6.0, self.theme.accent.gamma_multiply(0.22));
-                        layer.rect_stroke(r.shrink(2.0), 6.0, Stroke::new(2.0, self.theme.accent), egui::StrokeKind::Inside);
-                        layer.text(r.center(), Align2::CENTER_CENTER, "⇄", FontId::proportional(42.0), self.theme.accent);
+                    if let Some(drop) = drop {
+                        let r = drop.area(layout_rect, &tab.rects).shrink(2.0);
+                        layer.rect_filled(r, 6.0, self.theme.accent.gamma_multiply(0.22));
+                        layer.rect_stroke(r, 6.0, Stroke::new(2.0, self.theme.accent), egui::StrokeKind::Inside);
+                        if matches!(drop, PaneDrop::Swap(_)) {
+                            layer.text(r.center(), Align2::CENTER_CENTER, "⇄", FontId::proportional(42.0), self.theme.accent);
+                        }
                     }
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     if ui.input(|i| i.pointer.any_released() || !i.pointer.any_down()) {
-                        if let Some((target, _)) = target {
-                            tab.layout.swap(dragged, target);
+                        let moved = match drop {
+                            Some(PaneDrop::Swap(target)) => {
+                                tab.layout.swap(dragged, target);
+                                true
+                            }
+                            Some(PaneDrop::Beside(target, side)) => tab.layout.move_to(dragged, target, side),
+                            None => false,
+                        };
+                        if moved {
                             tab.focused = dragged;
                             self.focus_terminal = true;
                         }
@@ -3567,6 +3642,8 @@ impl App {
         self.paste_confirm_window(ui.ctx());
         self.guard_window(ui.ctx());
         self.startup_window(ui.ctx());
+        self.keep_active_window(ui.ctx());
+        crate::awake::configure(&self.config.settings.keep_active);
         if dialogs_here {
             self.confirm_reset_window(ui.ctx());
             self.link_confirm_window(ui.ctx());
@@ -3632,6 +3709,16 @@ impl eframe::App for App {
         if now - self.last_scrollback_save >= 60.0 {
             self.last_scrollback_save = now;
             self.save_scrollbacks(None, false);
+        }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // A system drag (files dragged out) took the button: the window never hears it let go.
+        if crate::dragout::take_release() {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            let modifiers = ctx.input(|i| i.modifiers);
+            raw_input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers });
+            raw_input.events.push(egui::Event::PointerGone);
         }
     }
 

@@ -2,6 +2,30 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.15.0] - 2026-10-02
+
+### Nouveautés
+
+- **Placer les panneaux où on veut** en les glissant par leur barre : au centre d'un autre panneau ils échangent leur place, près d'un de ses bords le panneau glissé se met de ce côté, tout au bord de l'onglet il prend toute la largeur ou la hauteur. La zone visée s'éclaire pendant le glisser.
+- Gestionnaire de fichiers :
+  - **Déplacer…** au clic droit sur un fichier ou un dossier : une fenêtre pour choisir la destination en naviguant dans les dossiers (ou en tapant son chemin), en local comme en SSH.
+  - Les éléments déplacés ou transférés restent **en surbrillance** dans le dossier où ils arrivent.
+  - **Glisser des fichiers hors de la fenêtre**, vers le Finder, l'Explorateur ou un gestionnaire de fichiers Linux ; les fichiers d'un serveur sont téléchargés là où on les dépose.
+- Éditeur de fichiers : une **barre de raccourcis** en bas, façon nano, et de nouveaux raccourcis : ⌃ K couper la ligne et ⌃ U la recoller, ⌥ ↑ / ⌥ ↓ déplacer la ligne, ⌥ ⇧ ↑ / ⌥ ⇧ ↓ la dupliquer, ⌘ ⌥ F rechercher et remplacer.
+- Vue git d'un **dossier contenant plusieurs dépôts** : chaque dépôt avec sa branche et ses fichiers modifiés, l'un sous l'autre, repliables ; un dépôt s'ouvre seul (historique, branches) et « ‹ dossier » en haut ramène à la liste.
+- Bases de données :
+  - **Cocher plusieurs tables** d'une base pour les supprimer ou les vider d'un coup.
+  - **Export compressé** en `.sql.gz` (case « Compresser », cochée par défaut).
+
+### Changements
+
+- Usage de Claude dans la barre d'un pane : affiché seulement une fois l'usage récupéré, et plus cliquable (le détail reste au survol).
+
+### Corrections
+
+- Terminal : sélectionner du texte en glissant près du haut ou du bas fait défiler, pour sélectionner plus qu'un écran.
+- Terminal : « Copier » au clic droit et ⌘ C copient la sélection faite dans un programme qui gère la souris lui-même, comme Claude Code.
+
 ## [0.14.0] - 2026-10-01
 
 ### Nouveautés

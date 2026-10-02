@@ -67,6 +67,25 @@ impl Node {
         true
     }
 
+    /// Moves leaf `pane` to the `side` of leaf `target` (None: of the whole layout), sharing that place
+    /// half and half. False if it can't (the only pane, or onto itself).
+    pub fn move_to(&mut self, pane: PaneId, target: Option<PaneId>, side: Direction) -> bool {
+        if target == Some(pane) || !self.remove(pane) {
+            return false;
+        }
+        match target {
+            Some(target) => self.split(target, pane, side),
+            None => {
+                // Around the whole layout: the pane on one side, everything else on the other.
+                let axis = if matches!(side, Direction::Left | Direction::Right) { Axis::Horizontal } else { Axis::Vertical };
+                let (old, new) = (Box::new(std::mem::replace(self, Node::Leaf(0))), Box::new(Node::Leaf(pane)));
+                let (a, b) = if matches!(side, Direction::Left | Direction::Up) { (new, old) } else { (old, new) };
+                *self = Node::Split { axis, ratio: 0.5, a, b };
+                true
+            }
+        }
+    }
+
     /// Swaps the places of two leaves (each keeps its program; the layout stays).
     pub fn swap(&mut self, x: PaneId, y: PaneId) {
         match self {
@@ -185,5 +204,22 @@ mod tests {
         assert_eq!(n.leaves(), [1, 2, 3]);
         n.swap(1, 3);
         assert_eq!(n.leaves(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn moves_a_pane_beside_another() {
+        // 1 | (2 over 3): 3 moved left of 1, then 2 below everything.
+        let mut n = Node::Leaf(1);
+        n.split(1, 2, Direction::Right);
+        n.split(2, 3, Direction::Down);
+        assert!(n.move_to(3, Some(1), Direction::Left));
+        assert_eq!(n.leaves(), [3, 1, 2]);
+        assert!(n.move_to(2, None, Direction::Down));
+        assert_eq!(n.leaves(), [3, 1, 2]);
+        assert!(matches!(&n, Node::Split { axis: Axis::Vertical, b, .. } if matches!(**b, Node::Leaf(2))));
+        // Not onto itself, nor the only pane.
+        assert!(!n.move_to(2, Some(2), Direction::Up));
+        let mut one = Node::Leaf(1);
+        assert!(!one.move_to(1, None, Direction::Up));
     }
 }

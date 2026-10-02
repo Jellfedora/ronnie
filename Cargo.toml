@@ -18,6 +18,7 @@ flate2 = "1.1.10"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust"] }
 portable-pty = "0.9"
+raw-window-handle = "0.6"
 rfd = "0.17"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3"] }
 russh-sftp = "3"
@@ -42,18 +43,24 @@ tiberius = { version = "0.13", default-features = false, features = ["tds73", "r
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Files dragged out of the window (src/dragout): X11 and Wayland, on the window's own connection.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+x11rb = { version = "0.13", features = ["screensaver", "xtest"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 muda = { version = "0.20.0", default-features = false }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSColor", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSNull", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSColor", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFilePromiseProvider", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSGeometry", "NSNull", "NSOperation", "NSString", "NSURL", "NSValue"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "block2"] }
-raw-window-handle = "0.6"
 
 [target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_System_Ole", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "chrono", "sql-browser-tokio"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target."cfg(windows)".build-dependencies]
 winresource = "0.1"

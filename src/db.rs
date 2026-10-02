@@ -1159,8 +1159,15 @@ async fn handle(conn: &mut Conn, request: Request, emit: &Emitter) -> mysql_asyn
             if let Some(db) = db.filter(|d| !d.is_empty()) {
                 conn.query_drop(format!("USE {}", ident(&db))).await?;
             }
-            match conn.query_drop(sql).await {
-                Ok(()) => emit.send(Event::Done { affected: conn.affected_rows(), tag }),
+            // Checks turned off for a script (tables dropped together) come back on even if it fails.
+            let fk_off = sql.starts_with("SET FOREIGN_KEY_CHECKS = 0");
+            let result = conn.query_drop(sql).await;
+            let affected = conn.affected_rows();
+            if fk_off && !result.as_ref().is_err_and(is_lost) {
+                conn.query_drop("SET FOREIGN_KEY_CHECKS = 1").await?;
+            }
+            match result {
+                Ok(()) => emit.send(Event::Done { affected, tag }),
                 Err(e) if is_lost(&e) => return Err(e),
                 Err(e) => emit.send(Event::Failed { error: e.to_string(), tag }),
             }

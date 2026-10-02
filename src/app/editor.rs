@@ -90,6 +90,9 @@ pub(super) struct Editor {
     saving_revision: u64,
     /// Bytes received while opening, of how many.
     pub progress: Option<(u64, u64)>,
+    /// Lines cut with ⌃ K, pasted back with ⌃ U (like nano), and the revision they were cut at: cut
+    /// again right away, the next lines are added to them.
+    cut: (String, u64),
 }
 
 const MONO: f32 = 13.0;
@@ -129,6 +132,7 @@ impl Editor {
             saved_revision: 0,
             saving_revision: 0,
             progress: None,
+            cut: (String::new(), u64::MAX),
         }
     }
 
@@ -263,8 +267,9 @@ impl Editor {
         let modal_open = ui.ctx().memory(|m| m.top_modal_layer().is_some());
 
         // Keys (before the text field sees them).
-        let (save, next, prev, goto, escape, find) = ui.input_mut(|i| {
+        let (replace, save, next, prev, goto, escape, find) = ui.input_mut(|i| {
             (
+                i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F)),
                 i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
                 i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::G)),
                 i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::G)),
@@ -278,6 +283,9 @@ impl Editor {
         }
         if find {
             self.open_find(ui.ctx());
+        }
+        if replace {
+            self.open_replace(ui.ctx());
         }
         if goto {
             self.goto = Some((String::new(), true));
@@ -368,7 +376,10 @@ impl Editor {
         }
 
         let status_h = 24.0;
-        let body = Rect::from_min_max(Pos2::new(rect.min.x, top), Pos2::new(rect.max.x, rect.max.y - status_h));
+        let keys = self.key_hints(t);
+        let key_cols = ((rect.width() - 16.0) / 175.0).floor().clamp(1.0, keys.len() as f32) as usize;
+        let keys_h = if matches!(self.state, State::Ready) { keys.len().div_ceil(key_cols) as f32 * 20.0 + 8.0 } else { 0.0 };
+        let body = Rect::from_min_max(Pos2::new(rect.min.x, top), Pos2::new(rect.max.x, rect.max.y - status_h - keys_h));
         match &self.state {
             State::Loading => {
                 let text = match self.progress {
@@ -389,6 +400,27 @@ impl Editor {
                 });
             }
             State::Ready => self.text_ui(ui, body, theme),
+        }
+
+        // The shortcuts, laid out in columns like nano's.
+        if keys_h > 0.0 {
+            let area = Rect::from_min_max(Pos2::new(rect.min.x, body.max.y), Pos2::new(rect.max.x, rect.max.y - status_h));
+            ui.painter().rect_filled(area, 0.0, theme.chrome_bg);
+            ui.painter().hline(area.x_range(), area.min.y, Stroke::new(1.0, theme.tab_hover));
+            let col_w = (area.width() - 16.0) / key_cols as f32;
+            let font = FontId::proportional(11.5);
+            for (i, (combo, label)) in keys.iter().enumerate() {
+                let at = Pos2::new(area.min.x + 8.0 + (i % key_cols) as f32 * col_w, area.min.y + 4.0 + (i / key_cols) as f32 * 20.0 + 10.0);
+                let galley = ui.painter().layout_no_wrap(combo.clone(), FontId::monospace(11.0), theme.text);
+                let chip = Rect::from_min_size(Pos2::new(at.x, at.y - 8.0), Vec2::new(galley.size().x + 10.0, 16.0));
+                ui.painter().rect_filled(chip, 3.0, theme.tab_hover);
+                ui.painter().galley(Pos2::new(chip.min.x + 5.0, at.y - galley.size().y / 2.0), galley, theme.text);
+                let room = col_w - chip.width() - 14.0;
+                let label = ui.painter().layout(label.to_string(), font.clone(), theme.text_muted, f32::INFINITY);
+                if label.size().x <= room {
+                    ui.painter().galley(Pos2::new(chip.max.x + 6.0, at.y - label.size().y / 2.0), label, theme.text_muted);
+                }
+            }
         }
 
         // Status bar.
@@ -444,6 +476,43 @@ impl Editor {
             }
             None => self.find = Some(Find { query: selected.unwrap_or_default(), replace: String::new(), case: false, show_replace: false, focus: true, current: None, missed: false }),
         }
+    }
+
+    /// ⌘ ⌥ F: the search bar with the replace field.
+    pub fn open_replace(&mut self, ctx: &egui::Context) {
+        self.open_find(ctx);
+        if let Some(find) = &mut self.find {
+            find.show_replace = true;
+        }
+    }
+
+    /// The shortcuts shown at the bottom: keys, what they do. The line ones only for files edited as
+    /// one text field (not the big ones).
+    fn key_hints(&self, t: &Strings) -> Vec<(String, &'static str)> {
+        let mac = cfg!(target_os = "macos");
+        let close = if mac { "⌘ W".to_owned() } else { "Ctrl+Shift+W".to_owned() };
+        let replace = if mac { "⌘ ⌥ F".to_owned() } else { "Ctrl+Alt+F".to_owned() };
+        let ctrl = |k: char| if mac { format!("⌃ {k}") } else { format!("Ctrl+{k}") };
+        let alt = |k: &str| if mac { format!("⌥ {k}") } else { format!("Alt+{k}") };
+        let mut keys = vec![
+            (shortcut_hint('S'), t.save),
+            (close, t.close),
+            (shortcut_hint('F'), t.editor_find),
+            (replace, t.editor_replace),
+            (shortcut_hint('G'), t.editor_next),
+            (shortcut_hint('L'), t.editor_goto),
+        ];
+        if self.big.is_none() {
+            keys.extend([
+                (ctrl('K'), t.editor_cut_line),
+                (ctrl('U'), t.editor_paste_line),
+                (alt(if mac { "⇧ ↓" } else { "Shift+↓" }), t.editor_duplicate_line),
+                (alt("↑ ↓"), t.editor_move_line),
+                (shortcut_hint('/'), t.editor_comment),
+                (shortcut_hint('Z'), t.editor_undo),
+            ]);
+        }
+        keys
     }
 
     /// Recomputes the matches if the text or the query changed.
@@ -781,6 +850,99 @@ impl Editor {
         state.store(ui.ctx(), id);
     }
 
+    /// ⌃ K (cut the lines, nano's), ⌃ U (paste them back), ⌥ ↑ / ⌥ ↓ (move them), ⌥ ⇧ ↑ / ⌥ ⇧ ↓
+    /// (duplicate them): on the lines the cursor or the selection is on.
+    fn line_keys(&mut self, ui: &Ui) {
+        let id = self.text_id();
+        if !ui.memory(|m| m.has_focus(id)) {
+            return;
+        }
+        let (cut, paste, dup_up, dup_down, up, down) = ui.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::CTRL, Key::K),
+                i.consume_key(Modifiers::CTRL, Key::U),
+                i.consume_key(Modifiers::ALT | Modifiers::SHIFT, Key::ArrowUp),
+                i.consume_key(Modifiers::ALT | Modifiers::SHIFT, Key::ArrowDown),
+                i.consume_key(Modifiers::ALT, Key::ArrowUp),
+                i.consume_key(Modifiers::ALT, Key::ArrowDown),
+            )
+        });
+        if !(cut || paste || dup_up || dup_down || up || down) {
+            return;
+        }
+        let Some(mut state) = TextEditState::load(ui.ctx(), id) else { return };
+        let Some(range) = state.cursor.char_range() else { return };
+        let r = range.as_sorted_char_range();
+        let (a, b) = (r.start.0, r.end.0);
+        let byte = |text: &str, c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
+        let chars = |text: &str, i: usize| text[..i].chars().count();
+        let (ba, bb) = (byte(&self.text, a), byte(&self.text, b));
+        // The lines: from the start of the first to the end of the last (its "\n" not included; not the
+        // line the selection ends at the start of).
+        let start = self.text[..ba].rfind('\n').map_or(0, |i| i + 1);
+        let last = if bb > ba && self.text[..bb].ends_with('\n') { bb - 1 } else { bb };
+        let end = self.text[last..].find('\n').map_or(self.text.len(), |i| last + i);
+        let (new_a, new_b);
+        if cut {
+            // With the line break after them (or before, for the last line of the file).
+            let (from, to) = if end < self.text.len() { (start, end + 1) } else { (start.saturating_sub(1), end) };
+            let mut lines = self.text[start..end].to_owned();
+            lines.push('\n');
+            if self.cut.1 == self.revision {
+                self.cut.0.push_str(&lines);
+            } else {
+                self.cut.0 = lines;
+            }
+            ui.ctx().copy_text(self.cut.0.clone());
+            self.text.replace_range(from..to, "");
+            new_a = chars(&self.text, from.min(self.text.len()));
+            new_b = new_a;
+            self.changed();
+            self.cut.1 = self.revision;
+        } else if paste {
+            if self.cut.0.is_empty() {
+                return;
+            }
+            // At the start of the line, like nano puts cut lines back.
+            let insert = self.cut.0.clone();
+            self.text.insert_str(start, &insert);
+            new_a = chars(&self.text, start) + insert.chars().count();
+            new_b = new_a;
+            self.changed();
+        } else if dup_up || dup_down {
+            let block = self.text[start..end].to_owned();
+            self.text.insert_str(end, &format!("\n{block}"));
+            // Down: the selection follows the copy.
+            let shift = if dup_down { block.chars().count() + 1 } else { 0 };
+            (new_a, new_b) = (a + shift, b + shift);
+            self.changed();
+        } else {
+            let block = self.text[start..end].to_owned();
+            if up {
+                if start == 0 {
+                    return;
+                }
+                let prev = self.text[..start - 1].rfind('\n').map_or(0, |i| i + 1);
+                let above = self.text[prev..start - 1].to_owned();
+                self.text.replace_range(prev..end, &format!("{block}\n{above}"));
+                let shift = above.chars().count() + 1;
+                (new_a, new_b) = (a - shift, b - shift);
+            } else {
+                if end >= self.text.len() {
+                    return;
+                }
+                let next = self.text[end + 1..].find('\n').map_or(self.text.len(), |i| end + 1 + i);
+                let below = self.text[end + 1..next].to_owned();
+                self.text.replace_range(start..next, &format!("{below}\n{block}"));
+                let shift = below.chars().count() + 1;
+                (new_a, new_b) = (a + shift, b + shift);
+            }
+            self.changed();
+        }
+        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(new_a), CCursor::new(new_b))));
+        state.store(ui.ctx(), id);
+    }
+
     /// The text with its line numbers.
     fn text_ui(&mut self, ui: &mut Ui, body: Rect, theme: &Theme) {
         let ctx = ui.ctx().clone();
@@ -805,6 +967,7 @@ impl Editor {
             self.focus = false;
         }
         self.edit_keys(ui);
+        self.line_keys(ui);
 
         let font = FontId::monospace(MONO);
         let row_h = ui.fonts_mut(|f| f.row_height(&font));

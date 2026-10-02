@@ -552,6 +552,27 @@ pub struct Settings {
     /// Its music: on or off (None: asked the first time).
     #[serde(default)]
     pub game_sound: Option<bool>,
+    /// The activity simulator (see awake.rs).
+    #[serde(default)]
+    pub keep_active: KeepActive,
+}
+
+/// The activity simulator: on or off, the days and the hours it acts.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct KeepActive {
+    pub enabled: bool,
+    /// Monday first.
+    pub days: [bool; 7],
+    /// From, to (excluded): minutes since midnight.
+    pub ranges: Vec<(u16, u16)>,
+}
+
+impl Default for KeepActive {
+    /// Off; office hours when on: 8:30 to 12:00 and 14:00 to 18:00, Monday to Friday.
+    fn default() -> Self {
+        Self { enabled: false, days: [true, true, true, true, true, false, false], ranges: vec![(8 * 60 + 30, 12 * 60), (14 * 60, 18 * 60)] }
+    }
 }
 
 /// A round of the home page's typing game.
@@ -775,7 +796,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, keep_active: KeepActive::default() }
     }
 }
 

@@ -2,9 +2,11 @@
 
 mod app;
 mod askpass;
+mod awake;
 mod claude;
 mod config;
 mod db;
+mod dragout;
 mod i18n;
 mod log;
 mod notify;

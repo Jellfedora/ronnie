@@ -58,11 +58,14 @@ struct Panel {
     generation: u64,
     /// Path completion: the suggestion picked with the arrows (and whether the arrows were used).
     completion: (usize, bool),
+    /// Items just moved or sent into a folder (its path, their names): selected there once listed, to
+    /// be seen at a glance.
+    arrived: Option<(String, HashSet<String>)>,
 }
 
 impl Panel {
     fn new(path: String) -> Self {
-        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, marquee: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false) }
+        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, marquee: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false), arrived: None }
     }
 
     fn set_entries(&mut self, entries: Vec<Entry>) {
@@ -70,6 +73,22 @@ impl Panel {
         self.generation += 1;
         let names: HashSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
         self.selected.retain(|n| names.contains(n.as_str()));
+        if let Some((dir, arrived)) = &mut self.arrived
+            && *dir == self.path
+        {
+            // Those not there yet (a transfer running) are selected when they are.
+            let (there, later): (HashSet<String>, HashSet<String>) = arrived.drain().partition(|n| names.contains(n.as_str()));
+            *arrived = later;
+            self.selected.extend(there);
+            if arrived.is_empty() {
+                self.arrived = None;
+            }
+        }
+    }
+
+    /// Marks `names`, sent into folder `dir`, to be selected there.
+    fn arriving(&mut self, dir: &str, names: impl IntoIterator<Item = String>) {
+        self.arrived = Some((dir.to_owned(), names.into_iter().collect()));
     }
 
     /// Display order: directories first, then the chosen column; hidden files filtered.
@@ -135,6 +154,8 @@ enum Dialog {
     Mkdir { side: Side, text: String, fresh: bool },
     NewFile { side: Side, text: String, fresh: bool },
     Delete { side: Side, names: Vec<String> },
+    /// Items (their paths) to move into a folder picked by browsing from `dir`; `text`: the path typed.
+    Move { side: Side, from: Vec<String>, dir: String, text: String },
     Chmod { side: Side, edit: Box<PermEdit> },
     /// Some of the files to transfer already exist on the other side.
     Conflict { from: Side, names: Vec<String>, target: String, existing: Vec<String> },
@@ -142,6 +163,21 @@ enum Dialog {
     MoveConflict { side: Side, from: Vec<String>, dir: String, existing: Vec<String> },
     /// Files dragged from the Finder onto a folder where some names exist.
     ImportConflict { side: Side, paths: Vec<std::path::PathBuf>, dir: String, existing: Vec<String> },
+    /// A remote item dragged out (promised) onto a folder where its name exists.
+    PromiseConflict(PromiseAsk),
+}
+
+/// A promised item to download: its remote path, the folder it was dropped in, who waits for it.
+struct PromiseAsk {
+    path: String,
+    dir: std::path::PathBuf,
+    done: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
+impl PromiseAsk {
+    fn name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
 }
 
 /// The answer to "already exists" kept for the rest of the session, when asked to: 0 none, 1 replace,
@@ -260,6 +296,21 @@ pub(super) struct FileManager {
     completion_pending: HashSet<String>,
     /// Archives being made: their line in the queue, and the result to come.
     zips: Vec<(u64, Side, std::sync::mpsc::Receiver<ZipResult>)>,
+    /// The local panel's share of the width, moved by dragging the line between the panels.
+    split: f32,
+    /// The queue's height once dragged.
+    queue_h: Option<f32>,
+    /// Remote items dragged out as promises (macOS): their paths, and where the system wants them.
+    promised: Vec<(Vec<String>, std::sync::mpsc::Receiver<crate::dragout::Ask>)>,
+    /// Downloads of promised items, by transfer: told when over.
+    promise_done: HashMap<u64, std::sync::mpsc::Sender<Result<(), String>>>,
+    /// Promised items waiting their turn (one asked about at a time, when its name is taken).
+    promise_queue: std::collections::VecDeque<PromiseAsk>,
+    /// Promised items downloaded aside to be kept beside the existing one: where they go once there.
+    promise_moves: HashMap<u64, (std::path::PathBuf, std::path::PathBuf)>,
+    /// Remote items being downloaded to a temporary folder, dragged out from there once they are (the
+    /// transfer, and the files to drag).
+    preparing: Option<(u64, Vec<std::path::PathBuf>)>,
 }
 
 impl FileManager {
@@ -294,6 +345,13 @@ impl FileManager {
             zips: Vec::new(),
             dir_cache: HashMap::new(),
             completion_pending: HashSet::new(),
+            split: 0.5,
+            queue_h: None,
+            promised: Vec::new(),
+            promise_done: HashMap::new(),
+            promise_queue: std::collections::VecDeque::new(),
+            promise_moves: HashMap::new(),
+            preparing: None,
         };
         fm.read_local();
         fm
@@ -424,6 +482,24 @@ impl FileManager {
         names.sort_by_key(|n| n.to_lowercase());
         names.truncate(8);
         (head, names)
+    }
+
+    /// The folders in `dir` of `side`, sorted (None while the server has not told).
+    fn subfolders(&mut self, side: Side, dir: &str) -> Option<Vec<String>> {
+        let entries = match side {
+            Side::Local => {
+                let key = (false, dir.to_owned());
+                if !self.dir_cache.get(&key).is_some_and(|(at, _)| at.elapsed().as_secs() < 5) {
+                    let entries = std::fs::read_dir(dir).map(|d| d.flatten().map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir())).collect()).unwrap_or_default();
+                    self.dir_cache.insert(key.clone(), (Instant::now(), entries));
+                }
+                self.dir_cache[&key].1.clone()
+            }
+            Side::Remote => self.remote_entries(dir)?,
+        };
+        let mut names: Vec<String> = entries.into_iter().filter(|(n, is_dir)| *is_dir && (self.show_hidden || !n.starts_with('.'))).map(|(n, _)| n).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        Some(names)
     }
 
     /// The server's entries of `dir` (name, is a folder), for the terminal's path suggestions: from the
@@ -577,6 +653,7 @@ impl FileManager {
             self.dir_sizes.insert((Side::Local, path), Some(result));
         }
         self.feed_viewer();
+        self.poll_drag_out();
         let Some(conn) = &self.conn else { return };
         for event in conn.poll() {
             match event {
@@ -654,6 +731,20 @@ impl FileManager {
                     }
                 }
                 Event::Finished { id, result } => {
+                    if let Some(done) = self.promise_done.remove(&id) {
+                        let mut outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                        // Kept beside the existing one: moved there under its free name.
+                        if let Some((from, to)) = self.promise_moves.remove(&id) {
+                            if outcome.is_ok() {
+                                outcome = move_aside(&from, &to).map_err(|e| format!("{} : {e}", to.display()));
+                                if let Err(e) = &outcome {
+                                    self.error = Some(e.clone());
+                                }
+                            }
+                            let _ = from.parent().map(std::fs::remove_dir_all);
+                        }
+                        let _ = done.send(outcome);
+                    }
                     if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
                         t.state = match result {
                             Ok(skipped) => TransferState::Done(skipped),
@@ -742,6 +833,8 @@ impl FileManager {
 
     /// One transfer (and one line in the queue) per item: they run one after the other.
     fn start_transfer(&mut self, from: Side, names: Vec<String>, target: String, overwrite: bool) {
+        let to = if from == Side::Local { Side::Remote } else { Side::Local };
+        self.panel(to).arriving(&target, names.iter().cloned());
         for name in names {
             let id = self.next_id;
             self.next_id += 1;
@@ -753,6 +846,132 @@ impl FileManager {
             self.send(request);
             self.transfers.push(Transfer { id, upload: from == Side::Local, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
         }
+    }
+
+    /// Rows dragged out of the window, the button still down: handed over to the system, to be dropped
+    /// in the Finder or another app.
+    fn drag_out(&mut self, ctx: &egui::Context) {
+        let Some(payload) = egui::DragAndDrop::payload::<FilesDrag>(ctx) else { return };
+        let window = ctx.content_rect();
+        let outside = ctx.input(|i| i.pointer.latest_pos()).is_none_or(|p| !window.shrink(2.0).contains(p));
+        if !outside || payload.names.is_empty() || !crate::dragout::button_down() {
+            return;
+        }
+        egui::DragAndDrop::clear_payload(ctx);
+        ctx.stop_dragging();
+        match payload.from {
+            Side::Local => {
+                let paths: Vec<std::path::PathBuf> = payload.names.iter().map(|n| std::path::Path::new(&self.local.path).join(n)).collect();
+                crate::dragout::start_files(&paths);
+            }
+            Side::Remote if self.conn.is_none() || self.preparing.is_some() => {}
+            Side::Remote if crate::dragout::PROMISES => {
+                let items = payload
+                    .names
+                    .iter()
+                    .map(|name| crate::dragout::RemoteItem { name: name.clone(), is_dir: self.remote.entries.iter().any(|e| &e.name == name && e.is_dir) })
+                    .collect();
+                let wake_ctx = ctx.clone();
+                if let Some(asks) = crate::dragout::start_promises(items, std::sync::Arc::new(move || wake_ctx.request_repaint())) {
+                    let paths = payload.names.iter().map(|n| self.path_of(Side::Remote, n)).collect();
+                    // AppKit keeps the latest drags' promises (see dragout): so do we.
+                    if self.promised.len() >= 16 {
+                        self.promised.remove(0);
+                    }
+                    self.promised.push((paths, asks));
+                }
+            }
+            // Downloaded to a temporary folder first: dragged out once there (if still held).
+            Side::Remote => {
+                let dir = drag_out_dir();
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    self.error = Some(format!("{} : {e}", dir.display()));
+                    return;
+                }
+                let id = self.next_id;
+                self.next_id += 1;
+                let remote = payload.names.iter().map(|n| self.path_of(Side::Remote, n)).collect();
+                self.send(Request::Download { id, remote, local_dir: dir.clone(), overwrite: true });
+                let label = if payload.names.len() == 1 { payload.names[0].clone() } else { format!("{} …", payload.names[0]) };
+                self.transfers.push(Transfer { id, upload: false, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+                self.preparing = Some((id, payload.names.iter().map(|n| dir.join(n)).collect()));
+            }
+        }
+    }
+
+    /// Promised items to download where they were dropped; prepared ones to drag out once downloaded.
+    fn poll_drag_out(&mut self) {
+        for (paths, asks) in &self.promised {
+            for crate::dragout::Ask::Download { index, dir, done } in asks.try_iter() {
+                match paths.get(index) {
+                    Some(path) => self.promise_queue.push_back(PromiseAsk { path: path.clone(), dir, done }),
+                    None => {
+                        let _ = done.send(Err("unknown item".into()));
+                    }
+                }
+            }
+        }
+        // Downloaded at once, unless the name is taken there: then asked (one at a time).
+        while self.dialog.is_none() {
+            let Some(ask) = self.promise_queue.pop_front() else { break };
+            if ask.dir.join(ask.name()).symlink_metadata().is_ok() {
+                self.dialog = Some(Dialog::PromiseConflict(ask));
+            } else {
+                self.download_promise(ask, PromiseChoice::Replace);
+            }
+        }
+
+        let Some((id, _)) = &self.preparing else { return };
+        let state = self.transfers.iter().find(|t| t.id == *id).map(|t| t.state.clone());
+        match state {
+            Some(TransferState::Done(_)) => {
+                if let Some((_, paths)) = self.preparing.take()
+                    && crate::dragout::button_down()
+                {
+                    crate::dragout::start_files(&paths);
+                }
+            }
+            Some(TransferState::Queued | TransferState::Running) => {
+                // Let go before the files are there: no drag any more.
+                if !crate::dragout::button_down() {
+                    if let Some(conn) = &self.conn {
+                        conn.cancel(*id);
+                    }
+                    self.preparing = None;
+                } else if let Some(ctx) = &self.ctx {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                }
+            }
+            _ => self.preparing = None,
+        }
+    }
+
+    /// Downloads a promised item where it was dropped: over the item there, or beside it.
+    fn download_promise(&mut self, ask: PromiseAsk, choice: PromiseChoice) {
+        if self.conn.is_none() {
+            let _ = ask.done.send(Err("disconnected".into()));
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let name = ask.name().to_owned();
+        let local_dir = match choice {
+            PromiseChoice::Replace => ask.dir.clone(),
+            // Downloaded aside, then moved in under a free name ("a (1).txt").
+            PromiseChoice::KeepBoth => {
+                let aside = drag_out_dir();
+                if let Err(e) = std::fs::create_dir_all(&aside) {
+                    let _ = ask.done.send(Err(e.to_string()));
+                    return;
+                }
+                let free = numbered_name(&name, |n| ask.dir.join(n).symlink_metadata().is_ok());
+                self.promise_moves.insert(id, (aside.join(&name), ask.dir.join(free)));
+                aside
+            }
+        };
+        self.send(Request::Download { id, remote: vec![ask.path], local_dir, overwrite: true });
+        self.transfers.push(Transfer { id, upload: false, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+        self.promise_done.insert(id, ask.done);
     }
 
     fn mkdir(&mut self, side: Side, name: &str) {
@@ -1022,12 +1241,21 @@ impl FileManager {
     }
 
     fn move_into(&mut self, side: Side, names: &[String], dir: &str) {
-        let from: Vec<String> = names.iter().map(|n| self.path_of(side, n)).filter(|p| p != dir).collect();
+        let from = names.iter().map(|n| self.path_of(side, n)).collect();
+        self.move_paths(side, from, dir);
+    }
+
+    /// Moves the items at paths `from` into folder `dir`, asking first when some names exist there.
+    fn move_paths(&mut self, side: Side, from: Vec<String>, dir: &str) {
+        let from: Vec<String> = from.into_iter().filter(|p| p != dir).collect();
         let dir = dir.to_owned();
         self.panel(side).selected.clear();
+        let names = from.iter().map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned());
+        self.panel(side).arriving(&dir, names);
         match side {
             Side::Local => {
-                let existing: Vec<String> = names.iter().filter(|n| std::path::Path::new(&dir).join(n).symlink_metadata().is_ok()).cloned().collect();
+                let names = from.iter().filter_map(|p| std::path::Path::new(p).file_name()).map(|n| n.to_string_lossy().into_owned());
+                let existing: Vec<String> = names.filter(|n| std::path::Path::new(&dir).join(n).symlink_metadata().is_ok()).collect();
                 match (existing.is_empty(), session_choice()) {
                     (true, _) => self.move_now(side, from, dir, false),
                     (false, Some(overwrite)) => self.move_now(side, from, dir, overwrite),
@@ -1118,10 +1346,12 @@ impl FileManager {
 
         // Panels, with the transfer buttons between them, and the queue below.
         let local_only = self.host.is_none();
-        let queue_h = if local_only { 110.0 } else { 150.0_f32 }.min(rect.height() * 0.35);
+        let max_queue_h = (rect.height() - bar.height() - 120.0).max(60.0);
+        let queue_h = self.queue_h.unwrap_or(if local_only { 110.0 } else { 150.0_f32 }.min(rect.height() * 0.35)).clamp(60.0, max_queue_h);
         let body = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), Pos2::new(rect.max.x, rect.max.y - queue_h));
         // Transfers: double-click a file, or drag from one panel to the other.
-        let panel_w = if local_only { body.width() } else { body.width() / 2.0 };
+        let min_side = (body.width() * 0.15).min(220.0);
+        let panel_w = if local_only { body.width() } else { (body.width() * self.split).clamp(min_side, body.width() - min_side) };
         let left = Rect::from_min_size(body.min, Vec2::new(panel_w, body.height()));
         let right = Rect::from_min_max(Pos2::new(left.max.x, body.min.y), body.max);
 
@@ -1161,8 +1391,17 @@ impl FileManager {
             self.apply(remote_out, t);
         }
 
+        self.drag_out(ui.ctx());
+
+        // Where the panels meet, and the queue's top edge: dragged to resize.
+        if !local_only && let Some(dx) = super::git::splitter(ui, ui.id().with("files-split"), left.max.x, body.y_range(), theme) {
+            self.split = ((left.max.x + dx - body.min.x) / body.width()).clamp(0.0, 1.0);
+        }
         let queue = Rect::from_min_max(Pos2::new(rect.min.x, body.max.y), rect.max);
         self.queue_ui(ui, queue, theme, t);
+        if let Some(dy) = row_splitter(ui, ui.id().with("files-queue-split"), queue.min.y, queue.x_range(), theme) {
+            self.queue_h = Some((queue_h - dy).clamp(60.0, max_queue_h));
+        }
         self.keyboard(ui, t);
         self.dialog_ui(ui.ctx(), theme, t);
         action
@@ -1495,6 +1734,15 @@ impl FileManager {
                         out.dialog = Some(Dialog::Rename { side, from: entry.name.clone(), text: entry.name.clone(), fresh: true });
                         ui.close();
                     }
+                    if ui.add_enabled(side == Side::Local || connected, egui::Button::new(t.files_move)).clicked() {
+                        let path = |n: &String| match side {
+                            Side::Local => std::path::Path::new(&panel.path).join(n).display().to_string(),
+                            Side::Remote => sftp::join(&panel.path, n),
+                        };
+                        let from = selection.iter().map(path).collect();
+                        out.dialog = Some(Dialog::Move { side, from, dir: panel.path.clone(), text: panel.path.clone() });
+                        ui.close();
+                    }
                     if ui.add_enabled(side == Side::Local || connected, egui::Button::new(format!("📦  {}", t.files_compress))).clicked() {
                         out.compress = Some(selection.clone());
                         ui.close();
@@ -1772,6 +2020,21 @@ impl FileManager {
     }
 
     fn dialog_ui(&mut self, ctx: &egui::Context, theme: &Theme, t: &Strings) {
+        // A folder renamed: all of its name picked (no extension).
+        let rename_dir = match &self.dialog {
+            Some(Dialog::Rename { side, from, .. }) => {
+                let panel = if *side == Side::Local { &self.local } else { &self.remote };
+                panel.entries.iter().any(|e| &e.name == from && e.is_dir)
+            }
+            _ => false,
+        };
+        let dialog_kind = self.dialog.as_ref().map(|d| matches!(d, Dialog::Rename { .. }));
+        let move_dir = match &self.dialog {
+            Some(Dialog::Move { side, dir, .. }) => Some((*side, dir.clone())),
+            _ => None,
+        };
+        let folders = move_dir.and_then(|(side, dir)| self.subfolders(side, &dir));
+        let home = self.home.clone();
         let Some(dialog) = &mut self.dialog else { return };
         let mut outcome: Option<Outcome> = None;
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
@@ -1799,13 +2062,81 @@ impl FileManager {
             }
             match dialog {
                 Dialog::Rename { text, fresh, .. } | Dialog::Mkdir { text, fresh, .. } | Dialog::NewFile { text, fresh, .. } => {
-                    let edit = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
+                    let renaming = matches!(dialog_kind, Some(true));
+                    let out = egui::TextEdit::singleline(text).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)).show(ui);
+                    let edit = out.response;
                     if *fresh {
                         edit.request_focus();
+                        // Renaming: the name picked, not its extension (typing replaces the name only).
+                        if renaming {
+                            let stem = match text.rsplit_once('.') {
+                                Some((stem, _)) if !stem.is_empty() && !rename_dir => stem.chars().count(),
+                                _ => text.chars().count(),
+                            };
+                            let mut state = out.state;
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(stem))));
+                            state.store(ui.ctx(), edit.id);
+                        }
                         *fresh = false;
                     }
                     if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         outcome = Some(Outcome::Confirm);
+                    }
+                }
+                Dialog::Move { side, from, dir, text } => {
+                    let side = *side;
+                    title(ui, &t.files_move_title.replace("{n}", &from.len().to_string()));
+                    let names: Vec<String> = from.iter().map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned()).collect();
+                    list(ui, &names);
+                    ui.add_space(10.0);
+                    let mut go = None;
+                    ui.horizontal(|ui| {
+                        if ui.button("↑").on_hover_text(t.files_parent).clicked() {
+                            go = Some(FileManager::parent_of(side, dir));
+                        }
+                        let edit = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)));
+                        if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            let typed = text.trim();
+                            let typed = match (side, typed.strip_prefix('~')) {
+                                (Side::Local, Some(rest)) => directories::BaseDirs::new().map(|d| format!("{}{rest}", d.home_dir().display())),
+                                (Side::Remote, Some("")) => home.clone(),
+                                (Side::Remote, Some(rest)) if rest.starts_with('/') => home.as_deref().map(|h| sftp::join(h, rest.trim_start_matches('/'))),
+                                _ => Some(typed.to_owned()),
+                            };
+                            go = typed.filter(|p| !p.is_empty() && (side == Side::Remote || std::path::Path::new(p).is_dir()));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    Frame::new().stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(6.0).inner_margin(4.0).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::ScrollArea::vertical().max_height(260.0).min_scrolled_height(260.0).auto_shrink([false, false]).show(ui, |ui| {
+                            match &folders {
+                                None => {
+                                    ui.spinner();
+                                }
+                                Some(folders) if folders.is_empty() => {
+                                    ui.label(egui::RichText::new(t.files_move_empty).size(12.5).color(theme.text_muted));
+                                }
+                                Some(folders) => {
+                                    for name in folders {
+                                        let path = match side {
+                                            Side::Local => std::path::Path::new(dir.as_str()).join(name).display().to_string(),
+                                            Side::Remote => sftp::join(dir, name),
+                                        };
+                                        // Not into one of the items moved.
+                                        let moved = from.contains(&path);
+                                        let row = egui::Button::new(format!("📁  {name}")).frame(false).min_size(Vec2::new(ui.available_width(), 24.0));
+                                        if ui.add_enabled(!moved, row).clicked() {
+                                            go = Some(path);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    });
+                    if let Some(path) = go {
+                        *text = path.clone();
+                        *dir = path;
                     }
                 }
                 Dialog::Delete { names, .. } => {
@@ -1813,6 +2144,12 @@ impl FileManager {
                     list(ui, names);
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(t.files_delete_body).size(12.5).color(theme.text_muted));
+                }
+                Dialog::PromiseConflict(ask) => {
+                    title(ui, &t.files_conflict_title.replace("{n}", "1"));
+                    list(ui, &[ask.name().to_owned()]);
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(ask.dir.display().to_string()).size(12.0).color(theme.text_muted));
                 }
                 Dialog::Chmod { edit, .. } => {
                     title(ui, t.files_permissions.trim_end_matches('…'));
@@ -1849,6 +2186,24 @@ impl FileManager {
                             outcome = Some(Outcome::Skip);
                         }
                     }
+                    Dialog::PromiseConflict(_) => {
+                        if ui.add(button(t.files_overwrite, Some(theme.accent))).clicked() {
+                            outcome = Some(Outcome::Confirm);
+                        }
+                        if ui.add(button(t.files_keep_both, None)).on_hover_text(t.files_keep_both_hint).clicked() {
+                            outcome = Some(Outcome::Skip);
+                        }
+                    }
+                    Dialog::Move { side, from, dir, .. } => {
+                        // Not where they are already, nor into one of them.
+                        let sep = if *side == Side::Local { std::path::MAIN_SEPARATOR } else { '/' };
+                        let inside = |p: &String| dir == p || dir.starts_with(&format!("{}{sep}", p.trim_end_matches(sep)));
+                        let here = from.iter().all(|p| FileManager::parent_of(*side, p) == *dir);
+                        let enabled = !here && !from.iter().any(inside);
+                        if ui.add_enabled(enabled, button(t.files_move_here, Some(theme.accent))).clicked() {
+                            outcome = Some(Outcome::Confirm);
+                        }
+                    }
                     Dialog::Delete { .. } => {
                         if ui.add(button(t.delete, Some(theme.ansi[1]))).clicked() {
                             outcome = Some(Outcome::Confirm);
@@ -1871,6 +2226,12 @@ impl FileManager {
         let Some(outcome) = outcome else { return };
         let Some(dialog) = self.dialog.take() else { return };
         match (dialog, outcome) {
+            (Dialog::PromiseConflict(ask), Outcome::Cancel) => {
+                let _ = ask.done.send(Err("cancelled".into()));
+            }
+            (Dialog::PromiseConflict(ask), outcome) => {
+                self.download_promise(ask, if outcome == Outcome::Confirm { PromiseChoice::Replace } else { PromiseChoice::KeepBoth });
+            }
             (_, Outcome::Cancel) => {}
             (Dialog::Rename { side, from, text, .. }, _) => {
                 let to = text.trim();
@@ -1900,6 +2261,7 @@ impl FileManager {
                 }
             }
             (Dialog::Delete { side, names }, _) => self.delete(side, &names),
+            (Dialog::Move { side, from, dir, .. }, _) => self.move_paths(side, from, &dir),
             (Dialog::Chmod { side, edit }, _) if edit.invalid => {
                 // Not applied: keep the dialog open with what was typed.
                 self.dialog = Some(Dialog::Chmod { side, edit });
@@ -1941,6 +2303,13 @@ impl FileManager {
             CONFLICT_CHOICE.store(if outcome == Outcome::Confirm { 1 } else { 2 }, std::sync::atomic::Ordering::Relaxed);
         }
     }
+}
+
+/// Where a promised item goes when its name is taken.
+#[derive(Clone, Copy, PartialEq)]
+enum PromiseChoice {
+    Replace,
+    KeepBoth,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2236,6 +2605,27 @@ fn copy_name(name: &str, suffix: &str, taken: &HashSet<String>) -> String {
         .unwrap()
 }
 
+/// "a (1).txt", "a (2).txt"...: the first that `taken` says is free (the extension stays last; folders
+/// and dotfiles keep their whole name first).
+fn numbered_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (1..).map(|n| format!("{stem} ({n}){ext}")).find(|c| !taken(c)).unwrap()
+}
+
+/// Moves a downloaded item into place, never over something there; copied when on another disk.
+fn move_aside(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    if to.symlink_metadata().is_ok() {
+        return Err(std::io::ErrorKind::AlreadyExists.into());
+    }
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    copy_local(from, to)
+}
+
 /// Copies a file or a folder tree (symbolic links are copied as links), never over something existing.
 fn copy_local(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     if to.symlink_metadata().is_ok() {
@@ -2258,6 +2648,19 @@ fn copy_local(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<(
     } else {
         std::fs::copy(from, to).map(|_| ())
     }
+}
+
+/// A new temporary folder for remote files dragged out; the ones of earlier drags (a day old) go.
+fn drag_out_dir() -> std::path::PathBuf {
+    let root = std::env::temp_dir().join("ronnie-drag");
+    let day = std::time::Duration::from_secs(24 * 3600);
+    for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > day)) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    root.join(format!("{}-{stamp}", std::process::id()))
 }
 
 /// Where the pointer is, in this window's points, while files are dragged from another app. macOS
@@ -2631,6 +3034,9 @@ mod tests {
         assert_eq!(copy_name("a.txt", "copy", &taken), "a copy 2.txt");
         assert_eq!(copy_name("dir", "copy", &taken), "dir copy");
         assert_eq!(copy_name(".env", "copy", &taken), ".env copy");
+        assert_eq!(numbered_name("a.txt", |n| n == "a (1).txt"), "a (2).txt");
+        assert_eq!(numbered_name("dir", |_| false), "dir (1)");
+        assert_eq!(numbered_name(".env", |_| false), ".env (1)");
     }
 
     #[test]
@@ -2675,4 +3081,15 @@ mod tests {
         }
         std::fs::remove_dir_all(&base).unwrap();
     }
+}
+
+/// A horizontal line that can be dragged up and down: how far it moved this frame.
+fn row_splitter(ui: &mut Ui, id: egui::Id, y: f32, x: egui::Rangef, theme: &Theme) -> Option<f32> {
+    let rect = Rect::from_x_y_ranges(x, y - 3.0..=y + 3.0);
+    let resp = ui.interact(rect, id, Sense::drag());
+    if resp.hovered() || resp.dragged() {
+        ui.painter().hline(x, y, Stroke::new(2.0, theme.accent.gamma_multiply(0.8)));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    (resp.dragged() && resp.drag_delta().y != 0.0).then(|| resp.drag_delta().y)
 }

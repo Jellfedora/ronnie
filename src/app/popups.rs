@@ -565,6 +565,92 @@ impl App {
         self.focus_terminal = true;
     }
 
+    /// The activity simulator: on or off, its days and hours (hidden: only its shortcut opens it).
+    pub(super) fn keep_active_window(&mut self, ctx: &egui::Context) {
+        if !self.keep_active_dialog {
+            return;
+        }
+        let t = self.t();
+        let theme = self.theme.clone();
+        let keep = &mut self.config.settings.keep_active;
+        let mut close = false;
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
+        let modal = egui::Modal::new(egui::Id::new("keep-active")).frame(frame).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.keep_title).size(17.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut keep.enabled, t.keep_enabled);
+                });
+            });
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t.keep_desc).size(12.5).color(theme.text_muted));
+            ui.add_space(12.0);
+            ui.add_enabled_ui(keep.enabled, |ui| {
+                ui.label(egui::RichText::new(t.keep_days).size(13.0).strong());
+                ui.horizontal(|ui| {
+                    for (day, letter) in keep.days.iter_mut().zip(t.keep_day_letters) {
+                        let b = egui::Button::selectable(*day, egui::RichText::new(*letter).size(13.0)).min_size(Vec2::new(32.0, 26.0)).corner_radius(5.0);
+                        if ui.add(b).clicked() {
+                            *day = !*day;
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(t.keep_hours).size(13.0).strong());
+                let hhmm = |v: f64, _: std::ops::RangeInclusive<usize>| format!("{:02}:{:02}", v as u32 / 60, v as u32 % 60);
+                let parse = |s: &str| {
+                    let (h, m) = s.trim().split_once([':', 'h', 'H']).unwrap_or((s.trim(), "0"));
+                    let (h, m) = (h.trim().parse::<u32>().ok()?, if m.trim().is_empty() { 0 } else { m.trim().parse::<u32>().ok()? });
+                    (h <= 24 && m < 60).then(|| f64::from((h * 60 + m).min(1440)))
+                };
+                let mut remove = None;
+                for (i, (from, to)) in keep.ranges.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(from).range(0..=1440).speed(2.0).custom_formatter(hhmm).custom_parser(parse));
+                        ui.label("→");
+                        ui.add(egui::DragValue::new(to).range(0..=1440).speed(2.0).custom_formatter(hhmm).custom_parser(parse));
+                        if ui.small_button("✕").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                    *to = (*to).max(*from);
+                }
+                if let Some(i) = remove {
+                    keep.ranges.remove(i);
+                }
+                if ui.button(t.keep_add).clicked() {
+                    let start = keep.ranges.last().map_or(9 * 60, |r| r.1.min(23 * 60));
+                    keep.ranges.push((start, (start + 60).min(1440)));
+                }
+            });
+            ui.add_space(12.0);
+            let (state, color) = match (keep.enabled, crate::awake::active_now(keep)) {
+                (false, _) => (t.keep_off, theme.text_muted),
+                (true, true) => (t.keep_now_on, theme.ansi[2]),
+                (true, false) => (t.keep_now_paused, theme.ansi[3]),
+            };
+            ui.label(egui::RichText::new(format!("●  {state}")).size(12.5).color(color));
+            if keep.enabled && !crate::awake::accessibility_allowed() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(t.keep_accessibility).size(12.0).color(theme.text_muted));
+                if ui.button(t.keep_open_accessibility).clicked() {
+                    crate::awake::open_accessibility_settings();
+                }
+            }
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new(egui::RichText::new(t.close).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || modal.should_close() {
+            self.keep_active_dialog = false;
+            self.focus_terminal = true;
+        }
+    }
+
     /// "Paste N lines?" when the program would run each pasted line at once (no bracketed paste).
     pub(super) fn paste_confirm_window(&mut self, ctx: &egui::Context) {
         if self.paste_confirm.is_none() {

@@ -408,10 +408,14 @@ pub(super) struct DbView {
     /// An export or import going on (what, how far, on what), then how it ended.
     transfer: Option<(String, f32, String)>,
     transfer_done: Option<Result<String, String>>,
-    /// Import and export with foreign keys checked.
+    /// Import, export and dropping or emptying ticked tables with foreign keys checked.
     check_fk: bool,
+    /// Exports compressed (.sql.gz).
+    gzip: bool,
     /// Rows ticked (to delete them), by index in the page shown.
     selected: HashSet<usize>,
+    /// Tables ticked on a database's page (to drop or empty them), and that database.
+    ticked: (String, HashSet<String>),
     /// Text searched in the table's columns (applied with Enter), and what is typed.
     search: String,
     search_typed: String,
@@ -519,7 +523,9 @@ impl DbView {
             transfer: None,
             transfer_done: None,
             check_fk: true,
+            gzip: true,
             selected: HashSet::new(),
+            ticked: (String::new(), HashSet::new()),
             search: String::new(),
             search_typed: String::new(),
             detail: None,
@@ -937,8 +943,10 @@ impl DbView {
     /// compressed).
     fn export(&mut self, name: &str, table: Option<&str>, t: &Strings) {
         let what = table.unwrap_or(name);
-        let default = format!("{what}-{}.sql", chrono::Local::now().format("%Y%m%d-%H%M"));
-        let Some(path) = rfd::FileDialog::new().set_file_name(default).add_filter("SQL", &["sql", "gz"]).save_file() else { return };
+        let ext = if self.gzip { "sql.gz" } else { "sql" };
+        let default = format!("{what}-{}.{ext}", chrono::Local::now().format("%Y%m%d-%H%M"));
+        let filter = if self.gzip { ("SQL (gzip)", ["gz"]) } else { ("SQL", ["sql"]) };
+        let Some(path) = rfd::FileDialog::new().set_file_name(default).add_filter(filter.0, &filter.1).save_file() else { return };
         self.start_transfer(t.db_exporting.replace("{db}", what), false);
         self.send(Request::Export { db: name.to_owned(), tables: table.map(|t| vec![t.to_owned()]), path, check_fk: self.check_fk });
     }
@@ -1178,6 +1186,7 @@ impl DbView {
                     }
                     if !dialect.mssql() {
                         ui.checkbox(&mut self.check_fk, t.db_check_fk).on_hover_text(t.db_check_fk_hint);
+                        ui.checkbox(&mut self.gzip, t.db_gzip).on_hover_text(t.db_gzip_hint);
                     }
                     ui.separator();
                     if ui.button(egui::RichText::new(t.db_drop_database).color(theme.ansi[1])).clicked() {
@@ -1520,6 +1529,8 @@ impl DbView {
                         export = true;
                     }
                     ui.add_space(6.0);
+                    ui.checkbox(&mut self.gzip, egui::RichText::new(t.db_gzip).size(12.5)).on_hover_text(t.db_gzip_hint);
+                    ui.add_space(6.0);
                     ui.checkbox(&mut self.check_fk, egui::RichText::new(t.db_check_fk).size(12.5)).on_hover_text(t.db_check_fk_hint);
                 }
                 ui.add_space(10.0);
@@ -1539,6 +1550,62 @@ impl DbView {
             self.new_table_dialog(&d);
         }
         ui.add_space(8.0);
+        // Tables ticked: drop or empty them all at once. Ticks don't follow to another database, and
+        // forget tables that are gone.
+        if self.ticked.0 != d {
+            self.ticked = (d.clone(), HashSet::new());
+        }
+        self.ticked.1.retain(|name| tables.iter().any(|x| &x.name == name));
+        if !self.ticked.1.is_empty() {
+            let ticked: Vec<&TableInfo> = tables.iter().filter(|x| self.ticked.1.contains(&x.name)).collect();
+            let emptied = ticked.iter().filter(|x| !x.view).count();
+            let (mut drop, mut empty) = (false, false);
+            Frame::NONE.fill(theme.accent.gamma_multiply(0.1)).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.4))).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(t.db_tables_selected.replace("{n}", &ticked.len().to_string())).size(12.5));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let del = egui::Button::new(egui::RichText::new(format!("🗑  {}", t.db_drop_tables.replace("{n}", &ticked.len().to_string()))).size(12.5).color(theme.bg)).fill(theme.ansi[1]).corner_radius(6.0);
+                        if ui.add(del).clicked() {
+                            drop = true;
+                        }
+                        // Views hold no rows: only the tables are emptied.
+                        let label = egui::RichText::new(t.db_truncate_tables.replace("{n}", &emptied.to_string())).size(12.5).color(theme.ansi[1]);
+                        if ui.add_enabled(emptied > 0, egui::Button::new(label).corner_radius(6.0)).clicked() {
+                            empty = true;
+                        }
+                        if ui.small_button(t.cancel).clicked() {
+                            self.ticked.1.clear();
+                        }
+                    });
+                });
+            });
+            if drop || empty {
+                let dialect = self.dialect;
+                let names = |view: bool| ticked.iter().filter(|x| x.view == view).map(|x| dialect.table(&d, &x.name)).collect::<Vec<_>>();
+                let mut statements = Vec::new();
+                if drop {
+                    for (view, what) in [(false, "TABLE"), (true, "VIEW")] {
+                        let list = names(view);
+                        if !list.is_empty() {
+                            statements.push(format!("DROP {what} {}", list.join(", ")));
+                        }
+                    }
+                } else {
+                    statements.extend(names(false).into_iter().map(|q| format!("TRUNCATE TABLE {q}")));
+                }
+                // Tables that refer to each other: MySQL refuses to drop or empty them unless the
+                // checks are off (for this session only; db.rs turns them back on even on failure).
+                if !self.check_fk && !dialect.mssql() {
+                    statements.insert(0, "SET FOREIGN_KEY_CHECKS = 0".into());
+                    statements.push("SET FOREIGN_KEY_CHECKS = 1".into());
+                }
+                let n = if drop { ticked.len() } else { emptied };
+                let reason = if drop { t.db_drop_tables_reason } else { t.db_truncate_tables_reason }.replace("{n}", &n.to_string());
+                self.dialog = Some(Dialog::Confirm { sql: statements.join(";\n"), db: None, reason, query: false, expect: None });
+            }
+            ui.add_space(6.0);
+        }
         let columns: Vec<String> = [t.db_col_table, t.db_col_type, t.db_col_engine, t.db_col_rows, t.db_col_size, t.db_col_collation, t.db_col_comment].iter().map(|s| s.to_string()).collect();
         let rows: Vec<Vec<Cell>> = tables
             .iter()
@@ -1554,7 +1621,10 @@ impl DbView {
                 ]
             })
             .collect();
-        let out = grid(ui, egui::Id::new(("db-tables", &d)), theme, &columns, &rows, None, ui.available_height());
+        let mut ticked: HashSet<usize> = tables.iter().enumerate().filter(|(_, x)| self.ticked.1.contains(&x.name)).map(|(i, _)| i).collect();
+        let extras = GridExtras { selection: Some(&mut ticked), ..Default::default() };
+        let out = grid_with(ui, egui::Id::new(("db-tables", &d)), theme, &columns, &rows, None, ui.available_height(), extras);
+        self.ticked.1 = ticked.into_iter().map(|i| tables[i].name.clone()).collect();
         if let Some((row, _)) = out.clicked {
             let name = tables[row].name.clone();
             self.select_table(&d, &name);
@@ -2469,11 +2539,11 @@ impl DbView {
                     if sql.starts_with("DROP DATABASE") {
                         self.db = None;
                         self.table = None;
-                    } else if sql.starts_with("DROP") {
+                    } else if sql.starts_with("DROP") || sql.contains("\nDROP ") {
                         self.table = None;
                     }
                     let reload = self.rows.as_ref().map(|r| (r.db.clone(), r.table.clone(), r.offset, r.order.clone()));
-                    let keep_rows = sql.starts_with("DELETE FROM") || sql.starts_with("TRUNCATE");
+                    let keep_rows = sql.starts_with("DELETE FROM") || sql.starts_with("TRUNCATE") || sql.contains("\nTRUNCATE ");
                     if !keep_rows {
                         self.rows = None;
                     }

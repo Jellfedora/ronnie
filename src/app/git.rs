@@ -1,7 +1,7 @@
 //! Git in a local pane's folder: the files changed and, for the one picked, its content in the last
 //! commit and now, side by side; the history of the branch and what each commit changed; the branches,
 //! to switch to another one or create one. Shown in place of the pane's terminal; it asks the system's
-//! `git`.
+//! `git`. A folder holding repositories (not one itself) shows them all, one under the other.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,39 @@ pub(super) fn repo_root(dir: &Path) -> Option<PathBuf> {
     }
     cache.insert(dir.to_path_buf(), (Instant::now(), root.clone()));
     root
+}
+
+/// The repositories right inside `dir`, when it isn't one itself: a folder of projects, each its own
+/// repository (as VS Code finds them). Remembered a few seconds, as `repo_root`.
+pub(super) fn child_repos(dir: &Path) -> Vec<PathBuf> {
+    type Children = HashMap<PathBuf, (Instant, Vec<PathBuf>)>;
+    static CACHE: Mutex<Option<Children>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, repos)) = cache.get(dir)
+        && at.elapsed() < Duration::from_secs(3)
+    {
+        return repos.clone();
+    }
+    let mut repos: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.') && e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| p.join(".git").exists())
+        .collect();
+    repos.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    if cache.len() > 256 {
+        cache.clear();
+    }
+    cache.insert(dir.to_path_buf(), (Instant::now(), repos.clone()));
+    repos
+}
+
+/// What the git view of `dir` shows: its repository, or `dir` itself when it holds repositories.
+pub(super) fn git_root(dir: &Path) -> Option<PathBuf> {
+    repo_root(dir).or_else(|| (!child_repos(dir).is_empty()).then(|| dir.to_path_buf()))
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -568,6 +601,16 @@ pub(super) struct GitView {
     v_visible: f32,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
+    /// A folder holding repositories (not one itself): a view of each, listed together.
+    repos: Vec<GitView>,
+    /// The repository shown on its own (its history, its branches), from that list.
+    open_repo: Option<usize>,
+    /// The repository of the file compared, in that list.
+    picked_repo: Option<usize>,
+    /// Repositories folded in that list.
+    folded: std::collections::HashSet<PathBuf>,
+    /// One of those repositories: its bar goes back to the list.
+    nested: bool,
 }
 
 impl GitView {
@@ -607,7 +650,27 @@ impl GitView {
             v_visible: 0.0,
             tx,
             rx,
+            repos: Vec::new(),
+            open_repo: None,
+            picked_repo: None,
+            folded: Default::default(),
+            nested: false,
         }
+    }
+
+    /// The view of `root`: a repository, or a folder of repositories.
+    pub fn open(root: PathBuf) -> Self {
+        let repos = if root.join(".git").exists() { Vec::new() } else { child_repos(&root) };
+        let mut view = Self::new(root);
+        view.repos = repos
+            .into_iter()
+            .map(|r| {
+                let mut repo = Self::new(r);
+                repo.nested = true;
+                repo
+            })
+            .collect();
+        view
     }
 
     /// Runs `job` on a thread; what it gives comes back through `poll`.
@@ -792,6 +855,9 @@ impl GitView {
     /// Draws the view in `rect` (`window`: a window of its own, else in place of a pane's terminal);
     /// what was asked from its top bar.
     pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings, window: bool) -> Option<Exit> {
+        if !self.repos.is_empty() {
+            return self.repos_ui(ui, rect, theme, t, window);
+        }
         let ctx = ui.ctx().clone();
         self.poll(&ctx, t);
         if self.last_status.is_none_or(|at| at.elapsed() >= REFRESH) {
@@ -810,9 +876,25 @@ impl GitView {
         ui.painter().rect_filled(bar, 0.0, theme.chrome_bg);
         ui.painter().hline(bar.x_range(), bar.max.y, Stroke::new(1.0, theme.tab_hover));
         let repo = self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(bar.min.x + 20.0, bar.center().y), Vec2::splat(16.0)), theme.accent);
-        let galley = ui.painter().layout_no_wrap(repo, FontId::proportional(13.5), theme.text);
         let mut x = bar.min.x + 36.0;
+        if self.nested {
+            // One of a folder's repositories: the folder first, a click goes back to all of them.
+            let folder = self.root.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let label = format!("‹  {folder}");
+            let w = ui.painter().layout_no_wrap(label.clone(), FontId::proportional(13.5), theme.text_muted).size().x + 16.0;
+            let at = Rect::from_min_size(Pos2::new(bar.min.x + 6.0, bar.min.y + 4.0), Vec2::new(w, 26.0));
+            let crumb = egui::Button::new(egui::RichText::new(label).size(13.5).color(theme.text_muted)).frame_when_inactive(false).corner_radius(5.0);
+            if ui.put(at, crumb).on_hover_text(t.git_all_repos).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                exit = Some(Exit::Back);
+            }
+            x = at.max.x + 6.0;
+            let slash = ui.painter().layout_no_wrap("/".into(), FontId::proportional(13.5), theme.text_muted);
+            ui.painter().galley(Pos2::new(x, bar.center().y - slash.size().y / 2.0), slash.clone(), theme.text_muted);
+            x += slash.size().x + 8.0;
+        } else {
+            paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(bar.min.x + 20.0, bar.center().y), Vec2::splat(16.0)), theme.accent);
+        }
+        let galley = ui.painter().layout_no_wrap(repo, FontId::proportional(13.5), theme.text);
         ui.painter().galley(Pos2::new(x, bar.center().y - galley.size().y / 2.0), galley.clone(), theme.text);
         x += galley.size().x + 8.0;
         if self.loaded && self.error.is_none() {
@@ -852,7 +934,11 @@ impl GitView {
         };
         // In a window: closes it. In a pane: its terminal again, or the view in a window.
         let mut right = bar.max.x - 6.0;
-        if window {
+        if self.nested {
+            if button(ui, right, "⤺", t.git_all_repos).0 {
+                exit = Some(Exit::Back);
+            }
+        } else if window {
             let (close, at) = button(ui, right, "", t.close);
             paint_close_icon(ui.painter(), at.center(), theme.fg);
             if close {
@@ -952,6 +1038,212 @@ impl GitView {
         }
         if let Some(dx) = splitter(ui, egui::Id::new(("git-list-split", &self.root)), list.max.x, list.y_range(), theme) {
             self.list_w = Some(list_w + dx);
+        }
+        exit
+    }
+
+    /// A folder of repositories: each one's branch and changes, one under the other (folded on a click);
+    /// a file picked, compared on the right. A repository opened shows on its own, as usual.
+    fn repos_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings, window: bool) -> Option<Exit> {
+        let ctx = ui.ctx().clone();
+        // Repositories cloned or removed meanwhile.
+        let found = child_repos(&self.root);
+        if !found.is_empty() && found.iter().ne(self.repos.iter().map(|r| &r.root)) {
+            let picked = self.picked_repo.and_then(|i| self.repos.get(i)).map(|r| r.root.clone());
+            let mut old: HashMap<PathBuf, GitView> = self.repos.drain(..).map(|r| (r.root.clone(), r)).collect();
+            self.repos = found
+                .into_iter()
+                .map(|root| {
+                    old.remove(&root).unwrap_or_else(|| {
+                        let mut repo = Self::new(root);
+                        repo.nested = true;
+                        repo
+                    })
+                })
+                .collect();
+            self.picked_repo = picked.and_then(|p| self.repos.iter().position(|r| r.root == p));
+            self.open_repo = None;
+        }
+        for repo in &mut self.repos {
+            repo.poll(&ctx, t);
+            if repo.last_status.is_none_or(|at| at.elapsed() >= REFRESH) {
+                repo.refresh(&ctx);
+            }
+        }
+        ctx.request_repaint_after(REFRESH);
+        if let Some(i) = self.open_repo {
+            if let Some(repo) = self.repos.get_mut(i) {
+                if let Some(Exit::Back) = repo.ui(ui, rect, theme, t, window) {
+                    self.open_repo = None;
+                }
+                return None;
+            }
+            self.open_repo = None;
+        }
+
+        ui.painter().rect_filled(rect, 0.0, theme.bg);
+        let mut exit = None;
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        ui.set_clip_rect(rect);
+        let ui = &mut ui;
+
+        // Top: the folder, how many repositories; refresh and back.
+        let (bar, _) = ui.allocate_exact_size(Vec2::new(rect.width(), 34.0), Sense::hover());
+        ui.painter().rect_filled(bar, 0.0, theme.chrome_bg);
+        ui.painter().hline(bar.x_range(), bar.max.y, Stroke::new(1.0, theme.tab_hover));
+        paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(bar.min.x + 20.0, bar.center().y), Vec2::splat(16.0)), theme.accent);
+        let name = self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&name, 0.0, egui::TextFormat::simple(FontId::proportional(13.5), theme.text));
+        let changed: usize = self.repos.iter().map(|r| r.files.len()).sum();
+        let count = t.git_repos.replace("{n}", &self.repos.len().to_string());
+        let changes = if changed == 0 { t.git_no_changes.to_owned() } else { t.git_changes.replace("{n}", &changed.to_string()) };
+        job.append(&format!("   ·   {count}   ·   {changes}"), 0.0, egui::TextFormat::simple(FontId::proportional(12.5), theme.text_muted));
+        job.wrap = egui::text::TextWrapping::truncate_at_width((bar.width() - 140.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(Pos2::new(bar.min.x + 36.0, bar.center().y - galley.size().y / 2.0), galley, theme.text);
+        let button = |ui: &mut Ui, right: f32, text: &str, tip: &str| {
+            let at = Rect::from_min_size(Pos2::new(right - 28.0, bar.min.y + 4.0), Vec2::new(28.0, 26.0));
+            let resp = ui.put(at, egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+            (resp.clicked(), at)
+        };
+        let mut right = bar.max.x - 6.0;
+        if window {
+            let (close, at) = button(ui, right, "", t.close);
+            paint_close_icon(ui.painter(), at.center(), theme.fg);
+            if close {
+                exit = Some(Exit::Back);
+            }
+        } else {
+            if button(ui, right, "⤺", t.git_back).0 {
+                exit = Some(Exit::Back);
+            }
+            right -= 32.0;
+            let (pop_out, at) = button(ui, right, "", t.new_window_open);
+            paint_window_icon(ui.painter(), at.center(), theme.fg);
+            if pop_out {
+                exit = Some(Exit::Window);
+            }
+        }
+        right -= 32.0;
+        if button(ui, right, "↻", t.git_refresh).0 {
+            for repo in &mut self.repos {
+                repo.last_status = None;
+            }
+        }
+
+        let body = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y + 1.0), rect.max);
+        let list_w = self.list_w.unwrap_or((body.width() * 0.32).clamp(280.0, 420.0)).clamp(220.0, (body.width() - 300.0).max(220.0));
+        let list = Rect::from_min_max(body.min, Pos2::new(body.min.x + list_w, body.max.y));
+        let view = Rect::from_min_max(Pos2::new(list.max.x + 1.0, body.min.y), body.max);
+        ui.painter().rect_filled(list, 0.0, theme.chrome_bg);
+        ui.painter().vline(list.max.x, list.y_range(), Stroke::new(1.0, theme.tab_hover));
+
+        // Each repository: a header (fold, name, branch, how far from the server, changes, open), then
+        // its files.
+        let (mut fold, mut open, mut picked) = (None, None, None);
+        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list.shrink2(Vec2::new(4.0, 6.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+        egui::ScrollArea::vertical().id_salt(("git-repos", &self.root)).auto_shrink(false).show(&mut list_ui, |ui| {
+            for (i, repo) in self.repos.iter().enumerate() {
+                let folded = self.folded.contains(&repo.root);
+                let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(row, 5.0, theme.tab_hover);
+                }
+                let c = Pos2::new(row.min.x + 10.0, row.center().y);
+                let arrow = if folded { vec![c + Vec2::new(-2.0, -4.0), c + Vec2::new(2.5, 0.0), c + Vec2::new(-2.0, 4.0)] } else { vec![c + Vec2::new(-4.0, -2.0), c + Vec2::new(0.0, 2.5), c + Vec2::new(4.0, -2.0)] };
+                ui.painter().add(egui::Shape::line(arrow, Stroke::new(1.4, theme.text_muted)));
+                // Open on its own: its history and branches.
+                let open_at = Rect::from_min_size(Pos2::new(row.max.x - 26.0, row.min.y + 3.0), Vec2::new(24.0, 22.0));
+                let open_resp = ui.put(open_at, egui::Button::new(egui::RichText::new("›").size(15.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(t.git_open_repo).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if open_resp.clicked() {
+                    open = Some(i);
+                }
+                let mut job = egui::text::LayoutJob::default();
+                let name = repo.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                job.append(&name, 0.0, egui::TextFormat::simple(FontId::proportional(13.0), theme.text));
+                if repo.loaded && repo.error.is_none() {
+                    let detached = repo.head.branch.is_empty();
+                    let branch = if detached { t.git_detached.to_owned() } else { repo.head.branch.clone() };
+                    job.append(&format!("  {branch}"), 0.0, egui::TextFormat::simple(FontId::monospace(11.5), if detached { theme.ansi[3] } else { theme.accent }));
+                    if repo.head.ahead > 0 {
+                        job.append(&format!(" ↑{}", repo.head.ahead), 0.0, egui::TextFormat::simple(FontId::monospace(11.5), theme.ansi[2]));
+                    }
+                    if repo.head.behind > 0 {
+                        job.append(&format!(" ↓{}", repo.head.behind), 0.0, egui::TextFormat::simple(FontId::monospace(11.5), theme.ansi[3]));
+                    }
+                }
+                // The number of files changed, in a badge.
+                let mut name_end = open_at.min.x - 4.0;
+                if !repo.loaded {
+                    ui.put(Rect::from_center_size(Pos2::new(name_end - 10.0, row.center().y), Vec2::splat(12.0)), egui::Spinner::new().size(12.0));
+                    name_end -= 24.0;
+                } else if !repo.files.is_empty() {
+                    let n = ui.painter().layout_no_wrap(repo.files.len().to_string(), FontId::proportional(11.0), theme.bg);
+                    let badge = Rect::from_center_size(Pos2::new(name_end - 4.0 - (n.size().x + 10.0) / 2.0, row.center().y), Vec2::new((n.size().x + 10.0).max(18.0), 17.0));
+                    ui.painter().rect_filled(badge, 8.5, theme.accent);
+                    ui.painter().galley(badge.center() - n.size() / 2.0, n, theme.bg);
+                    name_end = badge.min.x - 6.0;
+                }
+                job.wrap = egui::text::TextWrapping::truncate_at_width((name_end - row.min.x - 22.0).max(0.0));
+                let galley = ui.painter().layout_job(job);
+                ui.painter().galley(Pos2::new(row.min.x + 22.0, row.center().y - galley.size().y / 2.0), galley, theme.text);
+                if resp.on_hover_text(repo.root.display().to_string()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    fold = Some(repo.root.clone());
+                }
+                if folded {
+                    continue;
+                }
+                if let Some(e) = &repo.error {
+                    ui.add(egui::Label::new(egui::RichText::new(e).size(12.0).color(theme.ansi[1])).wrap());
+                }
+                ui.indent(("git-repo", i), |ui| {
+                    for change in &repo.files {
+                        let selected = self.picked_repo == Some(i) && repo.selected.as_ref() == Some(&change.path);
+                        if file_row(ui, change, selected, theme, t) {
+                            picked = Some((i, change.clone()));
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        });
+        if let Some(root) = fold
+            && !self.folded.remove(&root)
+        {
+            self.folded.insert(root);
+        }
+        if let Some(i) = open {
+            self.open_repo = Some(i);
+        }
+        if let Some((i, change)) = picked {
+            if let Some(old) = self.picked_repo.filter(|&j| j != i).and_then(|j| self.repos.get_mut(j)) {
+                old.selected = None;
+                old.reset_diff();
+            }
+            self.picked_repo = Some(i);
+            let repo = &mut self.repos[i];
+            if repo.mode != Mode::Changes || repo.selected.as_ref() != Some(&change.path) {
+                repo.mode = Mode::Changes;
+                repo.selected = Some(change.path.clone());
+                repo.reset_diff();
+                repo.load_diff(&ctx, change, None);
+            }
+        }
+        if let Some(dx) = splitter(ui, egui::Id::new(("git-repos-split", &self.root)), list.max.x, list.y_range(), theme) {
+            self.list_w = Some(list_w + dx);
+        }
+
+        // Right: the file picked, in its repository.
+        let shown = self.picked_repo.and_then(|i| self.repos.get_mut(i)).and_then(|repo| {
+            let path = repo.selected.clone().filter(|_| repo.mode == Mode::Changes)?;
+            let status = repo.files.iter().find(|f| f.path == path).map(|f| f.status);
+            Some((repo, path, status))
+        });
+        match shown {
+            Some((repo, path, status)) => repo.diff_ui(ui, view, (None, path), status, (t.git_before.to_owned(), t.git_after.to_owned()), theme, t),
+            None if changed == 0 => centered_text(ui, view, t.git_all_committed, theme),
+            None => centered_text(ui, view, t.git_pick, theme),
         }
         exit
     }
@@ -1627,7 +1919,7 @@ fn map_ui(ui: &mut Ui, map: Rect, rows: &[Row], row_h: f32, theme: &Theme, id: e
 }
 
 /// A vertical line that can be dragged sideways: how far it moved this frame.
-fn splitter(ui: &mut Ui, id: egui::Id, x: f32, y: egui::Rangef, theme: &Theme) -> Option<f32> {
+pub(super) fn splitter(ui: &mut Ui, id: egui::Id, x: f32, y: egui::Rangef, theme: &Theme) -> Option<f32> {
     let rect = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, y);
     let resp = ui.interact(rect, id, Sense::drag());
     if resp.hovered() || resp.dragged() {
@@ -1724,6 +2016,21 @@ mod tests {
         assert_eq!(rows[1].right, Some((2, "B".into())));
         assert_eq!(rows[4], Row { left: None, right: Some((5, "e".into())), kind: RowKind::Added });
         assert_eq!(hunks, vec![1, 4]);
+    }
+
+    #[test]
+    fn finds_repositories_inside() {
+        let dir = std::env::temp_dir().join(format!("ronnie-repos-{}", std::process::id()));
+        for sub in ["b-api/.git", "A-front/.git", "notes", ".hidden/.git"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let names: Vec<String> = child_repos(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["A-front", "b-api"]);
+        // Not in a repository itself: the folder is what the view shows.
+        if repo_root(&dir).is_none() {
+            assert_eq!(git_root(&dir), Some(dir.clone()));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

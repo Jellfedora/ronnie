@@ -152,6 +152,8 @@ pub struct Terminal {
     size: GridSize,
     cell: Vec2,
     scroll_acc: f32,
+    /// Lines to scroll while a selection is dragged near the top or bottom edge (the fraction kept).
+    drag_scroll: f32,
     mouse_down: bool,
     /// Link under the pointer, underlined and opened on click.
     hover_link: Option<links::Link>,
@@ -161,6 +163,9 @@ pub struct Terminal {
     pending_paste: Option<String>,
     /// Programs may set the clipboard (OSC 52), e.g. vim or tmux over SSH.
     allow_clipboard: bool,
+    /// What a program handling the mouse itself (Claude Code) put on the clipboard: its own selection,
+    /// which the terminal doesn't see. Copied by the menu and ⌘ C; forgotten on a click or a key.
+    program_copy: Option<String>,
     /// Text search in the output (Cmd+F), highlighted on screen.
     find: Option<Find>,
     /// Where the grid was drawn last frame, to place things next to the cursor.
@@ -256,12 +261,14 @@ impl Terminal {
             size,
             cell: Vec2::new(8.0, 16.0),
             scroll_acc: 0.0,
+            drag_scroll: 0.0,
             mouse_down: false,
             hover_link: None,
             find: None,
             link_request: None,
             pending_paste: None,
             allow_clipboard: true,
+            program_copy: None,
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
             local_shell: false,
@@ -484,7 +491,7 @@ impl Terminal {
     /// Text currently selected with the mouse, if any.
     /// Whether text is selected (cheap, unlike building the selected text).
     pub fn has_selection(&self) -> bool {
-        self.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty())
+        self.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty()) || self.program_copy.is_some()
     }
 
     /// Keeps up to `lines` lines above the screen.
@@ -501,7 +508,7 @@ impl Terminal {
     }
 
     pub fn selection_text(&self) -> Option<String> {
-        self.term.lock().selection_to_string().filter(|s| !s.is_empty())
+        self.term.lock().selection_to_string().filter(|s| !s.is_empty()).or_else(|| self.program_copy.clone())
     }
 
     /// Pastes as if typed, honoring bracketed paste mode.
@@ -620,6 +627,7 @@ impl Terminal {
             term.scroll_display(Scroll::Bottom);
             term.selection = None;
         }
+        self.program_copy = None;
         self.write(data);
     }
 
@@ -630,7 +638,14 @@ impl Terminal {
                 TermEvent::Title(t) => self.title = Some(t),
                 TermEvent::ResetTitle => self.title = None,
                 TermEvent::PtyWrite(s) => self.write(s.as_bytes()),
-                TermEvent::ClipboardStore(_, text) if allow_clipboard => ctx.copy_text(text),
+                TermEvent::ClipboardStore(_, text) => {
+                    if self.term.lock().mode().intersects(TermMode::MOUSE_MODE) {
+                        self.program_copy = Some(text.clone()).filter(|t| !t.is_empty());
+                    }
+                    if allow_clipboard {
+                        ctx.copy_text(text);
+                    }
+                }
                 TermEvent::ColorRequest(index, fmt) => {
                     let color = match index {
                         256 => Color::Named(NamedColor::Foreground),
@@ -776,7 +791,7 @@ impl Terminal {
                 // Outside macOS, Ctrl+C/X/V arrive as clipboard events: only Ctrl+Shift means clipboard.
                 Event::Copy => {
                     if mac || mods.shift {
-                        if let Some(text) = self.term.lock().selection_to_string() {
+                        if let Some(text) = self.selection_text() {
                             ui.ctx().copy_text(text);
                         }
                     } else {
@@ -896,6 +911,8 @@ impl Terminal {
             let pressed = ui.input(|i| i.pointer.button_pressed(PointerButton::Primary));
             let released = ui.input(|i| i.pointer.button_released(PointerButton::Primary));
             if response.hovered() && pressed {
+                // The program's selection goes away (a new one comes with its own copy).
+                self.program_copy = None;
                 self.mouse_down = true;
                 self.report_mouse(mode, 0, point, true);
             } else if self.mouse_down && released {
@@ -913,9 +930,27 @@ impl Terminal {
             let ty = if response.triple_clicked() { SelectionType::Lines } else { SelectionType::Semantic };
             self.term.lock().selection = Some(Selection::new(ty, point, side));
         } else if response.drag_started_by(PointerButton::Primary) {
+            self.drag_scroll = 0.0;
             self.term.lock().selection = Some(Selection::new(SelectionType::Simple, point, side));
         } else if response.dragged_by(PointerButton::Primary) {
-            if let Some(sel) = self.term.lock().selection.as_mut() {
+            // Near the top or bottom edge (or past it): the view scrolls, faster the closer or further.
+            let edge = self.cell.y * 1.5;
+            let (top, bottom) = (grid_origin.y + edge, grid_origin.y + self.size.rows as f32 * self.cell.y - edge);
+            let past = if pos.y < top { (top - pos.y) / self.cell.y } else if pos.y > bottom { (bottom - pos.y) / self.cell.y } else { 0.0 };
+            let mut term = self.term.lock();
+            if past != 0.0 {
+                let dt = ui.input(|i| i.stable_dt).min(0.1);
+                self.drag_scroll += past.signum() * (6.0 + past.abs() * 10.0).min(120.0) * dt;
+                let lines = self.drag_scroll.trunc() as i32;
+                if lines != 0 {
+                    self.drag_scroll -= lines as f32;
+                    term.scroll_display(Scroll::Delta(lines));
+                }
+                // Keeps scrolling while the pointer stays still.
+                ui.ctx().request_repaint();
+            }
+            let (point, side) = self.point_at(grid_origin, pos, term.grid().display_offset());
+            if let Some(sel) = term.selection.as_mut() {
                 sel.update(point, side);
             }
         } else if response.clicked_by(PointerButton::Primary) {
