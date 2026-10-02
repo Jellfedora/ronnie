@@ -24,5 +24,9 @@
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Ronnie écoute ce que tu dictes à Claude, le temps que tu parles.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Ronnie transcrit ce que tu dictes à Claude pour l'écrire à sa place.</string>
 </dict>
 </plist>

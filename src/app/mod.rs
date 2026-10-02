@@ -17,6 +17,7 @@ use crate::ssh::{self, SshAuth, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
+mod backup;
 mod bigtext;
 mod complete;
 mod dbview;
@@ -36,7 +37,9 @@ mod sqlcomplete;
 mod popups;
 mod viewer;
 mod settings;
+mod scorecard;
 mod sidebar;
+mod tour;
 
 const SIDEBAR_WIDTH: f32 = 220.0;
 /// The folded sidebar: room for the macOS window buttons, then badges.
@@ -63,7 +66,7 @@ const PANE_HEADER_H: f32 = 26.0;
 const SCROLLBACK_SAVED: usize = 5000;
 const SYNC_INTERVAL: f64 = 1.0;
 /// Seconds between two automatic update checks.
-const UPDATE_INTERVAL: f64 = 6.0 * 3600.0;
+const UPDATE_INTERVAL: f64 = 10.0 * 60.0;
 
 pub struct Tab {
     /// Name given by the user; falls back to the focused program's title.
@@ -307,6 +310,13 @@ pub struct App {
     settings_dialog: bool,
     /// The activity simulator's window, opened only by its shortcut (⌘ ⌥ ⇧ A).
     keep_active_dialog: bool,
+    /// Exporting or importing the configuration.
+    backup: Option<backup::BackupDialog>,
+    /// Listening to the user, for Claude Code in that pane.
+    dictation: Option<(PaneId, crate::voice::Dictation)>,
+    /// What was dictated was typed in that pane: Enter follows, a moment later (typed with the text,
+    /// Claude Code would take it for a pasted line break).
+    dictation_enter: Option<(PaneId, Instant)>,
     settings_tab: SettingsTab,
     /// Text of the config file editor while it is shown.
     editor: Option<ConfigEditor>,
@@ -388,6 +398,8 @@ pub struct App {
     close_confirmed: bool,
     /// App time when the startup splash began; None once it is over.
     splash: Option<f64>,
+    /// The tour of the features: at the first launch, or asked again from the settings.
+    tour: Option<tour::Tour>,
     ctx: egui::Context,
     /// The window being drawn (the main one is ROOT), and the other windows (see `WindowSlot`).
     viewport: egui::ViewportId,
@@ -920,6 +932,9 @@ impl App {
             window: None,
             settings_dialog: false,
             keep_active_dialog: false,
+            backup: None,
+            dictation: None,
+            dictation_enter: None,
             settings_tab: SettingsTab::General,
             editor: None,
             logs: None,
@@ -981,6 +996,7 @@ impl App {
             confirm_close: None,
             close_confirmed: false,
             splash: Some(f64::NAN),
+            tour: None,
             ctx: cc.egui_ctx.clone(),
         };
 
@@ -1059,6 +1075,9 @@ impl App {
         }
         if !app.config.settings.splash {
             app.splash = None;
+        }
+        if !app.config.settings.tour_seen {
+            app.tour = Some(tour::Tour::new());
         }
         // Claude's usage on by default (an installed Ronnie: a dev build's path mustn't stay there).
         if config::OFFICIAL && app.config.settings.claude_statusline && !app.read_only {
@@ -1631,7 +1650,20 @@ impl App {
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let shown = i == self.active && self.home.is_none() && !tab.show_files;
             // Taken even when disabled, not to report old commands once enabled.
-            let finished: Vec<Finished> = tab.panes.values_mut().flat_map(|term| term.take_finished(ctx)).collect();
+            let mut finished: Vec<Finished> = Vec::new();
+            for term in tab.panes.values_mut() {
+                let ended = term.take_finished(ctx);
+                // In sight, a failure flashes the pane in the theme's color; with Ronnie Métal, a long command
+                // done flashes it gold.
+                if shown {
+                    if ended.iter().any(|f| f.code.is_some_and(|c| c != 0)) {
+                        term.flash(self.theme.accent);
+                    } else if self.theme.metal && ended.iter().any(|f| f.duration.as_secs() >= settings.notify_after) {
+                        term.flash(self.theme.cursor);
+                    }
+                }
+                finished.extend(ended);
+            }
             let long = finished.into_iter().filter(|f| settings.notify_commands && f.duration.as_secs() >= settings.notify_after).last();
             let Some(done) = long.filter(|_| !(shown && focused)) else { continue };
             let ok = done.code.is_none_or(|c| c == 0);
@@ -2140,7 +2172,8 @@ const SETTINGS_NAV_WIDTH: f32 = 210.0;
 const SETTINGS_HEIGHT: f32 = 680.0;
 
 /// A clickable preview of a theme: its sidebar, a sample terminal line and its palette.
-fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, _highlight: Color32) -> egui::Response {
+/// `locked`: shown veiled, under a padlock, and not clickable.
+fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, locked: bool) -> egui::Response {
     let theme = preset.theme();
     let (rect, resp) = ui.allocate_exact_size(THEME_CARD, Sense::click());
     let painter = ui.painter();
@@ -2179,6 +2212,12 @@ fn theme_card(ui: &mut Ui, preset: &Preset, selected: bool, _highlight: Color32)
         Stroke::new(1.0, theme.tab_active)
     };
     painter.rect_stroke(rect, 8.0, border, egui::StrokeKind::Inside);
+    if locked {
+        painter.rect_filled(rect, 8.0, Color32::from_black_alpha(185));
+        painter.text(rect.center() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, "🔒", FontId::proportional(22.0), theme.cursor);
+        painter.text(rect.center() + Vec2::new(0.0, 18.0), Align2::CENTER_CENTER, "? ? ?", FontId::new(15.0, egui::FontFamily::Name("metal".into())), theme.accent);
+        return resp;
+    }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -2368,6 +2407,8 @@ fn paint_heart(painter: &egui::Painter, c: Pos2, r: f32, color: Color32) {
 /// What was clicked in a pane's header strip.
 #[derive(Default)]
 struct HeaderClicks {
+    /// The microphone: dictate to Claude (or stop).
+    mic: bool,
     /// The ⚙ button: the pane's menu (the right-click one) opens under it.
     gear: Option<egui::Response>,
     /// The strip itself: focus the pane.
@@ -2387,6 +2428,56 @@ struct HeaderClicks {
     close: bool,
     /// Double click: rename the pane.
     rename: bool,
+}
+
+/// The microphone of a pane's strip, ending at `right` (`listening`: the sound level and what was heard
+/// so far, shown beside it): its width.
+#[allow(clippy::too_many_arguments)]
+fn mic_button(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, listening: Option<&(f32, String)>, theme: &Theme, t: &Strings, clicks: &mut HeaderClicks) -> f32 {
+    let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+    let resp = ui.interact(at, egui::Id::new(("pane-mic", id)), Sense::click());
+    let painter = ui.painter();
+    let red = theme.ansi[1];
+    let color = match listening {
+        Some((level, _)) => {
+            // A disc that swells with the voice.
+            let r = 8.0 + level * 4.0;
+            painter.circle_filled(at.center(), r, red.gamma_multiply(0.25 + level * 0.35));
+            ui.ctx().request_repaint();
+            red
+        }
+        None if resp.hovered() => {
+            painter.rect_filled(at, 5.0, theme.tab_hover);
+            theme.text
+        }
+        None => theme.text_muted,
+    };
+    // The microphone: its head, the holder around it, the stand.
+    let c = at.center();
+    let stroke = Stroke::new(1.5, color);
+    painter.rect_filled(Rect::from_center_size(c - Vec2::new(0.0, 2.5), Vec2::new(5.0, 8.5)), 2.5, color);
+    let holder: Vec<Pos2> = (0..=12).map(|i| {
+        let a = std::f32::consts::PI * i as f32 / 12.0;
+        c + Vec2::new(-4.5 * a.cos(), -1.0 + 4.5 * a.sin())
+    }).collect();
+    painter.add(egui::Shape::line(holder, stroke));
+    painter.line_segment([c + Vec2::new(0.0, 3.5), c + Vec2::new(0.0, 6.0)], stroke);
+    painter.line_segment([c + Vec2::new(-2.5, 6.0), c + Vec2::new(2.5, 6.0)], stroke);
+    let tip = if listening.is_some() { t.mic_listening } else { t.mic_tip };
+    clicks.mic = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    // What was heard, beside it.
+    let mut w = at.width();
+    if let Some((_, text)) = listening {
+        let text = if text.is_empty() { t.mic_speak.to_owned() } else { text.clone() };
+        let room = (rect.width() * 0.35).min(320.0);
+        let mut job = egui::text::LayoutJob::simple_singleline(text, FontId::proportional(12.0), red);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let galley = ui.painter().layout_job(job);
+        let x = at.min.x - 6.0 - galley.size().x;
+        ui.painter().galley(Pos2::new(x, rect.center().y - galley.size().y / 2.0), galley.clone(), red);
+        w += galley.size().x + 6.0;
+    }
+    w
 }
 
 /// The badge of Claude's plan usage in a pane's strip, ending at `right`: its width, if it fits.
@@ -2440,9 +2531,23 @@ enum Header<'a> {
 /// history search.
 #[allow(clippy::too_many_arguments)]
 /// `claude`: the plan's usage, when Claude Code runs in the pane and Ronnie gets it.
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+/// `mic`: Claude Code runs there and dictation works: Some(None), or Some(Some(level, text)) while
+/// listening.
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, mic: Option<Option<(f32, String)>>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
+    if focused && theme.metal {
+        // Ronnie Métal: a line under the bar, red on the left, fading out to the right.
+        let line = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 2.0), rect.max);
+        let mut mesh = egui::Mesh::default();
+        let (strong, clear) = (theme.accent, Color32::TRANSPARENT);
+        for (pos, color) in [(line.left_top(), strong), (line.right_top(), clear), (line.right_bottom(), clear), (line.left_bottom(), strong)] {
+            mesh.colored_vertex(pos, color);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(mesh);
+    }
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
     let font = FontId::monospace(12.0);
     let color = if focused { theme.text } else { theme.text_muted };
@@ -2544,6 +2649,11 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             right -= w + 6.0;
             max_w = right - rect.min.x - 16.0;
         }
+        if let Some(listening) = &mic {
+            let w = mic_button(ui, rect, right, id, listening.as_ref(), theme, t, &mut clicks);
+            right -= w + 4.0;
+            max_w = right - rect.min.x - 16.0;
+        }
         if let Some(usage) = claude {
             if let Some(w) = claude_badge(ui, rect, right, id, usage, theme, t) {
                 right -= w + 6.0;
@@ -2589,10 +2699,11 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             (label(skip), Some(cwd.display().to_string()))
         }
     };
-    // The pane's name first, in the accent color.
+    // The pane's name first, in the accent color (Ronnie Métal: gold).
     let mut job = egui::text::LayoutJob::default();
     if let Some(name) = name {
-        job.append(name, 0.0, egui::TextFormat { font_id: font.clone(), color: if focused { theme.accent } else { theme.accent.gamma_multiply(0.7) }, ..Default::default() });
+        let name_color = if !focused { theme.accent.gamma_multiply(0.7) } else if theme.metal { theme.cursor } else { theme.accent };
+        job.append(name, 0.0, egui::TextFormat { font_id: font.clone(), color: name_color, ..Default::default() });
         if !text.is_empty() {
             job.append("  ·  ", 0.0, egui::TextFormat { font_id: font.clone(), color: theme.text_muted, ..Default::default() });
         }
@@ -3272,17 +3383,33 @@ impl App {
                     let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::git_root) } else { None };
                     let git_open = tab.git.contains_key(&id);
                     // Claude Code in the foreground: its plan's usage in the strip, once known.
-                    let claude_here = local && self.config.settings.claude_usage && term.live_program(ui.ctx()).is_some_and(crate::claude::is_claude);
+                    let claude_running = local && term.live_program(ui.ctx()).is_some_and(crate::claude::is_claude);
+                    let claude_here = claude_running && self.config.settings.claude_usage;
                     let claude = claude_here.then(|| self.claude.current().cloned()).flatten();
+                    // Dictation to Claude, where the system can.
+                    let mic = (claude_running && crate::voice::supported()).then(|| self.dictation.as_ref().filter(|(p, _)| *p == id).map(|(_, d)| (d.level(), d.text())));
                     // Split: always a strip, to drag the pane by.
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open || claude.is_some() {
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open || claude.is_some() || mic.is_some() {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let git_state = (repo.is_some() || git_open).then_some(git_open);
                         let header = if local { Header::Local(cwd.as_deref(), &urls, git_state) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), &self.theme, strings, &self.config.settings.shortcuts);
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, &self.theme, strings, &self.config.settings.shortcuts);
+                        if clicks.mic {
+                            if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
+                                // Dropped: stops listening, nothing sent.
+                                self.dictation = None;
+                            } else {
+                                let language = match self.config.settings.language {
+                                    Lang::Fr => "fr-FR",
+                                    Lang::En => "en-US",
+                                };
+                                let ctx = ui.ctx().clone();
+                                self.dictation = Some((id, crate::voice::Dictation::start(language, std::sync::Arc::new(move || ctx.request_repaint()))));
+                            }
+                        }
                         if clicks.rename {
                             self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
                         }
@@ -3411,8 +3538,21 @@ impl App {
                     // Dim inactive panes and frame the focused one so it stands out.
                     if split && id != tab.focused {
                         ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(if self.theme.dark { 50 } else { 18 }));
+                    } else if split && self.theme.metal {
+                        // A red glow, fading towards the inside.
+                        for k in 0..5 {
+                            let alpha = [0.95, 0.42, 0.22, 0.11, 0.05][k];
+                            ui.painter().rect_stroke(r.shrink(1.0 + k as f32), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+                        }
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    }
+                    if let Some((color, level)) = tab.panes.get_mut(&id).and_then(Terminal::flash_level) {
+                        for k in 0..10 {
+                            let alpha = level * (1.0 - k as f32 / 10.0).powi(2);
+                            ui.painter().rect_stroke(r.shrink(k as f32 * 1.5), 4.0, Stroke::new(1.5, color.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+                        }
+                        ui.ctx().request_repaint();
                     }
                 }
                 tab.rects = rects;
@@ -3456,11 +3596,11 @@ impl App {
                     }
                 }
 
-                if let (Some((_, prefix, items)), Some(term)) = (suggest.as_ref().filter(|(l, _, _)| self.path_dismissed.as_ref() != Some(l)), tab.panes.get_mut(&tab.focused)) {
+                if let (Some((line, prefix, items)), Some(term)) = (suggest.as_ref().filter(|(l, _, _)| self.path_dismissed.as_ref() != Some(l)), tab.panes.get_mut(&tab.focused)) {
                     let pos = term.cursor_pos() + Vec2::new(-(prefix.chars().count() as f32) * term.cell_size().x, term.cell_size().y + 2.0);
                     let pick = self.path_pick.1;
                     let theme = &self.theme;
-                    egui::Area::new(egui::Id::new("path-suggestions")).order(egui::Order::Foreground).fixed_pos(pos).interactable(true).show(ui.ctx(), |ui| {
+                    let area = egui::Area::new(egui::Id::new("path-suggestions")).order(egui::Order::Foreground).fixed_pos(pos).interactable(true).show(ui.ctx(), |ui| {
                         Frame::popup(ui.style()).fill(theme.chrome_bg).inner_margin(6.0).show(ui, |ui| {
                             for (i, (name, is_dir)) in items.iter().enumerate() {
                                 let row = ui.horizontal(|ui| {
@@ -3476,6 +3616,10 @@ impl App {
                             ui.label(egui::RichText::new(strings.path_suggest_hint).size(11.0).color(theme.text_muted));
                         });
                     });
+                    // A click elsewhere puts them away, like Escape, until the line changes.
+                    if ui.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))) {
+                        self.path_dismissed = Some(line.clone());
+                    }
                     if let Some(i) = take_suggestion {
                         let (name, is_dir) = &items[i];
                         // PowerShell's escapes on Windows (a server's shell has the usual ones).
@@ -3643,6 +3787,10 @@ impl App {
         self.guard_window(ui.ctx());
         self.startup_window(ui.ctx());
         self.keep_active_window(ui.ctx());
+        self.poll_dictation(ui.ctx());
+        if dialogs_here {
+            self.backup_window(ui.ctx());
+        }
         crate::awake::configure(&self.config.settings.keep_active);
         if dialogs_here {
             self.confirm_reset_window(ui.ctx());
@@ -3650,6 +3798,10 @@ impl App {
             self.ssh_prompt_window(ui.ctx());
         }
 
+        // The tour, once the splash is over.
+        if main_window && self.splash.is_none() {
+            self.tour_window(ui.ctx());
+        }
         self.toasts_ui(ui.ctx());
 
         // Startup splash, over everything; a click or a key skips it.
@@ -3673,7 +3825,45 @@ impl App {
                 self.window_title = title;
             }
         }
+        if self.theme.metal {
+            paint_metal_pointer(ui.ctx(), &self.theme);
+        }
     }
+}
+
+/// Ronnie Métal's mouse pointers, drawn in place of the system's: a red arrow edged with gold, and a
+/// gold text beam. The other shapes (hand, resize...) stay the system's.
+fn paint_metal_pointer(ctx: &egui::Context, theme: &Theme) {
+    let Some(at) = ctx.input(|i| i.pointer.hover_pos()) else { return };
+    let icon = ctx.output(|o| o.cursor_icon);
+    if !matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::Text) {
+        return;
+    }
+    ctx.set_cursor_icon(egui::CursorIcon::None);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("metal-pointer")));
+    let gold = theme.cursor;
+    if icon == egui::CursorIcon::Text {
+        let (top, bottom) = (at - Vec2::new(0.0, 9.0), at + Vec2::new(0.0, 9.0));
+        painter.line_segment([top, bottom], Stroke::new(5.0, theme.accent.gamma_multiply(0.35)));
+        painter.line_segment([top, bottom], Stroke::new(1.6, gold));
+        for y in [top.y, bottom.y] {
+            painter.line_segment([Pos2::new(at.x - 3.5, y), Pos2::new(at.x + 3.5, y)], Stroke::new(1.6, gold));
+        }
+        return;
+    }
+    // The arrow, in two convex parts (the head and the tail), its tip on the pointer.
+    let p = |x: f32, y: f32| at + Vec2::new(x, y);
+    let head = vec![p(0.0, 0.0), p(0.0, 17.0), p(12.5, 12.2)];
+    let tail = vec![p(4.2, 13.2), p(7.0, 19.5), p(9.6, 18.4), p(6.9, 12.2)];
+    let outline = vec![p(0.0, 0.0), p(0.0, 17.0), p(4.2, 13.2), p(7.0, 19.5), p(9.6, 18.4), p(6.9, 12.2), p(12.5, 12.2)];
+    let shadow = |points: &[Pos2]| points.iter().map(|q| *q + Vec2::new(1.5, 2.0)).collect::<Vec<_>>();
+    for part in [&head, &tail] {
+        painter.add(egui::Shape::convex_polygon(shadow(part), Color32::from_black_alpha(110), Stroke::NONE));
+    }
+    for part in [head, tail] {
+        painter.add(egui::Shape::convex_polygon(part, theme.accent, Stroke::NONE));
+    }
+    painter.add(egui::Shape::closed_line(outline, Stroke::new(1.2, gold)));
 }
 
 impl eframe::App for App {

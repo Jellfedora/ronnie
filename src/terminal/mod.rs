@@ -23,7 +23,7 @@ use alacritty_terminal::term::{Config as TermConfig, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
 use alacritty_terminal::Term;
 use anyhow::Result;
-use egui::{Event, EventFilter, Id, MouseWheelUnit, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Color32, Event, EventFilter, Id, MouseWheelUnit, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 pub use links::{open as open_url, LocalUrl};
 pub use osc::Finished;
@@ -172,6 +172,8 @@ pub struct Terminal {
     grid_origin: Pos2,
     /// Last looked-up working directory and when, so painting every frame stays cheap.
     cwd_cache: Option<(Instant, Option<PathBuf>, u64)>,
+    /// A flash of the pane's edges (a command failed...): its color and when it began.
+    flash: Option<(Color32, Instant)>,
     /// A shell on this machine (not ssh): the directory it reports is a local one.
     local_shell: bool,
 }
@@ -271,6 +273,7 @@ impl Terminal {
             program_copy: None,
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
+            flash: None,
             local_shell: false,
         }
     }
@@ -662,9 +665,27 @@ impl Terminal {
                     self.write(reply.as_bytes());
                 }
                 TermEvent::Exit | TermEvent::ChildExit(_) => self.exited.store(true, Ordering::Relaxed),
+                TermEvent::Bell if theme.metal => self.flash(theme.accent),
                 _ => {}
             }
         }
+    }
+
+    /// Makes the pane's edges flash in `color` (see `flash_level`).
+    pub fn flash(&mut self, color: Color32) {
+        self.flash = Some((color, Instant::now()));
+    }
+
+    /// The flash under way: its color and how strong it still is (1 at its start, then fading out).
+    pub fn flash_level(&mut self) -> Option<(Color32, f32)> {
+        const LENGTH: f32 = 0.7;
+        let (color, at) = self.flash?;
+        let k = 1.0 - at.elapsed().as_secs_f32() / LENGTH;
+        if k <= 0.0 {
+            self.flash = None;
+            return None;
+        }
+        Some((color, k * k))
     }
 
     fn window_size(&self) -> WindowSize {

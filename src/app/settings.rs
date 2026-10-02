@@ -1067,6 +1067,7 @@ impl App {
         let theme = self.theme.clone();
         let mut picked = self.config.settings.clone();
         let mut close = false;
+        let touring = self.tour.is_some();
         let screen = ctx.content_rect();
         let size = Vec2::new(SETTINGS_WIDTH.min(screen.width() - 60.0).max(640.0), SETTINGS_HEIGHT.min(screen.height() - 80.0).max(380.0));
         let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
@@ -1166,6 +1167,10 @@ impl App {
                 });
             });
         });
+        // The tour asked again: the settings make way for it.
+        if !touring && self.tour.is_some() {
+            close = true;
+        }
         if self.settings_tab != SettingsTab::Shortcuts {
             self.shortcut_capture = None;
         }
@@ -1210,6 +1215,12 @@ impl App {
             divider(ui, theme);
             setting_row(ui, theme, t.home_tips_setting, Some(t.home_tips_setting_desc), |ui| {
                 toggle(ui, theme, &mut picked.home_tips);
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.tour_setting, Some(t.tour_setting_desc), |ui| {
+                if ui.add(egui::Button::new(egui::RichText::new(t.tour_replay).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
+                    self.tour = Some(super::tour::Tour::new());
+                }
             });
             divider(ui, theme);
             setting_row(ui, theme, t.home_hosts_setting, Some(t.home_hosts_setting_desc), |ui| {
@@ -1314,6 +1325,17 @@ impl App {
                 });
             });
         });
+        card(ui, theme, Some(t.backup_section), |ui| {
+            setting_row(ui, theme, t.backup_row, Some(t.backup_desc), |ui| {
+                let b = |text: &str| egui::Button::new(egui::RichText::new(text).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                if ui.add(b(t.backup_import)).clicked() {
+                    self.pick_import();
+                }
+                if ui.add(b(t.backup_export)).clicked() {
+                    self.backup = Some(super::backup::BackupDialog::Export { secrets: true, password: String::new(), again: String::new(), error: None });
+                }
+            });
+        });
         card(ui, theme, Some(t.reset_section), |ui| {
             setting_row(ui, theme, t.reset_row, Some(t.reset_desc), |ui| {
                 let reset = egui::Button::new(egui::RichText::new(t.reset_button).size(13.5).color(theme.ansi[1]))
@@ -1362,12 +1384,15 @@ impl App {
         for (dark, title) in [(true, t.themes_dark), (false, t.themes_light)] {
             section_title(ui, theme, title);
             let presets: Vec<&Preset> = PRESETS.iter().filter(|p| p.dark == dark).collect();
+            let best = picked.typing_scores.first().map_or(0, |s| s.letters);
             let per_row = ((ui.available_width() + 12.0) / (THEME_CARD.x + 12.0)).floor().max(1.0) as usize;
             for row in presets.chunks(per_row) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if theme_card(ui, preset, picked.theme == preset.id, theme.text).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        if preset.locked(best) {
+                            theme_card(ui, preset, false, true).on_hover_text(t.theme_locked.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()));
+                        } else if theme_card(ui, preset, picked.theme == preset.id, false).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             picked.theme = preset.id.to_owned();
                         }
                     }

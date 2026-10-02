@@ -475,7 +475,7 @@ pub struct Settings {
     /// Show each local pane's working directory in a strip above it.
     #[serde(default = "default_true")]
     pub show_cwd: bool,
-    /// Look for a new release on GitHub at startup and every few hours.
+    /// Look for a new release on GitHub at startup and every 10 minutes.
     #[serde(default = "default_true")]
     pub auto_update: bool,
     #[serde(default)]
@@ -534,6 +534,9 @@ pub struct Settings {
     /// Tips about Ronnie scrolling by at the bottom of the home page.
     #[serde(default = "default_true")]
     pub home_tips: bool,
+    /// The tour of the features was shown (or skipped): not shown again at launch.
+    #[serde(default)]
+    pub tour_seen: bool,
     /// The home page's cards of SSH hosts and of database connections.
     #[serde(default = "default_true")]
     pub home_hosts: bool,
@@ -552,6 +555,9 @@ pub struct Settings {
     /// Its music: on or off (None: asked the first time).
     #[serde(default)]
     pub game_sound: Option<bool>,
+    /// The name put on the cards of its rounds, when shared.
+    #[serde(default)]
+    pub player_name: String,
     /// The activity simulator (see awake.rs).
     #[serde(default)]
     pub keep_active: KeepActive,
@@ -796,7 +802,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, keep_active: KeepActive::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), keep_active: KeepActive::default() }
     }
 }
 

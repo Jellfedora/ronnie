@@ -30,20 +30,29 @@ impl App {
             let ticker = Rect::from_min_size(Pos2::new(rect.min.x, rect.max.y - 44.0 + 44.0 * sunk), Vec2::new(rect.width(), 44.0));
             tips_ticker(ui, ticker, &self.theme, t, &self.config.settings.shortcuts);
         }
-        let out = self.game.ui(ui, game_rect, &self.theme, t, &self.config.settings.typing_scores, french, self.config.settings.game_sound);
+        let out = self.game.ui(ui, game_rect, &self.theme, t, &self.config.settings.typing_scores, french, self.config.settings.game_sound, &self.config.settings.player_name);
         // During a round the sidebar folds away, and unfolds after (if it was open).
         self.fold_for_game(self.game.playing());
         if let Some(on) = out.sound {
             self.config.settings.game_sound = Some(on);
             self.save_config();
         }
+        if let Some(name) = out.player {
+            self.config.settings.player_name = name;
+            self.save_config();
+        }
         if let Some(score) = out.finished {
             // On the board, below the rounds it ties with (stable sort).
             let scores = &mut self.config.settings.typing_scores;
+            let before = scores.first().map_or(0, |s| s.letters);
+            let unlocked = before < crate::theme::METAL_UNLOCK && score.letters >= crate::theme::METAL_UNLOCK;
             scores.push(score);
             scores.sort_by(|a, b| b.letters.cmp(&a.letters));
             scores.truncate(config::TYPING_SCORES);
             self.save_config();
+            if unlocked {
+                self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now() });
+            }
         }
         // Back to the home page, out of a round.
         if !self.game.playing() {
@@ -603,17 +612,18 @@ impl App {
         }
         if self.config.databases.is_empty() {
             if self.local_db {
-                let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 6.0));
+                // The button fits its label; the text before it goes on two lines when the sidebar is
+                // narrow, the card growing with it.
+                let label_w = painter.layout_no_wrap(t.db_add.to_owned(), FontId::proportional(12.0), self.theme.bg).size().x;
+                let text_w = row_w - label_w - 24.0 - 36.0;
+                let mut job = egui::text::LayoutJob::simple(t.db_local_found.to_owned(), FontId::proportional(12.0), self.theme.text, text_w);
+                job.wrap.max_rows = 2;
+                let galley = painter.layout_job(job);
+                let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, (ROW_H + 6.0).max(galley.size().y + 14.0)));
                 painter.rect_filled(r, 8.0, self.theme.accent.gamma_multiply(0.08));
                 painter.rect_stroke(r, 8.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.35)), egui::StrokeKind::Inside);
                 super::dbview::paint_db_icon(&painter, Pos2::new(r.min.x + 16.0, r.center().y), self.theme.accent);
-                // The button fits its label; the text before it is cut short if needed (with its whole
-                // wording on hover).
-                let label_w = painter.layout_no_wrap(t.db_add.to_owned(), FontId::proportional(12.0), self.theme.bg).size().x;
                 let button = Rect::from_min_size(Pos2::new(r.max.x - label_w - 24.0, r.center().y - 11.0), Vec2::new(label_w + 16.0, 22.0));
-                let mut job = egui::text::LayoutJob::simple_singleline(t.db_local_found.to_owned(), FontId::proportional(12.0), self.theme.text);
-                job.wrap = egui::text::TextWrapping::truncate_at_width(button.min.x - r.min.x - 36.0);
-                let galley = painter.layout_job(job);
                 painter.galley(Pos2::new(r.min.x + 30.0, r.center().y - galley.size().y / 2.0), galley, self.theme.text);
                 ui.interact(Rect::from_min_max(r.min, Pos2::new(button.min.x - 4.0, r.max.y)), ui.id().with("db-local-hint"), Sense::hover()).on_hover_text(t.db_local_found);
                 let add = ui.put(button, egui::Button::new(egui::RichText::new(t.db_add).size(12.0).color(self.theme.bg)).fill(self.theme.accent).corner_radius(5.0));

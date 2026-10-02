@@ -21,6 +21,7 @@ mod ssh;
 mod terminal;
 mod theme;
 mod update;
+mod voice;
 #[cfg(windows)]
 mod winproc;
 

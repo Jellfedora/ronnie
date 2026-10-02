@@ -1,5 +1,6 @@
 //! "Speed Metal", the home page's typing game: a minute to type as many words as possible. Each
-//! letter counts; words typed without a mistake build a combo; a finished word bursts into sparks.
+//! letter counts; words typed without a mistake build a combo, every 5 of them adding seconds to the
+//! round; a finished word bursts into sparks.
 
 use super::motion::{in_out_cubic, out_back, out_cubic, phase};
 use super::*;
@@ -7,6 +8,8 @@ use crate::config::{TypingScore, TYPING_SCORES};
 
 /// Length of a round, in seconds.
 const ROUND: f64 = 60.0;
+/// Seconds added to the round by each 5 words of a combo.
+const COMBO_BONUS: f64 = 2.0;
 /// The 3, 2, 1 before it starts.
 const COUNTDOWN: f64 = 3.0;
 /// The last seconds, when the clock turns red and beats.
@@ -101,6 +104,8 @@ pub(super) struct GameOut {
     pub finished: Option<TypingScore>,
     /// The sound turned on or off.
     pub sound: Option<bool>,
+    /// The name put on the shared card, changed.
+    pub player: Option<String>,
 }
 
 #[derive(Default)]
@@ -114,6 +119,8 @@ pub(super) struct Game {
     mistakes: u32,
     combo: u32,
     best_combo: u32,
+    /// Seconds won by the combos, added to the round.
+    bonus: f64,
     /// When the last wrong key was typed (the word shakes).
     shake: f64,
     sparks: Vec<Spark>,
@@ -126,6 +133,12 @@ pub(super) struct Game {
     music: Option<Music>,
     /// When the home page (the game) appeared: its entrance plays from there.
     appeared: Option<f64>,
+    /// The card of the round, shown to be shared.
+    share: Option<super::scorecard::ScoreCard>,
+    /// Kept: on Linux, what was copied goes with it.
+    clipboard: Option<arboard::Clipboard>,
+    /// The name typed on a card, to save.
+    renamed: Option<String>,
 }
 
 /// The letter without its accent: "é" typed as "e" counts.
@@ -187,6 +200,16 @@ impl Game {
             None => self.state = State::AskSound,
             Some(on) => self.start(now, list, on),
         }
+    }
+
+    /// The round's length, with the seconds won.
+    fn length(&self) -> f64 {
+        ROUND + self.bonus
+    }
+
+    /// The round's length as shown: "1 min", "1 min 08 s".
+    pub(super) fn length_text(&self) -> String {
+        round_time(self.length())
     }
 
     /// A round is on (its countdown included).
@@ -254,7 +277,8 @@ impl Game {
         let n = word.chars().count();
         self.floats.push(Float { text: format!("+{n}"), pos: at + Vec2::new(0.0, -46.0), born: now, size: 22.0, color: theme.ansi[2] });
         if self.combo.is_multiple_of(5) {
-            self.floats.push(Float { text: format!("COMBO ×{}", self.combo), pos: at + Vec2::new(0.0, -90.0), born: now, size: 30.0, color: theme.ansi[3] });
+            self.bonus += COMBO_BONUS;
+            self.floats.push(Float { text: format!("COMBO ×{}  +{COMBO_BONUS} s", self.combo), pos: at + Vec2::new(0.0, -90.0), born: now, size: 30.0, color: theme.ansi[3] });
             self.burst(at, now, [theme.ansi[3], Color32::WHITE, theme.accent], 40);
         }
     }
@@ -263,7 +287,7 @@ impl Game {
     /// to add to it.
     /// `sound`: the music on or off (None: not asked yet).
     #[allow(clippy::too_many_arguments)]
-    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings, scores: &[TypingScore], french: bool, sound: Option<bool>) -> GameOut {
+    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings, scores: &[TypingScore], french: bool, sound: Option<bool>, player: &str) -> GameOut {
         let mut out = GameOut::default();
         let best = scores.first().map_or(0, |s| s.letters);
         let now = ui.input(|i| i.time);
@@ -311,7 +335,7 @@ impl Game {
                 // GO: a burst of sparks from the first word.
                 self.burst(word_at, now, [theme.accent, theme.ansi[3], Color32::WHITE], 110);
             }
-            State::Playing(since) if now - since >= ROUND => {
+            State::Playing(since) if now - since >= self.length() => {
                 self.state = State::Over(now);
                 let score = self.score();
                 // Below the rounds it ties with.
@@ -331,7 +355,6 @@ impl Game {
             _ => {}
         }
         match self.state {
-            State::Idle | State::Over(_) if enter => self.play(now, list, sound),
             State::Playing(_) | State::Countdown(_) if escape => {
                 self.state = State::Idle;
                 self.music = None;
@@ -352,7 +375,7 @@ impl Game {
 
         // The last seconds: the whole page beats red.
         if let State::Playing(since) = self.state {
-            let left = ROUND - (now - since);
+            let left = self.length() - (now - since);
             if left < HURRY {
                 let beat = ((now * std::f64::consts::TAU * 2.0).sin() * 0.5 + 0.5) as f32;
                 painter.rect_filled(rect, 0.0, theme.ansi[1].gamma_multiply(0.03 + 0.05 * beat));
@@ -396,7 +419,7 @@ impl Game {
             State::Idle => {
                 let rules = intro(0.35, 0.5, out_cubic);
                 painter.text(Pos2::new(center.x, title_y + 46.0 + (1.0 - rules) * 14.0), Align2::CENTER_TOP, t.game_rules, FontId::proportional(14.0), theme.text_muted.gamma_multiply(rules));
-                if self.play_button(ui, Pos2::new(center.x, center.y + 20.0), t.game_play, theme, t, now, intro(0.45, 0.55, out_back)) {
+                if self.play_button(ui, Pos2::new(center.x, center.y + 20.0), t.game_play, theme, now, intro(0.45, 0.55, out_back)) {
                     self.play(now, list, sound);
                 }
                 // The soundtrack's author.
@@ -455,9 +478,10 @@ impl Game {
             }
             State::Playing(since) => self.playing_ui(ui, rect, word_at, theme, t, now, now - since),
             State::Over(at) => {
-                if self.over_ui(ui, rect, theme, t, now - at, best.max(self.letters), now) {
+                if self.over_ui(ui, rect, theme, t, now - at, best.max(self.letters), now, player) {
                     self.play(now, list, sound);
                 }
+                out.player = self.renamed.take();
             }
         }
 
@@ -488,7 +512,7 @@ impl Game {
         TypingScore {
             letters: self.letters,
             words: self.done,
-            wpm: (self.letters as f64 / 5.0 / (ROUND / 60.0)).round() as u32,
+            wpm: (self.letters as f64 / 5.0 / (self.length() / 60.0)).round() as u32,
             accuracy: (self.letters * 100).checked_div(typed).unwrap_or(100),
             combo: self.best_combo,
             at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
@@ -499,7 +523,7 @@ impl Game {
     /// font; it lifts when hovered and sinks when pressed; "or [Enter]" under it. `appear`: 0 to 1 (a
     /// little past 1 while landing) as it pops in.
     #[allow(clippy::too_many_arguments)]
-    fn play_button(&self, ui: &mut Ui, at: Pos2, text: &str, theme: &Theme, t: &Strings, now: f64, appear: f32) -> bool {
+    fn play_button(&self, ui: &mut Ui, at: Pos2, text: &str, theme: &Theme, now: f64, appear: f32) -> bool {
         if appear <= 0.01 {
             return false;
         }
@@ -541,21 +565,6 @@ impl Game {
         let font = FontId::new((26.0 * appear).max(1.0), egui::FontFamily::Name("metal".into()));
         painter.text(rect.center() + Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, text, font.clone(), Color32::from_black_alpha((150.0 * fade) as u8));
         painter.text(rect.center(), Align2::CENTER_CENTER, text, font, Color32::WHITE.gamma_multiply(fade));
-        // Below: "or [Enter]", the key drawn.
-        let hint = FontId::proportional(12.0);
-        let muted = theme.text_muted.gamma_multiply(fade);
-        let or = painter.layout_no_wrap(t.game_or.to_owned(), hint.clone(), muted);
-        let key = painter.layout_no_wrap(t.game_enter.to_owned(), FontId::proportional(11.5), theme.text.gamma_multiply(fade));
-        let key_w = key.size().x + 16.0;
-        let total = or.size().x + 8.0 + key_w;
-        let y = base.max.y + 22.0;
-        let left = at.x - total / 2.0;
-        painter.galley(Pos2::new(left, y - or.size().y / 2.0), or.clone(), muted);
-        let cap = Rect::from_min_size(Pos2::new(left + or.size().x + 8.0, y - 10.0), Vec2::new(key_w, 20.0));
-        painter.rect_filled(cap.translate(Vec2::new(0.0, 2.0)), 5.0, Color32::from_black_alpha((70.0 * fade) as u8));
-        painter.rect_filled(cap, 5.0, theme.chrome_bg.gamma_multiply(fade));
-        painter.rect_stroke(cap, 5.0, Stroke::new(1.0, theme.text_muted.gamma_multiply(0.6 * fade)), egui::StrokeKind::Inside);
-        painter.galley(cap.center() - key.size() / 2.0, key, theme.text);
         ui.ctx().request_repaint();
         resp.clicked()
     }
@@ -564,7 +573,7 @@ impl Game {
     fn playing_ui(&mut self, ui: &mut Ui, rect: Rect, word_at: Pos2, theme: &Theme, t: &Strings, now: f64, elapsed: f64) {
         ui.ctx().request_repaint();
         let painter = ui.painter_at(rect);
-        let left = (ROUND - elapsed).max(0.0);
+        let left = (self.length() - elapsed).max(0.0);
         let hurry = left < HURRY;
 
         // GO: the word blows up and away, the screen flashes.
@@ -582,7 +591,8 @@ impl Game {
         let radius = (36.0 + 4.0 * beat) * pop;
         let color = if hurry { theme.ansi[1] } else { theme.accent };
         painter.circle_stroke(clock, radius, Stroke::new(5.0, theme.tab_hover));
-        let fraction = (left / ROUND) as f32;
+        // The seconds won fill it up again, up to full.
+        let fraction = (left / ROUND).min(1.0) as f32;
         let steps = (64.0 * fraction).ceil() as usize + 1;
         let points: Vec<Pos2> = (0..=steps).map(|k| {
             let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * fraction * k as f32 / steps as f32;
@@ -645,7 +655,7 @@ impl Game {
 
     /// The results; true when "play again" was clicked.
     #[allow(clippy::too_many_arguments)]
-    fn over_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings, since: f64, best: u32, now: f64) -> bool {
+    fn over_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings, since: f64, best: u32, now: f64, player: &str) -> bool {
         let painter = ui.painter_at(rect);
         let center = rect.center();
         let at = |delay: f64, length: f64, ease: fn(f32) -> f32| ease(((since - delay) / length) as f32);
@@ -663,7 +673,7 @@ impl Game {
         let shown = (self.letters as f32 * count).round() as u32;
         let score_pop = at(0.3, 0.5, out_back).max(0.0);
         painter.text(Pos2::new(center.x, top + 62.0), Align2::CENTER_CENTER, shown.to_string(), FontId::new((84.0 * score_pop).max(1.0), egui::FontFamily::Name("metal".into())), theme.accent);
-        painter.text(Pos2::new(center.x, top + 116.0), Align2::CENTER_CENTER, t.game_letters, FontId::proportional(13.0), theme.text_muted.gamma_multiply(score_pop.min(1.0)));
+        painter.text(Pos2::new(center.x, top + 116.0), Align2::CENTER_CENTER, format!("{}  ·  {}", t.game_letters, self.length_text()), FontId::proportional(13.0), theme.text_muted.gamma_multiply(score_pop.min(1.0)));
         let verdict = at(1.3, 0.4, out_cubic);
         if verdict <= 0.0 {
         } else if self.record {
@@ -677,7 +687,7 @@ impl Game {
         // Words, per minute, accuracy, best combo.
         let typed = self.letters + self.mistakes;
         let accuracy = (self.letters * 100).checked_div(typed).unwrap_or(100);
-        let wpm = self.letters as f64 / 5.0 / (ROUND / 60.0);
+        let wpm = self.letters as f64 / 5.0 / (self.length() / 60.0);
         let stats = [
             (self.done.to_string(), t.game_words),
             (format!("{wpm:.0}"), t.game_wpm),
@@ -694,8 +704,35 @@ impl Game {
             painter.text(Pos2::new(x, y + dy), Align2::CENTER_CENTER, value, FontId::monospace(24.0), theme.text.gamma_multiply(a));
             painter.text(Pos2::new(x, y + 24.0 + dy), Align2::CENTER_CENTER, *label, FontId::proportional(11.5), theme.text_muted.gamma_multiply(a));
         }
-        self.play_button(ui, Pos2::new(center.x, y + 84.0), t.game_again, theme, t, now, at(1.6, 0.5, out_back))
+        let again = self.play_button(ui, Pos2::new(center.x, y + 84.0), t.game_again, theme, now, at(1.6, 0.5, out_back));
+        // Below: the card of the round, to share.
+        let share = at(1.9, 0.4, out_cubic);
+        if share > 0.01 && self.share.is_none() {
+            let button = egui::Button::new(egui::RichText::new(t.game_share).size(13.0).color(theme.text_muted.gamma_multiply(share))).frame_when_inactive(false).corner_radius(6.0);
+            let at = Rect::from_center_size(Pos2::new(center.x, y + 84.0 + 31.0 + 26.0), Vec2::new(220.0, 28.0));
+            if ui.put(at, button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.share = Some(super::scorecard::ScoreCard::new(player, self.letters, self.length_text(), self.done, wpm.round() as u32, accuracy, self.best_combo, self.record));
+            }
+        }
+        if let Some(card) = &mut self.share {
+            if card.ui(ui.ctx(), theme, t, now, &mut self.clipboard) {
+                // The name typed, kept for the next cards (an empty field forgets nothing).
+                let name = card.name.trim().to_owned();
+                if !name.is_empty() && name != player {
+                    self.renamed = Some(name);
+                }
+                self.share = None;
+            }
+            return false;
+        }
+        again
     }
+}
+
+/// `secs` as "1 min" or "1 min 08 s" (rounded to the second).
+fn round_time(secs: f64) -> String {
+    let s = secs.round() as u64;
+    if s >= 60 && s.is_multiple_of(60) { format!("{} min", s / 60) } else { format_duration(std::time::Duration::from_secs(s)) }
 }
 
 /// A speaker; with sound waves when `on`, crossed out otherwise.

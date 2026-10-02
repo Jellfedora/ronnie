@@ -113,8 +113,8 @@ impl App {
                 ui.label(egui::RichText::new(t.commands_hint).size(11.0).color(theme.text_muted));
             });
         });
-        // A click elsewhere closes it (except on the pane header, where the ⚡ button toggles it). Tested
-        // on the rect: `contains_pointer` is false over the menu's own widgets.
+        // A click elsewhere closes it (the ⚡ button, handled before, already toggles it). Tested on the
+        // rect: `contains_pointer` is false over the menu's own widgets.
         let inside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| area.response.rect.contains(p));
         let fresh = self.commands_menu.as_mut().is_some_and(|m| std::mem::replace(&mut m.fresh, false));
         let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !inside && !fresh;
@@ -143,10 +143,7 @@ impl App {
             self.commands_menu = None;
             self.focus_terminal = true;
         } else if clicked_outside && remove.is_none() {
-            let over_header = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.y < pane_rect.min.y + PANE_HEADER_H && pane_rect.contains(p));
-            if !over_header {
-                self.commands_menu = None;
-            }
+            self.commands_menu = None;
         }
     }
 
@@ -216,8 +213,10 @@ impl App {
         let mut step: Option<bool> = None; // Some(true): older occurrence
         let mut close = escape;
         let was_text = search.text;
+        // Opened by this frame's click (the pane's 🔍 button): that click isn't one elsewhere.
+        let opening = search.fresh;
 
-        egui::Area::new(egui::Id::new("history-search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+        let area = egui::Area::new(egui::Id::new("history-search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
             Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
                 ui.set_width(width - 20.0);
                 ui.horizontal(|ui| {
@@ -304,6 +303,11 @@ impl App {
                 }
             });
         });
+        // A click elsewhere closes it (the 🔍 button, handled before, already toggles it).
+        let clicked_outside = ctx.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p)));
+        if clicked_outside && !opening {
+            close = true;
+        }
 
         if let Some(term) = self.tabs.get_mut(index).and_then(|t| t.panes.get_mut(&pane)) {
             let mut status = None;
@@ -806,6 +810,51 @@ impl App {
             return;
         }
         crate::log::info("configuration reset (moved to a backup directory)");
+        self.relaunch_replaced();
+    }
+
+    /// Dictation to Claude: once the user stops talking, what they said is typed in the pane, then
+    /// Enter.
+    pub(super) fn poll_dictation(&mut self, ctx: &egui::Context) {
+        if let Some((pane, dictation)) = &mut self.dictation {
+            ctx.request_repaint_after(Duration::from_millis(50));
+            if let Some(outcome) = dictation.poll() {
+                let pane = *pane;
+                self.dictation = None;
+                let t = self.t();
+                match outcome {
+                    crate::voice::Outcome::Text(text) => {
+                        if let Some(term) = self.tabs.iter_mut().find_map(|tab| tab.panes.get_mut(&pane)) {
+                            term.type_text(&text);
+                            self.dictation_enter = Some((pane, Instant::now()));
+                        }
+                    }
+                    crate::voice::Outcome::Nothing => {}
+                    crate::voice::Outcome::Failed(e) => {
+                        self.error = Some(match e {
+                            crate::voice::Error::Denied => if cfg!(windows) { t.voice_denied_windows } else { t.voice_denied }.to_owned(),
+                            crate::voice::Error::Unavailable => t.voice_unavailable.to_owned(),
+                            crate::voice::Error::Online => t.voice_online.to_owned(),
+                            crate::voice::Error::Other(e) => t.voice_failed.replace("{e}", &e),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some((pane, at)) = self.dictation_enter {
+            if at.elapsed() >= Duration::from_millis(150) {
+                self.dictation_enter = None;
+                if let Some(term) = self.tabs.iter_mut().find_map(|tab| tab.panes.get_mut(&pane)) {
+                    term.type_text("\r");
+                }
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(30));
+            }
+        }
+    }
+
+    /// Restarts once the whole configuration was replaced (reset, import): nothing is saved before.
+    pub(super) fn relaunch_replaced(&mut self) {
         self._instance_lock = None;
         match self.updater.relaunch() {
             Ok(()) => {

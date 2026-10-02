@@ -121,7 +121,19 @@ pub fn paint<L: EventListener>(
     let default_bg = theme.resolve(Color::Named(NamedColor::Background), colors);
     let show_cursor = content.mode.contains(TermMode::SHOW_CURSOR) && cursor.shape != CursorShape::Hidden;
     let block_cursor = show_cursor && focused && cursor.shape == CursorShape::Block;
-    let cursor_color = theme.resolve(Color::Named(NamedColor::Cursor), colors);
+    let mut cursor_color = theme.resolve(Color::Named(NamedColor::Cursor), colors);
+    // Ronnie Métal: the cursor smoulders like an ember, between gold and red, while the window is in front.
+    let ember = (theme.metal && focused && show_cursor).then(|| {
+        let ctx = painter.ctx();
+        let (time, in_front) = ctx.input(|i| (i.time, i.viewport().focused.unwrap_or(true)));
+        if in_front {
+            ctx.request_repaint_after(std::time::Duration::from_millis(66));
+        }
+        0.5 + 0.5 * (time * 2.2).sin() as f32
+    });
+    if let Some(pulse) = ember {
+        cursor_color = cursor_color.lerp_to_gamma(theme.accent, 0.35 * pulse);
+    }
 
     let cell_rect = |row: usize, col: usize, width: usize| {
         Rect::from_min_size(
@@ -256,6 +268,16 @@ pub fn paint<L: EventListener>(
                 _ => Shape::rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, cursor_color), StrokeKind::Inside),
             };
             painter.add(shape);
+        }
+    }
+    if let Some(pulse) = ember {
+        let row = cursor.point.line.0 + offset;
+        if row >= 0 {
+            let r = cell_rect(row as usize, cursor.point.column.0, 1);
+            for k in 1..=4 {
+                let alpha = (0.32 - k as f32 * 0.07) * (0.35 + 0.65 * pulse);
+                painter.rect_stroke(r.expand(k as f32 * 1.5), 1.0 + k as f32, Stroke::new(1.5, cursor_color.gamma_multiply(alpha)), StrokeKind::Outside);
+            }
         }
     }
 

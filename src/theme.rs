@@ -18,6 +18,8 @@ pub struct Theme {
     pub text: Color32,
     pub accent: Color32,
     pub dark: bool,
+    /// Ronnie Métal: the focused pane glows, panes flash, the cursors are drawn (see `METAL_THEME`).
+    pub metal: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -60,20 +62,41 @@ pub struct Preset {
 
 pub const DEFAULT_THEME: &str = "dracula";
 
+/// The theme unlocked by the typing game.
+pub const METAL_THEME: &str = "ronnie-metal";
+/// Letters to reach in a round of the typing game to unlock it.
+pub const METAL_UNLOCK: u32 = 300;
+
 pub const PRESETS: &[Preset] = &[
     // The house theme: deep black, blood red, old gold and bone-colored text.
     Preset {
         id: "ronnie",
         name: "Ronnie",
-        bg: 0x110e0f,
-        fg: 0xe6ddd0,
+        bg: 0x1b1819,
+        fg: 0xefe8de,
         cursor: 0xd9a93f,
-        chrome: 0x0a0809,
-        surface: 0x2b1e20,
+        chrome: 0x141112,
+        surface: 0x322a2c,
         accent: 0xd8323c,
         ansi: [
-            0x1c1617, 0xd8323c, 0x8fb35a, 0xd9a93f, 0x6f8fc4, 0xb8528c, 0x5fa9a0, 0xd4cabd, //
+            0x2a2325, 0xd8323c, 0x8fb35a, 0xd9a93f, 0x6f8fc4, 0xb8528c, 0x5fa9a0, 0xd4cabd, //
             0x5c4b4d, 0xff5058, 0xa9d06c, 0xf2c55c, 0x8eaae2, 0xde72ae, 0x80cfc5, 0xfff7ec,
+        ],
+        dark: true,
+    },
+    // Unlocked by the typing game: black as a stage, a red that burns and the gold of the spotlights.
+    Preset {
+        id: METAL_THEME,
+        name: "Ronnie Métal",
+        bg: 0x0f0c0d,
+        fg: 0xf2ebe0,
+        cursor: 0xf2b632,
+        chrome: 0x080607,
+        surface: 0x2c1517,
+        accent: 0xff2b3a,
+        ansi: [
+            0x1f1718, 0xe8202f, 0x9fd03c, 0xf2b632, 0x7f9bc0, 0x9b59d0, 0x4fb3a9, 0xd8cfc2, //
+            0x5a4446, 0xff4a56, 0xbcf05a, 0xffd25c, 0xa3bde0, 0xbd84ee, 0x76d6cb, 0xfffaf0,
         ],
         dark: true,
     },
@@ -275,7 +298,13 @@ impl Preset {
             text: fg,
             accent,
             dark: self.dark,
+            metal: self.id == METAL_THEME,
         }
+    }
+
+    /// Still locked, with this best score at the typing game (never in a dev build, to try it).
+    pub fn locked(&self, best: u32) -> bool {
+        crate::config::OFFICIAL && self.id == METAL_THEME && best < METAL_UNLOCK
     }
 
     /// The preset with this id, or the default one.

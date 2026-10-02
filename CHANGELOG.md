@@ -2,6 +2,30 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.16.0] - 2026-10-02
+
+### Nouveautés
+
+- **Visite guidée** au premier lancement : le tour des fonctionnalités principales en 7 étapes, chacune avec un schéma de la fenêtre où la partie présentée s'éclaire. « Passer » la ferme, et Paramètres › Général › Visite guidée › Revoir la relance.
+- **Dicter à Claude** (macOS et Windows) : un micro apparaît dans la barre d'un pane où Claude Code tourne. On parle, et le message part tout seul quand on s'arrête. Sous Windows, il faut activer « Reconnaissance vocale en ligne ».
+- **Exporter et importer la configuration** dans un `.zip` (Paramètres › Général › Sauvegarde) : réglages, hôtes SSH, bases de données, profils, onglets, historiques et contenu des terminaux. Les mots de passe et les clés SSH peuvent y être inclus, chiffrés avec un mot de passe choisi à l'export. L'import remplace tout, met l'ancienne configuration de côté, et marche aussi d'un système à l'autre.
+- Speed Metal :
+  - **Partager son score** à la fin d'une partie : une carte aux couleurs du thème, avec son pseudo (retenu pour la fois suivante), à copier en image ou en texte et à coller dans une discussion.
+  - **5 mots sans faute font gagner 2 secondes**. La durée de la partie s'affiche avec le score.
+- **Un thème secret** se débloque au Speed Metal. Des indices sont cachés dans les astuces de la page d'accueil.
+- Une commande qui échoue fait **flasher le bord de son pane** dans la couleur du thème.
+
+### Changements
+
+- Les fenêtres flottantes se ferment d'un clic à côté : la recherche, le menu des commandes enregistrées ⚡ et les suggestions de chemin.
+- Thème Ronnie un peu éclairci, pour mieux lire.
+- Les mises à jour sont cherchées toutes les 10 minutes, au lieu de toutes les 6 heures.
+- Speed Metal : Entrée ne lance plus de partie, pour ne pas relancer sans le vouloir en finissant de taper.
+
+### Corrections
+
+- Barre latérale : « Base locale détectée » passe sur deux lignes au lieu d'être coupée quand la barre est étroite.
+
 ## [0.15.0] - 2026-10-02
 
 ### Nouveautés
