@@ -23,7 +23,7 @@ use alacritty_terminal::term::{Config as TermConfig, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
 use alacritty_terminal::Term;
 use anyhow::Result;
-use egui::{Color32, Event, EventFilter, Id, MouseWheelUnit, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Color32, Event, EventFilter, Id, Key, MouseWheelUnit, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 pub use links::{open as open_url, LocalUrl};
 pub use osc::Finished;
@@ -161,6 +161,9 @@ pub struct Terminal {
     link_request: Option<String>,
     /// Multi-line paste waiting for confirmation (the program doesn't use bracketed paste).
     pending_paste: Option<String>,
+    /// A paste shortcut with no text on the clipboard reaches egui only as V released, with no V
+    /// pressed before it: what was seen of the press (the key, or the pasted text) since.
+    v_press_seen: bool,
     /// Programs may set the clipboard (OSC 52), e.g. vim or tmux over SSH.
     allow_clipboard: bool,
     /// What a program handling the mouse itself (Claude Code) put on the clipboard: its own selection,
@@ -269,6 +272,7 @@ impl Terminal {
             find: None,
             link_request: None,
             pending_paste: None,
+            v_press_seen: false,
             allow_clipboard: true,
             program_copy: None,
             grid_origin: Pos2::ZERO,
@@ -518,6 +522,12 @@ impl Terminal {
     pub fn paste_text(&mut self, text: &str) {
         let mode = *self.term.lock().mode();
         self.paste(text, mode);
+    }
+
+    /// The clipboard holds an image, no text: the key programs read it with themselves (Claude Code:
+    /// Alt+V on Windows, Ctrl+V elsewhere).
+    pub fn paste_image(&mut self) {
+        self.write_user(if cfg!(windows) { b"\x1bv" } else { b"\x16" });
     }
 
     /// A clicked link waiting for confirmation, taken once.
@@ -804,7 +814,14 @@ impl Terminal {
                     }
                 }
                 Event::Ime(egui::ImeEvent::Commit(text)) => self.write_user(text.as_bytes()),
+                // An image on the clipboard: the paste shortcut is passed on for Claude Code to read it.
+                Event::Key { key: Key::V, pressed: false, .. } => {
+                    if !std::mem::take(&mut self.v_press_seen) && arboard::Clipboard::new().and_then(|mut c| c.get_image()).is_ok() {
+                        self.paste_image();
+                    }
+                }
                 Event::Key { key, pressed: true, modifiers, .. } => {
+                    self.v_press_seen |= key == Key::V;
                     if let Some(bytes) = input::key_to_bytes(key, modifiers, mode) {
                         self.write_user(&bytes);
                     }
@@ -821,6 +838,7 @@ impl Terminal {
                 }
                 Event::Cut if !mac => self.write_user(b"\x18"),
                 Event::Paste(text) => {
+                    self.v_press_seen = true;
                     if mac || mods.shift {
                         self.paste(&text, mode);
                     } else {

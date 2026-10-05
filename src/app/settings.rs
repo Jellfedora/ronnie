@@ -387,6 +387,16 @@ impl App {
     /// Dialog to create or edit a database connection, with a connection test.
     pub(super) fn db_editor_window(&mut self, ctx: &egui::Context) {
         let hosts: Vec<(Uuid, String)> = self.config.ssh.iter().map(|h| (h.id, if h.name.is_empty() { h.address() } else { h.name.clone() })).collect();
+        // Through an SSH host, the server's own address (or "localhost", maybe ::1 there) is 127.0.0.1
+        // as seen from it: MariaDB often listens only there.
+        let ssh_hosts = self.config.ssh.clone();
+        let via_ssh_host = move |d: &mut crate::config::DbConnection| {
+            let Some(ssh) = d.ssh.and_then(|id| ssh_hosts.iter().find(|h| h.id == id)) else { return };
+            let host = crate::db::clean_host(&d.host);
+            if host.is_empty() || host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case(ssh.host.trim()) {
+                d.host = "127.0.0.1".into();
+            }
+        };
         let Some(editor) = &mut self.db_editor else { return };
         let t = self.config.settings.language.strings();
         let theme = self.theme.clone();
@@ -444,11 +454,14 @@ impl App {
                 ui.end_row();
                 // Through an SSH host: for servers that only listen on their own machine.
                 ui.label(egui::RichText::new(t.db_via_ssh).color(theme.text_muted));
-                let current = d.ssh.and_then(|id| hosts.iter().find(|(h, _)| *h == id)).map_or(t.db_direct.to_owned(), |(_, n)| format!("🔒  {n}"));
+                let current = d.ssh.and_then(|id| hosts.iter().find(|(h, _)| *h == id)).map_or(t.db_direct.to_owned(), |(_, n)| format!("🔒  SSH  ·  {n}"));
                 egui::ComboBox::from_id_salt("db-editor-ssh").selected_text(current).width(ui.available_width()).show_ui(ui, |ui| {
                     ui.selectable_value(&mut d.ssh, None, t.db_direct);
                     for (id, name) in &hosts {
-                        ui.selectable_value(&mut d.ssh, Some(*id), format!("🔒  {name}"));
+                        // The server is usually on the SSH host itself (another machine it reaches: typed after).
+                        if ui.selectable_value(&mut d.ssh, Some(*id), format!("🔒  SSH  ·  {name}")).clicked() {
+                            d.host = "127.0.0.1".into();
+                        }
                     }
                 });
                 ui.end_row();
@@ -542,11 +555,14 @@ impl App {
         }
         let Some(editor) = &mut self.db_editor else { return };
         let port = editor.port.trim().parse::<u16>().ok().filter(|p| *p > 0);
+        if test || save {
+            via_ssh_host(&mut editor.draft);
+        }
         if test {
             let password = if editor.password_changed || !editor.draft.password_saved { Some(editor.password.clone()).filter(|p| !p.is_empty()) } else { ssh::load_password(editor.draft.id) };
             let host = editor.draft.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned();
             let tunnel = host.as_ref().map(|h| h.tunnel_command());
-            let target = crate::db::Target { host: editor.draft.host.trim().to_owned(), port: port.unwrap_or(editor.draft.engine.default_port()), user: editor.draft.user.trim().to_owned(), password, database: editor.draft.database.clone(), tunnel, engine: editor.draft.engine, trust_cert: editor.draft.trust_cert };
+            let target = crate::db::Target { host: crate::db::clean_host(&editor.draft.host), port: port.unwrap_or(editor.draft.engine.default_port()), user: editor.draft.user.trim().to_owned(), password, database: editor.draft.database.clone(), tunnel, engine: editor.draft.engine, trust_cert: editor.draft.trust_cert };
             editor.tested = None;
             let (rx, pid) = crate::db::test(ctx, target);
             editor.testing = Some(rx);
@@ -570,7 +586,7 @@ impl App {
             return;
         }
         let mut c = editor.draft.clone();
-        c.host = c.host.trim().to_owned();
+        c.host = crate::db::clean_host(&c.host);
         c.user = c.user.trim().to_owned();
         if c.host.is_empty() {
             editor.error = Some(t.host_required.to_owned());

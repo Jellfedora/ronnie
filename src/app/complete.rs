@@ -15,7 +15,7 @@ pub(super) struct Suggestions {
 
 /// The last word of `line` (what is left of the cursor), unescaped, if it looks like a path to
 /// complete: an argument (not the command name, unless it has a "/"), without quotes, variables or
-/// patterns.
+/// patterns. Nothing typed yet after `cd` or `pushd`: the folder's names, all of them.
 fn last_word(line: &str) -> Option<String> {
     let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
@@ -50,7 +50,7 @@ fn last_word(line: &str) -> Option<String> {
     }
     // Nothing typed yet in this word.
     if !in_word || word.is_empty() {
-        return None;
+        return (words.len() == 1 && matches!(words[0].as_str(), "cd" | "pushd")).then(String::new);
     }
     // A command name: only a path to a program (./script, bin/tool).
     if words.is_empty() && !word.contains('/') {
@@ -86,6 +86,7 @@ pub(super) fn parse(line: &str, cwd: &Path, home: &Path) -> Option<Suggestions> 
 /// (as `last_word`).
 fn last_word_windows(line: &str) -> Option<String> {
     let mut words = 0;
+    let mut first = String::new();
     let mut word = String::new();
     let mut in_word = false;
     let mut chars = line.chars();
@@ -98,6 +99,9 @@ fn last_word_windows(line: &str) -> Option<String> {
             ' ' | '\t' => {
                 if in_word {
                     words += 1;
+                    if words == 1 {
+                        first = word.to_lowercase();
+                    }
                     word.clear();
                     in_word = false;
                 }
@@ -114,7 +118,10 @@ fn last_word_windows(line: &str) -> Option<String> {
             }
         }
     }
-    if !in_word || word.is_empty() || word.starts_with('-') {
+    if !in_word || word.is_empty() {
+        return (words == 1 && matches!(first.as_str(), "cd" | "pushd" | "sl" | "set-location")).then(String::new);
+    }
+    if word.starts_with('-') {
         return None;
     }
     // A command name: only a path to a program (.\script.ps1).
@@ -236,6 +243,8 @@ mod tests {
         assert_eq!(s("./scripts/re"), Some(Suggestions { dir: "/work/./scripts/".into(), prefix: "re".into() }));
         assert_eq!(s("git"), None);
         assert_eq!(s("ls "), None);
+        assert_eq!(s("cd "), Some(Suggestions { dir: "/work".into(), prefix: String::new() }), "after cd, without a \"/\"");
+        assert_eq!(s("cd src "), None);
         assert_eq!(s("ls -la"), None);
         assert_eq!(s("echo \"a b"), None);
         assert_eq!(s("ls $HOME/x"), None);
@@ -276,6 +285,8 @@ mod tests {
         assert_eq!(s("cd My` Doc"), Some(Suggestions { dir: "/work/".into(), prefix: "My Doc".into() }));
         assert_eq!(s(".\\scr"), Some(Suggestions { dir: "/work/.\\".into(), prefix: "scr".into() }));
         assert_eq!(s("git"), None);
+        assert_eq!(s("Set-Location "), Some(Suggestions { dir: "/work".into(), prefix: String::new() }));
+        assert_eq!(s("ls "), None);
         assert_eq!(s("ls -Force"), None);
         assert_eq!(s("cd $HOME\\x"), None);
         assert_eq!(s("cd 'a b"), None);

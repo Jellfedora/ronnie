@@ -268,6 +268,7 @@ struct WindowSlot {
     guard_confirm: Option<(PaneId, String, guard::Danger)>,
     pane_drag: Option<PaneId>,
     pane_rename: Option<(PaneId, String, bool)>,
+    pane_path: Option<(PaneId, String, Rect, bool)>,
     toasts: Vec<Toast>,
     toast_rects: Vec<Rect>,
     home: Option<String>,
@@ -440,6 +441,9 @@ pub struct App {
     pane_drag: Option<PaneId>,
     /// Pane being renamed: its id, the name typed, whether the field was just opened.
     pane_rename: Option<(PaneId, String, bool)>,
+    /// Folder of a pane being edited in its strip (Enter goes there): the pane, the path typed, the
+    /// field, whether it was just opened.
+    pane_path: Option<(PaneId, String, Rect, bool)>,
     /// The home page is shown instead of the active tab: at launch, after a tab closed (with a line
     /// about it), or from the logo.
     home: Option<String>,
@@ -1028,6 +1032,7 @@ impl App {
             guard_confirm: None,
             pane_drag: None,
             pane_rename: None,
+            pane_path: None,
             startup_edit: None,
             home: None,
             home_game: false,
@@ -1613,6 +1618,7 @@ impl App {
         swap(&mut self.guard_confirm, &mut slot.guard_confirm);
         swap(&mut self.pane_drag, &mut slot.pane_drag);
         swap(&mut self.pane_rename, &mut slot.pane_rename);
+        swap(&mut self.pane_path, &mut slot.pane_path);
         swap(&mut self.toasts, &mut slot.toasts);
         swap(&mut self.toast_rects, &mut slot.toast_rects);
         swap(&mut self.home, &mut slot.home);
@@ -2549,6 +2555,8 @@ struct HeaderClicks {
     close: bool,
     /// Double click: rename the pane.
     rename: bool,
+    /// A click on the folder shown: where to edit it.
+    path: Option<Rect>,
 }
 
 /// The microphone of a pane's strip, ending at `right` (`listening`: the sound level and what was heard
@@ -2794,6 +2802,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         max_w -= 96.0;
     }
 
+    let ssh = matches!(header, Header::Ssh(_));
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
         Header::Local(None, _, _) if name.is_none() => {
@@ -2832,6 +2841,22 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     job.append(&text, 0.0, egui::TextFormat { font_id: font.clone(), color, ..Default::default() });
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
     let galley = painter.layout_job(job);
+    // The folder (after the host, for SSH): clicked, it can be edited to go elsewhere.
+    let path_from = if ssh { text.find("  ·  ").map(|i| i + "  ·  ".len()) } else { (!text.is_empty()).then_some(0) };
+    if let Some(from) = path_from {
+        let before = match name {
+            Some(name) => format!("{name}  ·  {}", &text[..from]),
+            None => text[..from].to_owned(),
+        };
+        let start = rect.min.x + 10.0 + painter.layout_no_wrap(before, font.clone(), color).size().x;
+        let area = Rect::from_x_y_ranges(start..=(rect.min.x + 10.0 + galley.size().x), rect.y_range());
+        if resp.hovered() && resp.hover_pos().is_some_and(|p| area.contains(p)) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        if resp.clicked() && resp.interact_pointer_pos().is_some_and(|p| area.contains(p)) {
+            clicks.path = Some(Rect::from_x_y_ranges((start - 6.0)..=(rect.min.x + 10.0 + max_w), rect.y_range()));
+        }
+    }
     painter.galley(Pos2::new(rect.min.x + 10.0, rect.center().y - galley.size().y / 2.0), galley, color);
     let resp = match tooltip {
         Some(tip) => resp.on_hover_text(tip),
@@ -2980,6 +3005,8 @@ enum TabAction {
 
 enum PaneAction {
     Copy(PaneId),
+    /// The pane's folder, from the root (the server's, for an SSH pane).
+    CopyPath(PaneId),
     Paste(PaneId),
     Split(PaneId, Direction),
     Close(PaneId),
@@ -3000,6 +3027,19 @@ enum PaneAction {
     Reopen(PaneId, usize),
 }
 
+/// The pane's folder, from the root. On a server (`ssh`), "~" is its home: known once the file
+/// manager has connected, or guessed from the account.
+fn pane_path(term: &Terminal, local: bool, ssh: Option<&SshHost>, files: Option<&files::FileManager>) -> Option<String> {
+    if local {
+        return term.cwd().map(|p| p.display().to_string());
+    }
+    let cwd = term.reported_cwd()?;
+    let Some(rest) = cwd.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/')) else { return Some(cwd) };
+    let user = ssh.and_then(|h| h.user.clone());
+    let home = files.and_then(|f| f.remote_home()).map(str::to_owned).or_else(|| user.map(|u| if u == "root" { "/root".into() } else { format!("/home/{u}") }));
+    Some(home.map_or(cwd.clone(), |h| format!("{}{rest}", h.trim_end_matches('/'))))
+}
+
 /// Right-click menu of a terminal pane.
 #[allow(clippy::too_many_arguments)]
 fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[String], action: &mut Option<PaneAction>) {
@@ -3014,6 +3054,7 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     };
     item(ui, can_copy, t.copy, shortcut("⌘ C", "Ctrl+Shift+C"), PaneAction::Copy(id));
     item(ui, true, t.paste, shortcut("⌘ V", "Ctrl+Shift+V"), PaneAction::Paste(id));
+    item(ui, true, t.files_copy_path, String::new(), PaneAction::CopyPath(id));
     ui.separator();
     // The splits with a shortcut first.
     item(ui, true, t.split_right, shortcuts.split_right.label(), PaneAction::Split(id, Direction::Right));
@@ -3334,7 +3375,7 @@ impl App {
                 };
                 // Given once the click that asked for it (in the sidebar...) is over: during that frame, egui
                 // takes the focus away from every widget the pointer isn't on, the terminal included.
-                if self.focus_terminal && self.rename.is_none() && self.pane_rename.is_none() {
+                if self.focus_terminal && self.rename.is_none() && self.pane_rename.is_none() && self.pane_path.is_none() {
                     if ui.input(|i| i.pointer.any_pressed() || i.pointer.any_click() || i.pointer.any_down()) {
                         ui.ctx().request_repaint();
                     } else {
@@ -3570,6 +3611,44 @@ impl App {
                                 self.focus_terminal = true;
                             }
                         }
+                        if let Some(field) = clicks.path {
+                            let path = pane_path(term, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|s| s.id == h)), tab.files.as_deref());
+                            if let Some(path) = path {
+                                self.pane_path = Some((id, path, field, true));
+                            }
+                        }
+                        // The folder edited in the strip: Enter goes there (cd), when the shell waits at its prompt.
+                        if let Some((_, text, field, fresh)) = self.pane_path.as_mut().filter(|(p, ..)| *p == id) {
+                            let field = *field;
+                            ui.painter().rect_filled(field.shrink2(Vec2::new(0.0, 3.0)), 5.0, self.theme.bg);
+                            let mut output = egui::TextEdit::singleline(text).font(FontId::monospace(12.0)).frame(Frame::NONE).show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field.shrink2(Vec2::new(6.0, 4.0)))));
+                            ui.painter().rect_stroke(field.shrink2(Vec2::new(0.0, 3.0)), 5.0, Stroke::new(1.0, self.theme.accent), egui::StrokeKind::Inside);
+                            if *fresh {
+                                // All selected: ⌘ C copies it, typing replaces it.
+                                output.response.request_focus();
+                                output.state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+                                output.state.store(ui.ctx(), output.response.id);
+                                *fresh = false;
+                            }
+                            let (enter, escape) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+                            if enter && !text.trim().is_empty() && term.ready_for_commands(Duration::ZERO, local) {
+                                // A leading "~" stays the home folder.
+                                let typed = text.trim();
+                                let (home, path) = match typed.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with(['/', '\\'])) {
+                                    Some(rest) => ("~", rest),
+                                    None => ("", typed),
+                                };
+                                let path = if local && cfg!(windows) { complete::completion_windows(path, "", false) } else { complete::completion(path, "", false) };
+                                let path = format!("{home}{path}");
+                                // What was typed at the prompt is cleared first (Esc for PowerShell, Ctrl+E Ctrl+U elsewhere).
+                                let clear = if local && cfg!(windows) { "\x1b" } else { "\x05\x15" };
+                                term.type_text(&format!("{clear}cd {path}\r"));
+                            }
+                            if enter || escape || output.response.lost_focus() {
+                                self.pane_path = None;
+                                self.focus_terminal = true;
+                            }
+                        }
                         if clicks.close {
                             pane_action = Some(PaneAction::Close(id));
                         }
@@ -3634,6 +3713,31 @@ impl App {
                         let resp = term.ui(ui, body, &self.theme, &self.fonts);
                         if resp.secondary_clicked() {
                             resp.request_focus();
+                        }
+                        // Files dragged from the Finder: their paths typed at the cursor, escaped, as other
+                        // terminals do (Claude Code attaches the images). A server can't open this computer's files.
+                        if local {
+                            let (hovering, dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
+                            if hovering || !dropped.is_empty() {
+                                let over = files::drag_pointer(ui.ctx()).is_some_and(|p| body.contains(p));
+                                if hovering {
+                                    // The system doesn't move the pointer during such a drag: asked again each frame.
+                                    ui.ctx().request_repaint();
+                                    if over {
+                                        ui.painter().rect_stroke(body.shrink(1.0), 4.0, Stroke::new(2.0, self.theme.accent), egui::StrokeKind::Inside);
+                                    }
+                                }
+                                if over && !dropped.is_empty() {
+                                    let escape = |p: &std::path::PathBuf| {
+                                        let p = p.display().to_string();
+                                        if cfg!(windows) { complete::completion_windows(&p, "", false) } else { complete::completion(&p, "", false) }
+                                    };
+                                    let paths: Vec<String> = dropped.iter().map(escape).collect();
+                                    term.paste_text(&format!("{} ", paths.join(" ")));
+                                    resp.request_focus();
+                                    tab.focused = id;
+                                }
+                            }
                         }
                         if resp.has_focus() {
                             tab.focused = id;
@@ -3800,9 +3904,15 @@ impl App {
                         self.focus_terminal = true;
                     }
                     Some(PaneAction::Paste(id)) => {
-                        let text = arboard::Clipboard::new().and_then(|mut c| c.get_text());
-                        match (text, tab.panes.get_mut(&id)) {
-                            (Ok(text), Some(term)) => term.paste_text(&text),
+                        // Text, or None for an image (read by the program itself).
+                        let pasted = arboard::Clipboard::new().and_then(|mut c| match c.get_text() {
+                            Ok(text) => Ok(Some(text)),
+                            Err(_) if c.get_image().is_ok() => Ok(None),
+                            Err(e) => Err(e),
+                        });
+                        match (pasted, tab.panes.get_mut(&id)) {
+                            (Ok(Some(text)), Some(term)) => term.paste_text(&text),
+                            (Ok(None), Some(term)) => term.paste_image(),
                             (Err(e), _) => self.error = Some(format!("{} : {e}", self.t().clipboard)),
                             _ => {}
                         }
@@ -3834,6 +3944,13 @@ impl App {
                     }
                     Some(PaneAction::Relaunch(id)) => relaunch = Some(id),
                     Some(PaneAction::Reopen(id, k)) => reopen = Some((id, k)),
+                    Some(PaneAction::CopyPath(id)) => {
+                        let path = tab.panes.get(&id).and_then(|term| pane_path(term, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|s| s.id == h)), tab.files.as_deref()));
+                        if let Some(path) = path {
+                            ui.ctx().copy_text(path);
+                        }
+                        self.focus_terminal = true;
+                    }
                     Some(PaneAction::Reveal(id)) => {
                         if let Some(dir) = tab.panes.get(&id).and_then(Terminal::cwd) {
                             config::open_folder(&dir);

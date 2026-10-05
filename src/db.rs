@@ -45,6 +45,14 @@ pub struct Target {
     pub trust_cert: bool,
 }
 
+/// A host as typed, made an address: without spaces, nor what a pasted URL adds ("http://", a
+/// trailing "/path").
+pub fn clean_host(host: &str) -> String {
+    let host = host.trim();
+    let host = host.split_once("://").map_or(host, |(_, rest)| rest);
+    host.split('/').next().unwrap_or(host).to_owned()
+}
+
 impl Target {
     /// The machine, without a SQL Server instance name (`server\instance`).
     pub(crate) fn machine(&self) -> &str {
@@ -1327,6 +1335,14 @@ fn kill(direct: Target, id: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleans_a_pasted_host() {
+        assert_eq!(clean_host(" http://185.245.143.93 "), "185.245.143.93");
+        assert_eq!(clean_host("https://db.example.com/admin/"), "db.example.com");
+        assert_eq!(clean_host("SRV\\SQLEXPRESS"), "SRV\\SQLEXPRESS");
+        assert_eq!(clean_host("localhost"), "localhost");
+    }
 
     #[test]
     fn quotes_names_and_strings() {

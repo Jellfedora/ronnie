@@ -2665,7 +2665,7 @@ fn drag_out_dir() -> std::path::PathBuf {
 
 /// Where the pointer is, in this window's points, while files are dragged from another app. macOS
 /// doesn't tell the window during such a drag: the system is asked.
-fn drag_pointer(ctx: &egui::Context) -> Option<Pos2> {
+pub(super) fn drag_pointer(ctx: &egui::Context) -> Option<Pos2> {
     #[cfg(target_os = "macos")]
     {
         let inner = ctx.input(|i| i.viewport().inner_rect)?;
