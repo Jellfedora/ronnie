@@ -311,6 +311,8 @@ fn grant_sql(access: Access, database: &str, user: &str, host: &str) -> Option<S
 #[derive(Clone)]
 enum Dialog {
     NewDatabase { name: String, fresh: bool },
+    /// Export (of a database, or one of its tables) or import: its options, then the file.
+    Transfer { db: Option<String>, table: Option<String>, import: bool, gzip: bool, check_fk: bool },
     NewTable { db: String, name: String, columns: Vec<NewColumn>, fresh: bool },
     RenameTable { db: String, old: String, name: String, fresh: bool },
     /// A row added to the table shown.
@@ -324,7 +326,9 @@ enum Dialog {
     /// A column added (`original` None) or changed.
     Column(ColumnEdit),
     /// A destructive statement, run once confirmed (`query`: as a query, its results shown).
-    Confirm { sql: String, db: Option<String>, reason: String, query: bool, expect: Option<Expect> },
+    /// `fk`: dropping or emptying tables on MySQL, whether the foreign keys are checked (a box in the
+    /// window; off, tables that refer to each other go too).
+    Confirm { sql: String, db: Option<String>, reason: String, query: bool, expect: Option<Expect>, fk: Option<bool> },
     /// A change made through the interface, its SQL shown before it runs.
     Review(Change),
 }
@@ -671,32 +675,27 @@ impl DbView {
                         };
                         self.finish_entry(id, since, outcome);
                     }
-                    // A change typed above a table (UPDATE, DELETE...): its rows are reloaded.
-                    let changed = error.is_none() && results.iter().all(|r| r.columns.is_empty());
+                    // A change (UPDATE, DROP...), or a script stopped partway: the rows shown are reloaded,
+                    // wherever it was typed.
+                    let changed = error.is_some() || results.iter().any(|r| r.columns.is_empty());
                     let out = Some((results, elapsed, error));
-                    let from_table = match self.query_for.take() {
+                    match self.query_for.take() {
                         // A tab closed meanwhile: the result has nowhere to go.
                         Some(id) => {
                             if let Some(tab) = self.sql_tabs.iter_mut().find(|tab| tab.id == id) {
                                 tab.out = out;
                             }
-                            false
                         }
-                        None => {
-                            self.table_out = out;
-                            true
-                        }
-                    };
+                        None => self.table_out = out,
+                    }
                     self.sql_running = false;
-                    if from_table && self.table_query && changed {
+                    // A query may have changed what is listed (and the columns, if it changed something).
+                    if changed {
+                        self.columns_asked.clear();
                         if let Some(r) = &self.rows {
                             let (d, tb, o, order) = (r.db.clone(), r.table.clone(), r.offset, r.order.clone());
                             self.load_rows(d, tb, o, order);
                         }
-                    }
-                    // A query may have changed what is listed (and the columns, if it changed something).
-                    if changed {
-                        self.columns_asked.clear();
                     }
                     self.refresh_lists();
                 }
@@ -716,6 +715,9 @@ impl DbView {
                     }
                     self.error = Some(error);
                     self.rows_loading = false;
+                    // Part of it may have been applied (tables dropped before the one refused).
+                    self.columns_asked.clear();
+                    self.refresh();
                 }
                 Event::Done { affected, tag } => {
                     self.columns_asked.clear();
@@ -925,7 +927,7 @@ impl DbView {
         } else {
             format!("DELETE FROM {} WHERE {} LIMIT {n}", d.table(db_name, table), conditions.join(" OR "))
         };
-        self.dialog = Some(Dialog::Confirm { sql, db: None, reason: t.db_delete_rows_reason.to_owned(), query: false, expect: Some(Expect::Delete) });
+        self.dialog = Some(Dialog::Confirm { sql, db: None, reason: t.db_delete_rows_reason.to_owned(), query: false, expect: Some(Expect::Delete), fk: None });
     }
 
     fn load_rows(&mut self, db: String, table: String, offset: u64, order: Option<(String, bool)>) {
@@ -937,6 +939,15 @@ impl DbView {
         let columns: Vec<String> = self.rows.as_ref().filter(|r| r.db == db && r.table == table).map(|r| r.result.columns.clone()).unwrap_or_default();
         let search = (!self.search.is_empty()).then(|| (self.search.clone(), columns));
         self.send(Request::Rows { db, table, offset, limit: self.limit, order, search });
+    }
+
+    /// Export or import: the options asked first (SQL Server's scripts have none: the file at once).
+    fn transfer_dialog(&mut self, db: Option<String>, table: Option<String>, import: bool, t: &Strings) {
+        if import && self.dialect.mssql() {
+            self.import(db.as_deref(), t);
+        } else {
+            self.dialog = Some(Dialog::Transfer { db, table, import, gzip: self.gzip, check_fk: self.check_fk });
+        }
     }
 
     /// Writes database `name` (or only its `table`) to a .sql file chosen by the user (.sql.gz:
@@ -1033,7 +1044,7 @@ impl DbView {
                 super::guard::Danger::DropColumn => t.guard_drop_column.to_owned(),
                 _ => String::new(),
             };
-            self.dialog = Some(Dialog::Confirm { sql, db: self.db.clone(), reason, query: true, expect: None });
+            self.dialog = Some(Dialog::Confirm { sql, db: self.db.clone(), reason, query: true, expect: None, fk: None });
             return;
         }
         self.send_query(self.db.clone(), sql);
@@ -1184,13 +1195,9 @@ impl DbView {
                         import = Some(d.name.clone());
                         ui.close();
                     }
-                    if !dialect.mssql() {
-                        ui.checkbox(&mut self.check_fk, t.db_check_fk).on_hover_text(t.db_check_fk_hint);
-                        ui.checkbox(&mut self.gzip, t.db_gzip).on_hover_text(t.db_gzip_hint);
-                    }
                     ui.separator();
                     if ui.button(egui::RichText::new(t.db_drop_database).color(theme.ansi[1])).clicked() {
-                        confirm = Some(Dialog::Confirm { sql: format!("DROP DATABASE {}", dialect.ident(&d.name)), db: None, reason: t.guard_drop.to_owned(), query: false, expect: None });
+                        confirm = Some(Dialog::Confirm { sql: format!("DROP DATABASE {}", dialect.ident(&d.name)), db: None, reason: t.guard_drop.to_owned(), query: false, expect: None, fk: None });
                         ui.close();
                     }
                 });
@@ -1245,12 +1252,12 @@ impl DbView {
                                 ui.separator();
                                 let q = dialect.table(&d.name, &tb.name);
                                 if !tb.view && ui.button(egui::RichText::new(t.db_truncate).color(theme.ansi[1])).clicked() {
-                                    confirm = Some(Dialog::Confirm { sql: format!("TRUNCATE TABLE {q}"), db: None, reason: t.guard_table.to_owned(), query: false, expect: None });
+                                    confirm = Some(Dialog::Confirm { sql: format!("TRUNCATE TABLE {q}"), db: None, reason: t.guard_table.to_owned(), query: false, expect: None, fk: (!dialect.mssql()).then_some(self.check_fk) });
                                     ui.close();
                                 }
                                 if ui.button(egui::RichText::new(t.db_drop_table).color(theme.ansi[1])).clicked() {
                                     let what = if tb.view { "VIEW" } else { "TABLE" };
-                                    confirm = Some(Dialog::Confirm { sql: format!("DROP {what} {q}"), db: None, reason: t.db_drop_table_reason.to_owned(), query: false, expect: None });
+                                    confirm = Some(Dialog::Confirm { sql: format!("DROP {what} {q}"), db: None, reason: t.db_drop_table_reason.to_owned(), query: false, expect: None, fk: (!dialect.mssql()).then_some(self.check_fk) });
                                     ui.close();
                                 }
                             });
@@ -1283,14 +1290,14 @@ impl DbView {
             self.dialog = Some(c);
         }
         if let Some(name) = export {
-            self.export(&name, None, t);
+            self.transfer_dialog(Some(name), None, false, t);
         }
         if let Some(name) = import {
-            self.import(Some(&name), t);
+            self.transfer_dialog(Some(name), None, true, t);
         }
         match table_export {
             Some((d, tb, true)) => self.export_csv(&d, &tb, t),
-            Some((d, tb, false)) => self.export(&d, Some(&tb), t),
+            Some((d, tb, false)) => self.transfer_dialog(Some(d), Some(tb), false, t),
             None => {}
         }
         if let Some(d) = new_table {
@@ -1478,8 +1485,8 @@ impl DbView {
         });
         let acct = db::account(&user, &host);
         match action {
-            Some(0) => self.dialog = Some(Dialog::Confirm { sql: format!("DROP USER {acct}"), db: None, reason: t.db_drop_user_reason.to_owned(), query: false, expect: Some(Expect::Users) }),
-            Some(1) => self.dialog = Some(Dialog::Confirm { sql: format!("REVOKE ALL PRIVILEGES, GRANT OPTION FROM {acct}"), db: None, reason: t.db_revoke_reason.to_owned(), query: false, expect: Some(Expect::Users) }),
+            Some(0) => self.dialog = Some(Dialog::Confirm { sql: format!("DROP USER {acct}"), db: None, reason: t.db_drop_user_reason.to_owned(), query: false, expect: Some(Expect::Users), fk: None }),
+            Some(1) => self.dialog = Some(Dialog::Confirm { sql: format!("REVOKE ALL PRIVILEGES, GRANT OPTION FROM {acct}"), db: None, reason: t.db_revoke_reason.to_owned(), query: false, expect: Some(Expect::Users), fk: None }),
             Some(2) => self.dialog = Some(Dialog::Grant { user: user.clone(), host: host.clone(), access: Access::Write, database: self.db.clone().unwrap_or_default() }),
             Some(3) => self.dialog = Some(Dialog::Password { user: user.clone(), host: host.clone(), password: String::new(), reveal: false }),
             _ => {}
@@ -1528,10 +1535,6 @@ impl DbView {
                     if ui.add_enabled(!busy, egui::Button::new(egui::RichText::new(format!("⤓  {}", t.db_export)).size(12.5)).corner_radius(6.0)).clicked() {
                         export = true;
                     }
-                    ui.add_space(6.0);
-                    ui.checkbox(&mut self.gzip, egui::RichText::new(t.db_gzip).size(12.5)).on_hover_text(t.db_gzip_hint);
-                    ui.add_space(6.0);
-                    ui.checkbox(&mut self.check_fk, egui::RichText::new(t.db_check_fk).size(12.5)).on_hover_text(t.db_check_fk_hint);
                 }
                 ui.add_space(10.0);
                 let add = egui::Button::new(egui::RichText::new(format!("+  {}", t.db_new_table)).size(12.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0);
@@ -1541,10 +1544,10 @@ impl DbView {
             });
         });
         if export {
-            self.export(&d, None, t);
+            self.transfer_dialog(Some(d.clone()), None, false, t);
         }
         if import {
-            self.import(Some(&d), t);
+            self.transfer_dialog(Some(d.clone()), None, true, t);
         }
         if new_table {
             self.new_table_dialog(&d);
@@ -1588,21 +1591,16 @@ impl DbView {
                     for (view, what) in [(false, "TABLE"), (true, "VIEW")] {
                         let list = names(view);
                         if !list.is_empty() {
-                            statements.push(format!("DROP {what} {}", list.join(", ")));
+                            // Some may already be gone (a first try stopped by a foreign key).
+                            statements.push(format!("DROP {what} IF EXISTS {}", list.join(", ")));
                         }
                     }
                 } else {
                     statements.extend(names(false).into_iter().map(|q| format!("TRUNCATE TABLE {q}")));
                 }
-                // Tables that refer to each other: MySQL refuses to drop or empty them unless the
-                // checks are off (for this session only; db.rs turns them back on even on failure).
-                if !self.check_fk && !dialect.mssql() {
-                    statements.insert(0, "SET FOREIGN_KEY_CHECKS = 0".into());
-                    statements.push("SET FOREIGN_KEY_CHECKS = 1".into());
-                }
                 let n = if drop { ticked.len() } else { emptied };
                 let reason = if drop { t.db_drop_tables_reason } else { t.db_truncate_tables_reason }.replace("{n}", &n.to_string());
-                self.dialog = Some(Dialog::Confirm { sql: statements.join(";\n"), db: None, reason, query: false, expect: None });
+                self.dialog = Some(Dialog::Confirm { sql: statements.join(";\n"), db: None, reason, query: false, expect: None, fk: (!dialect.mssql()).then_some(self.check_fk) });
             }
             ui.add_space(6.0);
         }
@@ -2327,6 +2325,18 @@ impl DbView {
                     }
                 }
 
+                Dialog::Transfer { db, table, import, gzip, check_fk } => {
+                    let what = table.as_deref().or(db.as_deref()).unwrap_or_default();
+                    ui.label(egui::RichText::new(format!("{}  ·  {what}", if *import { t.db_import } else { t.db_export })).size(17.0).strong());
+                    ui.add_space(12.0);
+                    if !*import {
+                        ui.checkbox(gzip, egui::RichText::new(t.db_gzip).size(13.0));
+                        option_hint(ui, theme, t.db_gzip_hint);
+                        ui.add_space(8.0);
+                    }
+                    ui.checkbox(check_fk, egui::RichText::new(t.db_check_fk).size(13.0));
+                    option_hint(ui, theme, if *import { t.db_check_fk_import_hint } else { t.db_check_fk_export_hint });
+                }
                 Dialog::NewDatabase { name, fresh } => {
                     ui.label(egui::RichText::new(t.db_new_database).size(17.0).strong());
                     ui.add_space(10.0);
@@ -2413,13 +2423,18 @@ impl DbView {
                     ui.add_space(10.0);
                     sql_box(ui, theme, &change.sql);
                 }
-                Dialog::Confirm { sql, reason, .. } => {
+                Dialog::Confirm { sql, reason, fk, .. } => {
                     ui.label(egui::RichText::new(t.guard_title).size(18.0).strong().color(theme.ansi[1]));
                     ui.add_space(10.0);
                     sql_box(ui, theme, sql);
                     if !reason.is_empty() {
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new(reason.as_str()).size(13.0));
+                    }
+                    if let Some(check) = fk {
+                        ui.add_space(8.0);
+                        ui.checkbox(check, egui::RichText::new(t.db_check_fk).size(13.0));
+                        option_hint(ui, theme, t.db_check_fk_drop_hint);
                     }
                 }
             }
@@ -2431,6 +2446,7 @@ impl DbView {
                     Dialog::Grant { .. } => (t.db_grant, theme.accent),
                     Dialog::Column(_) | Dialog::RenameTable { .. } | Dialog::Cell { .. } | Dialog::Password { .. } => (t.save, theme.accent),
                     Dialog::Confirm { .. } => (t.guard_run, theme.ansi[1]),
+                    Dialog::Transfer { .. } => (t.db_choose_file, theme.accent),
                     Dialog::Review(_) => (t.db_run, theme.accent),
                 };
                 if ui.add(egui::Button::new(egui::RichText::new(label).size(13.5).color(theme.bg)).fill(fill).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0))).clicked() {
@@ -2448,7 +2464,7 @@ impl DbView {
         if let Some(column) = drop_column {
             let (d, tb) = (self.db.clone().unwrap_or_default(), self.table.clone().unwrap_or_default());
             let sql = format!("ALTER TABLE {} DROP COLUMN {}", dialect.table(&d, &tb), dialect.ident(&column));
-            self.dialog = Some(Dialog::Confirm { sql, db: None, reason: t.db_drop_column_reason.to_owned(), query: false, expect: None });
+            self.dialog = Some(Dialog::Confirm { sql, db: None, reason: t.db_drop_column_reason.to_owned(), query: false, expect: None, fk: None });
             return;
         }
         let Some(ok) = done else { return };
@@ -2464,6 +2480,15 @@ impl DbView {
         let back = Some(Box::new(dialog.clone()));
         match dialog {
             Dialog::Review(change) => self.run_change(change),
+            Dialog::Transfer { db, table, import, gzip, check_fk } => {
+                // Kept for the next time.
+                (self.gzip, self.check_fk) = (gzip, check_fk);
+                if import {
+                    self.import(db.as_deref(), t);
+                } else if let Some(d) = db {
+                    self.export(&d, table.as_deref(), t);
+                }
+            }
             Dialog::Column(c) => {
                 let (d, tb) = (self.db.clone().unwrap_or_default(), self.table.clone().unwrap_or_default());
                 if !c.name.trim().is_empty() && !c.kind.trim().is_empty() && !c.generated() {
@@ -2531,7 +2556,7 @@ impl DbView {
                     self.change(Change { back, ..Change::new(sql, None) });
                 }
             }
-            Dialog::Confirm { sql, db, query, expect, .. } => {
+            Dialog::Confirm { sql, db, query, expect, fk, .. } => {
                 if query {
                     self.send_query(db, sql);
                 } else {
@@ -2547,6 +2572,9 @@ impl DbView {
                     if !keep_rows {
                         self.rows = None;
                     }
+                    // Tables that refer to each other: MySQL refuses to drop or empty them unless the
+                    // checks are off (for this session only; db.rs turns them back on even on failure).
+                    let sql = if fk == Some(false) { format!("SET FOREIGN_KEY_CHECKS = 0;\n{sql};\nSET FOREIGN_KEY_CHECKS = 1") } else { sql };
                     self.exec(db, sql, expect);
                     if let (true, Some((d, tb, _, order))) = (keep_rows, reload) {
                         self.load_rows(d, tb, 0, order);
@@ -2555,6 +2583,13 @@ impl DbView {
             }
         }
     }
+}
+
+/// What an option of a window does, under it.
+fn option_hint(ui: &mut Ui, theme: &Theme, text: &str) {
+    ui.indent("hint", |ui| {
+        ui.label(egui::RichText::new(text).size(11.5).color(theme.text_muted));
+    });
 }
 
 /// SQL to be run, laid out and colored, in a box that scrolls when long.

@@ -543,7 +543,8 @@ async fn export(conn: &mut Conn, db: &str, only: Option<&[String]>, path: &std::
         let names: Vec<String> = base.iter().map(|(n, _)| n.clone()).collect();
         let order = dependency_order(&names, &links);
         base.sort_by_key(|(n, _)| order.iter().position(|o| o == n));
-        writeln!(out, "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 1;\nSET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n").map_err(|e| err(&e))?;
+        // The checks are left as whoever imports it set them (forcing them on would undo their choice).
+        writeln!(out, "SET NAMES utf8mb4;\nSET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n").map_err(|e| err(&e))?;
         for (view, _) in &views {
             writeln!(out, "DROP VIEW IF EXISTS {};", ident(view)).map_err(|e| err(&e))?;
         }
@@ -715,6 +716,113 @@ enum SplitState {
     LineComment,
     /// A /* comment */; true: /*! ... */, kept (instructions for MySQL).
     Block(bool),
+}
+
+/// A multi-row INSERT (or REPLACE) longer than `limit` bytes, cut into several that fit (whole rows,
+/// what follows them, as ON DUPLICATE KEY UPDATE, repeated). None: not such a statement, or a row
+/// alone is too long.
+fn split_insert(statement: &str, limit: usize) -> Option<Vec<String>> {
+    let b = statement.as_bytes();
+    let starts = |at: usize, word: &str| b.len() >= at + word.len() && b[at..at + word.len()].eq_ignore_ascii_case(word.as_bytes());
+    if !(starts(0, "INSERT") || starts(0, "REPLACE")) {
+        return None;
+    }
+    // From `at` on a quote: just past its end.
+    let skip_quote = |mut at: usize| {
+        let q = b[at];
+        at += 1;
+        while at < b.len() {
+            match b[at] {
+                b'\\' if q != b'`' => at += 2,
+                c if c == q => return at + 1,
+                _ => at += 1,
+            }
+        }
+        b.len()
+    };
+    // "VALUES" outside quotes and parentheses.
+    let (mut at, mut depth) = (0, 0usize);
+    let values = loop {
+        if at >= b.len() {
+            return None;
+        }
+        match b[at] {
+            b'\'' | b'"' | b'`' => at = skip_quote(at),
+            b'(' => {
+                depth += 1;
+                at += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                at += 1;
+            }
+            _ if depth == 0 && starts(at, "VALUES") && (at == 0 || !b[at - 1].is_ascii_alphanumeric()) && b.get(at + 6).is_none_or(|c| !c.is_ascii_alphanumeric() && *c != b'_') => break at + 6,
+            _ => at += 1,
+        }
+    };
+    let head = &statement[..values];
+    // The rows: "(...)" separated by commas.
+    let mut rows = Vec::new();
+    at = values;
+    loop {
+        while at < b.len() && b[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        if b.get(at) != Some(&b'(') {
+            return None;
+        }
+        let start = at;
+        let mut depth = 0usize;
+        while at < b.len() {
+            match b[at] {
+                b'\'' | b'"' | b'`' => {
+                    at = skip_quote(at);
+                    continue;
+                }
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        at += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        rows.push(&statement[start..at]);
+        while at < b.len() && b[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        if b.get(at) == Some(&b',') {
+            at += 1;
+        } else {
+            break;
+        }
+    }
+    let tail = statement[at..].trim();
+    let tail = if tail.is_empty() { String::new() } else { format!(" {tail}") };
+    let fixed = head.len() + 1 + tail.len();
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for row in rows {
+        if fixed + row.len() > limit {
+            return None;
+        }
+        if !current.is_empty() && fixed + current.len() + 1 + row.len() > limit {
+            out.push(format!("{head} {current}{tail}"));
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(',');
+        }
+        current.push_str(row);
+    }
+    if !current.is_empty() {
+        out.push(format!("{head} {current}{tail}"));
+    }
+    Some(out)
 }
 
 /// Cuts a SQL script into statements, at ";" (or the DELIMITER set) outside quotes and comments, as the
@@ -980,6 +1088,9 @@ async fn import(conn: &mut Conn, db: Option<&str>, path: &std::path::Path, check
     if let Some(db) = db.filter(|d| !d.is_empty()) {
         conn.query_drop(format!("USE {}", ident(db))).await.map_err(|e| e.to_string())?;
     }
+    // What the server takes in one go: longer multi-row INSERTs are cut (a little kept for the packet's own bytes).
+    let max_packet: Option<u64> = conn.query_first("SELECT @@max_allowed_packet").await.ok().flatten();
+    let limit = max_packet.map_or(4 << 20, |m| m as usize).saturating_sub(1024).max(1024);
     let mut splitter = Splitter::default();
     let mut decoder = Decoder::default();
     let mut buf = vec![0u8; 1 << 20];
@@ -996,9 +1107,17 @@ async fn import(conn: &mut Conn, db: Option<&str>, path: &std::path::Path, check
                 let done = read.load(Ordering::Relaxed);
                 emit.send(Event::Progress { fraction: (done as f32 / size as f32).min(1.0), text: format!("{count}") });
             }
-            if let Err(e) = conn.query_drop(statement.as_str()).await {
-                let head: String = statement.chars().take(120).collect();
-                return Err(format!("#{count} : {e}\n{head}"));
+            let parts = if statement.len() > limit { split_insert(&statement, limit) } else { None };
+            for part in parts.as_deref().unwrap_or(std::slice::from_ref(&statement)) {
+                if let Err(e) = conn.query_drop(part.as_str()).await {
+                    let head: String = statement.chars().take(120).collect();
+                    return Err(format!("#{count} : {e}\n{head}"));
+                }
+            }
+            // Checks unticked: the file doesn't turn them back on (mysqldump restores them at its end,
+            // others after each table).
+            if !check_fk && statement.len() < 4096 && statement.to_ascii_uppercase().contains("FOREIGN_KEY_CHECKS") {
+                conn.query_drop("SET FOREIGN_KEY_CHECKS = 0").await.map_err(|e| e.to_string())?;
             }
         }
         if eof {
@@ -1335,6 +1454,19 @@ fn kill(direct: Target, id: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cuts_long_inserts() {
+        let sql = "INSERT INTO `t` VALUES (1,'a,b)'),(2,'it\\'s'),(3,\"(\")";
+        let parts = split_insert(sql, 40).unwrap();
+        assert_eq!(parts, ["INSERT INTO `t` VALUES (1,'a,b)')", "INSERT INTO `t` VALUES (2,'it\\'s')", "INSERT INTO `t` VALUES (3,\"(\")"]);
+        assert_eq!(split_insert(sql, 1000).unwrap(), [sql]);
+        let upsert = "insert into t (a, b) values (1, 2), (3, 4) ON DUPLICATE KEY UPDATE b = VALUES(b)";
+        assert_eq!(split_insert(upsert, 75).unwrap(), ["insert into t (a, b) values (1, 2) ON DUPLICATE KEY UPDATE b = VALUES(b)", "insert into t (a, b) values (3, 4) ON DUPLICATE KEY UPDATE b = VALUES(b)"]);
+        assert_eq!(split_insert("INSERT INTO t VALUES ('a very long row indeed')", 30), None, "a row alone too long");
+        assert_eq!(split_insert("INSERT INTO t SELECT * FROM u", 10), None);
+        assert_eq!(split_insert("UPDATE t SET a = 1", 10), None);
+    }
 
     #[test]
     fn cleans_a_pasted_host() {
