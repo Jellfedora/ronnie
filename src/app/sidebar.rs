@@ -7,10 +7,19 @@ impl App {
     /// The home page: what just closed, the typing game, tips scrolling below (the sidebar leads back
     /// to the tabs).
     pub(super) fn home_page(&mut self, ui: &mut Ui, rect: Rect) {
-        if !self.home_game {
+        if !self.home_game || self.home_which != super::four::HomeGame::SpeedMetal {
             self.game.leave();
+            if self.home_game && self.home_which == super::four::HomeGame::Blob {
+                // It folds the sidebar itself, during a life.
+                self.blob_page(ui, rect);
+                return;
+            }
             self.fold_for_game(false);
-            self.home_dashboard(ui, rect);
+            if self.home_game {
+                self.four_page(ui, rect);
+            } else {
+                self.home_dashboard(ui, rect);
+            }
             return;
         }
         let t = self.t();
@@ -31,41 +40,41 @@ impl App {
             tips_ticker(ui, ticker, &self.theme, t, &self.config.settings.shortcuts);
         }
         // floor's board, fetched again every minute out of a round; the player's line from here.
-        if let Some(account) = self.floor.poll() {
-            self.config.settings.floor = account;
-            self.save_config();
-        }
+        self.poll_floor();
         let settings = &self.config.settings;
         if !self.game.playing() {
-            self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref(), &settings.player_name);
+            self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref());
         }
-        let board = crate::floor::shown(self.floor.board(), &settings.typing_scores, &settings.player_name);
+        let pseudo = crate::floor::pseudo(settings.floor.as_ref());
+        let board = crate::floor::shown(self.floor.board(), &settings.typing_scores, pseudo);
         let best = settings.typing_scores.first().map_or(0, |s| s.letters);
-        let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, &settings.player_name);
+        let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, pseudo.unwrap_or(&settings.player_name));
         // During a round the sidebar folds away, and unfolds after (if it was open).
         self.fold_for_game(self.game.playing());
         if let Some(on) = out.sound {
             self.config.settings.game_sound = Some(on);
             self.save_config();
         }
+        // The name typed on a card: the next cards' (the pseudo only changes in its window).
         if let Some(name) = out.player {
             self.config.settings.player_name = name;
             self.save_config();
-            let settings = &self.config.settings;
-            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name);
         }
         if let Some(score) = out.finished {
             // On the board, below the rounds it ties with (stable sort).
             let scores = &mut self.config.settings.typing_scores;
             let before = scores.first().map_or(0, |s| s.letters);
             let unlocked = before < crate::theme::METAL_UNLOCK && score.letters >= crate::theme::METAL_UNLOCK;
-            self.floor.finished(score.clone());
+            // Online only with a pseudo.
+            if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
+                self.floor.finished(score.clone());
+            }
+            let scores = &mut self.config.settings.typing_scores;
             scores.push(score);
             scores.sort_by(|a, b| b.letters.cmp(&a.letters));
             scores.truncate(config::TYPING_SCORES);
             self.save_config();
-            let settings = &self.config.settings;
-            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name);
+            self.floor.sync(ui.ctx(), now, None, self.config.settings.floor.as_ref());
             if unlocked {
                 self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now() });
             }
@@ -94,6 +103,7 @@ impl App {
             self.go_home(None);
         }
         self.home_game = true;
+        self.home_which = super::four::HomeGame::SpeedMetal;
         self.music_page = false;
         self.notes_page = false;
     }
@@ -197,25 +207,89 @@ impl App {
         }
     }
 
-    /// The "Games" category: Speed Metal, with the best score.
+    /// The "Games" category: Speed Metal (with the best score), Puissance 4 (with the players online),
+    /// Ronnie.io (with the best mass).
     fn games_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
+        use super::four::HomeGame;
         let t = self.t();
+        let theme = self.theme.clone();
         let painter = ui.painter().clone();
-        paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &self.theme);
+        paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &theme);
         *y += SECTION_HEADER_H;
-        let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
-        *y += slot.height() + ROW_GAP;
-        let resp = ui.interact(slot, ui.id().with("game-speed-metal"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        let active = self.home.is_some() && self.home_game;
-        paint_row_bg(&painter, slot, active, resp.hovered(), &self.theme);
-        super::paint_metal(&painter, Pos2::new(slot.min.x + 17.0, slot.center().y), Align2::CENTER_CENTER, "R", 20.0, self.theme.accent, 1.0);
-        painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, "Speed Metal", FontId::proportional(13.0), if active || resp.hovered() { self.theme.text } else { self.theme.text_muted });
-        if let Some(best) = self.config.settings.typing_scores.first() {
-            painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, best.letters.to_string(), FontId::proportional(11.5), self.theme.text_muted.gamma_multiply(0.85));
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
+        let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
+        let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
+        let mut open = None;
+        let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
+        for (game, name, note) in [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)] {
+            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
+            *y += slot.height() + ROW_GAP;
+            let resp = ui.interact(slot, ui.id().with(("game", game as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let active = self.home.is_some() && self.home_game && self.home_which == game;
+            paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
+            let icon = Pos2::new(slot.min.x + 17.0, slot.center().y);
+            match game {
+                HomeGame::SpeedMetal => super::paint_metal(&painter, icon, Align2::CENTER_CENTER, "R", 20.0, theme.accent, 1.0),
+                HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, 1.0),
+            }
+            painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
+            if let Some(note) = note {
+                painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85));
+            }
+            if resp.clicked() {
+                open = Some(game);
+            }
         }
-        if resp.clicked() {
-            self.open_game();
+        match open {
+            Some(HomeGame::SpeedMetal) => self.open_game(),
+            Some(HomeGame::Four) => self.open_four(),
+            Some(HomeGame::Blob) => self.open_blob(),
+            None => {}
         }
+    }
+
+    /// The player's pseudo, in a card at the bottom of the "Games" category, with a pencil to change
+    /// it (or a button to pick one). Returns the card's top.
+    fn pseudo_card(&mut self, ui: &mut Ui, left: f32, width: f32, bottom: f32) -> f32 {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let painter = ui.painter().clone();
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
+        let card = Rect::from_min_max(Pos2::new(left, bottom - 62.0 - 6.0), Pos2::new(left + width, bottom - 6.0));
+        let resp = ui.interact(card, ui.id().with("game-pseudo"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let fill = if resp.hovered() { lerp_color(theme.tab_active, theme.accent, 0.08) } else { theme.tab_active };
+        painter.rect_filled(card, 10.0, fill);
+        painter.rect_stroke(card, 10.0, Stroke::new(1.0, theme.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 })), egui::StrokeKind::Inside);
+        // The avatar: the pseudo's first letter in a disc of the accent, a green dot when online.
+        let avatar = Pos2::new(card.min.x + 30.0, card.center().y);
+        painter.circle_filled(avatar, 18.0, theme.accent.gamma_multiply(if pseudo.is_some() { 1.0 } else { 0.25 }));
+        let initial = pseudo.as_deref().and_then(|p| p.chars().next()).map_or("?".to_owned(), |c| c.to_uppercase().to_string());
+        painter.text(avatar + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, initial, FontId::proportional(17.0), if pseudo.is_some() { theme.bg } else { theme.text_muted });
+        if pseudo.is_some() && self.versus.reachable == Some(true) {
+            let dot = avatar + Vec2::new(13.0, 13.0);
+            painter.circle_filled(dot, 5.0, theme.tab_active);
+            painter.circle_filled(dot, 3.5, theme.ansi[2]);
+        }
+        let x = avatar.x + 28.0;
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&t.pseudo_row.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(10.0), color: theme.text_muted, extra_letter_spacing: 1.2, ..Default::default() });
+        painter.galley(Pos2::new(x, card.center().y - 17.0), painter.layout_job(job), theme.text_muted);
+        let (name, color) = match &pseudo {
+            Some(name) => (name.clone(), theme.text),
+            None => (t.pseudo_pick.to_owned(), theme.accent),
+        };
+        let mut job = egui::text::LayoutJob::simple_singleline(name, FontId::proportional(16.0), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(card.max.x - 40.0 - x);
+        painter.galley(Pos2::new(x, card.center().y - 4.0), painter.layout_job(job), color);
+        // The pencil (or a plus, without a pseudo yet).
+        let edit = Rect::from_center_size(Pos2::new(card.max.x - 20.0, card.center().y), Vec2::splat(26.0));
+        let pencil = icon_button(ui, &painter, edit, "game-pseudo-edit", &theme, if pseudo.is_some() { super::paint_pencil } else { paint_plus });
+        let tip = if pseudo.is_some() { t.pseudo_edit } else { t.pseudo_pick };
+        if pencil.on_hover_text(tip).clicked() || resp.on_hover_text(tip).clicked() {
+            self.ask_pseudo();
+        }
+        card.min.y
     }
 
     /// Folds the sidebar for a round of the game (`playing`), unfolds it after if the game folded it;
@@ -1215,6 +1289,12 @@ impl App {
         self.config.normalize();
         self.follow_shown();
         let category = self.category();
+        // On the way into the games, the pseudo, if there is none yet.
+        let games = category == Category::Games;
+        if games && !self.games_seen && crate::floor::pseudo(self.config.settings.floor.as_ref()).is_none() {
+            self.ask_pseudo();
+        }
+        self.games_seen = games;
         let whole = ui.max_rect();
         // A slight gradient, darker at the bottom.
         {
@@ -1256,7 +1336,8 @@ impl App {
         let footer_top = bar.max.y - FOOTER_H;
         // macOS: the traffic lights don't scale with the interface zoom, so the space kept for them doesn't either.
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
-        self.category_strip(ui, strip, strip.min.y + top + 4.0);
+        // Its first icon level with the panel's title, under the logo (the slots are 40 high).
+        self.category_strip(ui, strip, strip.min.y + top + LOGO_H + SECTION_HEADER_H / 2.0 - 20.0);
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
         // The logo leads home (the typing game).
@@ -1278,6 +1359,7 @@ impl App {
         }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let card_top = self.music_card(ui, left, row_w, card_top);
+        let card_top = if self.category() == Category::Games { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
 
         // Footer: settings button, always visible.
@@ -1734,7 +1816,7 @@ pub(super) fn paint_badge(painter: &egui::Painter, c: Pos2, name: &str, color: O
     }
 }
 
-fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+pub(super) fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from(egui::lerp(egui::Rgba::from(a)..=egui::Rgba::from(b), t))
 }
 

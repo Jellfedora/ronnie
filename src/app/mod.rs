@@ -20,10 +20,12 @@ use crate::update::{self, Updater};
 mod backup;
 mod bigtext;
 mod complete;
+mod blob;
 mod dbview;
 mod easter;
 mod editor;
 mod files;
+mod four;
 mod game;
 mod git;
 mod home;
@@ -277,6 +279,8 @@ struct WindowSlot {
     toast_rects: Vec<Rect>,
     home: Option<String>,
     home_game: bool,
+    /// Which game: Speed Metal or Puissance 4.
+    home_which: four::HomeGame,
     game: game::Game,
     ronnie_show: Option<(PaneId, f64)>,
     game_folded: bool,
@@ -321,6 +325,16 @@ pub struct App {
     settings_dialog: bool,
     /// The activity simulator's window, opened only by its shortcut (⌘ ⌥ ⇧ A).
     keep_active_dialog: bool,
+    /// The window asking the player's pseudo (on the way into the games).
+    pseudo_prompt: Option<popups::PseudoPrompt>,
+    /// The game for two on floor: who is online, the invitations, the match.
+    versus: crate::live::Live,
+    /// Puissance 4's page.
+    four: four::Four,
+    /// Ronnie.io's page, and its connection to floor.
+    blob: blob::Blob,
+    /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
+    games_seen: bool,
     /// Exporting or importing the configuration.
     backup: Option<backup::BackupDialog>,
     /// Listening to the user, for Claude Code in that pane.
@@ -465,6 +479,8 @@ pub struct App {
     home: Option<String>,
     /// The home page shows the typing game (three clicks on the logo).
     home_game: bool,
+    /// Which game: Speed Metal or Puissance 4.
+    home_which: four::HomeGame,
     game: game::Game,
     /// "ronnie" was typed in this pane: its show, since when (see `easter`).
     ronnie_show: Option<(PaneId, f64)>,
@@ -1010,6 +1026,11 @@ impl App {
             window: None,
             settings_dialog: false,
             keep_active_dialog: false,
+            pseudo_prompt: None,
+            versus: crate::live::Live::default(),
+            four: four::Four::default(),
+            blob: blob::Blob::default(),
+            games_seen: false,
             backup: None,
             dictation: None,
             dictation_enter: None,
@@ -1067,6 +1088,7 @@ impl App {
             startup_edit: None,
             home: None,
             home_game: false,
+            home_which: four::HomeGame::SpeedMetal,
             game: game::Game::default(),
             ronnie_show: None,
             game_folded: false,
@@ -1186,6 +1208,16 @@ impl App {
             if std::env::var_os("RONNIE_DEMO_TOAST").is_some() {
                 app.splash = None;
                 app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now() });
+            }
+            // Puissance 4: "lobby", or the columns played against the computer ("3342"...).
+            if let Ok(four) = std::env::var("RONNIE_OPEN_FOUR") {
+                app.splash = None;
+                app.four.demo(&four);
+                app.open_four();
+            }
+            if std::env::var("RONNIE_OPEN_BLOB").is_ok() {
+                app.splash = None;
+                app.open_blob();
             }
             if let Ok(page) = std::env::var("RONNIE_OPEN_SETTINGS") {
                 app.settings_dialog = true;
@@ -1657,6 +1689,7 @@ impl App {
         swap(&mut self.toast_rects, &mut slot.toast_rects);
         swap(&mut self.home, &mut slot.home);
         swap(&mut self.home_game, &mut slot.home_game);
+        swap(&mut self.home_which, &mut slot.home_which);
         swap(&mut self.game, &mut slot.game);
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
         swap(&mut self.game_folded, &mut slot.game_folded);
@@ -4198,6 +4231,9 @@ impl App {
             self.confirm_reset_window(ui.ctx());
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
+            self.live_frame(ui.ctx());
+            self.blob_frame(ui.ctx());
+            self.pseudo_window(ui.ctx());
         }
         self.poll_uploads();
 

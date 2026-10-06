@@ -859,7 +859,7 @@ impl App {
                             picked = Some((Station::Liked, None));
                         }
                         ui.separator();
-                        egui::ScrollArea::vertical().id_salt("music-liked").max_height(360.0).show(ui, |ui| {
+                        egui::ScrollArea::vertical().id_salt("music-liked").max_height(360.0).min_scrolled_height((liked.len() as f32 * 28.0).min(360.0)).show(ui, |ui| {
                             let playing = self.music.current.as_ref().map(|s| s.id.as_str());
                             for song in liked {
                                 let label = format!("{}  —  {}", song.title, song.artist);
@@ -879,7 +879,9 @@ impl App {
                     ui.add(egui::Label::new(egui::RichText::new(e).size(12.0).color(theme.ansi[1])).wrap());
                 }
                 Some(Ok(genres)) => {
-                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    // Tall enough to pick from (egui would shrink it to a few rows in the popup).
+                    let tall = (genres.len() as f32 * 30.0).min(360.0);
+                    egui::ScrollArea::vertical().max_height(360.0).min_scrolled_height(tall).show(ui, |ui| {
                         for genre in genres {
                             if item(ui, &genre.name, Some(genre.songs), current == Some(Station::Genre(Some(genre.name.clone())))) {
                                 picked = Some((Station::Genre(Some(genre.name.clone())), None));

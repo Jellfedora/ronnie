@@ -37,6 +37,7 @@ ureq = { version = "3.4.2", features = ["json"] }
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 md-5 = "0.11"
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 
 # SQL Server: rustls (macOS's TLS refuses the self-signed certificates SQL Server makes, even when told to
 # accept them; no OpenSSL to ship on Linux), and the system's TLS on Windows, as SSMS (below).

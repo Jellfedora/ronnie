@@ -2,6 +2,24 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.20.0] - 2026-10-06
+
+### Nouveautés
+
+- **Ronnie.io**, un nouveau jeu dans la catégorie Jeux, comme agar.io : tout le monde joue dans le même monde, qui tourne sur le serveur de jeux. La souris dirige ta cellule, Espace la divise pour attraper les autres, W éjecte de la masse. Mange les granules et les plus petits que toi, fuis les plus gros, et méfie-toi des virus verts.
+  - Des bots complètent la partie quand il y a peu de joueurs ; ils ont un badge « BOT » dans le classement.
+  - Des **bonus** traînent sur la carte : vitesse, aimant à granules, bouclier.
+  - Des **événements** passent : une pluie de granules dorées, et un Boss géant à abattre. Et parfois, **Ronnie** apparaît, tout rose : qui le mange gagne son skin.
+  - Des **skins** à débloquer en jouant : une partie, 5, 10, 25 parties, 25 joueurs mangés, 1 000 puis 3 000 de masse en une partie.
+  - Le classement de la partie en direct, le fil des joueurs mangés, et le classement des records (la plus grosse masse de chaque joueur).
+  - Invite un joueur en ligne à te rejoindre depuis la carte du jeu.
+- **Puissance 4**, dans la catégorie Jeux : contre l'ordinateur (facile, moyen, difficile), ou contre un autre joueur en ligne, avec invitations, revanche et classement des victoires.
+- **Ton pseudo**, en bas de la catégorie Jeux : il est demandé la première fois, il est unique, et il sert pour les classements en ligne et pour jouer contre les autres.
+
+### Changements
+
+- Les listes de titres aimés et de genres de la radio sont plus hautes dans leur fenêtre.
+
 ## [0.19.0] - 2026-10-06
 
 ### Nouveautés

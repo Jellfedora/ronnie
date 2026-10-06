@@ -1020,3 +1020,146 @@ pub(super) fn dictate(pane: PaneId, language: Lang, ctx: &egui::Context) -> (Pan
     let ctx = ctx.clone();
     (pane, crate::voice::Dictation::start(language, std::sync::Arc::new(move || ctx.request_repaint())))
 }
+
+/// The window asking the player's pseudo: the name typed, and why floor didn't take the last one.
+pub(super) struct PseudoPrompt {
+    text: String,
+    error: Option<crate::floor::ClaimError>,
+    focus: bool,
+    /// When the text last changed (it is checked a moment after), and the pseudo last checked.
+    typed_at: f64,
+    checked: Option<String>,
+}
+
+impl App {
+    /// The pseudo asked (the one kept, to change it); not without floor.
+    pub(super) fn ask_pseudo(&mut self) {
+        if crate::floor::url().is_none() || self.pseudo_prompt.is_some() {
+            return;
+        }
+        let settings = &self.config.settings;
+        let text = crate::floor::pseudo(settings.floor.as_ref()).unwrap_or(&settings.player_name).to_owned();
+        self.pseudo_prompt = Some(PseudoPrompt { text, error: None, focus: true, typed_at: 0.0, checked: None });
+    }
+
+    /// What floor answered: the account to save (made, renamed or forgotten), or why the pseudo wasn't taken.
+    pub(super) fn poll_floor(&mut self) {
+        if let Some(account) = self.floor.poll() {
+            self.config.settings.floor = account;
+            self.save_config();
+        }
+        match self.floor.claimed() {
+            Some(Ok(account)) => {
+                self.config.settings.player_name = account.name.clone().unwrap_or_default();
+                self.config.settings.floor = Some(account);
+                self.save_config();
+                self.pseudo_prompt = None;
+            }
+            Some(Err(e)) => {
+                if let Some(prompt) = &mut self.pseudo_prompt {
+                    prompt.error = Some(e);
+                    prompt.focus = true;
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub(super) fn pseudo_window(&mut self, ctx: &egui::Context) {
+        self.poll_floor();
+        if self.pseudo_prompt.is_none() {
+            return;
+        }
+        let t = self.t();
+        let theme = self.theme.clone();
+        let claiming = self.floor.claiming();
+        let own = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
+        let has_pseudo = own.is_some();
+        let now = ctx.input(|i| i.time);
+        let Some(prompt) = &mut self.pseudo_prompt else { return };
+        // Whether it is free, asked once the typing pauses (not for the player's own).
+        let clean = crate::floor::floor_name(&prompt.text);
+        let mine = clean.is_some() && clean.as_deref().map(str::to_lowercase) == own.as_deref().map(str::to_lowercase);
+        if clean.is_some() && !mine && prompt.checked != clean && !claiming {
+            if now - prompt.typed_at >= 0.35 {
+                prompt.checked = clean.clone();
+                let account = self.config.settings.floor.clone();
+                self.floor.check(ctx, account.as_ref(), &prompt.text);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(120));
+            }
+        }
+        let answer = if mine || clean.is_none() { None } else { self.floor.checked(&prompt.text).filter(|_| prompt.checked == clean) };
+        let free = answer.flatten();
+        // No answer yet (floor not answering: nothing shown, Save tells).
+        let checking = !mine && clean.is_some() && answer.is_none();
+        let (mut save, mut close) = (false, false);
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent));
+        let modal = egui::Modal::new(egui::Id::new("pseudo")).frame(frame).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(egui::RichText::new(t.pseudo_title).size(18.0).strong());
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t.pseudo_desc).size(13.0).color(theme.text_muted));
+            ui.add_space(14.0);
+            let edit = egui::TextEdit::singleline(&mut prompt.text).char_limit(24).hint_text(t.pseudo_hint).font(FontId::proportional(16.0)).desired_width(f32::INFINITY).margin(Vec2::new(10.0, 8.0));
+            let resp = ui.add_enabled(!claiming, edit);
+            if std::mem::take(&mut prompt.focus) {
+                resp.request_focus();
+            }
+            if resp.changed() {
+                prompt.error = None;
+                prompt.typed_at = now;
+            }
+            let valid = clean.is_some() && free != Some(false);
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && valid {
+                save = true;
+            }
+            ui.add_space(8.0);
+            if claiming {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.pseudo_checking).size(12.5).color(theme.text_muted));
+                });
+            } else if let Some(e) = &prompt.error {
+                let text = match e {
+                    crate::floor::ClaimError::Taken => t.pseudo_taken.to_owned(),
+                    crate::floor::ClaimError::Unreachable => t.pseudo_unreachable.to_owned(),
+                    crate::floor::ClaimError::Refused(code) => t.pseudo_refused.replace("{e}", code),
+                };
+                ui.label(egui::RichText::new(text).size(12.5).color(theme.ansi[1]));
+            } else if free == Some(false) {
+                ui.label(egui::RichText::new(format!("✗  {}", t.pseudo_taken)).size(12.5).color(theme.ansi[1]));
+            } else if free == Some(true) {
+                ui.label(egui::RichText::new(format!("✓  {}", t.pseudo_free)).size(12.5).color(theme.ansi[2]));
+            } else if checking {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.pseudo_checking).size(12.5).color(theme.text_muted));
+                });
+            } else if !has_pseudo {
+                ui.label(egui::RichText::new(t.pseudo_without).size(12.0).color(theme.text_muted));
+            }
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ok = egui::Button::new(egui::RichText::new(t.pseudo_save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0));
+                if ui.add_enabled(valid && !claiming, ok).clicked() {
+                    save = true;
+                }
+                let later = if has_pseudo { t.cancel } else { t.pseudo_later };
+                if ui.add(egui::Button::new(egui::RichText::new(later).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if modal.should_close() && !claiming {
+            close = true;
+        }
+        if save {
+            let text = prompt.text.clone();
+            let account = self.config.settings.floor.clone();
+            self.floor.claim(ctx, account.as_ref(), &text);
+        } else if close {
+            self.pseudo_prompt = None;
+        }
+    }
+}

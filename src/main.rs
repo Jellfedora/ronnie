@@ -2,13 +2,16 @@
 
 mod app;
 mod askpass;
+mod blob;
 mod awake;
 mod claude;
 mod config;
+mod connect4;
 mod db;
 mod dragout;
 mod floor;
 mod i18n;
+mod live;
 mod log;
 mod media_keys;
 mod notify;
