@@ -13,7 +13,6 @@ const BATCH: u32 = 40;
 /// Downloads failed in a row before the radio gives up.
 const MAX_FAILURES: u32 = 4;
 const CARD_H: f32 = 86.0;
-const IDLE_H: f32 = 32.0;
 
 enum Msg {
     Genres(Result<Vec<Genre>, Failure>),
@@ -620,7 +619,7 @@ impl Music {
 }
 
 impl App {
-    /// The radio's card, above `bottom` in the sidebar (nothing without a server). Where it starts.
+    /// The radio's card while it plays, above `bottom` in the sidebar. Where it starts.
     pub(super) fn music_card(&mut self, ui: &mut Ui, left: f32, width: f32, bottom: f32) -> f32 {
         let settings = &self.config.settings;
         if settings.subsonic.url.is_empty() || !settings.subsonic.password_saved {
@@ -628,43 +627,12 @@ impl App {
         }
         let t = self.t();
         let theme = self.theme.clone();
-        let playing = self.music.playing();
-        let h = if playing { CARD_H } else { IDLE_H };
-        let card = Rect::from_min_max(Pos2::new(left, bottom - h - 6.0), Pos2::new(left + width, bottom - 6.0));
-        let volume = settings.subsonic.volume;
-
-        if !playing {
-            // Two buttons: the music page, and the radio's genres.
-            let radio_w = 78.0;
-            let page = Rect::from_min_max(card.min, Pos2::new(card.max.x - radio_w - 4.0, card.max.y));
-            let radio = Rect::from_min_max(Pos2::new(card.max.x - radio_w, card.min.y), card.max);
-            let page_resp = ui.interact(page, ui.id().with("music-page"), Sense::click()).on_hover_text(t.lib_open).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let resp = ui.interact(radio, ui.id().with("music-start"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
-            for (rect, hot) in [(page, page_resp.hovered() || self.music_page), (radio, resp.hovered() || open)] {
-                ui.painter().rect_filled(rect, 8.0, if hot { theme.tab_active } else { Color32::TRANSPARENT });
-                ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0, if hot { theme.accent.gamma_multiply(0.5) } else { theme.tab_hover }), egui::StrokeKind::Inside);
-            }
-            paint_note(ui.painter(), Pos2::new(page.min.x + 16.0, page.center().y), theme.accent);
-            ui.painter().text(Pos2::new(page.min.x + 32.0, page.center().y), Align2::LEFT_CENTER, t.music_nav, FontId::proportional(13.0), theme.text);
-            ui.painter().text(Pos2::new(radio.min.x + 12.0, radio.center().y), Align2::LEFT_CENTER, t.music_radio, FontId::proportional(13.0), theme.text);
-            paint_chevron(ui.painter(), Pos2::new(radio.max.x - 14.0, radio.center().y), theme.text_muted);
-            if let Some(e) = &self.music.error {
-                let mark = Pos2::new(page.max.x - 12.0, page.center().y);
-                ui.painter().circle_filled(mark, 3.5, theme.ansi[1]);
-                page_resp.clone().on_hover_text(e.as_str());
-            }
-            if page_resp.clicked() {
-                self.open_music_page(None);
-            }
-            if resp.clicked() {
-                let server = configured_server(&self.config.settings);
-                self.music.load_genres(ui.ctx(), server);
-                self.music.load_liked(ui.ctx());
-            }
-            self.genre_menu(&resp, &theme, t);
-            return card.min.y - 6.0;
+        // Idle, the radio is reached from the sidebar's music category.
+        if !self.music.playing() {
+            return bottom;
         }
+        let card = Rect::from_min_max(Pos2::new(left, bottom - CARD_H - 6.0), Pos2::new(left + width, bottom - 6.0));
+        let volume = settings.subsonic.volume;
 
         let painter = ui.painter().clone();
         painter.rect_filled(card, 8.0, theme.tab_active);
@@ -801,6 +769,52 @@ impl App {
         card.min.y - 6.0
     }
 
+    /// The "Music" category of the sidebar: the places of the library, then the radio's genres.
+    pub(super) fn music_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let painter = ui.painter().clone();
+        super::sidebar::paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.music_nav, &theme);
+        *y += SECTION_HEADER_H;
+        let section = self.music_page.then(|| super::library::nav_section(self.library.view()));
+        let mut go = None;
+        for (k, (target, icon, label)) in super::library::nav_entries(t).into_iter().enumerate() {
+            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
+            *y += ROW_H + ROW_GAP;
+            let resp = ui.interact(slot, ui.id().with(("music-nav", k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let active = section == Some(k);
+            super::sidebar::paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
+            painter.text(Pos2::new(slot.min.x + 17.0, slot.center().y), Align2::CENTER_CENTER, icon, FontId::proportional(14.0), if active { theme.accent } else { theme.text_muted });
+            painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
+            if resp.clicked() {
+                go = Some(target);
+            }
+        }
+        if let Some(view) = go {
+            self.open_music_page(Some(view));
+        }
+        // The radio: its genres in a menu.
+        *y += 6.0;
+        let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
+        *y += ROW_H + ROW_GAP;
+        let resp = ui.interact(slot, ui.id().with("music-nav-radio"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        super::sidebar::paint_row_bg(&painter, slot, false, resp.hovered() || open, &theme);
+        paint_note(&painter, Pos2::new(slot.min.x + 17.0, slot.center().y), theme.accent);
+        painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, t.music_radio, FontId::proportional(13.0), theme.text);
+        paint_chevron(&painter, Pos2::new(slot.max.x - 14.0, slot.center().y), theme.text_muted);
+        if let Some(e) = &self.music.error {
+            painter.circle_filled(Pos2::new(slot.max.x - 30.0, slot.center().y), 3.5, theme.ansi[1]);
+            resp.clone().on_hover_text(e.as_str());
+        }
+        if resp.clicked() {
+            let server = configured_server(&self.config.settings);
+            self.music.load_genres(ui.ctx(), server);
+            self.music.load_liked(ui.ctx());
+        }
+        self.genre_menu(&resp, &theme, t);
+    }
+
     /// The music page shown (in this window), on `view` if given.
     pub(super) fn open_music_page(&mut self, view: Option<super::library::View>) {
         self.library.open(configured_server(&self.config.settings), view);
@@ -927,7 +941,7 @@ pub(super) fn paint_heart(painter: &egui::Painter, c: Pos2, color: Color32, fill
     }
 }
 
-fn paint_note(painter: &egui::Painter, c: Pos2, color: Color32) {
+pub(super) fn paint_note(painter: &egui::Painter, c: Pos2, color: Color32) {
     painter.circle_filled(c + Vec2::new(-3.0, 4.0), 2.8, color);
     painter.line_segment([c + Vec2::new(-0.5, 4.0), c + Vec2::new(-0.5, -5.5)], Stroke::new(1.4, color));
     painter.line_segment([c + Vec2::new(-0.5, -5.5), c + Vec2::new(4.0, -3.0)], Stroke::new(1.4, color));

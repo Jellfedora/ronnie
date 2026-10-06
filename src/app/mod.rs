@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use crate::config::{self, Config, Layout, Profile, Session, SessionTab, SessionWindow, TabState, WindowState};
+use crate::config::{self, Category, Config, Layout, Profile, Session, SessionTab, SessionWindow, TabState, WindowState};
 use crate::i18n::{Lang, Strings};
 use crate::pane::{self, Direction, Node, PaneId};
 use crate::terminal::{Finished, FontSet, LocalUrl, Terminal};
@@ -45,7 +45,10 @@ mod scorecard;
 mod sidebar;
 mod tour;
 
-const SIDEBAR_WIDTH: f32 = 220.0;
+/// The strip of category icons, on the left of the sidebar.
+const STRIP_W: f32 = 52.0;
+/// The sidebar unfolded: the strip, and the panel listing the category picked.
+const SIDEBAR_WIDTH: f32 = STRIP_W + 216.0;
 /// The folded sidebar: room for the macOS window buttons, then badges.
 const RAIL_WIDTH: f32 = 72.0;
 /// Window title: dev builds are told apart from the installed app.
@@ -56,7 +59,6 @@ const SIDEBAR_TOP: f32 = if cfg!(target_os = "macos") { 40.0 } else { 10.0 };
 /// Band under the traffic lights holding the app name.
 const LOGO_H: f32 = 46.0;
 const SECTION_HEADER_H: f32 = 30.0;
-const SECTION_GAP: f32 = 12.0;
 const ROW_H: f32 = 32.0;
 const ROW_GAP: f32 = 3.0;
 /// Height of a group title in the profiles section.
@@ -355,6 +357,9 @@ pub struct App {
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
     notes_page: bool,
+    /// What was shown when the sidebar last looked (tab, notes, music, game): when it changes, the
+    /// sidebar shows the category of the new one.
+    sidebar_seen: (Option<usize>, bool, bool, bool),
     /// The notes, the same in every window.
     notes: notes::Notes,
     media_keys: crate::media_keys::MediaKeys,
@@ -1023,6 +1028,7 @@ impl App {
             music_volume_changed: false,
             music_page: false,
             notes_page: false,
+            sidebar_seen: (None, false, false, false),
             notes: notes::Notes::load(),
             library: library::Library::default(),
             media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {
@@ -3137,8 +3143,9 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
             ui.close();
         }
     };
-    item(ui, can_copy, t.copy, shortcut("⌘ C", "Ctrl+Shift+C"), PaneAction::Copy(id));
-    item(ui, true, t.paste, shortcut("⌘ V", "Ctrl+Shift+V"), PaneAction::Paste(id));
+    let (copy, paste) = if shortcuts.plain_clipboard { ("Ctrl+C", "Ctrl+V") } else { ("Ctrl+Shift+C", "Ctrl+Shift+V") };
+    item(ui, can_copy, t.copy, shortcut("⌘ C", copy), PaneAction::Copy(id));
+    item(ui, true, t.paste, shortcut("⌘ V", paste), PaneAction::Paste(id));
     item(ui, true, t.files_copy_path, String::new(), PaneAction::CopyPath(id));
     ui.separator();
     // The splits with a shortcut first.
@@ -3653,6 +3660,7 @@ impl App {
                 for &(id, r) in &rects {
                     let Some(term) = tab.panes.get_mut(&id) else { continue };
                     term.remote = !local;
+                    term.plain_clipboard = self.config.settings.shortcuts.plain_clipboard;
                     // Startup commands, typed once the shell shows its prompt.
                     if let Some(since) = tab.startup_due.get(&id).copied() {
                         if term.ready_for_commands(since.elapsed(), local) {

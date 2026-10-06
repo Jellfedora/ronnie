@@ -935,7 +935,9 @@ impl GitView {
         // In a window: closes it. In a pane: its terminal again, or the view in a window.
         let mut right = bar.max.x - 6.0;
         if self.nested {
-            if button(ui, right, "⤺", t.git_all_repos).0 {
+            let (back, at) = button(ui, right, "", t.git_all_repos);
+            paint_return_icon(ui.painter(), at.center(), theme.fg);
+            if back {
                 exit = Some(Exit::Back);
             }
         } else if window {
@@ -945,7 +947,9 @@ impl GitView {
                 exit = Some(Exit::Back);
             }
         } else {
-            if button(ui, right, "⤺", t.git_back).0 {
+            let (back, at) = button(ui, right, "", t.git_back);
+            paint_return_icon(ui.painter(), at.center(), theme.fg);
+            if back {
                 exit = Some(Exit::Back);
             }
             right -= 32.0;
@@ -1115,7 +1119,9 @@ impl GitView {
                 exit = Some(Exit::Back);
             }
         } else {
-            if button(ui, right, "⤺", t.git_back).0 {
+            let (back, at) = button(ui, right, "", t.git_back);
+            paint_return_icon(ui.painter(), at.center(), theme.fg);
+            if back {
                 exit = Some(Exit::Back);
             }
             right -= 32.0;
@@ -1826,6 +1832,21 @@ fn paint_fetch_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
 }
 
 /// A window with an arrow out of its corner: open in a new window.
+/// A curved arrow going back, to the left: back to the terminal (or to all the repositories).
+fn paint_return_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    // Half a circle open to the left, from its top to its bottom, then the stem back to the left.
+    let (center, r) = (c + Vec2::new(1.5, 0.5), 4.5);
+    let mut arc: Vec<Pos2> = (0..=12).map(|k| center + Vec2::angled(-std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * k as f32 / 12.0) * r).collect();
+    arc.push(c + Vec2::new(-4.5, 0.5 + r));
+    arc.reverse();
+    painter.add(egui::Shape::line(arc, stroke));
+    // On the top end, a short stem to the left and its head.
+    let tip = center + Vec2::new(-6.5, -r);
+    painter.line_segment([tip, center + Vec2::new(0.0, -r)], stroke);
+    painter.add(egui::Shape::line(vec![tip + Vec2::new(3.0, -3.0), tip, tip + Vec2::new(3.0, 3.0)], stroke));
+}
+
 fn paint_window_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let frame = Rect::from_center_size(c + Vec2::new(-1.0, 1.0), Vec2::splat(10.0));

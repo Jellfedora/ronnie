@@ -37,7 +37,7 @@ impl App {
         }
         let settings = &self.config.settings;
         if !self.game.playing() {
-            self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref(), &settings.player_name, settings.typing_scores.first());
+            self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref(), &settings.player_name);
         }
         let board = crate::floor::shown(self.floor.board(), &settings.typing_scores, &settings.player_name);
         let best = settings.typing_scores.first().map_or(0, |s| s.letters);
@@ -52,19 +52,20 @@ impl App {
             self.config.settings.player_name = name;
             self.save_config();
             let settings = &self.config.settings;
-            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name, settings.typing_scores.first());
+            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name);
         }
         if let Some(score) = out.finished {
             // On the board, below the rounds it ties with (stable sort).
             let scores = &mut self.config.settings.typing_scores;
             let before = scores.first().map_or(0, |s| s.letters);
             let unlocked = before < crate::theme::METAL_UNLOCK && score.letters >= crate::theme::METAL_UNLOCK;
+            self.floor.finished(score.clone());
             scores.push(score);
             scores.sort_by(|a, b| b.letters.cmp(&a.letters));
             scores.truncate(config::TYPING_SCORES);
             self.save_config();
             let settings = &self.config.settings;
-            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name, settings.typing_scores.first());
+            self.floor.sync(ui.ctx(), now, None, settings.floor.as_ref(), &settings.player_name);
             if unlocked {
                 self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now() });
             }
@@ -80,15 +81,140 @@ impl App {
 
     }
 
-    /// The logo leads to the home page; three clicks, to the typing game.
+    /// The logo leads to the home page.
     fn logo_clicked(&mut self, logo: &egui::Response) {
-        if logo.triple_clicked() {
-            if self.home.is_none() {
-                self.go_home(None);
-            }
-            self.home_game = true;
-        } else if logo.clicked() && (self.home.is_none() || self.home_game) && !logo.double_clicked() {
+        if logo.clicked() && (self.home.is_none() || self.home_game) {
             self.go_home(None);
+        }
+    }
+
+    /// The typing game, on the home page.
+    pub(super) fn open_game(&mut self) {
+        if self.home.is_none() {
+            self.go_home(None);
+        }
+        self.home_game = true;
+        self.music_page = false;
+        self.notes_page = false;
+    }
+
+    /// The categories in the sidebar's strip, in order: those not hidden in the settings, the music
+    /// only with a server (always one, the local terminals at least).
+    pub(super) fn categories(&self) -> Vec<Category> {
+        let s = &self.config.settings;
+        let music = !s.subsonic.url.is_empty() && s.subsonic.password_saved;
+        let shown: Vec<Category> = Category::ALL.into_iter().filter(|c| !s.hidden_categories.contains(c) && (*c != Category::Music || music)).collect();
+        if shown.is_empty() { vec![Category::Local] } else { shown }
+    }
+
+    /// The category the panel lists: the one picked, or the first shown when it is hidden.
+    fn category(&self) -> Category {
+        let shown = self.categories();
+        let picked = self.config.settings.sidebar_category;
+        if shown.contains(&picked) { picked } else { shown[0] }
+    }
+
+    /// The category of a tab.
+    fn tab_category(&self, i: usize) -> Category {
+        match self.tabs.get(i) {
+            Some(tab) if tab.ssh.is_some() => Category::Ssh,
+            Some(tab) if tab.db.is_some() => Category::Db,
+            _ => Category::Local,
+        }
+    }
+
+    /// When what is shown changes (another tab, the notes, the music, the game), the sidebar shows its
+    /// category; the home page leaves it as it is.
+    fn follow_shown(&mut self) {
+        let game = self.home.is_some() && self.home_game;
+        let seen = (self.shown_tab(), self.notes_page, self.music_page, game);
+        if seen == self.sidebar_seen {
+            return;
+        }
+        self.sidebar_seen = seen;
+        let category = if self.notes_page {
+            Category::Notes
+        } else if self.music_page {
+            Category::Music
+        } else if game {
+            Category::Games
+        } else if let Some(i) = seen.0 {
+            self.tab_category(i)
+        } else {
+            return;
+        };
+        if self.categories().contains(&category) {
+            self.config.settings.sidebar_category = category;
+        }
+    }
+
+    /// The strip of category icons, on the left of the sidebar: a click shows a category in the
+    /// panel; on the one shown, it folds the sidebar.
+    fn category_strip(&mut self, ui: &Ui, strip: Rect, top: f32) {
+        let t = self.t();
+        let shown = self.category();
+        let mut y = top;
+        for category in self.categories() {
+            let slot = Rect::from_center_size(Pos2::new(strip.center().x, y + 20.0), Vec2::splat(40.0));
+            y += 46.0;
+            let resp = ui.interact(slot, ui.id().with(("category", category as u8)), Sense::click());
+            let active = category == shown;
+            if active {
+                ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
+                ui.painter().rect_filled(Rect::from_min_size(Pos2::new(strip.min.x + 2.0, slot.min.y + 10.0), Vec2::new(3.0, slot.height() - 20.0)), 1.5, self.theme.accent);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(slot, 9.0, self.theme.tab_hover.gamma_multiply(0.75));
+            }
+            let color = if active { self.theme.accent } else if resp.hovered() { self.theme.text } else { self.theme.text_muted };
+            paint_category_icon(ui.painter(), slot.center(), category, color);
+            // The tabs open in it: how many, and a long command ended in one (✓ or ✗).
+            let open: Vec<usize> = (0..self.tabs.len()).filter(|&i| matches!(category, Category::Local | Category::Ssh | Category::Db) && self.tab_category(i) == category).collect();
+            if !open.is_empty() {
+                let galley = ui.painter().layout_no_wrap(open.len().to_string(), FontId::proportional(9.5), self.theme.text);
+                let pill = Rect::from_center_size(slot.right_bottom() + Vec2::new(-8.0, -8.0), Vec2::new((galley.size().x + 7.0).max(14.0), 14.0));
+                ui.painter().rect_filled(pill, 7.0, self.theme.chrome_bg);
+                ui.painter().rect_filled(pill.shrink(1.0), 6.0, if active { self.theme.accent.gamma_multiply(0.3) } else { self.theme.tab_hover });
+                ui.painter().galley(pill.center() - galley.size() / 2.0, galley, self.theme.text);
+            }
+            if let Some(ok) = open.iter().filter_map(|&i| self.tabs[i].done.as_ref()).map(|d| d.ok).reduce(|a, b| a && b) {
+                let dot = slot.right_top() + Vec2::new(-8.0, 8.0);
+                ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
+                ui.painter().circle_filled(dot, 3.0, if ok { self.theme.ansi[2] } else { self.theme.ansi[1] });
+            }
+            if category == Category::Music && self.music.playing() {
+                let dot = slot.right_top() + Vec2::new(-8.0, 8.0);
+                ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
+                ui.painter().circle_filled(dot, 3.0, self.theme.accent);
+            }
+            let hint = if active { format!("{}  ·  {}", category_name(t, category), t.fold_sidebar) } else { category_name(t, category).to_owned() };
+            if resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                if active {
+                    self.config.settings.sidebar_folded = true;
+                } else {
+                    self.config.settings.sidebar_category = category;
+                }
+            }
+        }
+    }
+
+    /// The "Games" category: Speed Metal, with the best score.
+    fn games_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
+        let t = self.t();
+        let painter = ui.painter().clone();
+        paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &self.theme);
+        *y += SECTION_HEADER_H;
+        let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
+        *y += slot.height() + ROW_GAP;
+        let resp = ui.interact(slot, ui.id().with("game-speed-metal"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let active = self.home.is_some() && self.home_game;
+        paint_row_bg(&painter, slot, active, resp.hovered(), &self.theme);
+        super::paint_metal(&painter, Pos2::new(slot.min.x + 17.0, slot.center().y), Align2::CENTER_CENTER, "R", 20.0, self.theme.accent, 1.0);
+        painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, "Speed Metal", FontId::proportional(13.0), if active || resp.hovered() { self.theme.text } else { self.theme.text_muted });
+        if let Some(best) = self.config.settings.typing_scores.first() {
+            painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, best.letters.to_string(), FontId::proportional(11.5), self.theme.text_muted.gamma_multiply(0.85));
+        }
+        if resp.clicked() {
+            self.open_game();
         }
     }
 
@@ -144,7 +270,7 @@ impl App {
         // SSH header: title and a "+" menu.
         if !local {
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        let collapsed = self.section_title(ui, header, t.profiles, true, RailSection::Ssh);
+        paint_panel_title(&painter, header, t.profiles, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
         let plus = icon_button(ui, &painter, plus_rect, "profiles-plus", &self.theme, paint_plus);
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
@@ -152,9 +278,6 @@ impl App {
             menu_item(ui, t.new_group, TabAction::NewGroup(false), action);
         });
         *y += SECTION_HEADER_H;
-        if collapsed {
-            return;
-        }
         }
 
         if !local && self.config.ssh.is_empty() && !self.config.groups.iter().any(|g| !g.local) {
@@ -435,12 +558,22 @@ impl App {
             })
             .map(RailEntry::Tab)
             .collect();
-        let sections: Vec<(RailSection, &str, Vec<RailEntry>)> = vec![
+        let shown = self.categories();
+        let sections: Vec<(RailSection, &str, Vec<RailEntry>)> = [
             (RailSection::Local, t.terminals, plain.into_iter().chain(kind(true).into_iter().map(RailEntry::Item)).collect()),
             (RailSection::Ssh, t.profiles, kind(false).into_iter().map(RailEntry::Item).collect()),
             (RailSection::Db, t.db_section, self.config.databases.iter().map(|c| RailEntry::Db(c.id)).collect()),
             (RailSection::Notes, t.notes, self.notes.entries(t).into_iter().map(|(e, ..)| RailEntry::Note(e)).collect()),
-        ];
+        ]
+        .into_iter()
+        // Those hidden in the settings stay out.
+        .filter(|(section, ..)| shown.contains(&match section {
+            RailSection::Local => Category::Local,
+            RailSection::Ssh => Category::Ssh,
+            RailSection::Db => Category::Db,
+            RailSection::Notes => Category::Notes,
+        }))
+        .collect();
 
         let footer = bar.max.y - 54.0;
         let list = Rect::from_min_max(Pos2::new(bar.min.x, unfold.max.y + 8.0), Pos2::new(bar.max.x - 1.0, footer));
@@ -538,20 +671,6 @@ impl App {
         }
     }
 
-    /// A section's title (with its chevron), which folds or unfolds it when clicked. `plus`: room kept
-    /// on the right for its "+". True when the section is folded.
-    fn section_title(&mut self, ui: &Ui, rect: Rect, title: &str, plus: bool, section: RailSection) -> bool {
-        let hit = Rect::from_min_max(rect.min, Pos2::new(if plus { rect.max.x - 26.0 } else { rect.max.x }, rect.max.y));
-        let resp = ui.interact(hit, ui.id().with(("section-title", section as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        if resp.clicked() {
-            let c = self.collapsed(section);
-            *c = !*c;
-        }
-        let collapsed = *self.collapsed(section);
-        paint_section_title(ui.painter(), rect, title, plus, collapsed, resp.hovered(), &self.theme);
-        collapsed
-    }
-
     /// The tab an entry of the folded sidebar is open in.
     fn rail_open(&self, entry: RailEntry) -> Option<usize> {
         match entry {
@@ -647,15 +766,12 @@ impl App {
         let t = self.t();
         let painter = ui.painter().clone();
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        let collapsed = self.section_title(ui, header, t.db_section, true, RailSection::Db);
+        paint_panel_title(&painter, header, t.db_section, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
         if icon_button(ui, &painter, plus_rect, "db-plus", &self.theme, paint_plus).on_hover_text(t.db_new_connection).clicked() {
             *action = Some(TabAction::NewDb);
         }
         *y += SECTION_HEADER_H;
-        if collapsed {
-            return;
-        }
         if self.config.databases.is_empty() {
             if self.local_db {
                 // The button fits its label; the text before it goes on two lines when the sidebar is
@@ -739,7 +855,7 @@ impl App {
         let t = self.t();
         let painter = ui.painter().clone();
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        let collapsed = self.section_title(ui, header, t.notes, true, RailSection::Notes);
+        paint_panel_title(&painter, header, t.notes, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
         let plus = icon_button(ui, &painter, plus_rect, "notes-plus", &self.theme, paint_plus).on_hover_text(format!("{}  ({})", t.notes_toggle, self.config.settings.shortcuts.toggle_notes.label()));
         egui::Popup::menu(&plus).width(200.0).show(|ui| {
@@ -747,9 +863,6 @@ impl App {
             menu_item(ui, t.notes_new_folder, TabAction::Notes(Action::NewFolder), action);
         });
         *y += SECTION_HEADER_H;
-        if collapsed {
-            return;
-        }
         let open = self.notes_page;
         for (entry, name, count) in self.notes.entries(t) {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
@@ -958,22 +1071,12 @@ impl App {
         menu_item(ui, t.delete, if item.ssh { TabAction::DeleteHost(id) } else { TabAction::DeleteProfile(id) }, action);
     }
 
-    /// Small caps section title with an optional "+" button on the right. Returns true when "+" is clicked.
-    pub(super) fn section_header(&mut self, ui: &Ui, title: &str, pos: Pos2, width: f32, plus_hint: Option<&str>, section: RailSection) -> bool {
+    /// The panel's title, with a "+" on the right. Returns true when "+" is clicked.
+    pub(super) fn section_header(&mut self, ui: &Ui, title: &str, pos: Pos2, width: f32, plus_hint: &str) -> bool {
         let rect = Rect::from_min_size(pos, Vec2::new(width, SECTION_HEADER_H));
-        self.section_title(ui, rect, title, plus_hint.is_some(), section);
-        let painter = ui.painter();
-        let Some(hint) = plus_hint else { return false };
+        paint_panel_title(ui.painter(), rect, title, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(20.0));
-        let plus = ui.interact(plus_rect, ui.id().with(("section-plus", title)), Sense::click());
-        if plus.hovered() {
-            painter.circle_filled(plus_rect.center(), 10.0, self.theme.accent.gamma_multiply(0.25));
-        }
-        let stroke = Stroke::new(1.6, if plus.hovered() { self.theme.accent } else { self.theme.text_muted });
-        let (c, d) = (plus_rect.center(), 5.0);
-        painter.line_segment([c - Vec2::new(d, 0.0), c + Vec2::new(d, 0.0)], stroke);
-        painter.line_segment([c - Vec2::new(0.0, d), c + Vec2::new(0.0, d)], stroke);
-        plus.on_hover_text(hint).clicked()
+        icon_button(ui, ui.painter(), plus_rect, "section-plus", &self.theme, paint_plus).on_hover_text(plus_hint).clicked()
     }
 
     /// Right-click menu of a tab.
@@ -1110,23 +1213,30 @@ impl App {
         self.live = self.tabs.iter_mut().map(|tab| tab.panes.values_mut().find_map(|term| term.live_program(&ctx).map(str::to_owned))).collect();
         // New profiles and hosts show up outside groups; deleted ones disappear.
         self.config.normalize();
-        let bar = ui.max_rect();
+        self.follow_shown();
+        let category = self.category();
+        let whole = ui.max_rect();
         // A slight gradient, darker at the bottom.
         {
             let (top, bottom) = (self.theme.chrome_bg, lerp_color(self.theme.chrome_bg, self.theme.bg, 0.55));
             let mut mesh = egui::Mesh::default();
-            mesh.colored_vertex(bar.left_top(), top);
-            mesh.colored_vertex(bar.right_top(), top);
-            mesh.colored_vertex(bar.right_bottom(), bottom);
-            mesh.colored_vertex(bar.left_bottom(), bottom);
+            mesh.colored_vertex(whole.left_top(), top);
+            mesh.colored_vertex(whole.right_top(), top);
+            mesh.colored_vertex(whole.right_bottom(), bottom);
+            mesh.colored_vertex(whole.left_bottom(), bottom);
             mesh.add_triangle(0, 1, 2);
             mesh.add_triangle(0, 2, 3);
             ui.painter().add(egui::Shape::mesh(mesh));
         }
-        ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
+        ui.painter().vline(whole.max.x - 0.5, whole.y_range(), Stroke::new(1.0, self.theme.tab_hover));
+        // On the left the strip of categories, a shade darker; the panel of the one picked beside it.
+        let strip = Rect::from_min_max(whole.min, Pos2::new(whole.min.x + STRIP_W, whole.max.y));
+        let bar = Rect::from_min_max(Pos2::new(strip.max.x, whole.min.y), whole.max);
+        ui.painter().rect_filled(strip, 0.0, self.theme.bg.gamma_multiply(0.3));
+        ui.painter().vline(strip.max.x - 0.5, strip.y_range(), Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.7)));
 
         // Empty space in the sidebar drags the window (the native title bar is hidden).
-        let bg = ui.interact(bar, ui.id().with("sidebar-bg"), Sense::click_and_drag());
+        let bg = ui.interact(whole, ui.id().with("sidebar-bg"), Sense::click_and_drag());
         if bg.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
@@ -1146,6 +1256,7 @@ impl App {
         let footer_top = bar.max.y - FOOTER_H;
         // macOS: the traffic lights don't scale with the interface zoom, so the space kept for them doesn't either.
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
+        self.category_strip(ui, strip, strip.min.y + top + 4.0);
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
         // The logo leads home (the typing game).
@@ -1208,15 +1319,17 @@ impl App {
         let origin = ui.max_rect().min;
         let mut y = origin.y;
 
-        // Local section: open tabs that are neither a profile nor an SSH host, then local profiles.
-        let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
-        if self.section_header(ui, t.terminals, Pos2::new(left, y), row_w, Some(&new_hint), RailSection::Local) {
-            action = Some(TabAction::New);
+        // Local terminals: open tabs that are neither a profile nor an SSH host, then local profiles.
+        let local = category == Category::Local;
+        if local {
+            let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
+            if self.section_header(ui, t.cat_local, Pos2::new(left, y), row_w, &new_hint) {
+                action = Some(TabAction::New);
+            }
+            y += SECTION_HEADER_H;
         }
-        y += SECTION_HEADER_H;
 
-        let local_collapsed = self.config.settings.local_collapsed;
-        let is_plain = |tab: &Tab| tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none() && !local_collapsed;
+        let is_plain = |tab: &Tab| tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none() && local;
         let first_y = y;
         let local_count = self.tabs.iter().filter(|t| is_plain(t)).count();
         let mut tab_rects: Vec<(usize, Rect)> = Vec::with_capacity(local_count);
@@ -1357,19 +1470,15 @@ impl App {
             resp.context_menu(|ui| self.tab_menu(ui, i, &mut action));
         }
 
-        // Local profiles sit with the terminals, in their own groups; the SSH section below lists hosts.
-        if !local_collapsed {
-            self.profiles_section(ui, left, row_w, &mut y, &mut action, true);
+        // Local profiles sit with the terminals, in their own groups.
+        match category {
+            Category::Local => self.profiles_section(ui, left, row_w, &mut y, &mut action, true),
+            Category::Ssh => self.profiles_section(ui, left, row_w, &mut y, &mut action, false),
+            Category::Db => self.db_section(ui, left, row_w, &mut y, &mut action),
+            Category::Music => self.music_section(ui, left, row_w, &mut y),
+            Category::Notes => self.notes_section(ui, left, row_w, &mut y, &mut action),
+            Category::Games => self.games_section(ui, left, row_w, &mut y),
         }
-
-        y += SECTION_GAP;
-        self.profiles_section(ui, left, row_w, &mut y, &mut action, false);
-
-        y += SECTION_GAP;
-        self.db_section(ui, left, row_w, &mut y, &mut action);
-
-        y += SECTION_GAP;
-        self.notes_section(ui, left, row_w, &mut y, &mut action);
 
         // Content height, so the scroll area knows how far it can go.
         ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
@@ -1592,7 +1701,7 @@ fn paint_done(painter: &egui::Painter, c: Pos2, ok: bool, theme: &crate::theme::
 
 /// Background of a sidebar row: nothing at rest, a light fill on hover, and for the open one a fill
 /// with a touch of the accent and a bar on its left.
-fn paint_row_bg(painter: &egui::Painter, rect: Rect, active: bool, hovered: bool, theme: &crate::theme::Theme) {
+pub(super) fn paint_row_bg(painter: &egui::Painter, rect: Rect, active: bool, hovered: bool, theme: &crate::theme::Theme) {
     if active {
         painter.rect_filled(rect, 8.0, theme.tab_active);
         painter.rect_filled(rect, 8.0, theme.accent.gamma_multiply(0.07));
@@ -1629,20 +1738,47 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from(egui::lerp(egui::Rgba::from(a)..=egui::Rgba::from(b), t))
 }
 
-/// A sidebar section's title: small spaced capitals, then a thin line (up to the + button).
-/// A section's title, after the chevron that folds it.
-fn paint_section_title(painter: &egui::Painter, rect: Rect, title: &str, plus: bool, collapsed: bool, hovered: bool, theme: &crate::theme::Theme) {
-    let color = if hovered { theme.text } else { theme.text_muted.gamma_multiply(0.85) };
-    paint_chevron(painter, Pos2::new(rect.min.x + 9.0, rect.center().y), !collapsed, color);
+/// The title of the sidebar's panel: the category it lists, in small spaced capitals.
+pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str, theme: &crate::theme::Theme) {
     let mut job = egui::text::LayoutJob::default();
-    job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(10.5), color, extra_letter_spacing: 1.2, ..Default::default() });
+    job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(11.0), color: theme.text_muted, extra_letter_spacing: 1.4, ..Default::default() });
     let galley = painter.layout_job(job);
-    let text_end = rect.min.x + 20.0 + galley.size().x;
-    painter.galley(Pos2::new(rect.min.x + 20.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
-    let line_end = if plus { rect.max.x - 28.0 } else { rect.max.x - 6.0 };
-    if line_end > text_end + 10.0 {
-        painter.hline(text_end + 8.0..=line_end, rect.center().y, Stroke::new(1.0, theme.tab_hover.gamma_multiply(0.9)));
+    painter.galley(Pos2::new(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
+}
+
+/// The name of a category of the sidebar.
+pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
+    match category {
+        Category::Local => t.cat_local,
+        Category::Ssh => t.profiles,
+        Category::Db => t.db_section,
+        Category::Music => t.music_nav,
+        Category::Notes => t.notes,
+        Category::Games => t.cat_games,
     }
+}
+
+/// The icon of a category, in the sidebar's strip.
+fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Category, color: Color32) {
+    match category {
+        Category::Local => paint_prompt_icon(painter, c, color),
+        Category::Ssh => paint_server_icon(painter, c, color),
+        Category::Db => super::dbview::paint_db_icon(painter, c, color),
+        Category::Music => super::music::paint_note(painter, c, color),
+        Category::Notes => super::notes::paint_notes_icon(painter, c, color),
+        Category::Games => paint_gamepad_icon(painter, c, color),
+    }
+}
+
+/// A game controller: the games category.
+fn paint_gamepad_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3, color);
+    painter.rect_stroke(Rect::from_center_size(c, Vec2::new(17.0, 11.0)), 5.0, stroke, egui::StrokeKind::Middle);
+    let pad = c + Vec2::new(-4.0, 0.0);
+    painter.line_segment([pad - Vec2::new(2.5, 0.0), pad + Vec2::new(2.5, 0.0)], stroke);
+    painter.line_segment([pad - Vec2::new(0.0, 2.5), pad + Vec2::new(0.0, 2.5)], stroke);
+    painter.circle_filled(c + Vec2::new(3.5, 1.2), 1.1, color);
+    painter.circle_filled(c + Vec2::new(5.5, -1.2), 1.1, color);
 }
 
 /// « : fold the sidebar.

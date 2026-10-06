@@ -573,6 +573,29 @@ pub struct Settings {
     /// The sidebar's notes section folded.
     #[serde(default)]
     pub notes_collapsed: bool,
+    /// The category the sidebar shows, picked in its strip of icons.
+    #[serde(default)]
+    pub sidebar_category: Category,
+    /// Categories left out of the sidebar.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_categories: Vec<Category>,
+}
+
+/// A category of the sidebar: an icon in its strip, and what the panel next to it lists.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Category {
+    #[default]
+    Local,
+    Ssh,
+    Db,
+    Music,
+    Notes,
+    Games,
+}
+
+impl Category {
+    pub const ALL: [Category; 6] = [Category::Local, Category::Ssh, Category::Db, Category::Music, Category::Notes, Category::Games];
 }
 
 /// The music server (Navidrome, Gonic, Airsonic… any that speaks the Subsonic API); its password is
@@ -740,6 +763,10 @@ pub struct Shortcuts {
     /// Shows or hides the notes beside the terminals.
     #[serde(default = "default_toggle_notes")]
     pub toggle_notes: Shortcut,
+    /// Outside macOS: Ctrl+C copies the selection (with none, it still interrupts) and Ctrl+V pastes,
+    /// as well as Ctrl+Shift+C / V.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain_clipboard: bool,
 }
 
 fn default_toggle_notes() -> Shortcut {
@@ -776,6 +803,7 @@ impl Default for Shortcuts {
             toggle_sidebar: default_toggle_sidebar(),
             dictate: default_dictate(),
             toggle_notes: default_toggle_notes(),
+            plain_clipboard: false,
         }
     }
 }
@@ -857,7 +885,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new() }
     }
 }
 

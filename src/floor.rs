@@ -2,8 +2,11 @@
 //! best round of each player; the typing game shows its board, and its own rounds when it can't reach it.
 //!
 //! The work is a sync, in the background, after which the board and the account are up to date: the
-//! board is fetched, and the best local round sent if floor doesn't have it yet (a round played offline
-//! gets there later), as the player's name if it changed. The account is made on the first round sent.
+//! board is fetched, and the round just finished sent if it beats the player's line on floor, as the
+//! player's name if it changed. The account is made on the first round sent.
+//!
+//! Only a round ended in the game is sent, never the scores kept in the settings (a file anyone can
+//! edit). One floor couldn't take is tried again at the next syncs, while the app runs.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -82,6 +85,8 @@ struct Synced {
     board: Option<Vec<Entry>>,
     /// The account changed (made, or forgotten by floor): to save.
     account: Option<Option<FloorAccount>>,
+    /// The round to send, not sent (floor unreachable): tried again.
+    unsent: Option<TypingScore>,
 }
 
 #[derive(Default)]
@@ -99,6 +104,8 @@ pub struct Floor {
     board: Option<Vec<Entry>>,
     /// When the last sync started (app time): the board is fetched again a minute later.
     last: Option<f64>,
+    /// A round finished, not sent yet (kept in memory only).
+    pending: Option<TypingScore>,
 }
 
 impl Floor {
@@ -116,14 +123,28 @@ impl Floor {
             self.last = None;
         }
         drop(shared);
+        if let Some(round) = done.unsent {
+            self.keep(round);
+        }
         if done.board.is_some() {
             self.board = done.board;
         }
         done.account
     }
 
+    /// A round just finished in the game: sent at the next sync (the best one, when several wait).
+    pub fn finished(&mut self, round: TypingScore) {
+        self.keep(round);
+    }
+
+    fn keep(&mut self, round: TypingScore) {
+        if self.pending.as_ref().is_none_or(|p| round.letters > p.letters) {
+            self.pending = Some(round);
+        }
+    }
+
     /// A sync, if the last one is older than `every` seconds (None: now).
-    pub fn sync(&mut self, ctx: &egui::Context, now: f64, every: Option<f64>, account: Option<&FloorAccount>, name: &str, best: Option<&TypingScore>) {
+    pub fn sync(&mut self, ctx: &egui::Context, now: f64, every: Option<f64>, account: Option<&FloorAccount>, name: &str) {
         if every.is_some_and(|every| self.last.is_some_and(|last| now - last < every)) {
             return;
         }
@@ -139,11 +160,13 @@ impl Floor {
         }
         // The account made for another floor (a dev build sharing the installed app's settings...) isn't used.
         let account = account.filter(|a| a.url == url).cloned();
-        let (name, best, shared, ctx) = (floor_name(name), best.cloned(), self.shared.clone(), ctx.clone());
+        let (name, round, shared, ctx) = (floor_name(name), self.pending.take(), self.shared.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let synced = sync(&url, account, name, best).unwrap_or_else(|e| {
+            let synced = sync(&url, account, name, round.clone()).unwrap_or_else(|e| {
                 crate::log::info(&format!("floor: {e}"));
-                Synced::default()
+                // Refused by floor (out of its bounds): not tried again.
+                let refused = matches!(e, ureq::Error::StatusCode(400..=499));
+                Synced { unsent: round.filter(|_| !refused), ..Default::default() }
             });
             if let Ok(mut shared) = shared.lock() {
                 shared.done = Some(synced);
@@ -181,24 +204,21 @@ fn entry(e: WireEntry) -> Entry {
     Entry { name: e.name, me: e.me, score: TypingScore { letters: e.score, words: d.words, wpm: d.wpm, accuracy: d.accuracy, combo: d.combo, at: e.at / 1000 } }
 }
 
-fn sync(url: &str, mut account: Option<FloorAccount>, name: Option<String>, best: Option<TypingScore>) -> Result<Synced, ureq::Error> {
+fn sync(url: &str, mut account: Option<FloorAccount>, name: Option<String>, round: Option<TypingScore>) -> Result<Synced, ureq::Error> {
     let agent = agent();
     let mut synced = Synced::default();
     let (mut entries, me) = board(&agent, url, account.as_ref())?;
     // An account floor doesn't know (its base started over): a new one.
-    if account.is_some() && me.is_none() && best.is_some() {
+    if account.is_some() && me.is_none() && round.is_some() {
         let known = agent.patch(format!("{url}/v1/players/me")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.as_ref().map_or("", |a| &a.token))).send_json(serde_json::json!({ "name": name }));
         if matches!(known, Err(ureq::Error::StatusCode(401))) {
             account = None;
             synced.account = Some(None);
         }
     }
-    let Some(best) = best else {
-        synced.board = Some(entries);
-        return Ok(synced);
-    };
     let mut changed = false;
-    if me.as_ref().is_none_or(|m| best.letters > m.score) {
+    // The round, if it beats the player's line (floor keeps the best one anyway).
+    if let Some(best) = round.filter(|r| me.as_ref().is_none_or(|m| r.letters > m.score)) {
         let account = match &account {
             Some(a) => a.clone(),
             None => {

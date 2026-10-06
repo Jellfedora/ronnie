@@ -2,6 +2,22 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.19.0] - 2026-10-06
+
+### Nouveautés
+
+- **Nouvelle barre latérale** : une colonne d'icônes à gauche (Local, SSH, Bases, Musique, Notes, Jeux) choisit ce que la barre affiche à côté. Elle suit ce qui est à l'écran (un onglet SSH montre la catégorie SSH), et un clic sur l'icône déjà choisie replie la barre. Le nombre d'onglets ouverts et la fin d'une longue commande s'affichent sur les icônes.
+  - La catégorie **Musique** donne les rubriques de la bibliothèque et la radio. La carte de la radio ne s'affiche plus que pendant la lecture.
+  - La catégorie **Jeux** ouvre Speed Metal, avec le meilleur score.
+  - Les catégories se masquent dans Réglages › Général.
+- **Ctrl+C / Ctrl+V pour copier et coller** sous Windows et Linux, en option (Réglages › Raccourcis) : sans sélection, Ctrl+C interrompt toujours le programme.
+- **Speed Metal** : 200 nouveaux mots, en français et en anglais.
+
+### Changements
+
+- Seules les parties jouées dans le jeu partent au classement mondial, plus les scores gardés dans les réglages. Une partie que le serveur n'a pas reçue est renvoyée plus tard.
+- L'icône « Revenir au terminal » de la vue Git s'affichait en carré : elle est redessinée.
+
 ## [0.18.0] - 2026-10-06
 
 ### Nouveautés

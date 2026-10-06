@@ -102,7 +102,30 @@ impl Default for Library {
     }
 }
 
+/// The places of the library's navigation (in the page, and in the sidebar): where each leads, its
+/// icon, its name.
+pub(super) fn nav_entries(t: &Strings) -> [(View, &'static str, &'static str); 5] {
+    [(View::Home, "⌂", t.lib_home), (View::Albums(AlbumOrder::Newest), "◫", t.lib_albums), (View::Artists, "☺", t.lib_artists), (View::Liked, "♥", t.music_liked), (View::Playlists, "☰", t.lib_playlists)]
+}
+
+/// Which of `nav_entries` a place belongs to (5: none, a search).
+pub(super) fn nav_section(view: &View) -> usize {
+    match view {
+        View::Albums(_) | View::Album(_) => 1,
+        View::Artists | View::Artist(_) => 2,
+        View::Liked => 3,
+        View::Playlists | View::Playlist(_) => 4,
+        View::Search(_) => 5,
+        View::Home => 0,
+    }
+}
+
 impl Library {
+    /// The place shown.
+    pub(super) fn view(&self) -> &View {
+        &self.view
+    }
+
     /// The page opened, on `view` if given; the server taken again from the settings (it may have changed).
     pub(super) fn open(&mut self, server: Option<Server>, view: Option<View>) {
         let changed = match (&self.server, &server) {
@@ -366,16 +389,8 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(nav.shrink2(Vec2::new(10.0, 16.0))).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
             ui.label(egui::RichText::new(t.music_nav).size(18.0).strong().color(theme.text));
             ui.add_space(14.0);
-            let section = match &view {
-                View::Albums(_) | View::Album(_) => 1,
-                View::Artists | View::Artist(_) => 2,
-                View::Liked => 3,
-                View::Playlists | View::Playlist(_) => 4,
-                View::Search(_) => 5,
-                View::Home => 0,
-            };
-            let entries = [(View::Home, "⌂", t.lib_home), (View::Albums(AlbumOrder::Newest), "◫", t.lib_albums), (View::Artists, "☺", t.lib_artists), (View::Liked, "♥", t.music_liked), (View::Playlists, "☰", t.lib_playlists)];
-            for (k, (target, icon, label)) in entries.into_iter().enumerate() {
+            let section = nav_section(&view);
+            for (k, (target, icon, label)) in nav_entries(t).into_iter().enumerate() {
                 let selected = section == k;
                 let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
                 let fill = if selected { theme.tab_active } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };

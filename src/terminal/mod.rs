@@ -166,6 +166,9 @@ pub struct Terminal {
     v_press_seen: bool,
     /// An SSH session (set by the app): pasted images are sent to the server, asked with `wants_upload`.
     pub remote: bool,
+    /// Outside macOS, Ctrl+C copies a selection and Ctrl+V pastes (set by the app, see
+    /// `Shortcuts::plain_clipboard`).
+    pub plain_clipboard: bool,
     wants_upload: bool,
     /// Programs may set the clipboard (OSC 52), e.g. vim or tmux over SSH.
     allow_clipboard: bool,
@@ -277,6 +280,7 @@ impl Terminal {
             pending_paste: None,
             v_press_seen: false,
             remote: false,
+            plain_clipboard: false,
             wants_upload: false,
             allow_clipboard: true,
             program_copy: None,
@@ -846,11 +850,17 @@ impl Terminal {
                         self.write_user(&bytes);
                     }
                 }
-                // Outside macOS, Ctrl+C/X/V arrive as clipboard events: only Ctrl+Shift means clipboard.
+                // Outside macOS, Ctrl+C/X/V arrive as clipboard events: only Ctrl+Shift means clipboard,
+                // unless plain Ctrl+C copies a selection (then gone, the next one interrupts).
                 Event::Copy => {
-                    if mac || mods.shift {
+                    let selected = self.plain_clipboard && self.has_selection();
+                    if mac || mods.shift || selected {
                         if let Some(text) = self.selection_text() {
                             ui.ctx().copy_text(text);
+                        }
+                        if selected && !mods.shift {
+                            self.term.lock().selection = None;
+                            self.program_copy = None;
                         }
                     } else {
                         self.write_user(b"\x03");
@@ -859,7 +869,7 @@ impl Terminal {
                 Event::Cut if !mac => self.write_user(b"\x18"),
                 Event::Paste(text) => {
                     self.v_press_seen = true;
-                    if mac || mods.shift {
+                    if mac || mods.shift || self.plain_clipboard {
                         self.paste(&text, mode);
                     } else {
                         self.write_user(b"\x16");

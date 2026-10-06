@@ -1262,6 +1262,25 @@ impl App {
                 toggle(ui, theme, &mut picked.home_databases);
             });
         });
+        card(ui, theme, Some(t.sidebar_setting), |ui| {
+            ui.label(egui::RichText::new(t.sidebar_setting_desc).size(12.5).color(theme.text_muted));
+            ui.add_space(4.0);
+            for (k, category) in Category::ALL.into_iter().enumerate() {
+                if k > 0 {
+                    divider(ui, theme);
+                }
+                let desc = (category == Category::Music).then_some(t.sidebar_music_desc);
+                setting_row(ui, theme, super::sidebar::category_name(t, category), desc, |ui| {
+                    let mut on = !picked.hidden_categories.contains(&category);
+                    if toggle(ui, theme, &mut on).changed() {
+                        picked.hidden_categories.retain(|c| *c != category);
+                        if !on {
+                            picked.hidden_categories.push(category);
+                        }
+                    }
+                });
+            }
+        });
         card(ui, theme, Some(t.set_terminal), |ui| {
             setting_row(ui, theme, t.show_cwd, Some(t.show_cwd_desc), |ui| {
                 toggle(ui, theme, &mut picked.show_cwd);
@@ -1624,9 +1643,19 @@ impl App {
                 }
             });
             let mac = cfg!(target_os = "macos");
+            // Outside macOS (where ⌘ C / ⌘ V copy and paste): Ctrl alone too, or only Ctrl+Shift (plain
+            // Ctrl+C interrupting the program).
+            if !mac {
+                card(ui, &theme, Some(t.shortcut_clipboard), |ui| {
+                    setting_row(ui, &theme, t.shortcut_plain_clipboard, Some(t.shortcut_plain_clipboard_desc), |ui| {
+                        toggle(ui, &theme, &mut picked.shortcuts.plain_clipboard);
+                    });
+                });
+            }
+            let plain = picked.shortcuts.plain_clipboard;
             let fixed = [
-                (t.copy, if mac { "⌘ C" } else { "Ctrl+Shift+C" }),
-                (t.paste, if mac { "⌘ V" } else { "Ctrl+Shift+V" }),
+                (t.copy, if mac { "⌘ C" } else if plain { "Ctrl+C   Ctrl+Shift+C" } else { "Ctrl+Shift+C" }),
+                (t.paste, if mac { "⌘ V" } else if plain { "Ctrl+V   Ctrl+Shift+V" } else { "Ctrl+Shift+V" }),
                 (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
                 (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
                 (t.shortcut_zoom, if mac { "⌘ +   ⌘ −   ⌘ 0" } else { "Ctrl++   Ctrl+−   Ctrl+0" }),
