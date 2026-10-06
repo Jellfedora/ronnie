@@ -2,6 +2,12 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.20.1] - 2026-10-06
+
+### Corrections
+
+- Ronnie.io restait bloqué sur « Connexion au serveur de jeux… » : la connexion sécurisée au serveur échouait. Si elle échoue encore, la page le dit au lieu d'attendre.
+
 ## [0.20.0] - 2026-10-06
 
 ### Nouveautés

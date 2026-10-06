@@ -186,6 +186,8 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     log::install_panic_hook();
+    // ring and aws-lc-rs are both compiled in: without a default, rustls panics at the first wss:// (Ronnie.io).
+    let _ = rustls::crypto::ring::default_provider().install_default();
     // Claude Code's status line command: keeps the plan's usage for the panes where Claude runs.
     if std::env::args().nth(1).as_deref() == Some("claude-statusline") {
         claude::run_statusline();

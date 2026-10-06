@@ -335,10 +335,16 @@ impl Online {
         let Some(link) = &self.link else { return news };
         let mut closed = None;
         let mut messages = Vec::new();
-        while let Ok(event) = link.rx.try_recv() {
-            match event {
-                Event::Closed(why) => closed = Some(why),
-                Event::Message(wire, at) => messages.push((wire, at)),
+        loop {
+            match link.rx.try_recv() {
+                Ok(Event::Closed(why)) => closed = Some(why),
+                Ok(Event::Message(wire, at)) => messages.push((wire, at)),
+                Err(mpsc::TryRecvError::Empty) => break,
+                // The thread died without a word (a panic): closed all the same, not "connecting" forever.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    closed.get_or_insert(None);
+                    break;
+                }
             }
         }
         for (wire, at) in messages {
