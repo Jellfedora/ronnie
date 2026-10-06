@@ -195,8 +195,10 @@ impl SshHost {
         args.push("--".to_owned());
         args.push(self.host.clone());
 
+        // Every prompt goes through Ronnie as askpass helper: the saved password typed, a new host's key
+        // asked in a window; anything else is asked on the terminal, as ssh would.
         let mut env = Vec::new();
-        if self.uses_saved_password() {
+        {
             if let Ok(exe) = std::env::current_exe() {
                 env.push(("SSH_ASKPASS".to_owned(), exe.display().to_string()));
                 env.push(("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()));
@@ -559,8 +561,8 @@ pub fn saved_password_ids() -> Option<std::collections::HashSet<Uuid>> {
 
 /// When ssh runs ronnie as its askpass helper, answers the prompt and returns true (the process should
 /// then exit). The saved password answers the first password prompt, and with a key file the first
-/// passphrase prompt; anything else (host key confirmation, a retry after a wrong password) is asked on
-/// the terminal.
+/// passphrase prompt; a new host's key is asked in the window; anything else (a retry after a wrong
+/// password, a server's question) is asked on the terminal.
 pub fn run_askpass() -> bool {
     if std::env::var_os(ASKPASS_ENV).is_none() {
         return false;
@@ -771,7 +773,8 @@ Host db
         let args = launch.args.join(" ");
         assert!(args.starts_with("-p 2222 -l deploy -i "), "{args}");
         assert!(args.ends_with("-o IdentitiesOnly=yes -o ConnectTimeout=10 -- 10.0.0.1"), "{args}");
-        assert!(launch.env.is_empty());
+        // Ronnie answers ssh's questions (a new host's key) even without a saved password.
+        assert!(launch.env.iter().any(|(k, _)| k == "SSH_ASKPASS"));
     }
 
     #[test]
@@ -786,7 +789,7 @@ Host db
         host.auth = Some(SshAuth::Interactive);
         let args = host.command().args.join(" ");
         assert!(!args.contains(" -i ") && args.contains("PreferredAuthentications=keyboard-interactive"), "{args}");
-        assert!(!host.uses_saved_password() && host.command().env.is_empty());
+        assert!(!host.uses_saved_password());
 
         host.auth = Some(SshAuth::Password);
         assert!(host.command().args.join(" ").contains("PreferredAuthentications=password,keyboard-interactive"));

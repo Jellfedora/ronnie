@@ -2,6 +2,43 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.18.0] - 2026-10-06
+
+### Nouveautés
+
+- **Notes**, dans une section de la barre latérale, en Markdown. Le « + » crée une note ou un dossier, et un dossier peut avoir des sous-dossiers. Les notes s'affichent à la place des terminaux (⌘ ⇧ N sur macOS, Ctrl+Alt+N ailleurs), classées par date, avec les épinglées en tête et une recherche.
+  - Chaque note s'affiche rendue ou en Markdown. Un double-clic sur le rendu passe au Markdown, à la ligne cliquée.
+  - Une barre de mise en forme propose titres, listes, tâches, gras, italique, barré, code, liens, citations, séparateurs et tableaux. Dans un tableau, ⇥ passe à la cellule suivante.
+  - Images et pièces jointes, collées ou glissées dans la note.
+  - Les notes supprimées restent 30 jours dans « Suppressions récentes ».
+- **Procédures stockées, fonctions et déclencheurs** (MySQL, MariaDB et SQL Server), dans deux nouveaux onglets de la base et sous chaque table. On peut les créer, modifier, dupliquer, supprimer et exécuter (une fenêtre demande les paramètres), et activer ou désactiver un déclencheur.
+  - Ils se modifient dans un formulaire à la phpMyAdmin (paramètres, type renvoyé, options, définition), avec le SQL généré sous les yeux, ou directement en SQL.
+  - L'enregistrement est sûr : le nouveau code est d'abord essayé sur une copie, et si le serveur le refuse, l'ancienne version reste en place.
+- **Glisser ou coller des fichiers dans un terminal SSH** : ils sont envoyés sur le serveur, dans le dossier courant, et leur chemin est tapé. Une image collée pour Claude Code part dans /tmp sur le serveur, comme en local.
+- **Glisser des fichiers sur un terminal local** tape leurs chemins, échappés, au curseur (Claude Code joint les images).
+- **Coller une image pour Claude Code** marche aussi au clavier et depuis le menu (Alt+V sous Windows).
+- **Première connexion à un serveur SSH** : l'empreinte du serveur est demandée dans une fenêtre, au lieu de la question de ssh dans le terminal.
+- **Renommer les commandes enregistrées** du terminal : le nom s'affiche à la place de la commande.
+- **Temps restant estimé** dans les transferts du gestionnaire de fichiers, et la durée totale une fois fini.
+- **Le dossier dans la barre d'un pane** se modifie d'un clic, et Entrée y va avec `cd`, même sur un serveur. Le menu du terminal propose aussi « Copier le chemin ».
+- **Lignes orphelines** : depuis le menu d'une table, une requête liste les lignes dont la clé étrangère ne pointe sur rien.
+- **Import de base de données** :
+  - Les `.zip` contenant un `.sql` sont acceptés.
+  - Après une erreur de clé étrangère, un bouton relance l'import sans les vérifier.
+  - Les options d'export et d'import sont expliquées dans une fenêtre.
+
+### Changements
+
+- Après `cd `, seuls les dossiers sont proposés, et dès que rien n'est encore tapé (aussi `pushd`, `Set-Location`…).
+- « Connexion refusée » sur une base en connexion directe suggère de passer par un tunnel SSH.
+- Une base à travers un tunnel SSH prend 127.0.0.1 comme hôte, et une URL collée dans l'hôte est nettoyée.
+- Les longs `INSERT` d'un import sont découpés quand ils dépassent la taille permise par le serveur.
+- Si on la décoche, la vérification des clés étrangères reste coupée pendant tout l'import. L'export ne la force plus.
+- La fenêtre de suppression de tables a la case des clés étrangères.
+- L'affichage de la base est relu après une modification qui a échoué en partie, ou une modification tapée dans l'éditeur SQL.
+- Les messages d'erreur en haut de la fenêtre se ferment (✕) et disparaissent tout seuls après 12 secondes.
+- Les icônes de crayon qui s'affichaient en carré sont redessinées.
+
 ## [0.17.0] - 2026-10-02
 
 ### Nouveautés

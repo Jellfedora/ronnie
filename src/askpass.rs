@@ -178,8 +178,15 @@ impl Server {
         if state.allowed.insert(ssh_pid, host.id) != Some(host.id) {
             state.answered.remove(&ssh_pid);
             state.unlocked.remove(&ssh_pid);
+            state.refused.remove(&ssh_pid);
         }
-        state.unsaved.remove(&ssh_pid);
+        // Its saved password, if any, is typed for it; otherwise only its host key is asked in the window.
+        if host.uses_saved_password() {
+            state.unsaved.remove(&ssh_pid);
+        } else {
+            state.unsaved.insert(ssh_pid);
+        }
+        state.names.insert(host.id, host.name.clone());
         if host.auth_method() == crate::ssh::SshAuth::Key {
             state.key.insert(ssh_pid);
         } else {
@@ -236,7 +243,8 @@ fn answer<S: Read + Write>(mut stream: S, helper: Option<u32>, state: &Mutex<Sta
         let id = state.allowed[&ssh];
         let host = ((first_password || first_passphrase) && !state.unsaved.contains(&ssh)).then_some(id);
         let name = state.names.get(&id).cloned().unwrap_or_default();
-        let interactive = state.interactive.contains(&ssh) && !state.refused.contains(&ssh);
+        // A terminal's ssh asks there, except to trust a host's key: asked in the window.
+        let interactive = (state.interactive.contains(&ssh) || is_host_key_prompt(&prompt)) && !state.refused.contains(&ssh);
         (host, interactive, state.prompter.clone().map(|p| (p, name, ssh)))
     };
     let answer = host.and_then(crate::ssh::load_password).or_else(|| {
@@ -251,6 +259,10 @@ fn answer<S: Read + Write>(mut stream: S, helper: Option<u32>, state: &Mutex<Sta
         let answer = answer.recv_timeout(std::time::Duration::from_secs(300)).ok().flatten();
         if answer.is_none() {
             state.lock().unwrap().refused.insert(ssh);
+            // Not trusted: ssh stops (instead of asking again on the terminal).
+            if is_host_key_prompt(&prompt) {
+                return Some("no".to_owned());
+            }
         }
         answer
     });
@@ -258,6 +270,20 @@ fn answer<S: Read + Write>(mut stream: S, helper: Option<u32>, state: &Mutex<Sta
         Some(answer) => write!(stream, "OK\n{answer}\n"),
         None => stream.write_all(b"NO\n"),
     }
+}
+
+/// ssh asking whether to trust a host it doesn't know yet.
+pub fn is_host_key_prompt(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    lower.contains("continue connecting") && lower.contains("yes/no")
+}
+
+/// The fingerprint of the key in such a question ("SHA256:…"), and its type (ED25519...).
+pub fn host_key_fingerprint(prompt: &str) -> Option<(String, String)> {
+    let at = prompt.find("SHA256:").or_else(|| prompt.find("MD5:"))?;
+    let fingerprint: String = prompt[at..].chars().take_while(|c| !c.is_whitespace()).collect::<String>().trim_end_matches('.').to_owned();
+    let kind = prompt[..at].split_whitespace().rev().find(|w| w.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-') && w.len() > 2).unwrap_or_default().to_owned();
+    Some((fingerprint, kind))
 }
 
 /// The helper's side: asks the window. None when it has no answer (then ask on the terminal).
@@ -388,5 +414,18 @@ mod tests {
         ask(&state, prompt);
         assert!(state.lock().unwrap().unlocked.contains(&ssh), "counted as tried");
         assert!(state.lock().unwrap().answered.is_empty(), "the password's try is left");
+    }
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_host_key_question() {
+        let prompt = "The authenticity of host '185.245.143.111 (185.245.143.111)' can't be established. ED25519 key fingerprint is: SHA256:4kHgJSXhIIHlitBVIfNqg3GhDV+sfnQoc5nXTTdSaHA This key is not known by any other names. Are you sure you want to continue connecting (yes/no/[fingerprint])? ";
+        assert!(is_host_key_prompt(prompt));
+        assert_eq!(host_key_fingerprint(prompt), Some(("SHA256:4kHgJSXhIIHlitBVIfNqg3GhDV+sfnQoc5nXTTdSaHA".into(), "ED25519".into())));
+        assert!(!is_host_key_prompt("user@host's password: "));
     }
 }

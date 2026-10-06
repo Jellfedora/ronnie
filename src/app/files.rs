@@ -146,6 +146,11 @@ struct Transfer {
     current: String,
     state: TransferState,
     started: Instant,
+    /// The recent speed (bytes per second, smoothed), and where it was last measured.
+    rate: f64,
+    sample: Option<(Instant, u64)>,
+    /// How long it took, once done.
+    took: Option<std::time::Duration>,
 }
 
 /// A dialog of the file manager.
@@ -726,6 +731,18 @@ impl FileManager {
                         // The speed counts from the actual start, not from the time it was queued.
                         if t.state == TransferState::Queued {
                             t.started = Instant::now();
+                            t.sample = Some((t.started, 0));
+                        }
+                        // The speed of the last moments (each half second), for the time left.
+                        let now = Instant::now();
+                        match t.sample {
+                            Some((at, before)) if now.duration_since(at).as_secs_f64() >= 0.5 => {
+                                let speed = done.saturating_sub(before) as f64 / now.duration_since(at).as_secs_f64();
+                                t.rate = if t.rate == 0.0 { speed } else { t.rate * 0.7 + speed * 0.3 };
+                                t.sample = Some((now, done));
+                            }
+                            None => t.sample = Some((now, done)),
+                            _ => {}
                         }
                         (t.done, t.total, t.current, t.state) = (done, total, current, TransferState::Running);
                     }
@@ -746,6 +763,7 @@ impl FileManager {
                         let _ = done.send(outcome);
                     }
                     if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                        t.took = Some(t.started.elapsed());
                         t.state = match result {
                             Ok(skipped) => TransferState::Done(skipped),
                             Err(e) => TransferState::Failed(e),
@@ -844,7 +862,7 @@ impl FileManager {
                 Side::Remote => Request::Download { id, remote: vec![path], local_dir: target.clone().into(), overwrite },
             };
             self.send(request);
-            self.transfers.push(Transfer { id, upload: from == Side::Local, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+            self.transfers.push(Transfer { id, upload: from == Side::Local, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
         }
     }
 
@@ -893,7 +911,7 @@ impl FileManager {
                 let remote = payload.names.iter().map(|n| self.path_of(Side::Remote, n)).collect();
                 self.send(Request::Download { id, remote, local_dir: dir.clone(), overwrite: true });
                 let label = if payload.names.len() == 1 { payload.names[0].clone() } else { format!("{} …", payload.names[0]) };
-                self.transfers.push(Transfer { id, upload: false, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+                self.transfers.push(Transfer { id, upload: false, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
                 self.preparing = Some((id, payload.names.iter().map(|n| dir.join(n)).collect()));
             }
         }
@@ -970,7 +988,7 @@ impl FileManager {
             }
         };
         self.send(Request::Download { id, remote: vec![ask.path], local_dir, overwrite: true });
-        self.transfers.push(Transfer { id, upload: false, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+        self.transfers.push(Transfer { id, upload: false, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
         self.promise_done.insert(id, ask.done);
     }
 
@@ -1061,7 +1079,7 @@ impl FileManager {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.transfers.push(Transfer { id, upload: false, zip: true, label: out, done: 0, total: 0, current: String::new(), state: TransferState::Running, started: Instant::now() });
+        self.transfers.push(Transfer { id, upload: false, zip: true, label: out, done: 0, total: 0, current: String::new(), state: TransferState::Running, started: Instant::now(), rate: 0.0, sample: None, took: None });
         self.zips.push((id, side, rx));
     }
 
@@ -1234,7 +1252,7 @@ impl FileManager {
                     self.next_id += 1;
                     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.send(Request::Upload { id, local: vec![path], remote_dir: dir.clone(), overwrite });
-                    self.transfers.push(Transfer { id, upload: true, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now() });
+                    self.transfers.push(Transfer { id, upload: true, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
                 }
             }
         }
@@ -1714,7 +1732,7 @@ impl FileManager {
                         ui.close();
                     }
                     let editable = !entry.is_dir && (side == Side::Local || connected);
-                    if editable && selection.len() == 1 && ui.button(format!("✎  {}", t.files_edit)).clicked() {
+                    if editable && selection.len() == 1 && ui.button(t.files_edit).clicked() {
                         out.edit = Some(entry.name.clone());
                         ui.close();
                     }
@@ -1983,9 +2001,18 @@ impl FileManager {
                             TransferState::Running if tr.zip => t.files_compressing.to_owned(),
                             TransferState::Done(_) if tr.zip => format!("✔  {}", t.files_compressed),
                             TransferState::Queued => t.files_queued.to_owned(),
-                            TransferState::Running => format!("{} / {}  ·  {}/s", format_size(tr.done, t), format_size(tr.total, t), format_size((tr.done as f64 / secs) as u64, t)),
-                            TransferState::Done(0) => format!("✔  {}", format_size(tr.total, t)),
-                            TransferState::Done(skipped) => format!("✔  {}  ·  {}", format_size(tr.total, t), t.files_skipped.replace("{n}", &skipped.to_string())),
+                            TransferState::Running => {
+                                // The recent speed once known (the average before), and the time left at it.
+                                let speed = if tr.rate > 0.0 { tr.rate } else { tr.done as f64 / secs };
+                                let left = (speed > 0.0 && tr.total > tr.done && secs > 1.0).then(|| (tr.total - tr.done) as f64 / speed);
+                                let eta = left.map(|l| format!("  ·  {}", t.files_eta.replace("{t}", &duration_text(l)))).unwrap_or_default();
+                                format!("{} / {}  ·  {}/s{eta}", format_size(tr.done, t), format_size(tr.total, t), format_size(speed as u64, t))
+                            }
+                            TransferState::Done(skipped) => {
+                                let took = tr.took.map(|d| format!("  ·  {}", t.files_took.replace("{t}", &duration_text(d.as_secs_f64())))).unwrap_or_default();
+                                let skipped = if *skipped == 0 { String::new() } else { format!("  ·  {}", t.files_skipped.replace("{n}", &skipped.to_string())) };
+                                format!("✔  {}{took}{skipped}", format_size(tr.total, t))
+                            }
                             TransferState::Failed(e) if e == "cancelled" => t.files_cancelled.to_owned(),
                             TransferState::Failed(e) => format!("✖  {e}"),
                         };
@@ -2443,6 +2470,47 @@ impl App {
         let mut done: Option<Option<String>> = None;
         let yes_no = !prompt.secret;
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg);
+        // A new host's key: its fingerprint, trusted or not.
+        if let Some((fingerprint, kind)) = crate::askpass::is_host_key_prompt(&prompt.text).then(|| crate::askpass::host_key_fingerprint(&prompt.text)).flatten() {
+            let theme = &self.theme;
+            let modal = egui::Modal::new(egui::Id::new("ssh-hostkey")).frame(frame).show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.label(egui::RichText::new(t.ssh_hostkey_title.replace("{host}", &prompt.host)).size(16.0).strong());
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.ssh_hostkey_text).size(13.0).color(theme.text_muted)).wrap());
+                ui.add_space(12.0);
+                Frame::NONE.fill(theme.bg).corner_radius(8.0).inner_margin(12.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    if !kind.is_empty() {
+                        ui.label(egui::RichText::new(kind).size(11.5).strong().color(theme.text_muted));
+                    }
+                    ui.add(egui::Label::new(egui::RichText::new(&fingerprint).monospace().size(13.0).color(theme.accent)).wrap().selectable(true));
+                });
+                ui.add_space(6.0);
+                egui::CollapsingHeader::new(egui::RichText::new(t.ssh_hostkey_details).size(12.0).color(theme.text_muted)).id_salt("ssh-hostkey-raw").show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(&prompt.text).monospace().size(11.5)).wrap().selectable(true));
+                });
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let trust = egui::Button::new(egui::RichText::new(t.ssh_hostkey_trust).color(theme.bg)).fill(theme.accent).corner_radius(6.0);
+                    if ui.add(trust).clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                        done = Some(Some("yes".into()));
+                    }
+                    if ui.button(t.cancel).clicked() {
+                        done = Some(Some("no".into()));
+                    }
+                });
+            });
+            if modal.should_close() {
+                done.get_or_insert(Some("no".into()));
+            }
+            if let Some(reply) = done {
+                if let Some((prompt, _)) = self.ssh_prompt.take() {
+                    let _ = prompt.reply.send(reply);
+                }
+            }
+            return;
+        }
         let modal = egui::Modal::new(egui::Id::new("ssh-prompt")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
             ui.label(egui::RichText::new(t.ssh_prompt_title.replace("{host}", &prompt.host)).size(16.0).strong());
@@ -3006,6 +3074,14 @@ fn display_name(name: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn reads_durations() {
+        assert_eq!(duration_text(0.2), "< 1 s");
+        assert_eq!(duration_text(45.4), "45 s");
+        assert_eq!(duration_text(185.0), "3 min 05 s");
+        assert_eq!(duration_text(4320.0), "1 h 12 min");
+    }
+
     /// Needs a screen (not in CI).
     #[cfg(target_os = "macos")]
     #[test]
@@ -3092,4 +3168,15 @@ fn row_splitter(ui: &mut Ui, id: egui::Id, y: f32, x: egui::Rangef, theme: &Them
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
     (resp.dragged() && resp.drag_delta().y != 0.0).then(|| resp.drag_delta().y)
+}
+
+/// A duration as read: "45 s", "3 min 05 s", "1 h 12 min" (under a second: "< 1 s").
+fn duration_text(secs: f64) -> String {
+    let s = secs.round() as u64;
+    match s {
+        0 => "< 1 s".into(),
+        1..=59 => format!("{s} s"),
+        60..=3599 => format!("{} min {:02} s", s / 60, s % 60),
+        _ => format!("{} h {:02} min", s / 3600, s % 3600 / 60),
+    }
 }

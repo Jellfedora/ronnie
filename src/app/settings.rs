@@ -508,7 +508,7 @@ impl App {
             });
             ui.add_space(14.0);
             // Test the connection with what is typed.
-            let (d_engine_mssql, d_trust) = (editor.draft.engine == config::Engine::Sqlserver, editor.draft.trust_cert);
+            let (d_engine_mssql, d_trust, d_ssh) = (editor.draft.engine == config::Engine::Sqlserver, editor.draft.trust_cert, editor.draft.ssh);
             ui.horizontal(|ui| {
                 if ui.add_enabled(editor.testing.is_none(), egui::Button::new(egui::RichText::new(format!("⚡  {}", t.db_test)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
                     test = true;
@@ -524,7 +524,13 @@ impl App {
                     (None, Some(Err(e))) => {
                         // A self-signed certificate refused: say what to tick.
                         let cert = d_engine_mssql && !d_trust && e.to_lowercase().contains("certificat");
-                        let text = if cert { format!("✗  {e}\n{}", t.db_cert_refused) } else { format!("✗  {e}") };
+                        let text = if cert {
+                            format!("✗  {e}\n{}", t.db_cert_refused)
+                        } else if crate::db::refused(e) && d_ssh.is_none() {
+                            format!("✗  {e}\n{}", t.db_refused_hint)
+                        } else {
+                            format!("✗  {e}")
+                        };
                         ui.add(egui::Label::new(egui::RichText::new(text).size(12.5).color(theme.ansi[1])).wrap());
                     }
                     _ => {}

@@ -426,7 +426,7 @@ impl Viewer {
                 if ui.button(egui::RichText::new(format!("✕  {}", t.close)).size(13.0)).clicked() {
                     self.close_requested = true;
                 }
-                if self.editable && ui.button(egui::RichText::new(format!("✎  {}", t.files_edit)).size(13.0)).clicked() {
+                if self.editable && ui.button(egui::RichText::new(t.files_edit).size(13.0)).clicked() {
                     action = ViewerAction::Edit;
                 }
                 ui.add_space(6.0);

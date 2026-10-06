@@ -154,6 +154,9 @@ pub struct Config {
     /// Commands saved for every terminal (the ⚡ menu), written at the prompt on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// Names given to saved commands (of any list), shown instead of the command.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub command_names: std::collections::BTreeMap<String, String>,
     /// MariaDB / MySQL servers. Passwords are in passwords.json, encrypted, like the SSH ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub databases: Vec<DbConnection>,
@@ -567,6 +570,9 @@ pub struct Settings {
     /// The music server.
     #[serde(default)]
     pub subsonic: Subsonic,
+    /// The sidebar's notes section folded.
+    #[serde(default)]
+    pub notes_collapsed: bool,
 }
 
 /// The music server (Navidrome, Gonic, Airsonic… any that speaks the Subsonic API); its password is
@@ -731,6 +737,13 @@ pub struct Shortcuts {
     /// Dictation to Claude: pressed, listens until "stop micro"; held down, until let go of.
     #[serde(default = "default_dictate")]
     pub dictate: Shortcut,
+    /// Shows or hides the notes beside the terminals.
+    #[serde(default = "default_toggle_notes")]
+    pub toggle_notes: Shortcut,
+}
+
+fn default_toggle_notes() -> Shortcut {
+    Shortcut(if cfg!(target_os = "macos") { "Cmd+Shift+N" } else { "Ctrl+Alt+N" }.into())
 }
 
 fn default_dictate() -> Shortcut {
@@ -762,6 +775,7 @@ impl Default for Shortcuts {
             new_window: default_new_window(),
             toggle_sidebar: default_toggle_sidebar(),
             dictate: default_dictate(),
+            toggle_notes: default_toggle_notes(),
         }
     }
 }
@@ -843,7 +857,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, typing_scores: Vec::new(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false }
     }
 }
 

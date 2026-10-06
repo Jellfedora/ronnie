@@ -1,6 +1,6 @@
 mod boxdraw;
 mod input;
-mod links;
+pub(crate) mod links;
 mod osc;
 mod pty;
 pub use pty::finish_ending;
@@ -164,6 +164,9 @@ pub struct Terminal {
     /// A paste shortcut with no text on the clipboard reaches egui only as V released, with no V
     /// pressed before it: what was seen of the press (the key, or the pasted text) since.
     v_press_seen: bool,
+    /// An SSH session (set by the app): pasted images are sent to the server, asked with `wants_upload`.
+    pub remote: bool,
+    wants_upload: bool,
     /// Programs may set the clipboard (OSC 52), e.g. vim or tmux over SSH.
     allow_clipboard: bool,
     /// What a program handling the mouse itself (Claude Code) put on the clipboard: its own selection,
@@ -273,6 +276,8 @@ impl Terminal {
             link_request: None,
             pending_paste: None,
             v_press_seen: false,
+            remote: false,
+            wants_upload: false,
             allow_clipboard: true,
             program_copy: None,
             grid_origin: Pos2::ZERO,
@@ -526,8 +531,19 @@ impl Terminal {
 
     /// The clipboard holds an image, no text: the key programs read it with themselves (Claude Code:
     /// Alt+V on Windows, Ctrl+V elsewhere).
+    /// Over SSH, the program reads the server's clipboard, not this one: the image (or files) is
+    /// sent to the server instead (see `take_upload`).
     pub fn paste_image(&mut self) {
+        if self.remote {
+            self.wants_upload = true;
+            return;
+        }
         self.write_user(if cfg!(windows) { b"\x1bv" } else { b"\x16" });
+    }
+
+    /// An image or files pasted in an SSH session, to send to the server (taken once).
+    pub fn take_upload(&mut self) -> bool {
+        std::mem::take(&mut self.wants_upload)
     }
 
     /// A clicked link waiting for confirmation, taken once.
@@ -816,8 +832,12 @@ impl Terminal {
                 Event::Ime(egui::ImeEvent::Commit(text)) => self.write_user(text.as_bytes()),
                 // An image on the clipboard: the paste shortcut is passed on for Claude Code to read it.
                 Event::Key { key: Key::V, pressed: false, .. } => {
-                    if !std::mem::take(&mut self.v_press_seen) && arboard::Clipboard::new().and_then(|mut c| c.get_image()).is_ok() {
-                        self.paste_image();
+                    if !std::mem::take(&mut self.v_press_seen) {
+                        // Over SSH, files copied (Explorer) count too: no text, so the paste was swallowed.
+                        let wanted = arboard::Clipboard::new().is_ok_and(|mut c| c.get_image().is_ok() || (self.remote && c.get_text().is_err() && c.get().file_list().is_ok_and(|f| !f.is_empty())));
+                        if wanted {
+                            self.paste_image();
+                        }
                     }
                 }
                 Event::Key { key, pressed: true, modifiers, .. } => {

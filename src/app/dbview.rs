@@ -7,7 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::db::{self, Cell, DatabaseInfo, Dialect, Event, QueryResult, Request, Structure, TableInfo, UserInfo};
+use crate::db::{self, Cell, DatabaseInfo, Dialect, Event, ObjectKind, QueryResult, Request, Routine, Structure, TableInfo, Trigger, UserInfo};
+
+mod form;
+mod objects;
+use objects::{CodeEdit, Group, ObjectDialog};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -16,6 +20,10 @@ enum Page {
     Structure,
     Sql,
     Users,
+    /// A database's procedures and functions.
+    Routines,
+    /// A database's triggers, or a table's.
+    Triggers,
 }
 
 /// What a change sent is, to tell how it went once done.
@@ -29,6 +37,10 @@ enum Expect {
     Open(String, String),
     /// Accounts changed: listed again.
     Users,
+    /// A procedure, function or trigger written: open under its name (maybe new) once done.
+    Saved { db: String, kind: ObjectKind, name: String, fresh: bool },
+    /// One dropped: closed if open.
+    Dropped { db: String, kind: ObjectKind, name: String },
 }
 
 #[derive(Clone, Copy)]
@@ -36,6 +48,8 @@ enum PendingNotice {
     CellUnchanged,
     Deleted,
     Inserted,
+    NoForeignKeys,
+    CodeSaved,
 }
 
 /// How the last change went, shown above the page for a while.
@@ -412,6 +426,8 @@ pub(super) struct DbView {
     /// An export or import going on (what, how far, on what), then how it ended.
     transfer: Option<(String, f32, String)>,
     transfer_done: Option<Result<String, String>>,
+    /// The last import (database, file, foreign keys checked): run again without the checks when they stopped it.
+    last_import: Option<(Option<String>, std::path::PathBuf, bool)>,
     /// Import, export and dropping or emptying ticked tables with foreign keys checked.
     check_fk: bool,
     /// Exports compressed (.sql.gz).
@@ -459,6 +475,13 @@ pub(super) struct DbView {
     users_asked: bool,
     user: Option<(String, String)>,
     grants: Option<(String, String, Vec<String>)>,
+    /// Procedures and functions, and triggers, of each database listed.
+    routines: HashMap<String, Vec<Routine>>,
+    triggers: HashMap<String, Vec<Trigger>>,
+    /// The procedure, function or trigger open in the code editor; the text searched in their lists.
+    code: Option<CodeEdit>,
+    object_filter: String,
+    object_dialog: Option<ObjectDialog>,
 }
 
 /// The columns that tell a row apart: the primary key, else a unique key without NULLs.
@@ -526,6 +549,7 @@ impl DbView {
             editing: None,
             transfer: None,
             transfer_done: None,
+            last_import: None,
             check_fk: true,
             gzip: true,
             selected: HashSet::new(),
@@ -557,6 +581,11 @@ impl DbView {
             users_asked: false,
             user: None,
             grants: None,
+            routines: HashMap::new(),
+            triggers: HashMap::new(),
+            code: None,
+            object_filter: String::new(),
+            object_dialog: None,
         };
         if let Some(d) = conn.database.clone().filter(|d| !d.is_empty()) {
             view.expanded.insert(d.clone());
@@ -641,7 +670,7 @@ impl DbView {
                     self.columns_asked.clear();
                     self.send(Request::Databases);
                     for d in self.expanded.clone() {
-                        self.send(Request::Tables(d));
+                        self.ask_lists(d);
                     }
                     if let (Some(d), Some(t)) = (self.db.clone(), self.table.clone()) {
                         self.load_rows(d, t, 0, None);
@@ -654,7 +683,36 @@ impl DbView {
                 Event::Columns { db, columns } => {
                     self.columns.insert(db, columns);
                 }
+                // Orphan rows asked: one query per foreign key, in a SQL tab of their own.
+                Event::ForeignKeys { db, table, keys } => {
+                    if keys.is_empty() {
+                        self.pending_notice = Some((PendingNotice::NoForeignKeys, 0));
+                    } else {
+                        let mut tab = SqlTab::new(self.next_sql_tab);
+                        self.next_sql_tab += 1;
+                        tab.sql = db::orphans_sql(&db, &table, &keys);
+                        let (id, sql) = (tab.id, tab.sql.clone());
+                        self.sql_tabs.push(tab);
+                        self.sql_tab = self.sql_tabs.len() - 1;
+                        self.page = Page::Sql;
+                        self.query_for = Some(id);
+                        self.send_query(Some(db), sql);
+                    }
+                }
                 Event::Structure { db, table, structure } => self.structure = Some((db, table, structure)),
+                Event::Routines { db, routines } => {
+                    self.routines.insert(db, routines);
+                }
+                Event::Triggers { db, triggers } => {
+                    self.triggers.insert(db, triggers);
+                }
+                Event::Definition { db, kind, name, sql } => {
+                    // Read again after a save: replaces the text unless it was changed meanwhile.
+                    let mssql = self.dialect.mssql();
+                    if let Some(c) = self.code.as_mut().filter(|c| c.db == db && c.kind == kind && c.name.as_deref() == Some(name.as_str())) {
+                        c.loaded(sql, mssql);
+                    }
+                }
                 Event::Rows { db, table, offset, result, total, exact, sql } => {
                     if self.db.as_deref() == Some(&db) && self.table.as_deref() == Some(&table) && (self.table_sql.trim().is_empty() || self.table_sql == self.table_sql_auto) {
                         self.table_sql_auto = super::sql::format(&sql);
@@ -708,8 +766,23 @@ impl DbView {
                     self.transfer = None;
                     self.transfer_done = Some(result);
                 }
-                Event::Failed { error, tag } => {
-                    self.expect.remove(&tag);
+                Event::Failed { mut error, tag } => {
+                    if let Some(Expect::Saved { fresh, .. }) = self.expect.remove(&tag) {
+                        if let Some(c) = &mut self.code {
+                            c.saving = false;
+                        }
+                        // New: nothing was there before.
+                        if fresh {
+                            error = error.trim_start_matches(db::RESTORED).trim_start_matches(db::LOST).to_owned();
+                        } else if error.starts_with(db::LOST) {
+                            // The old one couldn't be put back: its code is kept in a SQL tab.
+                            if let Some(original) = self.code.as_ref().map(|c| c.original.clone()) {
+                                let page = self.page;
+                                self.open_sql_tab(original, None);
+                                self.page = page;
+                            }
+                        }
+                    }
                     if let Some((id, since)) = self.exec_entries.remove(&tag) {
                         self.finish_entry(id, since, super::sql::Outcome::Error(error.clone()));
                     }
@@ -730,6 +803,22 @@ impl DbView {
                         Some(Expect::Delete) => self.pending_notice = Some((PendingNotice::Deleted, affected)),
                         Some(Expect::Insert) => self.pending_notice = Some((PendingNotice::Inserted, affected)),
                         Some(Expect::Open(d, tb)) => self.open_after = Some((d, tb)),
+                        Some(Expect::Saved { db, kind, name, .. }) => {
+                            let dialect = self.dialect;
+                            if let Some(c) = self.code.as_mut().filter(|c| c.db == db && c.saving) {
+                                c.saved(dialect);
+                                c.kind = kind;
+                                c.name = Some(name.clone());
+                            }
+                            // As the server keeps it.
+                            self.send(Request::Definition { db, kind, name });
+                            self.pending_notice = Some((PendingNotice::CodeSaved, 0));
+                        }
+                        Some(Expect::Dropped { db, kind, name }) => {
+                            if self.code.as_ref().is_some_and(|c| c.db == db && c.kind == kind && c.name.as_deref() == Some(name.as_str())) {
+                                self.code = None;
+                            }
+                        }
                         Some(Expect::Users) => {
                             self.send(Request::Users);
                             if let Some((u, h)) = self.user.clone() {
@@ -751,6 +840,9 @@ impl DbView {
                 Event::Users(users) => self.users = Some(users),
                 Event::Grants { user, host, grants } => self.grants = Some((user, host, grants)),
                 Event::Error(e) => {
+                    if let Some(c) = self.code.as_mut().filter(|c| c.loading) {
+                        c.loading = false;
+                    }
                     // Accounts that can't be listed (not allowed): the page says so instead of waiting.
                     if self.users_asked && self.users.is_none() {
                         self.users = Some(Vec::new());
@@ -786,8 +878,15 @@ impl DbView {
     fn refresh_lists(&mut self) {
         self.send(Request::Databases);
         for d in self.expanded.clone() {
-            self.send(Request::Tables(d));
+            self.ask_lists(d);
         }
+    }
+
+    /// The tables of database `d`, its procedures and functions, its triggers.
+    fn ask_lists(&mut self, d: String) {
+        self.send(Request::Tables(d.clone()));
+        self.send(Request::Routines(d.clone()));
+        self.send(Request::Triggers(d));
     }
 
     fn refresh(&mut self) {
@@ -800,7 +899,7 @@ impl DbView {
 
     fn select_db(&mut self, name: &str) {
         if !self.tables.contains_key(name) {
-            self.send(Request::Tables(name.to_owned()));
+            self.ask_lists(name.to_owned());
         }
         self.expanded.insert(name.to_owned());
         self.db = Some(name.to_owned());
@@ -814,7 +913,7 @@ impl DbView {
         let other = self.table.as_deref() != Some(table) || self.db.as_deref() != Some(db);
         self.db = Some(db.to_owned());
         self.table = Some(table.to_owned());
-        if !matches!(self.page, Page::Content | Page::Structure) {
+        if !matches!(self.page, Page::Content | Page::Structure | Page::Triggers) {
             self.page = Page::Content;
         }
         self.detail = None;
@@ -972,9 +1071,14 @@ impl DbView {
 
     /// Runs a .sql (or .sql.gz) file chosen by the user in database `name` (or where the file says).
     fn import(&mut self, name: Option<&str>, t: &Strings) {
-        let Some(path) = rfd::FileDialog::new().add_filter("SQL", &["sql", "gz"]).pick_file() else { return };
+        let Some(path) = rfd::FileDialog::new().add_filter("SQL", &["sql", "gz", "zip"]).pick_file() else { return };
+        self.import_file(name.map(str::to_owned), path, self.check_fk, t);
+    }
+
+    fn import_file(&mut self, db: Option<String>, path: std::path::PathBuf, check_fk: bool, t: &Strings) {
         self.start_transfer(t.db_importing.replace("{file}", &path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), true);
-        self.send(Request::Import { db: name.map(str::to_owned), path, check_fk: self.check_fk });
+        self.last_import = Some((db.clone(), path.clone(), check_fk));
+        self.send(Request::Import { db, path, check_fk });
     }
 
     fn start_transfer(&mut self, what: String, import: bool) {
@@ -1061,6 +1165,8 @@ impl DbView {
                 PendingNotice::CellUnchanged => self.notify(format!("⚠  {}", t.db_cell_unchanged), true),
                 PendingNotice::Deleted => self.notify(format!("✓  {}", t.db_rows_deleted.replace("{n}", &n.to_string())), false),
                 PendingNotice::Inserted => self.notify(format!("✓  {}", t.db_row_inserted.replace("{n}", &n.to_string())), false),
+                PendingNotice::NoForeignKeys => self.notify(format!("ⓘ  {}", t.db_orphans_none), false),
+                PendingNotice::CodeSaved => self.notify(format!("✓  {}", t.db_code_saved), false),
             }
         }
         if let Some((d, tb)) = self.open_after.take() {
@@ -1090,7 +1196,8 @@ impl DbView {
             };
             ui.label(egui::RichText::new(text).size(12.0).color(color));
             if let Status::Closed(reason) = &self.status {
-                ui.label(egui::RichText::new("ⓘ").color(theme.ansi[1])).on_hover_text(reason);
+                let tip = if db::refused(reason) && self.via.is_none() { format!("{reason}\n\n{}", t.db_refused_hint) } else { reason.clone() };
+                ui.label(egui::RichText::new("ⓘ").color(theme.ansi[1])).on_hover_text(tip);
                 if ui.button(format!("↻  {}", t.reconnect)).clicked() {
                     self.reconnect(ui.ctx());
                 }
@@ -1115,6 +1222,7 @@ impl DbView {
         self.tree_ui(ui, left.shrink2(Vec2::new(10.0, 10.0)), theme, t);
         self.page_ui(ui, right.shrink2(Vec2::new(20.0, 14.0)), theme, t);
         self.dialog_ui(ui.ctx(), theme, t);
+        self.object_dialog_ui(ui.ctx(), theme, t);
         action
     }
 
@@ -1141,6 +1249,10 @@ impl DbView {
         let mut confirm = None;
         let (mut export, mut import) = (None, None);
         let (mut table_export, mut new_table, mut rename) = (None, None, None);
+        let mut orphans: Option<(String, String)> = None;
+        // A page of a database (or of a table) to show, a new procedure, function or trigger to write.
+        let mut open_page: Option<(String, Option<String>, Page)> = None;
+        let mut new_object: Option<(String, Option<String>, ObjectKind)> = None;
         egui::ScrollArea::vertical().id_salt("db-tree").auto_shrink([false, false]).show(ui, |ui| {
             for d in &dbs {
                 let tables = self.tables.get(&d.name);
@@ -1184,6 +1296,17 @@ impl DbView {
                     if ui.button(format!("+  {}", t.db_new_table)).clicked() {
                         new_table = Some(d.name.clone());
                         ui.close();
+                    }
+                    for kind in [ObjectKind::Procedure, ObjectKind::Function, ObjectKind::Trigger] {
+                        let label = match kind {
+                            ObjectKind::Procedure => t.db_new_procedure,
+                            ObjectKind::Function => t.db_new_function,
+                            ObjectKind::Trigger => t.db_new_trigger,
+                        };
+                        if ui.button(format!("+  {label}")).clicked() {
+                            new_object = Some((d.name.clone(), None, kind));
+                            ui.close();
+                        }
                     }
                     ui.separator();
                     // SQL Server: scripts run, no dump written.
@@ -1249,6 +1372,21 @@ impl DbView {
                                     table_export = Some((d.name.clone(), tb.name.clone(), true));
                                     ui.close();
                                 }
+                                if !tb.view && !dialect.mssql() && ui.button(format!("🔗  {}", t.db_orphans)).clicked() {
+                                    orphans = Some((d.name.clone(), tb.name.clone()));
+                                    ui.close();
+                                }
+                                if !tb.view {
+                                    ui.separator();
+                                    if ui.button(t.db_page_triggers).clicked() {
+                                        open_page = Some((d.name.clone(), Some(tb.name.clone()), Page::Triggers));
+                                        ui.close();
+                                    }
+                                    if ui.button(format!("+  {}", t.db_new_trigger)).clicked() {
+                                        new_object = Some((d.name.clone(), Some(tb.name.clone()), ObjectKind::Trigger));
+                                        ui.close();
+                                    }
+                                }
                                 ui.separator();
                                 let q = dialect.table(&d.name, &tb.name);
                                 if !tb.view && ui.button(egui::RichText::new(t.db_truncate).color(theme.ansi[1])).clicked() {
@@ -1261,6 +1399,28 @@ impl DbView {
                                     ui.close();
                                 }
                             });
+                        }
+                        // Procedures and functions, triggers: a line each when there are some.
+                        let counts = [
+                            (Page::Routines, ObjectKind::Procedure, t.db_page_routines, self.routines.get(&d.name).map_or(0, Vec::len)),
+                            (Page::Triggers, ObjectKind::Trigger, t.db_page_triggers, self.triggers.get(&d.name).map_or(0, Vec::len)),
+                        ];
+                        for (page, kind, label, n) in counts.into_iter().filter(|c| c.3 > 0 && filter.is_empty()) {
+                            let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 25.0), Sense::click());
+                            let selected = self.db.as_deref() == Some(d.name.as_str()) && self.table.is_none() && self.page == page;
+                            if selected {
+                                ui.painter().rect_filled(r, 6.0, theme.tab_active);
+                                ui.painter().rect_filled(Rect::from_min_size(r.min + Vec2::new(0.0, 5.0), Vec2::new(3.0, 15.0)), 1.5, theme.accent);
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(r, 6.0, theme.tab_hover.gamma_multiply(0.7));
+                            }
+                            objects::paint_mini_badge(ui.painter(), Pos2::new(r.min.x + 34.0, r.center().y), kind, theme);
+                            let color = if selected { theme.text } else { theme.text.gamma_multiply(0.85) };
+                            ui.painter().text(Pos2::new(r.min.x + 46.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), color);
+                            ui.painter().text(Pos2::new(r.max.x - 6.0, r.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::proportional(10.5), theme.text_muted.gamma_multiply(0.8));
+                            if resp.clicked() {
+                                open_page = Some((d.name.clone(), None, page));
+                            }
                         }
                     }
                 }
@@ -1276,7 +1436,7 @@ impl DbView {
             if !self.expanded.remove(&name) {
                 self.expanded.insert(name.clone());
                 if !self.tables.contains_key(&name) {
-                    self.send(Request::Tables(name));
+                    self.ask_lists(name);
                 }
             }
         }
@@ -1295,6 +1455,10 @@ impl DbView {
         if let Some(name) = import {
             self.transfer_dialog(Some(name), None, true, t);
         }
+        if let Some((d, tb)) = orphans {
+            self.select_table(&d, &tb);
+            self.send(Request::ForeignKeys { db: d, table: tb });
+        }
         match table_export {
             Some((d, tb, true)) => self.export_csv(&d, &tb, t),
             Some((d, tb, false)) => self.transfer_dialog(Some(d), Some(tb), false, t),
@@ -1305,6 +1469,21 @@ impl DbView {
         }
         if let Some((d, tb)) = rename {
             self.dialog = Some(Dialog::RenameTable { db: d, old: tb.clone(), name: tb, fresh: true });
+        }
+        if let Some((d, tb, page)) = open_page {
+            match tb {
+                Some(tb) => self.select_table(&d, &tb),
+                None => self.select_db(&d),
+            }
+            self.page = page;
+        }
+        if let Some((d, tb, kind)) = new_object {
+            match &tb {
+                Some(tb) => self.select_table(&d, tb),
+                None => self.select_db(&d),
+            }
+            self.page = if kind == ObjectKind::Trigger { Page::Triggers } else { Page::Routines };
+            self.new_object(&d, tb, kind);
         }
     }
 
@@ -1330,10 +1509,27 @@ impl DbView {
             ui.label(egui::RichText::new(crumb).size(18.0).strong());
         });
         ui.add_space(8.0);
-        let pages: Vec<(Page, &str)> = match (&self.db, &self.table) {
-            (Some(_), Some(_)) => vec![(Page::Content, t.db_page_content), (Page::Structure, t.db_page_structure), (Page::Sql, t.db_page_sql)],
-            (Some(_), None) => vec![(Page::Database, t.db_page_tables), (Page::Sql, t.db_page_sql)],
-            _ => vec![(Page::Sql, t.db_page_sql)],
+        // Triggers and routines, with how many there are.
+        let counted = |label: &str, n: Option<usize>| match n {
+            Some(n) if n > 0 => format!("{label}  {n}"),
+            _ => label.to_owned(),
+        };
+        let triggers = |table: Option<&String>| self.db.as_ref().and_then(|d| self.triggers.get(d)).map(|ts| ts.iter().filter(|x| table.is_none_or(|tb| x.table == *tb)).count());
+        let routines = self.db.as_ref().and_then(|d| self.routines.get(d)).map(Vec::len);
+        let pages: Vec<(Page, String)> = match (&self.db, &self.table) {
+            (Some(_), Some(tb)) => vec![
+                (Page::Content, t.db_page_content.to_owned()),
+                (Page::Structure, t.db_page_structure.to_owned()),
+                (Page::Triggers, counted(t.db_page_triggers, triggers(Some(tb)))),
+                (Page::Sql, t.db_page_sql.to_owned()),
+            ],
+            (Some(_), None) => vec![
+                (Page::Database, t.db_page_tables.to_owned()),
+                (Page::Routines, counted(t.db_page_routines, routines)),
+                (Page::Triggers, counted(t.db_page_triggers, triggers(None))),
+                (Page::Sql, t.db_page_sql.to_owned()),
+            ],
+            _ => vec![(Page::Sql, t.db_page_sql.to_owned())],
         };
         if !pages.iter().any(|(p, _)| *p == self.page) && self.page != Page::Users {
             self.page = pages[0].0;
@@ -1344,7 +1540,7 @@ impl DbView {
             }
             for (page, label) in &pages {
                 let selected = self.page == *page;
-                let text = egui::RichText::new(*label).size(13.5).color(if selected { theme.text } else { theme.text_muted });
+                let text = egui::RichText::new(label).size(13.5).color(if selected { theme.text } else { theme.text_muted });
                 let resp = ui.add(egui::Button::new(text).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0)));
                 if selected {
                     let r = resp.rect;
@@ -1360,8 +1556,16 @@ impl DbView {
         ui.painter().hline(rect.x_range(), sep, Stroke::new(1.0, theme.tab_hover));
         ui.add_space(12.0);
         if let Some(e) = self.error.clone() {
+            // A procedure, function or trigger refused: whether the old one is still there.
+            let e = if let Some(rest) = e.strip_prefix(db::RESTORED) {
+                format!("{rest}\n{}", t.db_code_restored)
+            } else if let Some(rest) = e.strip_prefix(db::LOST) {
+                format!("{rest}\n{}", t.db_code_lost)
+            } else {
+                e
+            };
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("⚠  {e}")).size(12.5).color(theme.ansi[1]));
+                ui.add(egui::Label::new(egui::RichText::new(format!("⚠  {e}")).size(12.5).color(theme.ansi[1])).wrap());
                 if ui.small_button("✕").clicked() {
                     self.error = None;
                 }
@@ -1407,12 +1611,21 @@ impl DbView {
                 Err(e) if self.transfer_import => (format!("✗  {e}\n{}", t.db_import_partial), theme.ansi[1]),
                 Err(e) => (format!("✗  {e}"), theme.ansi[1]),
             };
+            // Stopped by a foreign key: once more with the checks off.
+            let fk_failed = self.transfer_import && matches!(&done, Err(e) if e.contains("1452") || e.contains("1451") || e.to_lowercase().contains("foreign key constraint fails"));
+            let retry = self.last_import.clone().filter(|(_, _, checked)| fk_failed && *checked);
             ui.horizontal(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new(text).size(12.5).color(color)).wrap());
                 if ui.small_button("✕").clicked() {
                     self.transfer_done = None;
                 }
             });
+            if let Some((db, path, _)) = retry
+                && ui.button(format!("↻  {}", t.db_retry_without_fk)).clicked()
+            {
+                self.check_fk = false;
+                self.import_file(db, path, false, t);
+            }
             ui.add_space(6.0);
         }
         match self.page {
@@ -1421,6 +1634,8 @@ impl DbView {
             Page::Structure => self.structure_page(ui, theme, t),
             Page::Sql => self.sql_page(ui, theme, t),
             Page::Users => self.users_page(ui, theme, t),
+            Page::Routines => self.objects_page(ui, theme, t, Group::Routines),
+            Page::Triggers => self.objects_page(ui, theme, t, Group::Triggers),
         }
     }
 
@@ -2557,7 +2772,9 @@ impl DbView {
                 }
             }
             Dialog::Confirm { sql, db, query, expect, fk, .. } => {
-                if query {
+                if matches!(expect, Some(Expect::Dropped { .. })) {
+                    self.exec(db, sql, expect);
+                } else if query {
                     self.send_query(db, sql);
                 } else {
                     // What was just removed is no longer selected.

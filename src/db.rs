@@ -21,6 +21,10 @@ pub const MAX_QUERY_ROWS: usize = 1000;
 const EXACT_COUNT_MAX: u64 = 2_000_000;
 /// What an export or import stopped by the user ends with.
 pub const CANCELLED: &str = "\u{1}cancelled";
+/// What a routine or trigger written again starts its error with: the old one was put back...
+pub const RESTORED: &str = "\u{1}restored\n";
+/// ...or couldn't be.
+pub const LOST: &str = "\u{1}lost\n";
 /// How long to wait for an SSH forward to open (a password may have to be typed first).
 const TUNNEL_WAIT: Duration = Duration::from_secs(180);
 
@@ -123,6 +127,140 @@ pub struct QueryResult {
     pub affected: u64,
 }
 
+/// A foreign key: its columns, and those of the table they refer to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForeignKey {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_db: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+}
+
+/// For each foreign key of `table`, its rows referring to nothing (left behind by checks turned off).
+pub fn orphans_sql(db: &str, table: &str, keys: &[ForeignKey]) -> String {
+    keys.iter()
+        .map(|k| {
+            let on: Vec<String> = k.columns.iter().zip(&k.ref_columns).map(|(c, r)| format!("r.{} = t.{}", ident(r), ident(c))).collect();
+            // Rows with a NULL in the key refer to nothing on purpose.
+            let set: Vec<String> = k.columns.iter().map(|c| format!("t.{} IS NOT NULL", ident(c))).collect();
+            format!(
+                "-- {}\nSELECT t.* FROM {}.{} t\nWHERE {} AND NOT EXISTS (SELECT 1 FROM {}.{} r WHERE {})\nLIMIT 1000;",
+                k.name,
+                ident(db),
+                ident(table),
+                set.join(" AND "),
+                ident(&k.ref_db),
+                ident(&k.ref_table),
+                on.join(" AND ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// A connection refused on a server's port: it often listens only on its own machine.
+pub fn refused(error: &str) -> bool {
+    let e = error.to_lowercase();
+    e.contains("connection refused") || e.contains("os error 61") || e.contains("os error 111") || e.contains("os error 10061")
+}
+
+/// The first .sql file of a .zip read from `r`, uncompressed as it comes (stored or deflated).
+fn zip_entry<R: Read + Send + 'static>(mut r: R) -> Result<Box<dyn Read + Send>, String> {
+    let bad = || "Not a .zip with a .sql file (or the .sql isn't first)".to_owned();
+    loop {
+        let mut head = [0u8; 30];
+        r.read_exact(&mut head).map_err(|_| bad())?;
+        if head[..4] != [0x50, 0x4b, 0x03, 0x04] {
+            return Err(bad());
+        }
+        let u16_at = |i: usize| u16::from_le_bytes([head[i], head[i + 1]]) as u64;
+        let (flags, method) = (u16_at(6), u16_at(8));
+        let compressed = u64::from(u32::from_le_bytes([head[18], head[19], head[20], head[21]]));
+        let mut name = vec![0u8; u16_at(26) as usize];
+        r.read_exact(&mut name).map_err(|_| bad())?;
+        std::io::copy(&mut (&mut r).take(u16_at(28)), &mut std::io::sink()).map_err(|e| e.to_string())?;
+        let name = String::from_utf8_lossy(&name).to_lowercase();
+        if name.ends_with(".sql") && !name.starts_with("__macosx/") {
+            return match method {
+                0 if flags & 8 == 0 => Ok(Box::new(r.take(compressed))),
+                8 => Ok(Box::new(flate2::read::DeflateDecoder::new(std::io::BufReader::new(r)))),
+                _ => Err(bad()),
+            };
+        }
+        // Another file first: skipped, when its size is known before it.
+        if flags & 8 != 0 {
+            return Err(bad());
+        }
+        std::io::copy(&mut (&mut r).take(compressed), &mut std::io::sink()).map_err(|e| e.to_string())?;
+    }
+}
+
+/// What kind of code object: a procedure, a function, a trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    Procedure,
+    Function,
+    Trigger,
+}
+
+impl ObjectKind {
+    pub fn sql(self) -> &'static str {
+        match self {
+            ObjectKind::Procedure => "PROCEDURE",
+            ObjectKind::Function => "FUNCTION",
+            ObjectKind::Trigger => "TRIGGER",
+        }
+    }
+}
+
+/// A parameter of a routine: IN, OUT or INOUT (a function's are IN), its name and type.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Param {
+    pub mode: String,
+    pub name: String,
+    pub kind: String,
+}
+
+/// A stored procedure or function.
+#[derive(Clone, Debug, Default)]
+pub struct Routine {
+    /// SQL Server: `schema.name`.
+    pub name: String,
+    pub function: bool,
+    /// SQL Server: the object's type (P, FN, IF, TF...).
+    pub code: String,
+    /// What a function returns (TABLE for one that returns rows).
+    pub returns: String,
+    pub params: Vec<Param>,
+    pub deterministic: bool,
+    /// What it does with data (READS SQL DATA...), and as whom it runs (DEFINER, INVOKER).
+    pub access: String,
+    pub security: String,
+    pub definer: String,
+    pub created: String,
+    pub modified: String,
+    pub comment: String,
+}
+
+/// A trigger of a table.
+#[derive(Clone, Debug, Default)]
+pub struct Trigger {
+    /// SQL Server: `schema.name`.
+    pub name: String,
+    pub table: String,
+    /// BEFORE, AFTER, INSTEAD OF.
+    pub timing: String,
+    /// INSERT, UPDATE, DELETE (SQL Server: several, "INSERT, UPDATE").
+    pub events: String,
+    /// Among those of the same moment and event (MySQL).
+    pub order: u64,
+    pub enabled: bool,
+    pub definer: String,
+    pub created: String,
+    pub modified: String,
+}
+
 /// An account of the server.
 #[derive(Clone, Debug, Default)]
 pub struct UserInfo {
@@ -152,10 +290,22 @@ pub enum Request {
     /// Runs the statements of a .sql (or .sql.gz) file in `db` (or where it says), foreign keys checked
     /// or not.
     Import { db: Option<String>, path: std::path::PathBuf, check_fk: bool },
+    /// The foreign keys of a table.
+    ForeignKeys { db: String, table: String },
     /// The server's accounts.
     Users,
     /// What an account may do.
     Grants { user: String, host: String },
+    /// The procedures and functions of a database, and its triggers.
+    Routines(String),
+    Triggers(String),
+    /// The CREATE statement of a procedure, function or trigger.
+    Definition { db: String, kind: ObjectKind, name: String },
+    /// A procedure, function or trigger written again: `check` (the new one tried under another name,
+    /// then dropped; nothing is changed if it fails), `drop` (the old one), `create`; if `create`
+    /// fails, the first of `restore` (the old one) that the server takes. Done or Failed with `tag`,
+    /// the error starting with RESTORED or LOST. Empty statements are skipped.
+    Replace { db: String, check: Vec<String>, drop: String, create: String, restore: Vec<String>, tag: u32 },
 }
 
 #[derive(Debug)]
@@ -179,6 +329,12 @@ pub enum Event {
     Transfer(Result<String, String>),
     Users(Vec<UserInfo>),
     Grants { user: String, host: String, grants: Vec<String> },
+    /// The foreign keys of a table (asked to find its orphan rows).
+    ForeignKeys { db: String, table: String, keys: Vec<ForeignKey> },
+    Routines { db: String, routines: Vec<Routine> },
+    Triggers { db: String, triggers: Vec<Trigger> },
+    /// Empty when it can't be read (no right to, encrypted).
+    Definition { db: String, kind: ObjectKind, name: String, sql: String },
     Error(String),
     /// The connection is over (couldn't be made, or lost).
     Closed(String),
@@ -492,7 +648,7 @@ fn sql_value(value: &Value) -> String {
 
 /// `CREATE ... DEFINER=`user`@`host` ...` without its definer: created as whoever imports it (the
 /// account may not exist on another server).
-fn strip_definer(sql: &str) -> String {
+pub(crate) fn strip_definer(sql: &str) -> String {
     let Some(i) = sql.find("DEFINER=") else { return sql.to_owned() };
     let rest = &sql[i + "DEFINER=".len()..];
     let mut quote = None;
@@ -1082,8 +1238,14 @@ async fn import(conn: &mut Conn, db: Option<&str>, path: &std::path::Path, check
     let size = file.metadata().map(|m| m.len()).unwrap_or(0).max(1);
     let read = Arc::new(AtomicU64::new(0));
     let counting = Counting { inner: file, read: read.clone() };
-    let gz = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gz"));
-    let mut reader: Box<dyn Read + Send> = if gz { Box::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(counting))) } else { Box::new(counting) };
+    let ext = |x: &str| path.extension().is_some_and(|e| e.eq_ignore_ascii_case(x));
+    let mut reader: Box<dyn Read + Send> = if ext("gz") {
+        Box::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(counting)))
+    } else if ext("zip") {
+        zip_entry(counting)?
+    } else {
+        Box::new(counting)
+    };
     conn.query_drop(format!("SET FOREIGN_KEY_CHECKS = {}", u8::from(check_fk))).await.map_err(|e| e.to_string())?;
     if let Some(db) = db.filter(|d| !d.is_empty()) {
         conn.query_drop(format!("USE {}", ident(db))).await.map_err(|e| e.to_string())?;
@@ -1303,9 +1465,144 @@ async fn handle(conn: &mut Conn, request: Request, emit: &Emitter) -> mysql_asyn
             let users: Vec<(String, String)> = conn.query("SELECT User, Host FROM mysql.user ORDER BY User, Host").await?;
             emit.send(Event::Users(users.into_iter().map(|(user, host)| UserInfo { user, host }).collect()));
         }
+        Request::ForeignKeys { db, table } => {
+            let rows: Vec<(String, String, String, String, String)> = conn
+                .query(format!(
+                    "SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE \
+                     WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION",
+                    literal(&db),
+                    literal(&table)
+                ))
+                .await?;
+            let mut keys: Vec<ForeignKey> = Vec::new();
+            for (name, column, ref_db, ref_table, ref_column) in rows {
+                match keys.last_mut().filter(|k| k.name == name) {
+                    Some(k) => {
+                        k.columns.push(column);
+                        k.ref_columns.push(ref_column);
+                    }
+                    None => keys.push(ForeignKey { name, columns: vec![column], ref_db, ref_table, ref_columns: vec![ref_column] }),
+                }
+            }
+            emit.send(Event::ForeignKeys { db, table, keys });
+        }
         Request::Grants { user, host } => {
             let grants: Vec<String> = conn.query(format!("SHOW GRANTS FOR {}", account(&user, &host))).await?;
             emit.send(Event::Grants { user, host, grants });
+        }
+        Request::Routines(db) => {
+            let rows: Vec<Row> = conn
+                .query(format!(
+                    "SELECT ROUTINE_NAME, ROUTINE_TYPE, COALESCE(DTD_IDENTIFIER, ''), IS_DETERMINISTIC, COALESCE(SQL_DATA_ACCESS, ''), COALESCE(SECURITY_TYPE, ''), \
+                     COALESCE(DEFINER, ''), COALESCE(CAST(CREATED AS CHAR), ''), COALESCE(CAST(LAST_ALTERED AS CHAR), ''), COALESCE(ROUTINE_COMMENT, '') \
+                     FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = {} ORDER BY ROUTINE_TYPE DESC, ROUTINE_NAME",
+                    literal(&db)
+                ))
+                .await?;
+            let mut routines: Vec<Routine> = rows
+                .iter()
+                .map(|r| Routine {
+                    name: text(r, 0),
+                    function: text(r, 1) == "FUNCTION",
+                    code: text(r, 1),
+                    returns: text(r, 2),
+                    params: Vec::new(),
+                    deterministic: text(r, 3) == "YES",
+                    access: text(r, 4),
+                    security: text(r, 5),
+                    definer: text(r, 6),
+                    created: text(r, 7),
+                    modified: text(r, 8),
+                    comment: text(r, 9),
+                })
+                .collect();
+            let params: Vec<Row> = conn
+                .query(format!(
+                    "SELECT SPECIFIC_NAME, ROUTINE_TYPE, COALESCE(PARAMETER_MODE, ''), COALESCE(PARAMETER_NAME, ''), COALESCE(DTD_IDENTIFIER, '') \
+                     FROM information_schema.PARAMETERS WHERE SPECIFIC_SCHEMA = {} AND ORDINAL_POSITION > 0 ORDER BY SPECIFIC_NAME, ORDINAL_POSITION",
+                    literal(&db)
+                ))
+                .await
+                .unwrap_or_default();
+            for p in &params {
+                let (name, function) = (text(p, 0), text(p, 1) == "FUNCTION");
+                if let Some(r) = routines.iter_mut().find(|r| r.name == name && r.function == function) {
+                    r.params.push(Param { mode: text(p, 2), name: text(p, 3), kind: text(p, 4) });
+                }
+            }
+            emit.send(Event::Routines { db, routines });
+        }
+        Request::Triggers(db) => {
+            let columns = "TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION, COALESCE(DEFINER, ''), COALESCE(CAST(CREATED AS CHAR), '')";
+            let query = |order: &str| format!("SELECT {columns}{order} FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = {} ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME", literal(&db));
+            // ACTION_ORDER: MySQL 5.7, MariaDB 10.2.
+            let rows: Vec<Row> = match conn.query(query(", ACTION_ORDER")).await {
+                Ok(rows) => rows,
+                Err(e) if is_lost(&e) => return Err(e),
+                Err(_) => conn.query(query("")).await?,
+            };
+            let triggers = rows
+                .iter()
+                .map(|r| Trigger {
+                    name: text(r, 0),
+                    table: text(r, 1),
+                    timing: text(r, 2),
+                    events: text(r, 3),
+                    order: number(r, 6),
+                    enabled: true,
+                    definer: text(r, 4),
+                    created: text(r, 5),
+                    modified: String::new(),
+                })
+                .collect();
+            emit.send(Event::Triggers { db, triggers });
+        }
+        Request::Definition { db, kind, name } => {
+            let row: Option<Row> = match conn.query_first(format!("SHOW CREATE {} {}.{}", kind.sql(), ident(&db), ident(&name))).await {
+                Ok(row) => row,
+                Err(e) if is_lost(&e) => return Err(e),
+                Err(_) => None,
+            };
+            let sql = row.map(|r| text(&r, 2)).unwrap_or_default();
+            emit.send(Event::Definition { db, kind, name, sql });
+        }
+        Request::Replace { db, check, drop, create, restore, tag } => {
+            conn.query_drop(format!("USE {}", ident(&db))).await?;
+            let fail = |e: mysql_async::Error| if is_lost(&e) { Err(e) } else { Ok(e.to_string()) };
+            for s in check.iter().filter(|s| !s.trim().is_empty()) {
+                if let Err(e) = conn.query_drop(s).await {
+                    let error = fail(e)?;
+                    // The copy may have been made: gone again.
+                    if let Some(last) = check.last().filter(|l| *l != s) {
+                        let _ = conn.query_drop(last).await;
+                    }
+                    emit.send(Event::Failed { error, tag });
+                    return Ok(());
+                }
+            }
+            if !drop.trim().is_empty()
+                && let Err(e) = conn.query_drop(&drop).await
+            {
+                emit.send(Event::Failed { error: fail(e)?, tag });
+                return Ok(());
+            }
+            match conn.query_drop(&create).await {
+                Ok(()) => emit.send(Event::Done { affected: 0, tag }),
+                Err(e) => {
+                    let error = fail(e)?;
+                    // Nothing dropped: nothing to put back.
+                    let mut back = drop.trim().is_empty();
+                    if !back {
+                        for s in restore.iter().filter(|s| !s.trim().is_empty()) {
+                            if conn.query_drop(s).await.is_ok() {
+                                back = true;
+                                break;
+                            }
+                        }
+                    }
+                    emit.send(Event::Failed { error: format!("{}{error}", if back { RESTORED } else { LOST }), tag });
+                }
+            }
         }
         // Handled on a connection of their own.
         Request::Export { .. } | Request::ExportCsv { .. } | Request::Import { .. } => {}
@@ -1454,6 +1751,39 @@ fn kill(direct: Target, id: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_orphans_and_zipped_dumps() {
+        let key = ForeignKey { name: "fk_c".into(), columns: vec!["client_id".into()], ref_db: "shop".into(), ref_table: "client".into(), ref_columns: vec!["id".into()] };
+        assert_eq!(
+            orphans_sql("shop", "orders", &[key]),
+            "-- fk_c\nSELECT t.* FROM `shop`.`orders` t\nWHERE t.`client_id` IS NOT NULL AND NOT EXISTS (SELECT 1 FROM `shop`.`client` r WHERE r.`id` = t.`client_id`)\nLIMIT 1000;"
+        );
+        assert!(refused("Input/output error: Connection refused (os error 61)"));
+        assert!(!refused("Access denied for user"));
+        // A .zip made by hand: a stored entry, then a deflated one.
+        let entry = |name: &str, method: u16, data: &[u8], raw: usize| {
+            let mut out = vec![0x50, 0x4b, 0x03, 0x04, 20, 0, 0, 0];
+            out.extend(method.to_le_bytes());
+            out.extend([0u8; 8]);
+            out.extend((data.len() as u32).to_le_bytes());
+            out.extend((raw as u32).to_le_bytes());
+            out.extend((name.len() as u16).to_le_bytes());
+            out.extend(0u16.to_le_bytes());
+            out.extend(name.as_bytes());
+            out.extend(data);
+            out
+        };
+        let mut deflated = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut deflated, b"SELECT 1;").unwrap();
+        let deflated = deflated.finish().unwrap();
+        let mut zip = entry("readme.txt", 0, b"hello", 5);
+        zip.extend(entry("dump.SQL", 8, &deflated, 9));
+        let mut text = String::new();
+        zip_entry(std::io::Cursor::new(zip)).unwrap().read_to_string(&mut text).unwrap();
+        assert_eq!(text, "SELECT 1;");
+        assert!(zip_entry(std::io::Cursor::new(b"not a zip at all, sorry".to_vec())).is_err());
+    }
 
     #[test]
     fn cuts_long_inserts() {
@@ -1612,5 +1942,83 @@ mod tests {
         assert_eq!(tag, 7);
         assert!(!error.is_empty());
         assert_eq!(done, Some(8), "the connection goes on after a refused change");
+    }
+    /// Procedures, functions and triggers, in a database made for it (needs a local server).
+    #[test]
+    #[ignore]
+    fn routines_and_triggers() {
+        let target = Target { host: "localhost".into(), port: 3306, user: std::env::var("USER").unwrap_or_default(), password: None, database: None, tunnel: None, engine: Default::default(), trust_cert: false };
+        let ctx = egui::Context::default();
+        let conn = Connection::open(&ctx, target);
+        let wait = |want: &dyn Fn(&Event) -> bool| -> Event {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                for e in conn.poll() {
+                    if let Event::Closed(e) | Event::Error(e) = &e {
+                        panic!("{e}");
+                    }
+                    if want(&e) {
+                        return e;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("no answer");
+        };
+        let db = "ronnie_objects_test".to_owned();
+        let setup = "DROP DATABASE IF EXISTS ronnie_objects_test; CREATE DATABASE ronnie_objects_test; USE ronnie_objects_test; CREATE TABLE t (a INT); \
+                     CREATE PROCEDURE p(IN x INT, OUT y INT) SET y = x * 2; CREATE FUNCTION f(x INT) RETURNS INT DETERMINISTIC RETURN x + 1; \
+                     CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET NEW.a = NEW.a + 1";
+        conn.send(Request::Exec { db: None, sql: setup.into(), tag: 1 });
+        wait(&|e| matches!(e, Event::Done { tag: 1, .. }));
+        conn.send(Request::Routines(db.clone()));
+        let Event::Routines { routines, .. } = wait(&|e| matches!(e, Event::Routines { .. })) else { unreachable!() };
+        assert_eq!(routines.iter().map(|r| (r.name.as_str(), r.function)).collect::<Vec<_>>(), [("p", false), ("f", true)]);
+        assert_eq!(routines[0].params, [Param { mode: "IN".into(), name: "x".into(), kind: "int(11)".into() }, Param { mode: "OUT".into(), name: "y".into(), kind: "int(11)".into() }]);
+        assert!(routines[1].returns.starts_with("int") && routines[1].deterministic);
+        conn.send(Request::Triggers(db.clone()));
+        let Event::Triggers { triggers, .. } = wait(&|e| matches!(e, Event::Triggers { .. })) else { unreachable!() };
+        assert_eq!((triggers[0].name.as_str(), triggers[0].table.as_str(), triggers[0].timing.as_str(), triggers[0].events.as_str()), ("tr", "t", "BEFORE", "INSERT"));
+        let definition = |kind: ObjectKind, name: &str| {
+            conn.send(Request::Definition { db: db.clone(), kind, name: name.into() });
+            let Event::Definition { sql, .. } = wait(&|e| matches!(e, Event::Definition { .. })) else { unreachable!() };
+            sql
+        };
+        let original = definition(ObjectKind::Procedure, "p");
+        assert!(original.contains("SET y = x * 2"), "{original}");
+        // Refused after the old one was dropped: put back.
+        conn.send(Request::Replace { db: db.clone(), check: Vec::new(), drop: "DROP PROCEDURE IF EXISTS p".into(), create: "CREATE PROCEDURE p( SELEC".into(), restore: vec![original.clone()], tag: 2 });
+        let Event::Failed { error, .. } = wait(&|e| matches!(e, Event::Failed { tag: 2, .. })) else { unreachable!() };
+        assert!(error.starts_with(RESTORED), "{error}");
+        assert_eq!(definition(ObjectKind::Procedure, "p"), original);
+        // Refused by the check: nothing dropped.
+        let bad = "CREATE PROCEDURE p_ronnie_check() SELECT * FROM no_such_table_x WHERE";
+        conn.send(Request::Replace { db: db.clone(), check: vec![bad.into(), "DROP PROCEDURE IF EXISTS p_ronnie_check".into()], drop: "DROP PROCEDURE IF EXISTS p".into(), create: String::new(), restore: Vec::new(), tag: 3 });
+        let Event::Failed { error, .. } = wait(&|e| matches!(e, Event::Failed { tag: 3, .. })) else { unreachable!() };
+        assert!(!error.starts_with(RESTORED) && !error.starts_with(LOST), "{error}");
+        assert_eq!(definition(ObjectKind::Procedure, "p"), original);
+        // Written again.
+        let new = "CREATE PROCEDURE p(IN x INT, OUT y INT) SET y = x * 3";
+        conn.send(Request::Replace {
+            db: db.clone(),
+            check: vec![new.replace("PROCEDURE p(", "PROCEDURE p_ronnie_check("), "DROP PROCEDURE IF EXISTS p_ronnie_check".into()],
+            drop: "DROP PROCEDURE IF EXISTS p".into(),
+            create: new.into(),
+            restore: vec![original],
+            tag: 4,
+        });
+        wait(&|e| matches!(e, Event::Done { tag: 4, .. }));
+        assert!(definition(ObjectKind::Procedure, "p").contains("x * 3"));
+        conn.send(Request::Query { db: Some(db.clone()), sql: "CALL p(5, @y); SELECT @y AS y; INSERT INTO t VALUES (1); SELECT a FROM t".into() });
+        let Event::Query { results, error, .. } = wait(&|e| matches!(e, Event::Query { .. })) else { unreachable!() };
+        assert_eq!(error, None);
+        let rows: Vec<&Vec<Cell>> = results.iter().filter(|r| !r.columns.is_empty()).flat_map(|r| &r.rows).collect();
+        assert_eq!(rows, [&vec![Cell::Text("15".into())], &vec![Cell::Text("2".into())]]);
+        assert!(definition(ObjectKind::Trigger, "tr").contains("NEW.a + 1"));
+        conn.send(Request::Routines(db.clone()));
+        let Event::Routines { routines, .. } = wait(&|e| matches!(e, Event::Routines { .. })) else { unreachable!() };
+        assert_eq!(routines.len(), 2, "the check's copy is gone");
+        conn.send(Request::Exec { db: None, sql: "DROP DATABASE ronnie_objects_test".into(), tag: 5 });
+        wait(&|e| matches!(e, Event::Done { tag: 5, .. }));
     }
 }

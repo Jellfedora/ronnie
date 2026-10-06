@@ -439,6 +439,7 @@ impl App {
             (RailSection::Local, t.terminals, plain.into_iter().chain(kind(true).into_iter().map(RailEntry::Item)).collect()),
             (RailSection::Ssh, t.profiles, kind(false).into_iter().map(RailEntry::Item).collect()),
             (RailSection::Db, t.db_section, self.config.databases.iter().map(|c| RailEntry::Db(c.id)).collect()),
+            (RailSection::Notes, t.notes, self.notes.entries(t).into_iter().map(|(e, ..)| RailEntry::Note(e)).collect()),
         ];
 
         let footer = bar.max.y - 54.0;
@@ -463,6 +464,7 @@ impl App {
                     RailSection::Local => paint_prompt_icon(ui.painter(), icon_rect.center(), color),
                     RailSection::Ssh => paint_server_icon(ui.painter(), icon_rect.center(), color),
                     RailSection::Db => super::dbview::paint_db_icon(ui.painter(), icon_rect.center(), color),
+                    RailSection::Notes => super::notes::paint_notes_icon(ui.painter(), icon_rect.center(), if self.notes_page { self.theme.accent } else { color }),
                 }
                 let collapsed = *self.collapsed(*section);
                 let icon = ui.interact(icon_rect, ui.id().with(("rail-section", k)), Sense::click());
@@ -488,6 +490,13 @@ impl App {
                         egui::Popup::menu(&plus).width(210.0).show(|ui| {
                             menu_item(ui, t.new_host, TabAction::NewHost, &mut action);
                             menu_item(ui, t.new_group, TabAction::NewGroup(false), &mut action);
+                        });
+                    }
+                    RailSection::Notes => {
+                        let plus = plus.on_hover_text(*title);
+                        egui::Popup::menu(&plus).width(200.0).show(|ui| {
+                            menu_item(ui, t.notes_new, TabAction::Notes(super::notes::Action::NewNote), &mut action);
+                            menu_item(ui, t.notes_new_folder, TabAction::Notes(super::notes::Action::NewFolder), &mut action);
                         });
                     }
                     RailSection::Db => {
@@ -525,6 +534,7 @@ impl App {
             RailSection::Local => &mut s.local_collapsed,
             RailSection::Ssh => &mut s.ssh_collapsed,
             RailSection::Db => &mut s.db_collapsed,
+            RailSection::Notes => &mut s.notes_collapsed,
         }
     }
 
@@ -548,6 +558,7 @@ impl App {
             RailEntry::Tab(i) => Some(i),
             RailEntry::Item(id) => self.item(id).and_then(|item| item.open),
             RailEntry::Db(id) => self.tabs.iter().position(|tab| tab.db == Some(id)),
+            RailEntry::Note(_) => None,
         }
     }
 
@@ -569,9 +580,20 @@ impl App {
                 let open = self.tabs.iter().position(|tab| tab.db == Some(id));
                 (c.name.clone(), c.color, false, open, format!("{}\n{}", c.name, c.address()), TabAction::OpenDb(id))
             }
+            RailEntry::Note(entry) => {
+                let name = self.notes.entry_name(entry, t);
+                let click = match entry {
+                    super::notes::Entry::Place(place) => super::notes::Action::Place(place),
+                    super::notes::Entry::Note(id) => super::notes::Action::Open(id),
+                };
+                (name.clone(), None, false, None, name, TabAction::Notes(click))
+            }
         };
         let resp = ui.interact(slot, ui.id().with(("rail", entry)), Sense::click());
-        let active = open.is_some() && open == self.shown_tab();
+        let active = match entry {
+            RailEntry::Note(entry) => self.notes_page && self.notes.entry_shown(entry),
+            _ => open.is_some() && open == self.shown_tab(),
+        };
         if active {
             ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
             ui.painter().rect_filled(Rect::from_min_size(Pos2::new(left + 3.0, slot.min.y + 8.0), Vec2::new(3.0, slot.height() - 16.0)), 1.5, self.theme.accent);
@@ -581,7 +603,11 @@ impl App {
         if open.and_then(|i| self.live.get(i)).is_some_and(|l| l.is_some()) {
             paint_live(ui, ui.painter(), slot.center(), &self.theme);
         }
-        paint_badge(ui.painter(), slot.center(), &name, color, ssh, open.is_some(), active, &self.theme);
+        if let RailEntry::Note(entry) = entry {
+            paint_entry_icon(ui.painter(), slot.center(), entry, if active { self.theme.accent } else { self.theme.text_muted });
+        } else {
+            paint_badge(ui.painter(), slot.center(), &name, color, ssh, open.is_some(), active, &self.theme);
+        }
         let done = open.and_then(|i| self.tabs.get(i)).and_then(|tab| tab.done.as_ref());
         if let Some(done) = done {
             paint_done(ui.painter(), slot.right_top() + Vec2::new(-6.0, 7.0), done.ok, &self.theme);
@@ -601,6 +627,8 @@ impl App {
                     self.item_menu(ui, id, &item, action);
                 }
             }
+            RailEntry::Note(super::notes::Entry::Place(place)) => self.place_menu(ui, place, action),
+            RailEntry::Note(super::notes::Entry::Note(id)) => self.loose_note_menu(ui, id, action),
             RailEntry::Db(id) => {
                 ui.set_min_width(170.0);
                 menu_item(ui, t.connect, TabAction::OpenDb(id), action);
@@ -701,6 +729,138 @@ impl App {
                     ui.close();
                 }
             });
+        }
+    }
+
+    /// The "Notes" section: the folders of notes, and their bin when it holds something. A click
+    /// shows the folder in the notes panel; a note dragged from the panel onto one moves there.
+    pub(super) fn notes_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) {
+        use super::notes::{Action, DraggedNote, Entry, Place};
+        let t = self.t();
+        let painter = ui.painter().clone();
+        let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
+        let collapsed = self.section_title(ui, header, t.notes, true, RailSection::Notes);
+        let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
+        let plus = icon_button(ui, &painter, plus_rect, "notes-plus", &self.theme, paint_plus).on_hover_text(format!("{}  ({})", t.notes_toggle, self.config.settings.shortcuts.toggle_notes.label()));
+        egui::Popup::menu(&plus).width(200.0).show(|ui| {
+            menu_item(ui, t.notes_new, TabAction::Notes(Action::NewNote), action);
+            menu_item(ui, t.notes_new_folder, TabAction::Notes(Action::NewFolder), action);
+        });
+        *y += SECTION_HEADER_H;
+        if collapsed {
+            return;
+        }
+        let open = self.notes_page;
+        for (entry, name, count) in self.notes.entries(t) {
+            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
+            *y += ROW_H + ROW_GAP;
+            let resp = ui.interact(slot, ui.id().with(("notes-row", entry)), Sense::click());
+            let active = open && self.notes.entry_shown(entry);
+            // A note in no folder: opened by a click.
+            let Entry::Place(place) = entry else {
+                let Entry::Note(id) = entry else { continue };
+                paint_row_bg(&painter, slot, active, resp.contains_pointer(), &self.theme);
+                super::notes::paint_notes_icon(&painter, Pos2::new(slot.min.x + 17.0, slot.center().y), if active { self.theme.accent } else { self.theme.text_muted });
+                let color = if active { self.theme.text } else { self.theme.text_muted.gamma_multiply(0.85) };
+                let mut job = egui::text::LayoutJob::simple_singleline(name, FontId::proportional(13.0), color);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(row_w - 50.0);
+                let galley = painter.layout_job(job);
+                painter.galley(Pos2::new(slot.min.x + 36.0, slot.center().y - galley.size().y / 2.0), galley, color);
+                if resp.clicked() {
+                    action.get_or_insert(TabAction::Notes(Action::Open(id)));
+                }
+                resp.on_hover_cursor(egui::CursorIcon::PointingHand).context_menu(|ui| self.loose_note_menu(ui, id, action));
+                continue;
+            };
+            let hovered = resp.contains_pointer();
+            // A note dragged from the panel: dropped here, it moves into this folder (or the bin).
+            let dropping = resp.dnd_hover_payload::<DraggedNote>().is_some();
+            if let Some(note) = resp.dnd_release_payload::<DraggedNote>() {
+                *action = Some(TabAction::Notes(match place {
+                    Place::Folder(f) => Action::Move(note.0, f),
+                    Place::Trash => Action::Trash(note.0),
+                }));
+            }
+            paint_row_bg(&painter, slot, active, hovered || dropping, &self.theme);
+            if dropping {
+                painter.rect_stroke(slot, 8.0, Stroke::new(1.0, self.theme.accent), egui::StrokeKind::Inside);
+            }
+            paint_place_icon(&painter, Pos2::new(slot.min.x + 17.0, slot.center().y), place, if active { self.theme.accent } else { self.theme.text_muted });
+            let text_rect = Rect::from_min_max(Pos2::new(slot.min.x + 36.0, slot.min.y), Pos2::new(slot.max.x - 34.0, slot.max.y));
+            if let Place::Folder(Some(id)) = place
+                && self.notes.renaming() == Some(id)
+            {
+                let theme = self.theme.clone();
+                self.notes.rename_field(ui, Rect::from_min_max(Pos2::new(text_rect.min.x - 6.0, slot.min.y + 4.0), Pos2::new(slot.max.x - 6.0, slot.max.y - 4.0)), &theme);
+                continue;
+            }
+            let color = if active { self.theme.text } else if hovered { self.theme.text_muted } else { self.theme.text_muted.gamma_multiply(0.85) };
+            let mut job = egui::text::LayoutJob::simple_singleline(name, FontId::proportional(13.0), color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
+            let galley = painter.layout_job(job);
+            painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
+            // Its count, or on the shown one under the pointer a cross that closes the panel.
+            let close_rect = Rect::from_center_size(Pos2::new(slot.max.x - 14.0, slot.center().y), Vec2::splat(18.0));
+            if active && hovered {
+                let close = ui.interact(close_rect, ui.id().with(("notes-close", place)), Sense::click());
+                if close.hovered() {
+                    painter.rect_filled(close_rect, 4.0, self.theme.tab_hover.gamma_multiply(1.8));
+                }
+                paint_cross(&painter, close_rect.center(), if close.hovered() { self.theme.text } else { self.theme.text_muted });
+                if close.on_hover_text(t.notes_close).clicked() {
+                    *action = Some(TabAction::Notes(Action::Close));
+                }
+            } else if count > 0 {
+                painter.text(Pos2::new(slot.max.x - 12.0, slot.center().y), Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.5), self.theme.text_muted.gamma_multiply(0.8));
+            }
+            if resp.double_clicked()
+                && let Place::Folder(Some(id)) = place
+            {
+                *action = Some(TabAction::Notes(Action::RenameFolder(id)));
+            } else if resp.clicked() {
+                action.get_or_insert(TabAction::Notes(Action::Place(place)));
+            }
+            resp.on_hover_cursor(egui::CursorIcon::PointingHand).context_menu(|ui| self.place_menu(ui, place, action));
+        }
+    }
+
+    /// Right-click menu of a note in no folder, in the sidebar.
+    fn loose_note_menu(&self, ui: &mut Ui, id: Uuid, action: &mut Option<TabAction>) {
+        use super::notes::Action;
+        let t = self.t();
+        ui.set_min_width(170.0);
+        menu_item(ui, t.notes_open, TabAction::Notes(Action::Open(id)), action);
+        ui.separator();
+        if ui.button(egui::RichText::new(t.notes_delete).color(self.theme.ansi[1])).clicked() {
+            *action = Some(TabAction::Notes(Action::Trash(id)));
+            ui.close();
+        }
+    }
+
+    /// Right-click menu of a folder of notes (or of their bin).
+    fn place_menu(&self, ui: &mut Ui, place: super::notes::Place, action: &mut Option<TabAction>) {
+        use super::notes::{Action, Place};
+        let t = self.t();
+        ui.set_min_width(190.0);
+        match place {
+            Place::Trash => {
+                if ui.button(egui::RichText::new(t.notes_empty_trash).color(self.theme.ansi[1])).clicked() {
+                    *action = Some(TabAction::Notes(Action::EmptyTrash));
+                    ui.close();
+                }
+            }
+            Place::Folder(folder) => {
+                menu_item(ui, t.notes_new, TabAction::Notes(Action::NewNoteIn(folder)), action);
+                if let Some(id) = folder {
+                    menu_item(ui, t.notes_new_subfolder, TabAction::Notes(Action::NewSubfolder(Some(id))), action);
+                    menu_item(ui, t.notes_rename, TabAction::Notes(Action::RenameFolder(id)), action);
+                    ui.separator();
+                    if ui.button(egui::RichText::new(t.notes_delete_folder).color(self.theme.ansi[1])).clicked() {
+                        *action = Some(TabAction::Notes(Action::DeleteFolder(id)));
+                        ui.close();
+                    }
+                }
+            }
         }
     }
 
@@ -1208,6 +1368,9 @@ impl App {
         y += SECTION_GAP;
         self.db_section(ui, left, row_w, &mut y, &mut action);
 
+        y += SECTION_GAP;
+        self.notes_section(ui, left, row_w, &mut y, &mut action);
+
         // Content height, so the scroll area knows how far it can go.
         ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
 
@@ -1220,6 +1383,13 @@ impl App {
     pub(super) fn apply_tab_action(&mut self, ui: &Ui, action: Option<TabAction>, tab_rects: &[(usize, Rect)]) {
         let t = self.t();
         match action {
+            Some(TabAction::Notes(super::notes::Action::Close)) => self.close_notes(),
+            Some(TabAction::Notes(a)) => {
+                if a.shows() {
+                    self.open_notes();
+                }
+                self.notes.apply(a, ui, t);
+            }
             Some(TabAction::Select(i)) => self.select(i),
             Some(TabAction::Close(i)) => self.request_close(CloseRequest::Tab(i)),
             Some(TabAction::New) => self.new_tab(ui.ctx()),
@@ -1502,6 +1672,26 @@ enum RailEntry {
     /// A profile or an SSH host.
     Item(Uuid),
     Db(Uuid),
+    /// A folder of notes, a note in no folder, or their bin.
+    Note(super::notes::Entry),
+}
+
+/// The icon of a row of the notes: a folder, a page for a note, a bin.
+fn paint_entry_icon(painter: &egui::Painter, c: Pos2, entry: super::notes::Entry, color: Color32) {
+    match entry {
+        super::notes::Entry::Place(place) => paint_place_icon(painter, c, place, color),
+        super::notes::Entry::Note(_) => super::notes::paint_notes_icon(painter, c, color),
+    }
+}
+
+/// The icon of a folder of notes: a page for "Notes", a folder for the others, a bin.
+fn paint_place_icon(painter: &egui::Painter, c: Pos2, place: super::notes::Place, color: Color32) {
+    use super::notes::{paint_folder_icon, paint_notes_icon, paint_trash_icon, Place};
+    match place {
+        Place::Folder(None) => paint_notes_icon(painter, c, color),
+        Place::Folder(Some(_)) => paint_folder_icon(painter, c, color),
+        Place::Trash => paint_trash_icon(painter, c, color),
+    }
 }
 
 /// A section of the sidebar (folded or not).
@@ -1510,6 +1700,7 @@ pub(super) enum RailSection {
     Local,
     Ssh,
     Db,
+    Notes,
 }
 
 /// A terminal prompt (">_" in a window): the local section of the folded sidebar.

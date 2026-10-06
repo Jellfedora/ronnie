@@ -15,7 +15,7 @@ use tokio::sync::mpsc as tmpsc;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt as _};
 
 use crate::config::Engine;
-use crate::db::{self, Cell, Connection, DatabaseInfo, Emitter, Event, QueryResult, Request, Structure, TableInfo, Target, CANCELLED, MAX_QUERY_ROWS};
+use crate::db::{self, Cell, Connection, DatabaseInfo, Emitter, Event, Param, QueryResult, Request, Routine, Structure, TableInfo, Target, Trigger, CANCELLED, LOST, MAX_QUERY_ROWS, RESTORED};
 
 type Conn = Client<Compat<TcpStream>>;
 type Error = tiberius::error::Error;
@@ -284,6 +284,9 @@ const TYPE_SQL: &str = "ty.name + CASE \
      WHEN ty.name IN ('datetime2', 'time', 'datetimeoffset') THEN '(' + CAST(c.scale AS varchar(10)) + ')' \
      ELSE '' END";
 
+/// Procedures (P, PC: CLR) and functions (FN, FS: scalar; IF, TF, FT: rows).
+const ROUTINE_TYPES: &str = "('P', 'PC', 'FN', 'FS', 'IF', 'TF', 'FT')";
+
 /// Types that can't be searched as text.
 const NOT_SEARCHED: [&str; 9] = ["image", "varbinary", "binary", "timestamp", "rowversion", "geography", "geometry", "hierarchyid", "sql_variant"];
 
@@ -483,7 +486,144 @@ async fn handle(conn: &mut Conn, request: Request, emit: &Emitter) -> Result<(),
         }
         // Accounts are not managed here for SQL Server (the view doesn't offer it).
         Request::Users => emit.send(Event::Users(Vec::new())),
+        Request::ForeignKeys { db, table } => emit.send(Event::ForeignKeys { db, table, keys: Vec::new() }),
         Request::Grants { user, host } => emit.send(Event::Grants { user, host, grants: Vec::new() }),
+        Request::Routines(db) => {
+            let d = ident(&db);
+            let rows = select(
+                conn,
+                &format!(
+                    "SELECT s.name + N'.' + o.name, RTRIM(o.type), CONVERT(nvarchar(19), o.create_date, 120), CONVERT(nvarchar(19), o.modify_date, 120), \
+                     COALESCE(CAST(ep.value AS nvarchar(4000)), N''), CASE WHEN m.execute_as_principal_id IS NULL THEN N'CALLER' WHEN m.execute_as_principal_id = -2 THEN N'OWNER' ELSE N'USER' END, \
+                     CASE WHEN m.is_schema_bound = 1 THEN 1 ELSE 0 END \
+                     FROM {d}.sys.objects o JOIN {d}.sys.schemas s ON s.schema_id = o.schema_id LEFT JOIN {d}.sys.sql_modules m ON m.object_id = o.object_id \
+                     LEFT JOIN {d}.sys.extended_properties ep ON ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.class = 1 AND ep.name = N'MS_Description' \
+                     WHERE o.type IN {ROUTINE_TYPES} AND o.is_ms_shipped = 0 ORDER BY 1"
+                ),
+            )
+            .await?;
+            let mut routines: Vec<Routine> = rows
+                .iter()
+                .map(|r| {
+                    let code = string(r.get(1));
+                    let function = !matches!(code.as_str(), "P" | "PC");
+                    Routine {
+                        name: string(r.first()),
+                        function,
+                        returns: if matches!(code.as_str(), "IF" | "TF" | "FT") { "TABLE".into() } else { String::new() },
+                        code,
+                        created: string(r.get(2)),
+                        modified: string(r.get(3)),
+                        comment: string(r.get(4)),
+                        security: string(r.get(5)),
+                        access: if number(r.get(6)) == 1 { "SCHEMABINDING".into() } else { String::new() },
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            // Parameter 0: what a scalar function returns.
+            let params = select(
+                conn,
+                &format!(
+                    "SELECT s.name + N'.' + o.name, c.parameter_id, c.name, {TYPE_SQL}, CAST(c.is_output AS int) \
+                     FROM {d}.sys.parameters c JOIN {d}.sys.objects o ON o.object_id = c.object_id JOIN {d}.sys.schemas s ON s.schema_id = o.schema_id \
+                     JOIN {d}.sys.types ty ON ty.user_type_id = c.user_type_id WHERE o.type IN {ROUTINE_TYPES} AND o.is_ms_shipped = 0 ORDER BY 1, c.parameter_id"
+                ),
+            )
+            .await
+            .unwrap_or_default();
+            for p in &params {
+                let name = string(p.first());
+                let Some(r) = routines.iter_mut().find(|r| r.name == name) else { continue };
+                if number(p.get(1)) == 0 {
+                    r.returns = string(p.get(3));
+                } else {
+                    let mode = if number(p.get(4)) == 1 { "OUT" } else { "IN" };
+                    r.params.push(Param { mode: mode.into(), name: string(p.get(2)), kind: string(p.get(3)) });
+                }
+            }
+            emit.send(Event::Routines { db, routines });
+        }
+        Request::Triggers(db) => {
+            let d = ident(&db);
+            let rows = select(
+                conn,
+                &format!(
+                    "SELECT s.name + N'.' + tr.name, s.name + N'.' + o.name, CAST(tr.is_disabled AS int), CAST(tr.is_instead_of_trigger AS int), \
+                     CONVERT(nvarchar(19), tr.create_date, 120), CONVERT(nvarchar(19), tr.modify_date, 120), COALESCE(te.type_desc, N'') \
+                     FROM {d}.sys.triggers tr JOIN {d}.sys.objects o ON o.object_id = tr.parent_id JOIN {d}.sys.schemas s ON s.schema_id = o.schema_id \
+                     LEFT JOIN {d}.sys.trigger_events te ON te.object_id = tr.object_id \
+                     WHERE tr.parent_class = 1 ORDER BY 2, 1, te.type"
+                ),
+            )
+            .await?;
+            let mut triggers: Vec<Trigger> = Vec::new();
+            for r in &rows {
+                let (name, event) = (string(r.first()), string(r.get(6)));
+                if let Some(t) = triggers.last_mut().filter(|t| t.name == name) {
+                    t.events = format!("{}, {event}", t.events);
+                    continue;
+                }
+                triggers.push(Trigger {
+                    name,
+                    table: string(r.get(1)),
+                    timing: if number(r.get(3)) == 1 { "INSTEAD OF".into() } else { "AFTER".into() },
+                    events: event,
+                    order: 0,
+                    enabled: number(r.get(2)) == 0,
+                    definer: String::new(),
+                    created: string(r.get(4)),
+                    modified: string(r.get(5)),
+                });
+            }
+            emit.send(Event::Triggers { db, triggers });
+        }
+        Request::Definition { db, kind, name } => {
+            let sql = format!("SELECT m.definition FROM {}.sys.sql_modules m WHERE m.object_id = OBJECT_ID({})", ident(&db), literal(&self::table(&db, &name)));
+            let rows = match select(conn, &sql).await {
+                Ok(rows) => rows,
+                Err(e) if is_lost(&e) => return Err(e),
+                Err(_) => Vec::new(),
+            };
+            let sql = rows.first().map(|r| string(r.first())).unwrap_or_default().trim().to_owned();
+            emit.send(Event::Definition { db, kind, name, sql });
+        }
+        Request::Replace { db, check, drop, create, restore, tag } => {
+            use_db(conn, Some(&db)).await?;
+            let fail = |e: Error| if is_lost(&e) { Err(e) } else { Ok(message(&e)) };
+            for s in check.iter().filter(|s| !s.trim().is_empty()) {
+                if let Err(e) = exec(conn, s).await {
+                    let error = fail(e)?;
+                    if let Some(last) = check.last().filter(|l| *l != s) {
+                        let _ = exec(conn, last).await;
+                    }
+                    emit.send(Event::Failed { error, tag });
+                    return Ok(());
+                }
+            }
+            if !drop.trim().is_empty()
+                && let Err(e) = exec(conn, &drop).await
+            {
+                emit.send(Event::Failed { error: fail(e)?, tag });
+                return Ok(());
+            }
+            match exec(conn, &create).await {
+                Ok(_) => emit.send(Event::Done { affected: 0, tag }),
+                Err(e) => {
+                    let error = fail(e)?;
+                    let mut back = drop.trim().is_empty();
+                    if !back {
+                        for s in restore.iter().filter(|s| !s.trim().is_empty()) {
+                            if exec(conn, s).await.is_ok() {
+                                back = true;
+                                break;
+                            }
+                        }
+                    }
+                    emit.send(Event::Failed { error: format!("{}{error}", if back { RESTORED } else { LOST }), tag });
+                }
+            }
+        }
         Request::Export { .. } | Request::ExportCsv { .. } | Request::Import { .. } => {}
     }
     Ok(())
@@ -676,7 +816,7 @@ pub fn open(ctx: &egui::Context, target: Target) -> Connection {
                             let _ = conn.cancel_query().await;
                             emit.send(match request {
                                 Request::Query { .. } => Event::Query { results: Vec::new(), elapsed: start.elapsed(), error: Some(STOPPED.into()) },
-                                Request::Exec { tag, .. } => Event::Failed { error: STOPPED.into(), tag },
+                                Request::Exec { tag, .. } | Request::Replace { tag, .. } => Event::Failed { error: STOPPED.into(), tag },
                                 _ => Event::Error(STOPPED.into()),
                             });
                             continue;

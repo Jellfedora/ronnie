@@ -29,15 +29,15 @@ impl App {
         }
     }
 
-    /// Commands offered in tab `index`: its own first, then the general ones.
-    pub(super) fn saved_commands(&self, index: usize) -> Vec<String> {
+    /// Commands offered in tab `index`: its own first, then the general ones; each with its name, if given.
+    pub(super) fn saved_commands(&self, index: usize) -> Vec<(Option<String>, String)> {
         let mut all = self.tab_scope(index).map(|(scope, _)| self.commands_of(scope)).unwrap_or_default();
         for c in &self.config.commands {
             if !all.contains(c) {
                 all.push(c.clone());
             }
         }
-        all
+        all.into_iter().map(|c| (self.config.command_names.get(&c).cloned(), c)).collect()
     }
 
     /// The ⚡ menu, under the pane's header on the right: click a command to write it at the prompt
@@ -60,9 +60,12 @@ impl App {
         let pos = Pos2::new(pane_rect.max.x - width - 8.0, pane_rect.min.y + PANE_HEADER_H + 6.0);
         let theme = self.theme.clone();
 
+        let names = self.config.command_names.clone();
         let mut insert = None;
         let mut remove = None;
         let mut add = None;
+        // A name given (or taken away: empty) to a command.
+        let mut named: Option<(String, String)> = None;
         let escape = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         let menu = self.commands_menu.as_mut().unwrap();
         let area = egui::Area::new(egui::Id::new("commands-menu")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
@@ -75,14 +78,47 @@ impl App {
                             ui.label(egui::RichText::new(t.commands_empty).size(12.5).color(theme.text_muted.gamma_multiply(0.7)));
                         }
                         for (i, command) in commands.iter().enumerate() {
+                            // Being named: a field in its place, Enter keeps the name.
+                            if let Some((_, _, typed, focus)) = menu.renaming.as_mut().filter(|(s, k, _, _)| s == scope && *k == i) {
+                                let mut ended = false;
+                                ui.horizontal(|ui| {
+                                    let field = ui.add(egui::TextEdit::singleline(typed).hint_text(t.commands_name_hint).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 3.0)));
+                                    if std::mem::take(focus) {
+                                        field.request_focus();
+                                    }
+                                    if field.lost_focus() {
+                                        if ui.input(|i| i.key_pressed(Key::Enter)) {
+                                            named = Some((command.clone(), typed.trim().to_owned()));
+                                        }
+                                        ended = true;
+                                    }
+                                });
+                                if ended {
+                                    menu.renaming = None;
+                                }
+                                ui.label(egui::RichText::new(command.replace('\n', " ⏎ ")).monospace().size(11.0).color(theme.text_muted));
+                                continue;
+                            }
                             ui.horizontal(|ui| {
                                 let x = ui.add(egui::Button::new(egui::RichText::new("✕").size(11.0).color(theme.text_muted)).frame(false));
                                 if x.clicked() {
                                     remove = Some((*scope, i));
                                 }
-                                let label = egui::RichText::new(command.replace('\n', " ⏎ ")).monospace().size(12.5).color(theme.text);
-                                let row = ui.add(egui::Button::new(label).frame_when_inactive(false).truncate());
-                                if row.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                let name = names.get(command);
+                                let (r, rename) = ui.allocate_exact_size(Vec2::new(16.0, 16.0), Sense::click());
+                                let color = if rename.hovered() { theme.text } else { theme.text_muted };
+                                paint_pencil(ui.painter(), r.center(), color);
+                                let rename = rename.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.commands_rename);
+                                if rename.clicked() {
+                                    menu.renaming = Some((*scope, i, name.cloned().unwrap_or_default(), true));
+                                }
+                                let label = match name {
+                                    Some(n) => egui::RichText::new(n).size(12.5).color(theme.text),
+                                    None => egui::RichText::new(command.replace('\n', " ⏎ ")).monospace().size(12.5).color(theme.text),
+                                };
+                                let row = ui.add(egui::Button::new(label).frame_when_inactive(false).truncate()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                                let row = if name.is_some() { row.on_hover_text(egui::RichText::new(command).monospace()) } else { row };
+                                if row.clicked() {
                                     insert = Some(command.clone());
                                 }
                             });
@@ -122,8 +158,20 @@ impl App {
         if let Some((scope, i)) = remove {
             if let Some(list) = self.commands_mut(scope) {
                 if i < list.len() {
-                    list.remove(i);
+                    let gone = list.remove(i);
+                    // Its name goes with it, unless another list keeps the command.
+                    let kept = self.config.commands.contains(&gone) || self.config.profiles.iter().any(|p| p.commands.contains(&gone)) || self.config.ssh.iter().any(|h| h.commands.contains(&gone));
+                    if !kept {
+                        self.config.command_names.remove(&gone);
+                    }
                 }
+            }
+        }
+        if let Some((command, name)) = named {
+            if name.is_empty() {
+                self.config.command_names.remove(&command);
+            } else {
+                self.config.command_names.insert(command, name);
             }
         }
         if let Some((scope, command)) = add {

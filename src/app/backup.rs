@@ -17,8 +17,8 @@ const MANIFEST: &str = "manifest.json";
 const SECRETS: &str = "secrets.bin";
 const MAGIC: &[u8] = b"RONNIE-SECRETS-1";
 /// Files and folders of the config folder that travel (the rest belongs to this computer).
-const FILES: &[&str] = &["config.json", "session.json", "db-history.json"];
-const FOLDERS: &[&str] = &["history", "scrollback"];
+const FILES: &[&str] = &["config.json", "session.json", "db-history.json", "notes.json"];
+const FOLDERS: &[&str] = &["history", "scrollback", "notes-files"];
 /// Where the SSH keys of an import go, in the config folder.
 const KEYS: &str = "keys";
 pub(super) const MIN_PASSWORD: usize = 8;

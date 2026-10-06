@@ -33,8 +33,10 @@ mod library;
 mod loading;
 mod motion;
 mod music;
+mod notes;
 mod perms;
 mod sql;
+mod upload;
 mod sqlcomplete;
 mod popups;
 mod viewer;
@@ -277,6 +279,7 @@ struct WindowSlot {
     ronnie_show: Option<(PaneId, f64)>,
     game_folded: bool,
     music_page: bool,
+    notes_page: bool,
 }
 
 pub struct App {
@@ -290,6 +293,8 @@ pub struct App {
     scrollback_seq: HashMap<Uuid, u64>,
     last_scrollback_save: f64,
     error: Option<String>,
+    /// The error shown, and since when (it goes away by itself after a while).
+    error_shown: Option<(String, f64)>,
     window_title: String,
     next_pane: PaneId,
     /// While a tab is dragged: pointer x minus the tab's left edge.
@@ -348,6 +353,10 @@ pub struct App {
     /// The music page: shown instead of the tabs (in this window), and what it holds (for all).
     music_page: bool,
     library: library::Library,
+    /// The notes page: shown instead of the tabs (in this window) when set.
+    notes_page: bool,
+    /// The notes, the same in every window.
+    notes: notes::Notes,
     media_keys: crate::media_keys::MediaKeys,
     /// A MariaDB / MySQL server runs on this machine (offered in the sidebar while none is set up).
     local_db: bool,
@@ -407,6 +416,8 @@ pub struct App {
     ssh_prompts: std::sync::mpsc::Receiver<crate::askpass::Prompt>,
     /// The one being answered, and what is typed.
     ssh_prompt: Option<(crate::askpass::Prompt, String)>,
+    /// Images and files sent to SSH servers for their panes (see upload.rs).
+    uploads: Vec<upload::PaneUpload>,
     /// Path suggestions in terminals: folders listed lately, and the line and suggestion picked.
     path_cache: HashMap<PathBuf, (std::time::Instant, Vec<(String, bool)>)>,
     /// The line, the suggestion picked, and whether it was picked with the arrows (then Enter takes it).
@@ -690,6 +701,9 @@ fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config)
     }
 }
 
+/// How long an error stays above the terminals.
+const ERROR_SHOWN_SECS: f64 = 12.0;
+
 /// Where a saved command lives.
 #[derive(Clone, Copy, PartialEq)]
 enum CommandScope {
@@ -703,6 +717,8 @@ struct CommandsMenu {
     tab: usize,
     pane: PaneId,
     new_command: String,
+    /// The command being named (its list, its place in it), the name typed, and whether its field takes the focus.
+    renaming: Option<(CommandScope, usize, String, bool)>,
     /// Add to the tab's profile or host rather than to the general commands.
     for_tab: bool,
     /// Opened this frame: the click that opened it (a menu entry...) must not close it.
@@ -711,7 +727,7 @@ struct CommandsMenu {
 
 impl CommandsMenu {
     fn new(tab: usize, pane: PaneId) -> Self {
-        Self { tab, pane, new_command: String::new(), for_tab: true, fresh: true }
+        Self { tab, pane, new_command: String::new(), renaming: None, for_tab: true, fresh: true }
     }
 }
 
@@ -862,11 +878,12 @@ enum ShortcutAction {
     ToggleFiles,
     NewWindow,
     ToggleSidebar,
+    ToggleNotes,
     Dictate,
 }
 
 impl ShortcutAction {
-    const ALL: [ShortcutAction; 13] = [
+    const ALL: [ShortcutAction; 14] = [
         Self::NewTab,
         Self::ClosePane,
         Self::SplitRight,
@@ -879,6 +896,7 @@ impl ShortcutAction {
         Self::ToggleFiles,
         Self::NewWindow,
         Self::ToggleSidebar,
+        Self::ToggleNotes,
         Self::Dictate,
     ];
 
@@ -896,6 +914,7 @@ impl ShortcutAction {
             Self::ToggleFiles => t.shortcut_toggle_files,
             Self::NewWindow => t.new_window,
             Self::ToggleSidebar => t.toggle_sidebar,
+            Self::ToggleNotes => t.notes_toggle,
             Self::Dictate => t.shortcut_dictate,
         }
     }
@@ -914,6 +933,7 @@ impl ShortcutAction {
             Self::ToggleFiles => &s.toggle_files,
             Self::NewWindow => &s.new_window,
             Self::ToggleSidebar => &s.toggle_sidebar,
+            Self::ToggleNotes => &s.toggle_notes,
             Self::Dictate => &s.dictate,
         }
     }
@@ -932,6 +952,7 @@ impl ShortcutAction {
             Self::ToggleFiles => &mut s.toggle_files,
             Self::NewWindow => &mut s.new_window,
             Self::ToggleSidebar => &mut s.toggle_sidebar,
+            Self::ToggleNotes => &mut s.toggle_notes,
             Self::Dictate => &mut s.dictate,
         }
     }
@@ -968,6 +989,7 @@ impl App {
             scrollback_seq: HashMap::new(),
             last_scrollback_save: 0.0,
             error: None,
+            error_shown: None,
             window_title: String::new(),
             next_pane: 1,
             tab_grab: None,
@@ -1000,6 +1022,8 @@ impl App {
             music: music::Music::default(),
             music_volume_changed: false,
             music_page: false,
+            notes_page: false,
+            notes: notes::Notes::load(),
             library: library::Library::default(),
             media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {
                 use raw_window_handle::HasWindowHandle;
@@ -1022,6 +1046,7 @@ impl App {
             askpass: crate::askpass::Server::start(),
             ssh_prompts: std::sync::mpsc::channel().1,
             ssh_prompt: None,
+            uploads: Vec::new(),
             viewport: egui::ViewportId::ROOT,
             others: Vec::new(),
             tool_windows: Vec::new(),
@@ -1200,6 +1225,7 @@ impl App {
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.home = None;
+        self.notes_page = false;
         self.focus_terminal = true;
     }
 
@@ -1359,6 +1385,7 @@ impl App {
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.home = None;
+        self.notes_page = false;
     }
 
     /// The active tab's database view, filling `rect` (connecting it the first time).
@@ -1402,6 +1429,7 @@ impl App {
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.home = None;
+        self.notes_page = false;
         self.focus_terminal = true;
     }
 
@@ -1627,6 +1655,7 @@ impl App {
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
         swap(&mut self.game_folded, &mut slot.game_folded);
         swap(&mut self.music_page, &mut slot.music_page);
+        swap(&mut self.notes_page, &mut slot.notes_page);
     }
 
     fn save_config(&mut self) {
@@ -1716,7 +1745,7 @@ impl App {
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         let mut notified = false;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            let shown = i == self.active && self.home.is_none() && !tab.show_files;
+            let shown = i == self.active && self.home.is_none() && !self.notes_page && !tab.show_files;
             // Taken even when disabled, not to report old commands once enabled.
             let mut finished: Vec<Finished> = Vec::new();
             for term in tab.panes.values_mut() {
@@ -1901,6 +1930,7 @@ impl App {
             self.tabs.push(tab);
             self.active = self.tabs.len() - 1;
             self.home = None;
+            self.notes_page = false;
             self.focus_terminal = true;
         }
     }
@@ -2060,13 +2090,14 @@ impl App {
             self.active = index;
             self.home = None;
             self.music_page = false;
+            self.notes_page = false;
             self.focus_terminal = true;
         }
     }
 
     /// The tab shown: none on the home page.
     fn shown_tab(&self) -> Option<usize> {
-        (self.home.is_none() && self.active < self.tabs.len()).then_some(self.active)
+        (self.home.is_none() && !self.notes_page && self.active < self.tabs.len()).then_some(self.active)
     }
 
     /// The home page, with a line about what just closed (none: empty).
@@ -2079,6 +2110,7 @@ impl App {
         self.home = Some(line.unwrap_or_default());
         self.home_game = false;
         self.music_page = false;
+        self.notes_page = false;
         // The keys go to the game, not to a terminal no longer shown.
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
@@ -2111,14 +2143,50 @@ impl App {
         }
     }
 
+    /// Shows the notes, ready to type in, or hides them.
+    pub(super) fn toggle_notes(&mut self) {
+        if self.notes_page {
+            self.close_notes();
+        } else {
+            self.open_notes();
+        }
+    }
+
+    /// The notes page shown (in this window) in place of the tabs, ready to type in.
+    pub(super) fn open_notes(&mut self) {
+        if !self.notes_page {
+            self.notes.focus_editor();
+        }
+        self.notes_page = true;
+        self.music_page = false;
+        self.home_game = false;
+    }
+
+    /// Back to what the notes page covered.
+    pub(super) fn close_notes(&mut self) {
+        self.notes_page = false;
+        self.notes.flush();
+        self.focus_terminal = true;
+    }
+
     fn handle_shortcuts(&mut self, ui: &Ui) {
         // A shortcut is being recorded in the settings: keys are for it.
         if self.shortcut_capture.is_some() {
             return;
         }
-        // Not in any menu: the activity simulator.
-        if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::A))) {
+        // Not in any menu: the activity simulator. Windows: Ctrl+Alt is AltGr on many keyboards (and
+        // Ctrl+Alt+Shift+A closed Ronnie there), so Ctrl+Shift+F12.
+        let simulator = if cfg!(windows) { KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::F12) } else { KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::A) };
+        if ui.input_mut(|i| i.consume_shortcut(&simulator)) {
             self.keep_active_dialog = !self.keep_active_dialog;
+        }
+        // Writing a note: ⌘ B and ⌘ I put it in bold and italics (rather than folding the sidebar).
+        if self.notes_page && self.notes.editing(ui.ctx()) {
+            for (key, format) in [(Key::B, notes::Format::Bold), (Key::I, notes::Format::Italic)] {
+                if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))) {
+                    self.notes.format_key(format);
+                }
+            }
         }
         // The configurable shortcuts (Settings > Shortcuts), the most specific first: consume_shortcut
         // ignores extra Shift / Alt, so Cmd+T would otherwise also take Cmd+Shift+T.
@@ -2143,14 +2211,28 @@ impl App {
         // A file open in the file manager's editor: ⌘ F searches it, ⌘ W closes it.
         // The home page: the tab behind it isn't shown, nothing may act on it.
         if self.home.is_some() {
-            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar));
+            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The music page, likewise; its search takes ⌘ F.
         if self.music_page {
             if fired.contains(&ShortcutAction::FindText) {
                 self.library.focus_search();
             }
-            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar));
+            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
+        }
+        // The notes page: ⌘ F searches them, ⌘ W closes them, the tab behind isn't shown.
+        if self.notes_page {
+            if fired.contains(&ShortcutAction::FindText) {
+                self.notes.focus_search();
+            }
+            if fired.contains(&ShortcutAction::ClosePane) {
+                fired.push(ShortcutAction::ToggleNotes);
+            }
+            // ⌘ E: between the note's Markdown and its rendering.
+            if fired.contains(&ShortcutAction::ToggleFiles) {
+                self.notes.toggle_rendered();
+            }
+            fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         if let Some(viewer) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).and_then(|f| f.viewer.as_mut()) {
             fired.retain(|a| match a {
@@ -2211,6 +2293,7 @@ impl App {
                 }
                 ShortcutAction::OpenSettings => self.settings_dialog = !self.settings_dialog,
                 ShortcutAction::ToggleSidebar => self.config.settings.sidebar_folded = !self.config.settings.sidebar_folded,
+                ShortcutAction::ToggleNotes => self.toggle_notes(),
                 ShortcutAction::NewWindow => {
                     let ctx = ui.ctx().clone();
                     self.new_window(|app| app.new_tab(&ctx));
@@ -2881,7 +2964,7 @@ fn closed_banner(ui: &mut Ui, pane: Rect, theme: &Theme, t: &Strings) -> (bool, 
 }
 
 /// Pencil: the edit icon.
-fn paint_pencil(painter: &egui::Painter, c: Pos2, color: Color32) {
+pub(super) fn paint_pencil(painter: &egui::Painter, c: Pos2, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let (a, b) = (c + Vec2::new(-4.0, 4.0), c + Vec2::new(3.5, -3.5));
     painter.line_segment([a, b], Stroke::new(2.6, color));
@@ -2953,6 +3036,8 @@ fn menu_item<A>(ui: &mut Ui, label: &str, a: A, action: &mut Option<A>) {
 
 #[derive(Clone)]
 enum TabAction {
+    /// Something done to the notes from the sidebar.
+    Notes(notes::Action),
     Select(usize),
     Close(usize),
     New,
@@ -3042,7 +3127,7 @@ fn pane_path(term: &Terminal, local: bool, ssh: Option<&SshHost>, files: Option<
 
 /// Right-click menu of a terminal pane.
 #[allow(clippy::too_many_arguments)]
-fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[String], action: &mut Option<PaneAction>) {
+fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[(Option<String>, String)], action: &mut Option<PaneAction>) {
     ui.set_min_width(180.0);
     let shortcut = |mac: &str, other: &str| if cfg!(target_os = "macos") { mac.to_owned() } else { other.to_owned() };
     let mut item = |ui: &mut Ui, enabled: bool, label: &str, hint: String, a: PaneAction| {
@@ -3077,9 +3162,14 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
         if commands.is_empty() {
             ui.label(egui::RichText::new(t.commands_empty).color(ui.visuals().weak_text_color()));
         }
-        for command in commands {
-            let label = egui::RichText::new(command.replace('\n', " ⏎ ")).monospace();
-            if ui.add(egui::Button::new(label).truncate()).clicked() {
+        for (name, command) in commands {
+            let label = match name {
+                Some(n) => egui::RichText::new(n),
+                None => egui::RichText::new(command.replace('\n', " ⏎ ")).monospace(),
+            };
+            let button = ui.add(egui::Button::new(label).truncate());
+            let button = if name.is_some() { button.on_hover_text(egui::RichText::new(command).monospace()) } else { button };
+            if button.clicked() {
                 picked = Some(PaneAction::Insert(id, command.clone()));
                 ui.close();
             }
@@ -3254,7 +3344,7 @@ impl App {
                 term.set_allow_clipboard(self.config.settings.clipboard_from_programs);
                 term.process_events(ui.ctx(), &self.theme);
                 // Panes behind the file manager aren't on screen either.
-                term.set_visible(i == self.active && self.home.is_none() && !tab.show_files);
+                term.set_visible(i == self.active && self.home.is_none() && !self.notes_page && !tab.show_files);
             }
         }
         self.finished_commands(ui.ctx());
@@ -3328,10 +3418,38 @@ impl App {
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(self.theme.bg))
             .show(ui, |ui| {
-                if let Some(err) = &self.error {
-                    ui.colored_label(Color32::from_rgb(0xf7, 0x76, 0x8e), err);
+                // The last error: closed with its ✕, or gone by itself after a while.
+                if let Some(err) = self.error.clone() {
+                    let now = ui.input(|i| i.time);
+                    if self.error_shown.as_ref().is_none_or(|(shown, _)| *shown != err) {
+                        self.error_shown = Some((err.clone(), now));
+                    }
+                    let since = self.error_shown.as_ref().map_or(now, |(_, at)| *at);
+                    let mut close = now - since > ERROR_SHOWN_SECS;
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("✕").color(Color32::from_rgb(0xf7, 0x76, 0x8e))).frame(false)).on_hover_text(self.t().close).clicked() {
+                            close = true;
+                        }
+                        ui.add(egui::Label::new(egui::RichText::new(&err).color(Color32::from_rgb(0xf7, 0x76, 0x8e))).wrap());
+                    });
+                    if close {
+                        self.error = None;
+                        self.error_shown = None;
+                    } else {
+                        ui.ctx().request_repaint_after(Duration::from_secs_f64((ERROR_SHOWN_SECS - (now - since)).max(0.5)));
+                    }
                 }
                 let rect = ui.available_rect_before_wrap();
+                if self.notes_page {
+                    self.game.leave();
+                    self.fold_for_game(false);
+                    let strings = self.t();
+                    let mode_key = self.config.settings.shortcuts.toggle_files.label();
+                    if matches!(self.notes.ui(ui, rect, &theme, strings, &mode_key), Some(notes::Action::Close)) {
+                        self.close_notes();
+                    }
+                    return;
+                }
                 if self.music_page {
                     self.game.leave();
                     self.fold_for_game(false);
@@ -3405,6 +3523,8 @@ impl App {
                 let mut open_commands = None;
                 let mut open_files = false;
                 let mut open_files_window = None;
+                // Files dropped on an SSH pane (None: what the clipboard holds), with the pane's directory.
+                let mut uploads_wanted: Vec<(PaneId, Option<Vec<PathBuf>>, Option<String>)> = Vec::new();
                 // Path suggestions (→ takes one, Alt+↑ ↓ picks): at a local prompt (zsh tells what is typed,
                 // bash's prompt is read from the screen), or at a server's usual prompt (read from the screen; the server's files
                 // come through a background SFTP session). Checked before the panes handle keys, so these
@@ -3429,7 +3549,7 @@ impl App {
                                 }
                                 self.path_cache.insert(wanted.dir.clone(), (std::time::Instant::now(), complete::list(&wanted.dir)));
                             }
-                            let items: Vec<(String, bool)> = complete::matching(&self.path_cache[&wanted.dir].1, &wanted.prefix, 6, cfg!(windows)).into_iter().cloned().collect();
+                            let items: Vec<(String, bool)> = complete::matching(&self.path_cache[&wanted.dir].1, &wanted.prefix, 6, cfg!(windows), wanted.dirs_only).into_iter().cloned().collect();
                             (!items.is_empty()).then_some((line, wanted.prefix, items))
                         })();
                     } else if let Some((line, true)) = term.guess_prompt_input() {
@@ -3458,10 +3578,10 @@ impl App {
                                 Some(c) => c,
                                 None => home.clone(),
                             };
-                            let (dir, prefix) = complete::parse_remote(&line, &cwd, &home)?;
+                            let (dir, prefix, dirs_only) = complete::parse_remote(&line, &cwd, &home)?;
                             let entries = fm.remote_entries(&dir);
                             waiting = entries.is_none();
-                            let items: Vec<(String, bool)> = complete::matching(&entries?, &prefix, 6, false).into_iter().cloned().collect();
+                            let items: Vec<(String, bool)> = complete::matching(&entries?, &prefix, 6, false, dirs_only).into_iter().cloned().collect();
                             (!items.is_empty()).then_some((line, prefix, items))
                         })();
                     } else {
@@ -3532,6 +3652,7 @@ impl App {
                     && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)));
                 for &(id, r) in &rects {
                     let Some(term) = tab.panes.get_mut(&id) else { continue };
+                    term.remote = !local;
                     // Startup commands, typed once the shell shows its prompt.
                     if let Some(since) = tab.startup_due.get(&id).copied() {
                         if term.ready_for_commands(since.elapsed(), local) {
@@ -3715,8 +3836,9 @@ impl App {
                             resp.request_focus();
                         }
                         // Files dragged from the Finder: their paths typed at the cursor, escaped, as other
-                        // terminals do (Claude Code attaches the images). A server can't open this computer's files.
-                        if local {
+                        // terminals do (Claude Code attaches the images). A server can't open this computer's
+                        // files: they are sent to it first, into the pane's directory.
+                        {
                             let (hovering, dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
                             if hovering || !dropped.is_empty() {
                                 let over = files::drag_pointer(ui.ctx()).is_some_and(|p| body.contains(p));
@@ -3727,7 +3849,12 @@ impl App {
                                         ui.painter().rect_stroke(body.shrink(1.0), 4.0, Stroke::new(2.0, self.theme.accent), egui::StrokeKind::Inside);
                                     }
                                 }
-                                if over && !dropped.is_empty() {
+                                if over && !dropped.is_empty() && !local {
+                                    let dir = pane_path(term, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|s| s.id == h)), tab.files.as_deref());
+                                    uploads_wanted.push((id, Some(dropped.clone()), dir));
+                                    resp.request_focus();
+                                    tab.focused = id;
+                                } else if over && !dropped.is_empty() {
                                     let escape = |p: &std::path::PathBuf| {
                                         let p = p.display().to_string();
                                         if cfg!(windows) { complete::completion_windows(&p, "", false) } else { complete::completion(&p, "", false) }
@@ -3741,6 +3868,10 @@ impl App {
                         }
                         if resp.has_focus() {
                             tab.focused = id;
+                        }
+                        // An image (or files) pasted in an SSH pane: sent to the server.
+                        if term.take_upload() {
+                            uploads_wanted.push((id, None, None));
                         }
                         let can_copy = term.has_selection();
                         let startup = tab.startup.contains_key(&id);
@@ -3913,7 +4044,15 @@ impl App {
                         match (pasted, tab.panes.get_mut(&id)) {
                             (Ok(Some(text)), Some(term)) => term.paste_text(&text),
                             (Ok(None), Some(term)) => term.paste_image(),
-                            (Err(e), _) => self.error = Some(format!("{} : {e}", self.t().clipboard)),
+                            // Files copied (Explorer, Finder): sent to the server, or their paths typed here.
+                            (Err(_), Some(term)) if !local => term.paste_image(),
+                            (Err(e), Some(term)) => match upload::clipboard_files() {
+                                Some((files, false)) => {
+                                    let paths: Vec<String> = files.iter().map(|p| complete::completion(&p.display().to_string(), "", false)).collect();
+                                    term.paste_text(&format!("{} ", paths.join(" ")));
+                                }
+                                _ => self.error = Some(format!("{} : {} ({e})", self.t().clipboard, self.t().clipboard_nothing)),
+                            },
                             _ => {}
                         }
                         self.focus_terminal = true;
@@ -3960,6 +4099,16 @@ impl App {
                 }
                 if let Some(id) = close_dead {
                     self.close_pane(self.active, id);
+                }
+                for (id, files, dir) in uploads_wanted {
+                    let given = match files {
+                        Some(files) => Some((files, false)),
+                        None => upload::clipboard_files(),
+                    };
+                    match given {
+                        Some((files, image)) => self.upload_to_pane(ui.ctx(), self.active, id, files, image, dir),
+                        None => self.error = Some(format!("{} : {}", self.t().clipboard, self.t().clipboard_nothing)),
+                    }
                 }
                 if let Some(id) = open_search {
                     self.open_search(self.active, id, true);
@@ -4042,6 +4191,7 @@ impl App {
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
         }
+        self.poll_uploads();
 
         // The tour, once the splash is over.
         if main_window && self.splash.is_none() {

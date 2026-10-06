@@ -805,6 +805,7 @@ impl App {
     pub(super) fn open_music_page(&mut self, view: Option<super::library::View>) {
         self.library.open(configured_server(&self.config.settings), view);
         self.music_page = true;
+        self.notes_page = false;
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
 

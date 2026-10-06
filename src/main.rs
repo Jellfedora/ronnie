@@ -43,6 +43,16 @@ const SYSTEM_CJK_FONTS: &[&str] = &[
     "C:\\Windows\\Fonts\\msyh.ttc",
 ];
 
+/// The notes' faces (regular, bold, italic, bold italic) on each system: font file and the face's
+/// index in it. The first set found is used.
+const NOTE_FONTS: &[[(&str, u32); 4]] = &[
+    [("/System/Library/Fonts/HelveticaNeue.ttc", 0), ("/System/Library/Fonts/HelveticaNeue.ttc", 1), ("/System/Library/Fonts/HelveticaNeue.ttc", 2), ("/System/Library/Fonts/HelveticaNeue.ttc", 3)],
+    [("C:\\Windows\\Fonts\\segoeui.ttf", 0), ("C:\\Windows\\Fonts\\segoeuib.ttf", 0), ("C:\\Windows\\Fonts\\segoeuii.ttf", 0), ("C:\\Windows\\Fonts\\segoeuiz.ttf", 0)],
+    [("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", 0), ("/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", 0), ("/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf", 0), ("/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf", 0)],
+    [("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0), ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0), ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf", 0), ("/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf", 0)],
+    [("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", 0), ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf", 0), ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Oblique.ttf", 0), ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-BoldOblique.ttf", 0)],
+];
+
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let faces: [(&str, &'static [u8]); 4] = [
@@ -62,6 +72,34 @@ fn install_fonts(ctx: &egui::Context) {
         let mut chain = vec![name.to_owned()];
         chain.extend(fallbacks.iter().cloned());
         fonts.families.insert(FontFamily::Name(name.into()), chain);
+    }
+    // The notes' text: the system's sans serif, with real bold and italics (JetBrains Mono's faces
+    // when it has none of these).
+    let note_faces = ["note", "note-bold", "note-italic", "note-bold-italic"];
+    if let Some(set) = NOTE_FONTS.iter().find(|set| set.iter().all(|(path, _)| std::path::Path::new(path).is_file())) {
+        let mut read: Vec<(&str, &'static [u8])> = Vec::new();
+        for (name, (path, index)) in note_faces.iter().zip(set) {
+            let bytes = match read.iter().find(|(p, _)| p == path) {
+                Some((_, b)) => *b,
+                None => {
+                    let Ok(bytes) = std::fs::read(path) else { continue };
+                    // Read once for the faces it holds, and kept for the whole run.
+                    let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+                    read.push((path, bytes));
+                    bytes
+                }
+            };
+            let mut data = FontData::from_static(bytes);
+            data.index = *index;
+            fonts.font_data.insert((*name).to_owned(), Arc::new(data));
+            let mut chain = vec![(*name).to_owned()];
+            chain.extend(fallbacks.iter().cloned());
+            fonts.families.insert(FontFamily::Name((*name).into()), chain);
+        }
+    }
+    for (name, mono) in note_faces.iter().zip(["mono", "mono-bold", "mono-italic", "mono-bold-italic"]) {
+        let chain = fonts.families[&FontFamily::Name(mono.into())].clone();
+        fonts.families.entry(FontFamily::Name((*name).into())).or_insert(chain);
     }
     // The sidebar logo.
     fonts.font_data.insert("metal".to_owned(), Arc::new(FontData::from_static(include_bytes!("../assets/fonts/MetalMania-Regular.ttf"))));

@@ -300,7 +300,8 @@ impl Editor {
         ui.painter().rect_filled(head, 0.0, theme.chrome_bg);
         ui.painter().hline(head.x_range(), head.max.y, Stroke::new(1.0, theme.tab_hover));
         ui.scope_builder(egui::UiBuilder::new().max_rect(head.shrink2(Vec2::new(10.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.label(egui::RichText::new("✎").size(15.0).color(theme.accent));
+            let (icon, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+            super::paint_pencil(ui.painter(), icon.center(), theme.accent);
             ui.label(egui::RichText::new(&self.name).size(14.0).strong());
             if self.dirty {
                 ui.label(egui::RichText::new("●").size(11.0).color(theme.accent)).on_hover_text(t.editor_unsaved);
