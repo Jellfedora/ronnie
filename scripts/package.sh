@@ -54,8 +54,10 @@ Darwin)
     cp target/aarch64-apple-darwin/release/ronnie "$app/Contents/MacOS/ronnie"
     cp assets/icon/Ronnie.icns "$app/Contents/Resources/"
     sed "s/{{VERSION}}/$version/g" packaging/macos/Info.plist >"$app/Contents/Info.plist"
-    # Ad-hoc signature: required for arm64 code to run at all (no Apple Developer ID).
-    codesign --force --deep --sign - "$app"
+    # Signed with Ronnie's own (self-signed) certificate when RONNIE_SIGN_IDENTITY names it: the
+    # permissions macOS gives (Accessibility, Keychain) then survive updates, while an ad-hoc signature
+    # (the fallback, enough for arm64 code to run) changes with every build. No Apple Developer ID.
+    codesign --force --deep --sign "${RONNIE_SIGN_IDENTITY:--}" "$app"
     tar -C dist/stage -czf dist/ronnie-aarch64-apple-darwin.tar.gz Ronnie.app
     # The same app under the name versions up to 0.9.0 download, so that they can still update.
     cp dist/ronnie-aarch64-apple-darwin.tar.gz dist/ronnie-universal-apple-darwin.tar.gz
