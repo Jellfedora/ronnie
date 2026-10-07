@@ -64,12 +64,12 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTime", "AVAudioTypes"] }
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFErrors", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognitionTaskHint", "SFSpeechRecognizer", "SFTranscription"] }
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "block2"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNUserNotificationCenter", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "block2"] }
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62", features = ["Foundation", "Globalization", "Media", "Media_SpeechRecognition", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "Globalization", "Media", "Media_SpeechRecognition", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "UI_Notifications"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "chrono", "sql-browser-tokio"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target."cfg(windows)".build-dependencies]
 winresource = "0.1"

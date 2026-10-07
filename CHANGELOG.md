@@ -2,6 +2,13 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.21.0] - 2026-10-07
+
+### Corrections
+
+- Les **notifications système** s'affichent enfin sur Windows (fin d'une commande longue, bouton « Tester »).
+- Sur macOS, la notification système s'affiche aussi quand Ronnie est au premier plan (bouton « Tester », commande finie dans un autre onglet).
+
 ## [0.20.1] - 2026-10-06
 
 ### Corrections
