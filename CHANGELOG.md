@@ -7,6 +7,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 ### Nouveautés
 
 - **Prévenu quand Claude a fini** : quand Claude Code termine sa tâche ou attend ta réponse dans un pane qui n'est pas à l'écran (autre onglet, jeu, notes, Ronnie au second plan), tu reçois une notification, et l'onglet a un ✓. Ronnie ajoute pour ça des hooks à Claude Code, à côté des tiens ; l'option est dans Réglages → Claude Code.
+- **Pause dans Ronnie.io** : quitter la page du jeu en pleine partie la met en pause (ou P). Ta bulle est protégée : elle ne bouge plus, ne mange rien et personne ne peut la manger. Elle t'attend 30 minutes, connecté ou non : reviens et clique sur « Reprendre ». Au-delà, tu sors de la partie et ta masse compte au classement.
 
 ### Corrections
 

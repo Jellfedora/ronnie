@@ -19,6 +19,8 @@ use crate::config::FloorAccount;
 pub const FX_SPEED: u8 = 1;
 pub const FX_MAGNET: u8 = 2;
 pub const FX_SHIELD: u8 = 4;
+/// The player put the game on pause: protected, still.
+pub const FX_PAUSED: u8 = 8;
 /// The pellets' color during the golden rain.
 pub const GOLD: u8 = 99;
 /// floor's delay is measured this often.
@@ -96,6 +98,8 @@ pub struct Death {
     pub time: u32,
     /// The player's best on floor's board.
     pub record: bool,
+    /// Not eaten: the pause lasted too long.
+    pub expired: bool,
 }
 
 /// A line of the kill feed: who ate whom.
@@ -172,7 +176,15 @@ enum Wire {
     #[serde(rename = "records")]
     Records { l: Vec<(String, u32, bool)>, me: Option<(u32, u32)>, skins: Vec<Skin> },
     #[serde(rename = "dead")]
-    Dead { by: String, best: u32, kills: u32, time: u32, record: bool },
+    Dead {
+        by: String,
+        best: u32,
+        kills: u32,
+        time: u32,
+        record: bool,
+        #[serde(default)]
+        expired: bool,
+    },
     #[serde(rename = "kill")]
     Kill { by: (String, u32), victim: (String, u32), special: Option<String> },
     #[serde(rename = "event")]
@@ -281,6 +293,29 @@ impl Online {
             self.leave();
             *self = Online::default();
         }
+    }
+
+    /// The page left during a game: on pause (floor keeps the cells 30 min, protected), and closed.
+    /// Coming back connects again and finds them.
+    pub fn suspend(&mut self) {
+        if self.alive() && !self.paused() {
+            self.pause();
+        }
+        // The pause goes before the connection closes (the thread sends what is queued first).
+        *self = Online::default();
+    }
+
+    pub fn pause(&self) {
+        self.send(json!({ "t": "pause" }));
+    }
+
+    pub fn resume(&self) {
+        self.send(json!({ "t": "resume" }));
+    }
+
+    /// The player's game is on pause.
+    pub fn paused(&self) -> bool {
+        self.frame.as_ref().is_some_and(|f| f.me.is_some_and(|me| f.cells.iter().any(|c| c.owner == me && c.fx & FX_PAUSED != 0)))
     }
 
     fn send(&self, msg: serde_json::Value) {
@@ -413,8 +448,8 @@ impl Online {
                 }
                 self.skins = skins;
             }
-            Wire::Dead { by, best, kills, time, record } => {
-                let death = Death { by, best, kills, time, record };
+            Wire::Dead { by, best, kills, time, record, expired } => {
+                let death = Death { by, best, kills, time, record, expired };
                 news.death = Some(death.clone());
                 self.death = Some(death);
             }

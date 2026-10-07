@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use super::motion::{out_back, out_cubic};
 use super::*;
-use crate::blob::{FX_MAGNET, FX_SHIELD, FX_SPEED, GOLD};
+use crate::blob::{FX_MAGNET, FX_PAUSED, FX_SHIELD, FX_SPEED, GOLD};
 
 /// A cell as drawn.
 #[derive(Clone, Copy)]
@@ -160,12 +160,16 @@ impl App {
         self.home_which = super::four::HomeGame::Blob;
     }
 
-    /// At each frame: the page out of sight for a moment, the connection closes (floor takes the player
-    /// out of the world); an invitation to Ronnie.io accepted by the other, to the game.
+    /// At each frame: the page out of sight for a moment, the connection closes (a game under way goes
+    /// on pause, floor keeps it 30 min; otherwise floor takes the player out); an invitation to Ronnie.io accepted by the other, to the game.
     pub(super) fn blob_frame(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         if self.blob.online.connected() && now - self.blob.seen > 0.5 {
-            self.blob.online.disconnect();
+            if self.blob.online.alive() {
+                self.blob.online.suspend();
+            } else {
+                self.blob.online.disconnect();
+            }
             self.blob.shown.clear();
             self.blob.cam = None;
         }
@@ -240,9 +244,15 @@ impl App {
         self.blob_leaders(ui, rect, &theme, t);
         self.blob_feed(ui, rect, alive, &theme, t);
         self.blob_banner(ui, rect, now, &theme, t);
-        if alive {
+        let paused = self.blob.online.paused();
+        if alive && !paused {
             self.blob_controls(ui, rect, now, aspect);
+        }
+        if alive {
             self.blob_hud(ui, rect, now, &theme, t);
+        }
+        if paused {
+            self.blob_paused(ui, rect, &theme, t);
         }
 
         let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
@@ -269,7 +279,12 @@ impl App {
                 self.blob.aimed = Some((now, world));
             }
         }
-        let (split, eject, quit) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, egui::Key::Space), i.key_pressed(egui::Key::W), i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)));
+        let (split, eject, quit, pause) = ui.input_mut(|i| {
+            (i.consume_key(egui::Modifiers::NONE, egui::Key::Space), i.key_pressed(egui::Key::W), i.consume_key(egui::Modifiers::NONE, egui::Key::Escape), i.consume_key(egui::Modifiers::NONE, egui::Key::P))
+        });
+        if pause {
+            self.blob.online.pause();
+        }
         if split {
             self.blob.online.split();
         }
@@ -280,6 +295,27 @@ impl App {
             self.blob.online.leave();
         }
         ui.interact(rect, ui.id().with("blob-world"), Sense::hover()).on_hover_cursor(egui::CursorIcon::Crosshair);
+    }
+
+    /// The game on pause: what it means, and "Resume" (Enter, P).
+    fn blob_paused(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings) {
+        let width = 380.0_f32.min(rect.width() - 32.0);
+        let card = Rect::from_center_size(rect.center(), Vec2::new(width, 190.0));
+        let painter = ui.painter().clone();
+        painter.rect_filled(card.translate(Vec2::new(0.0, 6.0)), 16.0, Color32::from_black_alpha(60));
+        painter.rect_filled(card, 16.0, theme.chrome_bg.gamma_multiply(0.94));
+        painter.rect_stroke(card, 16.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.4)), egui::StrokeKind::Inside);
+        let mid = card.center().x;
+        paint_metal(&painter, Pos2::new(mid, card.min.y + 40.0), Align2::CENTER_CENTER, t.blob_paused, 30.0, theme.accent, 1.0);
+        let body = painter.layout(t.blob_paused_body.to_owned(), FontId::proportional(13.0), theme.text, width - 48.0);
+        painter.galley(Pos2::new(mid - body.size().x / 2.0, card.min.y + 70.0), body, theme.text);
+        let button = Rect::from_center_size(Pos2::new(mid, card.max.y - 34.0), Vec2::new(170.0, 36.0));
+        let resume = egui::Button::new(egui::RichText::new(t.blob_resume).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
+        let key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || i.consume_key(egui::Modifiers::NONE, egui::Key::P));
+        if ui.put(button, resume).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || key {
+            self.blob.online.resume();
+            self.blob.aimed = None;
+        }
     }
 
     /// The world around the camera: its grid, the pellets, the bonuses, the cells (the smaller under,
@@ -413,7 +449,8 @@ impl App {
                 continue;
             }
             let (name, k, skin) = blob.online.names.get(&cell.owner).map_or(("", 0, "plain"), |(n, k, s)| (n.as_str(), *k, s.as_str()));
-            let color = cell_color(theme, k, skin);
+            // On pause: faded, out of the game for now.
+            let color = cell_color(theme, k, skin).gamma_multiply(if cell.fx & FX_PAUSED != 0 { 0.4 } else { 1.0 });
             if cell.fx & FX_MAGNET != 0 {
                 let pull = (s.radius + 120.0 + s.radius * 0.3) * scale;
                 paint_ring(&painter, at, pull, theme.ansi[4].gamma_multiply(0.35), now);
@@ -664,7 +701,8 @@ impl App {
         let mut y = card.min.y + 44.0;
         match &death {
             Some(d) => {
-                paint_metal(painter, Pos2::new(mid, y), Align2::CENTER_CENTER, &t.blob_eaten.replace("{n}", &d.by), 30.0, if d.by == "Ronnie" { PINK } else { theme.accent }, pop);
+                let title = if d.expired { t.blob_expired.to_owned() } else { t.blob_eaten.replace("{n}", &d.by) };
+                paint_metal(painter, Pos2::new(mid, y), Align2::CENTER_CENTER, &title, 30.0, if d.by == "Ronnie" { PINK } else { theme.accent }, pop);
                 y += 44.0;
                 let stats = t.blob_stats.replace("{m}", &d.best.to_string()).replace("{t}", &duration(d.time)).replace("{k}", &d.kills.to_string());
                 painter.text(Pos2::new(mid, y), Align2::CENTER_CENTER, stats, FontId::proportional(14.0), theme.text);
