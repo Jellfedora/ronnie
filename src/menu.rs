@@ -72,6 +72,9 @@ impl MenuBar {
         .ok()?;
         let menu = Menu::with_items(&[&app_menu, &window_menu]).ok()?;
         menu.init_for_nsapp();
+        // The system adds its own items to it (move to another screen, fill, tile, the open windows): what
+        // brings back a window left on a screen unplugged since.
+        window_menu.set_as_windows_menu_for_nsapp();
 
         let (tx, events) = mpsc::channel();
         let ctx = ctx.clone();
