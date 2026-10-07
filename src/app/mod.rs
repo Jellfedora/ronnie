@@ -3449,7 +3449,6 @@ impl App {
                 term.set_visible(i == self.active && self.home.is_none() && !self.notes_page && !tab.show_files);
             }
         }
-        self.finished_commands(ui.ctx());
 
         // Panes whose shell has exited close by themselves. SSH panes stay, to show why the connection ended.
         let exited: Vec<(PaneId, usize)> = self
@@ -4368,6 +4367,12 @@ fn paint_metal_pointer(ctx: &egui::Context, theme: &Theme) {
 }
 
 impl eframe::App for App {
+    // Also called while the window is minimized or hidden, when `ui` isn't: that's when commands done and
+    // Claude done are worth telling.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.finished_commands(ctx);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         // Debug builds don't look for updates (they would replace themselves with a release), unless asked.
         // Only published builds update themselves: a local build would replace itself with the release.
