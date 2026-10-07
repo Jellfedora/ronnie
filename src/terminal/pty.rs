@@ -17,7 +17,8 @@ pub struct LocalPty {
 impl LocalPty {
     /// Spawns `launch` (the user's default shell if none) in `cwd` (home if unset). The shell keeps its
     /// command history in `history`. Returns the backend and a reader for its output.
-    pub fn spawn(cols: u16, rows: u16, cwd: Option<&Path>, launch: Option<&Launch>, history: Option<&Path>) -> Result<(Self, Box<dyn Read + Send>)> {
+    /// `env`: variables of Ronnie's own (see `claude::pane_env`).
+    pub fn spawn(cols: u16, rows: u16, cwd: Option<&Path>, launch: Option<&Launch>, history: Option<&Path>, env: &[(&str, String)]) -> Result<(Self, Box<dyn Read + Send>)> {
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .context("opening the PTY")?;
@@ -42,6 +43,9 @@ impl LocalPty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "ronnie");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
         let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
         if let Some(dir) = cwd.filter(|d| d.is_dir()).map(Path::to_path_buf).or(home) {
             cmd.cwd(dir);
@@ -260,7 +264,7 @@ mod tests {
     #[test]
     fn closing_ends_what_runs_in_the_pane() {
         let launch = crate::ssh::Launch { program: "/bin/sh".into(), args: vec!["-c".into(), "trap '' HUP; sleep 1000 & sleep 1001".into()], env: Vec::new() };
-        let (pty, mut reader) = super::LocalPty::spawn(80, 24, None, Some(&launch), None).unwrap();
+        let (pty, mut reader) = super::LocalPty::spawn(80, 24, None, Some(&launch), None, &[]).unwrap();
         std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
         let shell = super::Backend::pid(&pty).unwrap() as libc::pid_t;
         // The shell and its two sleeps.
@@ -281,7 +285,7 @@ mod tests {
     #[test]
     fn sees_foreground_program() {
         use super::super::Backend;
-        let (mut pty, mut reader) = super::LocalPty::spawn(80, 24, None, None, None).unwrap();
+        let (mut pty, mut reader) = super::LocalPty::spawn(80, 24, None, None, None, &[]).unwrap();
         // Drain the output so the shell never blocks on a full pipe.
         std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
         // Polls instead of fixed pauses: a loaded machine (CI) may take a while to start things.

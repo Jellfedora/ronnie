@@ -1342,6 +1342,18 @@ impl App {
             setting_row(ui, theme, t.claude_show_row, Some(t.claude_show_desc), |ui| {
                 toggle(ui, theme, &mut picked.claude_usage);
             });
+            divider(ui, theme);
+            setting_row(ui, theme, t.claude_notify_row, Some(t.claude_notify_desc), |ui| {
+                let was = picked.claude_notify;
+                toggle(ui, theme, &mut picked.claude_notify);
+                if picked.claude_notify != was {
+                    let done = if picked.claude_notify { crate::claude::connect_hooks() } else { crate::claude::disconnect_hooks() };
+                    if done.is_err() {
+                        picked.claude_notify = was;
+                    }
+                    self.claude_error = done.err();
+                }
+            });
         });
         card(ui, theme, Some(t.set_notifications), |ui| {
             setting_row(ui, theme, t.notify_commands, Some(t.notify_commands_hint), |ui| {

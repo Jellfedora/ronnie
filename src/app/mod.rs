@@ -361,6 +361,8 @@ pub struct App {
     claude: ClaudeUsage,
     /// Why setting up Claude's usage failed.
     claude_error: Option<String>,
+    /// What Claude Code's hooks told (see `claude::watch_events`), until the window of its pane takes it.
+    claude_events: std::sync::Arc<std::sync::Mutex<Vec<(crate::claude::Event, Instant)>>>,
     /// The music server's form in the settings, while they are open.
     subsonic_form: Option<SubsonicForm>,
     /// The radio, and its volume changed since the config was last saved.
@@ -1044,6 +1046,7 @@ impl App {
             db_editor: None,
             claude: ClaudeUsage::default(),
             claude_error: None,
+            claude_events: Default::default(),
             subsonic_form: None,
             music: music::Music::default(),
             music_volume_changed: false,
@@ -1203,6 +1206,12 @@ impl App {
                 crate::log::error(&format!("claude: {e}"));
             }
         }
+        if config::OFFICIAL && app.config.settings.claude_notify && !app.read_only {
+            if let Err(e) = crate::claude::ensure_hooks() {
+                crate::log::error(&format!("claude: {e}"));
+            }
+        }
+        crate::claude::watch_events(app.ctx.clone(), app.claude_events.clone());
         // Development: open the settings on a page right away (to look at them).
         if cfg!(debug_assertions) {
             if std::env::var_os("RONNIE_DEMO_TOAST").is_some() {
@@ -1830,12 +1839,65 @@ impl App {
                 notified = true;
             }
         }
+        if self.claude_events(ctx) {
+            notified = true;
+        }
         if notified {
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
         if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.show_files) {
             tab.done = None;
         }
+    }
+
+    /// Claude done, or waiting for the user, in a pane of this window: told unless that pane is on
+    /// screen in the window in front, like a long command. Whether the system's notification was sent.
+    fn claude_events(&mut self, ctx: &egui::Context) -> bool {
+        let mine: Vec<(crate::claude::Event, usize)> = {
+            let Ok(mut queue) = self.claude_events.lock() else { return false };
+            // A pane closed meanwhile, or in no window: forgotten after a while.
+            queue.retain(|(_, at)| at.elapsed() < Duration::from_secs(30));
+            let mut mine = Vec::new();
+            queue.retain(|(event, _)| {
+                let tab = self.tabs.iter().position(|t| t.panes.values().any(|p| p.token() == Some(event.pane.as_str())));
+                tab.map(|i| mine.push((event.clone(), i))).is_none()
+            });
+            mine
+        };
+        if !self.config.settings.claude_notify {
+            return false;
+        }
+        let t = self.t();
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page;
+        let mut notified = false;
+        for (event, i) in mine {
+            let shown = tab_shown(self, i);
+            let tab = &mut self.tabs[i];
+            let Some((&pane, _)) = tab.panes.iter().find(|(_, p)| p.token() == Some(event.pane.as_str())) else { continue };
+            // In front of the user: nothing to tell.
+            let on_screen = shown && !tab.show_files && !tab.show_db && !tab.git.contains_key(&pane);
+            if on_screen && focused {
+                continue;
+            }
+            let title = if event.waiting { t.claude_waiting } else { t.claude_done };
+            if !shown {
+                tab.done = Some(Done { ok: true, summary: format!("{} {title}", if event.waiting { "…" } else { "✓" }) });
+            }
+            let body = match &event.message {
+                Some(message) => format!("{message}\n{}", tab.title()),
+                None => tab.title().to_owned(),
+            };
+            let style = self.config.settings.notify_style;
+            if focused && style.in_app() {
+                self.toasts.push(Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now() });
+            }
+            if !focused || style.system() {
+                crate::notify::send(title, &body);
+                notified |= !focused;
+            }
+        }
+        notified
     }
 
     /// A sample notice, as the settings' "Test" button shows it (in the window, from the system, or both).

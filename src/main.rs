@@ -193,6 +193,11 @@ fn main() -> eframe::Result {
         claude::run_statusline();
         return Ok(());
     }
+    // Claude Code's hooks: Claude is done, or waits for the user.
+    if std::env::args().nth(1).as_deref() == Some("claude-hook") {
+        claude::run_hook();
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     update::integrate_appimage();
     log::info(&format!("start {}{}", update::VERSION, if config::OFFICIAL { "" } else { " dev" }));

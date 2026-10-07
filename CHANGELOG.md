@@ -4,6 +4,10 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [0.21.0] - 2026-10-07
 
+### Nouveautés
+
+- **Prévenu quand Claude a fini** : quand Claude Code termine sa tâche ou attend ta réponse dans un pane qui n'est pas à l'écran (autre onglet, jeu, notes, Ronnie au second plan), tu reçois une notification, et l'onglet a un ✓. Ronnie ajoute pour ça des hooks à Claude Code, à côté des tiens ; l'option est dans Réglages → Claude Code.
+
 ### Corrections
 
 - Les **notifications système** s'affichent enfin sur Windows (fin d'une commande longue, bouton « Tester »).

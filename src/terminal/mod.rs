@@ -185,6 +185,8 @@ pub struct Terminal {
     flash: Option<(Color32, Instant)>,
     /// A shell on this machine (not ssh): the directory it reports is a local one.
     local_shell: bool,
+    /// Its RONNIE_PANE: Claude Code's hooks name the pane with it (see `claude::Event`).
+    token: Option<String>,
 }
 
 impl Terminal {
@@ -193,9 +195,12 @@ impl Terminal {
     /// `restore`: what the terminal showed last time (see `dump`), shown again before the program starts.
     pub fn local(ctx: &egui::Context, cwd: Option<&Path>, launch: Option<&crate::ssh::Launch>, history: Option<&Path>, restore: Option<&[u8]>) -> Result<Self> {
         let size = GridSize { cols: 80, rows: 24 };
-        let (backend, reader) = pty::LocalPty::spawn(size.cols as u16, size.rows as u16, cwd, launch, history)?;
+        let token = uuid::Uuid::new_v4().to_string();
+        let env = crate::claude::pane_env(&token);
+        let (backend, reader) = pty::LocalPty::spawn(size.cols as u16, size.rows as u16, cwd, launch, history, &env)?;
         let mut term = Self::start(ctx, Box::new(backend), reader, size, restore);
         term.local_shell = launch.is_none();
+        term.token = Some(token);
         Ok(term)
     }
 
@@ -288,6 +293,7 @@ impl Terminal {
             cwd_cache: None,
             flash: None,
             local_shell: false,
+            token: None,
         }
     }
 
@@ -702,6 +708,11 @@ impl Terminal {
     }
 
     /// Makes the pane's edges flash in `color` (see `flash_level`).
+    /// Claude Code's hooks name this pane with it (local panes only).
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     pub fn flash(&mut self, color: Color32) {
         self.flash = Some((color, Instant::now()));
     }
