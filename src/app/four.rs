@@ -60,11 +60,13 @@ pub(super) struct Four {
     clearing: Option<(Board, f64)>,
     /// The online grid last drawn: it empties when a rematch starts.
     online_board: Option<Board>,
+    /// The chat with the other player, beside the grid.
+    chat: super::chat::Chat,
 }
 
 impl Default for Four {
     fn default() -> Self {
-        Self { mode: Mode::Lobby, level: Level::Medium, you_start: true, thinking: None, falling: None, seen: None, followed: None, board_at: None, clearing: None, online_board: None }
+        Self { mode: Mode::Lobby, level: Level::Medium, you_start: true, thinking: None, falling: None, seen: None, followed: None, board_at: None, clearing: None, online_board: None, chat: Default::default() }
     }
 }
 
@@ -514,7 +516,15 @@ impl App {
         let cleared = self.four.clearing.as_ref().is_none_or(|(_, at)| now - at > CLEAR);
         let can_play = cleared && !game.over && game.turn == game.you;
         let turn = (!game.over).then_some(game.turn);
+        // The chat on the right, the game in what's left.
+        let chat_w = (body.width() * 0.3).clamp(200.0, 300.0);
+        let chat_area = Rect::from_min_max(Pos2::new(body.max.x - chat_w, body.min.y + 64.0), Pos2::new(body.max.x, body.max.y - 16.0));
+        let body = Rect::from_min_max(body.min, Pos2::new(chat_area.min.x - 16.0, body.max.y));
         let board_area = game_header(ui, body, &status, color, &names, turn, game.over, &theme);
+        let lines: Vec<super::chat::Line> = game.chat.iter().map(|(from, text, mine)| super::chat::Line { from: from.as_deref().unwrap_or(t.game_anonymous), text, mine: *mine, age: None }).collect();
+        if let Some(text) = self.four.chat.ui(ui, chat_area, &lines, true, true, "four", &theme, t) {
+            self.versus.say(&text);
+        }
         let line: Option<Vec<(usize, usize)>> = game.line.as_ref().map(|l| l.iter().map(|&[c, r]| (c, r)).collect());
         let view = BoardView {
             board: &board,
@@ -527,7 +537,8 @@ impl App {
         };
         let mut clicked = board_ui(ui, board_area, view, now, &theme);
         self.four.online_board = Some(board.clone());
-        if can_play {
+        // Keys 1 to 7, unless they're typed in the chat.
+        if can_play && !self.four.chat.typing {
             clicked = clicked.or_else(|| column_key(ui));
         }
         if let Some(c) = clicked.filter(|&c| can_play && board.can_play(c)) {

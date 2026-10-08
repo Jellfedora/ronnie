@@ -1,5 +1,5 @@
 //! Ronnie.io, in the games: the world floor runs for everyone (see blob.rs), drawn around the player.
-//! The pointer steers, Space splits, W ejects some mass; watching between two lives, with the skin
+//! The pointer steers, Space splits, W ejects some mass, E lays a mine; watching between two lives, with the skin
 //! picked and the players online to invite.
 //!
 //! floor's frames come 20 times a second, a little late: the player's own cells are drawn where they
@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use super::motion::{out_back, out_cubic};
 use super::*;
-use crate::blob::{FX_MAGNET, FX_PAUSED, FX_SHIELD, FX_SPEED, GOLD};
+use crate::blob::{FX_BOUNTY, FX_GHOST, FX_MAGNET, FX_PAUSED, FX_SHIELD, FX_SPEED, GOLD};
 
 /// A cell as drawn.
 #[derive(Clone, Copy)]
@@ -44,6 +44,8 @@ pub(super) struct Blob {
     sound: Option<Sound>,
     /// The invitation (sent) already followed to the game.
     followed: Option<String>,
+    /// The chat, with two players or more connected.
+    chat: super::chat::Chat,
 }
 
 /// A cell's radius, from its mass (as floor's).
@@ -65,6 +67,7 @@ fn hue(theme: &Theme, k: u8) -> Color32 {
 const PINK: Color32 = Color32::from_rgb(255, 105, 180);
 const GOLDEN: Color32 = Color32::from_rgb(255, 200, 40);
 const BOSS: Color32 = Color32::from_rgb(150, 20, 30);
+const HOLE: Color32 = Color32::from_rgb(150, 90, 230);
 
 /// A cell's color: its player's, or its skin's own.
 fn cell_color(theme: &Theme, k: u8, skin: &str) -> Color32 {
@@ -101,8 +104,26 @@ fn bonus_name(t: &Strings, kind: &str) -> &'static str {
     match kind {
         "speed" => t.blob_fx_speed,
         "magnet" => t.blob_fx_magnet,
+        "ghost" => t.blob_fx_ghost,
+        "mine" => t.blob_fx_mine,
         _ => t.blob_fx_shield,
     }
+}
+
+/// A bonus's number on the wire, from its name.
+fn bonus_kind(kind: &str) -> u8 {
+    match kind {
+        "speed" => 0,
+        "magnet" => 1,
+        "ghost" => 3,
+        "mine" => 4,
+        _ => 2,
+    }
+}
+
+/// Who ate: a player's name, or the black hole.
+fn eater<'a>(t: &Strings, by: &'a str) -> &'a str {
+    if by == "hole" { t.blob_hole_name } else { by }
 }
 
 /// The game's little sounds, made on the spot: a gulp (the player ate someone), a rising chime (a bonus),
@@ -245,14 +266,19 @@ impl App {
         self.blob_feed(ui, rect, alive, &theme, t);
         self.blob_banner(ui, rect, now, &theme, t);
         let paused = self.blob.online.paused();
+        // The chat: with someone else connected (or once something was said).
+        let chat = self.blob.online.board.as_ref().is_some_and(|b| b.online >= 2) || !self.blob.online.chat.is_empty();
         if alive && !paused {
-            self.blob_controls(ui, rect, now, aspect);
+            self.blob_controls(ui, rect, now, aspect, chat);
         }
         if alive {
             self.blob_hud(ui, rect, now, &theme, t);
         }
         if paused {
             self.blob_paused(ui, rect, &theme, t);
+        }
+        if chat {
+            self.blob_chat(ui, rect, alive, &theme, t);
         }
 
         let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
@@ -265,8 +291,24 @@ impl App {
         }
     }
 
-    /// The pointer (where the cells go), Space, W, Escape.
-    fn blob_controls(&mut self, ui: &mut Ui, rect: Rect, now: f64, aspect: f32) {
+    /// The messages top left; the field while watching, or opened by Enter while playing (it closes
+    /// once sent, back to the game).
+    fn blob_chat(&mut self, ui: &mut Ui, rect: Rect, alive: bool, theme: &Theme, t: &Strings) {
+        let area = Rect::from_min_size(Pos2::new(rect.min.x + 14.0, rect.min.y + 56.0), Vec2::new((rect.width() * 0.4).clamp(220.0, 340.0), 210.0));
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
+        let lines: Vec<super::chat::Line> = self.blob.online.chat.iter().map(|s| super::chat::Line { from: &s.from, text: &s.text, mine: pseudo == Some(s.from.as_str()), age: Some(s.at.elapsed().as_secs_f32()) }).collect();
+        let sent = self.blob.chat.ui(ui, area, &lines, !alive, !alive, "blob", theme, t);
+        if let Some(text) = sent {
+            self.blob.online.say(&text);
+        }
+        if alive && !self.blob.chat.typing {
+            ui.painter().text(Pos2::new(area.min.x + 2.0, area.max.y + 10.0), Align2::LEFT_CENTER, t.chat_open, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.7));
+        }
+    }
+
+    /// The pointer (where the cells go), Space, W, E, P and Escape (pause), Enter (the chat, `chat`:
+    /// when there is one). Not while typing in the chat.
+    fn blob_controls(&mut self, ui: &mut Ui, rect: Rect, now: f64, aspect: f32, chat: bool) {
         let Some((cam, height)) = self.blob.cam else { return };
         let scale = rect.height() / height;
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p)) {
@@ -279,9 +321,23 @@ impl App {
                 self.blob.aimed = Some((now, world));
             }
         }
-        let (split, eject, quit, pause) = ui.input_mut(|i| {
-            (i.consume_key(egui::Modifiers::NONE, egui::Key::Space), i.key_pressed(egui::Key::W), i.consume_key(egui::Modifiers::NONE, egui::Key::Escape), i.consume_key(egui::Modifiers::NONE, egui::Key::P))
+        if self.blob.chat.typing {
+            return;
+        }
+        if chat && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            self.blob.chat.open();
+        }
+        let (split, eject, pause, mine) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Space),
+                i.key_pressed(egui::Key::W),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) | i.consume_key(egui::Modifiers::NONE, egui::Key::P),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::E),
+            )
         });
+        if mine {
+            self.blob.online.mine();
+        }
         if pause {
             self.blob.online.pause();
         }
@@ -291,13 +347,10 @@ impl App {
         if eject {
             self.blob.online.eject();
         }
-        if quit {
-            self.blob.online.leave();
-        }
         ui.interact(rect, ui.id().with("blob-world"), Sense::hover()).on_hover_cursor(egui::CursorIcon::Crosshair);
     }
 
-    /// The game on pause: what it means, and "Resume" (Enter, P).
+    /// The game on pause: what it means, "Resume" (Enter, P, Escape), and leave the game (the mass counts).
     fn blob_paused(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings) {
         let width = 380.0_f32.min(rect.width() - 32.0);
         let card = Rect::from_center_size(rect.center(), Vec2::new(width, 190.0));
@@ -309,12 +362,20 @@ impl App {
         paint_metal(&painter, Pos2::new(mid, card.min.y + 40.0), Align2::CENTER_CENTER, t.blob_paused, 30.0, theme.accent, 1.0);
         let body = painter.layout(t.blob_paused_body.to_owned(), FontId::proportional(13.0), theme.text, width - 48.0);
         painter.galley(Pos2::new(mid - body.size().x / 2.0, card.min.y + 70.0), body, theme.text);
-        let button = Rect::from_center_size(Pos2::new(mid, card.max.y - 34.0), Vec2::new(170.0, 36.0));
+        let y = card.max.y - 34.0;
+        let w = ((width - 48.0 - 12.0) / 2.0).min(160.0);
+        let resume_at = Rect::from_center_size(Pos2::new(mid + w / 2.0 + 6.0, y), Vec2::new(w, 36.0));
+        let quit_at = Rect::from_center_size(Pos2::new(mid - w / 2.0 - 6.0, y), Vec2::new(w, 36.0));
         let resume = egui::Button::new(egui::RichText::new(t.blob_resume).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
-        let key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || i.consume_key(egui::Modifiers::NONE, egui::Key::P));
-        if ui.put(button, resume).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || key {
+        let quit = egui::Button::new(egui::RichText::new(t.blob_quit).size(13.0)).corner_radius(8.0);
+        let typing = self.blob.chat.typing;
+        let key = !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) | i.consume_key(egui::Modifiers::NONE, egui::Key::P) | i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if ui.put(resume_at, resume).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || key {
             self.blob.online.resume();
             self.blob.aimed = None;
+        }
+        if ui.put(quit_at, quit).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.blob.online.leave();
         }
     }
 
@@ -437,6 +498,12 @@ impl App {
         for &(x, y, kind) in &frame.bonuses {
             paint_bonus(&painter, to_screen(Pos2::new(x, y)), (18.0 * scale).max(7.0), kind, now, theme);
         }
+        for &(x, y, k) in &frame.mines {
+            paint_mine(&painter, to_screen(Pos2::new(x, y)), (16.0 * scale).max(6.0), hue(theme, k), now, theme);
+        }
+        if let Some((x, y)) = frame.hole {
+            paint_hole(&painter, to_screen(Pos2::new(x, y)), scale, now);
+        }
 
         // The cells, the smaller first; their skins and effects, their names on them, the masses of the
         // player's.
@@ -449,8 +516,9 @@ impl App {
                 continue;
             }
             let (name, k, skin) = blob.online.names.get(&cell.owner).map_or(("", 0, "plain"), |(n, k, s)| (n.as_str(), *k, s.as_str()));
-            // On pause: faded, out of the game for now.
-            let color = cell_color(theme, k, skin).gamma_multiply(if cell.fx & FX_PAUSED != 0 { 0.4 } else { 1.0 });
+            // On pause: faded, out of the game for now; a ghost, see-through.
+            let faded = if cell.fx & FX_PAUSED != 0 { 0.4 } else if cell.fx & FX_GHOST != 0 { 0.5 + 0.1 * ((now * 4.0).sin() as f32) } else { 1.0 };
+            let color = cell_color(theme, k, skin).gamma_multiply(faded);
             if cell.fx & FX_MAGNET != 0 {
                 let pull = (s.radius + 120.0 + s.radius * 0.3) * scale;
                 paint_ring(&painter, at, pull, theme.ansi[4].gamma_multiply(0.35), now);
@@ -468,6 +536,9 @@ impl App {
                 let pulse = 0.6 + 0.4 * ((now * 5.0).sin() as f32);
                 painter.circle_filled(at, r + 6.0, theme.ansi[6].gamma_multiply(0.10));
                 painter.circle_stroke(at, r + 6.0, Stroke::new(2.5, theme.ansi[6].gamma_multiply(0.8 * pulse)));
+            }
+            if cell.fx & FX_BOUNTY != 0 {
+                paint_crosshair(&painter, at, r + 10.0, GOLDEN, now);
             }
             if r > 14.0 && !name.is_empty() {
                 let size = (r * 0.36).clamp(9.0, 42.0);
@@ -491,6 +562,18 @@ impl App {
             if rect.expand(r * 1.2).contains(at) {
                 paint_virus(&painter, at, r, virus, now);
             }
+        }
+
+        // The zone: outside it darkened and red, its edge pulsing.
+        if let Some((x, y, r)) = frame.zone {
+            let at = to_screen(Pos2::new(x, y));
+            let r = r * scale;
+            // A ring wide enough to cover the screen around the circle.
+            let far = rect.size().length() + (at - rect.center()).length();
+            let width = far.max(r) + 10.0;
+            painter.circle_stroke(at, r + width / 2.0, Stroke::new(width, theme.ansi[1].gamma_multiply(0.16)));
+            let pulse = 0.6 + 0.4 * ((now * 4.0).sin() as f32);
+            painter.circle_stroke(at, r, Stroke::new(3.0, theme.ansi[1].gamma_multiply(0.8 * pulse)));
         }
     }
 
@@ -549,6 +632,8 @@ impl App {
             let special = match kill.special.as_deref() {
                 Some("ronnie") => Some(PINK),
                 Some("boss") => Some(theme.ansi[1]),
+                Some("bounty") => Some(GOLDEN),
+                Some("hole") => Some(HOLE),
                 _ => None,
             };
             let name_color = |id: u32| if Some(id) == me { theme.accent } else { theme.text };
@@ -559,7 +644,8 @@ impl App {
             let mut job = egui::text::LayoutJob::default();
             let muted = egui::TextFormat { font_id: font.clone(), color: theme.text_muted.gamma_multiply(alpha), ..Default::default() };
             job.append(before, 0.0, muted.clone());
-            job.append(&kill.by.0, 0.0, egui::TextFormat { font_id: font.clone(), color: name_color(kill.by.1).gamma_multiply(alpha), ..Default::default() });
+            let by_color = if kill.by.0 == "hole" { HOLE } else { name_color(kill.by.1) };
+            job.append(eater(t, &kill.by.0), 0.0, egui::TextFormat { font_id: font.clone(), color: by_color.gamma_multiply(alpha), ..Default::default() });
             job.append(middle, 0.0, muted.clone());
             job.append(&kill.victim.0, 0.0, egui::TextFormat { font_id: font.clone(), color: special.unwrap_or_else(|| name_color(kill.victim.1)).gamma_multiply(alpha), ..Default::default() });
             job.append(after, 0.0, muted);
@@ -587,23 +673,31 @@ impl App {
             return;
         }
         let Some(frame) = &online.frame else { return };
-        // Just started (5 s): big, in the metal letters.
-        if let Some(notice) = online.notices.iter().rev().find(|n| n.on && n.at.elapsed().as_secs_f32() < 5.0) {
+        // Just started (5 s): big, in the metal letters; a bounty, and the player who held on.
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
+        if let Some(notice) = online.notices.iter().rev().find(|n| (n.on || n.held) && n.at.elapsed().as_secs_f32() < 5.0) {
             let (text, color) = match notice.kind.as_str() {
-                "rain" => (t.blob_rain, GOLDEN),
-                "boss" => (t.blob_boss, theme.ansi[1]),
-                _ => (t.blob_ronnie, PINK),
+                "rain" => (t.blob_rain.to_owned(), GOLDEN),
+                "boss" => (t.blob_boss.to_owned(), theme.ansi[1]),
+                "zone" => (t.blob_zone.to_owned(), theme.ansi[1]),
+                "hole" => (t.blob_hole.to_owned(), HOLE),
+                "bounty" if !notice.on => (t.blob_bounty_held.replace("{n}", &notice.name), GOLDEN),
+                "bounty" if pseudo == Some(notice.name.as_str()) => (t.blob_bounty_you.to_owned(), GOLDEN),
+                "bounty" => (t.blob_bounty.replace("{n}", &notice.name), GOLDEN),
+                _ => (t.blob_ronnie.to_owned(), PINK),
             };
             let age = notice.at.elapsed().as_secs_f32();
             let pop = out_back((age / 0.5).min(1.0));
             let alpha = ((5.0 - age) / 0.6).min(1.0);
             let size = 22.0 + 10.0 * pop;
-            paint_metal(&painter, at + Vec2::new(0.0, 30.0), Align2::CENTER_CENTER, text, size, color, alpha);
+            paint_metal(&painter, at + Vec2::new(0.0, 30.0), Align2::CENTER_CENTER, &text, size, color, alpha);
             return;
         }
         if let Some((kind, left)) = &frame.event {
             let (text, color) = match kind.as_str() {
                 "rain" => (t.blob_rain, GOLDEN),
+                "zone" => (t.blob_zone, theme.ansi[1]),
+                "hole" => (t.blob_hole, HOLE),
                 _ => (t.blob_boss, theme.ansi[1]),
             };
             banner(&painter, at, &format!("{text}  {left} s"), color, theme);
@@ -626,19 +720,20 @@ impl App {
         // The effects: a chip each, its time running out.
         if let Some(fx) = frame.fx {
             let mut x = area.min.x;
-            for (k, (kind, total)) in [("speed", 6.0), ("magnet", 8.0), ("shield", 4.0)].into_iter().enumerate() {
-                let left = fx[k];
-                if left <= 0.0 {
-                    continue;
-                }
-                let label = format!("{}  {:.1} s", bonus_name(t, kind), left);
+            let timed = [("speed", 6.0), ("magnet", 8.0), ("shield", 4.0), ("ghost", 7.0)].into_iter().enumerate().filter(|(k, _)| fx[*k] > 0.0);
+            let chips = timed.map(|(k, (kind, total))| (bonus_kind(kind), format!("{}  {:.1} s", bonus_name(t, kind), fx[k]), Some(fx[k] / total)));
+            // The mines carried: how many, no time.
+            let mines = (frame.carried > 0).then(|| (4, format!("{} ×{}  ·  E", t.blob_fx_mine, frame.carried), None));
+            for (kind, label, left) in chips.chain(mines) {
                 let galley = painter.layout_no_wrap(label, FontId::proportional(12.0), theme.text);
                 let chip = Rect::from_min_size(Pos2::new(x, area.min.y - 36.0), Vec2::new(galley.size().x + 40.0, 28.0));
                 painter.rect_filled(chip, 8.0, panel);
-                let bar = Rect::from_min_size(Pos2::new(chip.min.x + 6.0, chip.max.y - 5.0), Vec2::new((chip.width() - 12.0) * (left / total).min(1.0), 2.5));
-                let color = bonus_color(k as u8, theme);
-                painter.rect_filled(bar, 1.0, color);
-                paint_bonus_icon(&painter, Pos2::new(chip.min.x + 16.0, chip.center().y - 1.0), 7.0, k as u8, color);
+                let color = bonus_color(kind, theme);
+                if let Some(left) = left {
+                    let bar = Rect::from_min_size(Pos2::new(chip.min.x + 6.0, chip.max.y - 5.0), Vec2::new((chip.width() - 12.0) * left.min(1.0), 2.5));
+                    painter.rect_filled(bar, 1.0, color);
+                }
+                paint_bonus_icon(&painter, Pos2::new(chip.min.x + 16.0, chip.center().y - 1.0), 7.0, kind, color);
                 painter.galley(Pos2::new(chip.min.x + 30.0, chip.center().y - galley.size().y / 2.0 - 1.0), galley, theme.text);
                 x = chip.max.x + 8.0;
             }
@@ -648,12 +743,7 @@ impl App {
             if age < 1.2 {
                 let pop = out_back((age / 0.35).min(1.0));
                 let alpha = ((1.2 - age) / 0.4).min(1.0);
-                let k = match kind.as_str() {
-                    "speed" => 0,
-                    "magnet" => 1,
-                    _ => 2,
-                };
-                paint_metal(&painter, rect.center() - Vec2::new(0.0, rect.height() * 0.22), Align2::CENTER_CENTER, &format!("{} !", bonus_name(t, kind)), 20.0 + 12.0 * pop, bonus_color(k, theme), alpha);
+                paint_metal(&painter, rect.center() - Vec2::new(0.0, rect.height() * 0.22), Align2::CENTER_CENTER, &format!("{} !", bonus_name(t, kind)), 20.0 + 12.0 * pop, bonus_color(bonus_kind(kind), theme), alpha);
             }
         }
         // The map: where the player is in the world.
@@ -701,7 +791,7 @@ impl App {
         let mut y = card.min.y + 44.0;
         match &death {
             Some(d) => {
-                let title = if d.expired { t.blob_expired.to_owned() } else { t.blob_eaten.replace("{n}", &d.by) };
+                let title = if d.expired { t.blob_expired.to_owned() } else { t.blob_eaten.replace("{n}", eater(t, &d.by)) };
                 paint_metal(painter, Pos2::new(mid, y), Align2::CENTER_CENTER, &title, 30.0, if d.by == "Ronnie" { PINK } else { theme.accent }, pop);
                 y += 44.0;
                 let stats = t.blob_stats.replace("{m}", &d.best.to_string()).replace("{t}", &duration(d.time)).replace("{k}", &d.kills.to_string());
@@ -716,8 +806,21 @@ impl App {
                 y += 44.0;
                 painter.text(Pos2::new(mid, y), Align2::CENTER_CENTER, t.blob_tagline, FontId::proportional(14.0), theme.text);
                 y += 24.0;
-                painter.text(Pos2::new(mid, y), Align2::CENTER_CENTER, t.blob_help, FontId::proportional(12.0), theme.text_muted);
-                y += 22.0;
+                // The keys, cut between two of them when the card is too narrow; each line centered.
+                let font = FontId::proportional(12.0);
+                let fits = |text: &str| painter.layout_no_wrap(text.to_owned(), font.clone(), theme.text_muted).size().x <= width - 40.0;
+                let mut lines: Vec<String> = Vec::new();
+                for key in t.blob_help.split("  ·  ") {
+                    match lines.last_mut() {
+                        Some(line) if fits(&format!("{line}  ·  {key}")) => *line = format!("{line}  ·  {key}"),
+                        _ => lines.push(key.to_owned()),
+                    }
+                }
+                for line in lines {
+                    painter.text(Pos2::new(mid, y), Align2::CENTER_CENTER, line, font.clone(), theme.text_muted);
+                    y += 18.0;
+                }
+                y += 4.0;
                 let best = self.config.settings.blob_best;
                 if best > 0 {
                     painter.text(Pos2::new(mid, y), Align2::CENTER_CENTER, t.blob_best.replace("{n}", &best.to_string()), FontId::proportional(12.0), theme.text_muted);
@@ -747,7 +850,8 @@ impl App {
                 self.blob_skins(ui, Pos2::new(mid, card.max.y - 98.0), pop, theme, t);
                 let label = if death.is_some() { t.four_again } else { t.four_play };
                 let play = egui::Button::new(egui::RichText::new(label).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
-                let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                // Enter sends a message while typing in the chat.
+                let enter = !self.blob.chat.typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
                 // A short pause after a death: the Space pressed to flee doesn't replay at once.
                 let ready = now - self.blob.died_at > 0.6 && status == Status::Ready;
                 if (ui.put(button, play).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || enter) && ready {
@@ -1080,6 +1184,8 @@ fn bonus_color(kind: u8, theme: &Theme) -> Color32 {
     match kind {
         0 => theme.ansi[3],
         1 => theme.ansi[4],
+        3 => theme.ansi[5],
+        4 => theme.ansi[1],
         _ => theme.ansi[6],
     }
 }
@@ -1094,7 +1200,7 @@ fn paint_bonus(painter: &egui::Painter, at: Pos2, r: f32, kind: u8, now: f64, th
     paint_bonus_icon(painter, at, r * 0.55, kind, color);
 }
 
-/// A bonus's icon: two chevrons (speed), a horseshoe magnet, a shield.
+/// A bonus's icon: two chevrons (speed), a horseshoe magnet, a shield, a ghost, a mine.
 fn paint_bonus_icon(painter: &egui::Painter, at: Pos2, s: f32, kind: u8, color: Color32) {
     let stroke = Stroke::new((s * 0.28).max(1.3), color);
     match kind {
@@ -1115,10 +1221,78 @@ fn paint_bonus_icon(painter: &egui::Painter, at: Pos2, s: f32, kind: u8, color: 
                 painter.line_segment([at + Vec2::new(side * s * 0.6, -s * 0.4), at + Vec2::new(side * s * 0.6, -s * 0.65)], Stroke::new(stroke.width, Color32::WHITE));
             }
         }
+        3 => {
+            // A dome on top, three waves at the bottom, two eyes.
+            let mut outline: Vec<Pos2> = (0..=12).map(|k| {
+                let a = std::f32::consts::PI * (1.0 + k as f32 / 12.0);
+                at + Vec2::new(0.0, -s * 0.1) + Vec2::new(a.cos(), a.sin()) * s * 0.6
+            }).collect();
+            for k in 0..=6 {
+                let x = 0.6 - 1.2 * k as f32 / 6.0;
+                let y = if k % 2 == 0 { 0.65 } else { 0.4 };
+                outline.push(at + Vec2::new(x * s, y * s));
+            }
+            outline.push(outline[0]);
+            painter.add(egui::Shape::line(outline, stroke));
+            for side in [-1.0, 1.0] {
+                painter.circle_filled(at + Vec2::new(side * s * 0.22, -s * 0.12), s * 0.11, color);
+            }
+        }
+        4 => {
+            for k in 0..8 {
+                let a = k as f32 / 8.0 * std::f32::consts::TAU;
+                let d = Vec2::new(a.cos(), a.sin());
+                painter.line_segment([at + d * s * 0.3, at + d * s * 0.75], stroke);
+            }
+            painter.circle_filled(at, s * 0.42, color);
+        }
         _ => {
             let shield = vec![at + Vec2::new(-s * 0.6, -s * 0.6), at + Vec2::new(s * 0.6, -s * 0.6), at + Vec2::new(s * 0.6, s * 0.05), at + Vec2::new(0.0, s * 0.7), at + Vec2::new(-s * 0.6, s * 0.05)];
             painter.add(egui::Shape::convex_polygon(shield, color.gamma_multiply(0.35), stroke));
         }
+    }
+}
+
+/// A mine laid: a dark spiked ball, its light blinking in its player's color.
+fn paint_mine(painter: &egui::Painter, at: Pos2, r: f32, color: Color32, now: f64, theme: &Theme) {
+    let body = super::sidebar::lerp_color(theme.text_muted, Color32::BLACK, 0.5);
+    for k in 0..8 {
+        let a = k as f32 / 8.0 * std::f32::consts::TAU + 0.2;
+        let d = Vec2::new(a.cos(), a.sin());
+        painter.line_segment([at, at + d * r * 1.35], Stroke::new((r * 0.22).max(1.5), body));
+    }
+    painter.circle_filled(at, r, body);
+    let blink = if (now * 3.0).fract() < 0.5 { 1.0 } else { 0.35 };
+    painter.circle_filled(at, r * 0.32, color.gamma_multiply(blink));
+}
+
+/// The black hole: a dark core, a glowing ring and arms turning around it.
+fn paint_hole(painter: &egui::Painter, at: Pos2, scale: f32, now: f64) {
+    let core = 70.0 * scale;
+    let t = now as f32;
+    painter.circle_filled(at, core * 5.0, HOLE.gamma_multiply(0.05));
+    painter.circle_filled(at, core * 2.6, HOLE.gamma_multiply(0.08));
+    // Arms of dust spiraling in.
+    for arm in 0..4 {
+        let points: Vec<Pos2> = (0..=24).map(|k| {
+            let f = k as f32 / 24.0;
+            let a = t * 1.2 + arm as f32 / 4.0 * std::f32::consts::TAU + f * 3.0;
+            at + Vec2::new(a.cos(), a.sin()) * core * (1.0 + f * 3.5)
+        }).collect();
+        painter.add(egui::Shape::line(points, Stroke::new((core * 0.12).max(1.5), HOLE.gamma_multiply(0.35))));
+    }
+    painter.circle_stroke(at, core * 1.15, Stroke::new((core * 0.18).max(2.0), HOLE.gamma_multiply(0.7 + 0.2 * (t * 3.0).sin())));
+    painter.circle_filled(at, core, Color32::from_rgb(8, 4, 14));
+}
+
+/// The crosshair on a head with a bounty: four ticks turning, and a dashed ring.
+fn paint_crosshair(painter: &egui::Painter, at: Pos2, r: f32, color: Color32, now: f64) {
+    paint_ring(painter, at, r, color.gamma_multiply(0.8), now);
+    let turn = now as f32 * 0.8;
+    for k in 0..4 {
+        let a = turn + k as f32 / 4.0 * std::f32::consts::TAU;
+        let d = Vec2::new(a.cos(), a.sin());
+        painter.line_segment([at + d * (r - 6.0), at + d * (r + 10.0)], Stroke::new(2.5, color));
     }
 }
 

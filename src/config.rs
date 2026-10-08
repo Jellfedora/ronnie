@@ -688,7 +688,7 @@ fn default_zoom() -> f32 {
 pub const FONT_SIZES: std::ops::RangeInclusive<f32> = 9.0..=32.0;
 pub const SCROLLBACK_LINES: std::ops::RangeInclusive<usize> = 1_000..=100_000;
 
-fn default_font_size() -> f32 {
+pub fn default_font_size() -> f32 {
     14.0
 }
 
@@ -780,6 +780,85 @@ pub struct Shortcuts {
     /// as well as Ctrl+Shift+C / V.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plain_clipboard: bool,
+    /// The size of the whole interface: bigger, smaller, back to normal.
+    #[serde(default = "default_zoom_in")]
+    pub zoom_in: Shortcut,
+    #[serde(default = "default_zoom_out")]
+    pub zoom_out: Shortcut,
+    #[serde(default = "default_zoom_reset")]
+    pub zoom_reset: Shortcut,
+    /// The terminals' text only: bigger, smaller, back to normal.
+    #[serde(default = "default_text_bigger")]
+    pub text_bigger: Shortcut,
+    #[serde(default = "default_text_smaller")]
+    pub text_smaller: Shortcut,
+    #[serde(default = "default_text_reset")]
+    pub text_reset: Shortcut,
+    /// The modifier that turns the wheel into the interface zoom.
+    #[serde(default)]
+    pub zoom_wheel: ZoomWheel,
+    /// The one that turns it into the terminals' text size.
+    #[serde(default = "default_text_wheel")]
+    pub text_wheel: ZoomWheel,
+}
+
+/// The zoom's modifier: Cmd on macOS, Ctrl elsewhere (Ctrl + / - aren't the shell's); Alt with it
+/// for the terminals' text.
+fn zoom_key(text: bool, key: &str) -> Shortcut {
+    let base = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+    Shortcut(if text { format!("{base}+Alt+{key}") } else { format!("{base}+{key}") })
+}
+
+fn default_zoom_in() -> Shortcut {
+    zoom_key(false, "Plus")
+}
+
+fn default_zoom_out() -> Shortcut {
+    zoom_key(false, "Minus")
+}
+
+fn default_zoom_reset() -> Shortcut {
+    zoom_key(false, "0")
+}
+
+fn default_text_bigger() -> Shortcut {
+    zoom_key(true, "Plus")
+}
+
+fn default_text_smaller() -> Shortcut {
+    zoom_key(true, "Minus")
+}
+
+fn default_text_reset() -> Shortcut {
+    zoom_key(true, "0")
+}
+
+fn default_text_wheel() -> ZoomWheel {
+    ZoomWheel::Alt
+}
+
+/// What, held with the wheel, zooms the interface.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ZoomWheel {
+    /// Cmd on macOS, Ctrl elsewhere.
+    #[default]
+    Command,
+    Alt,
+    Off,
+}
+
+impl ZoomWheel {
+    pub const ALL: [ZoomWheel; 3] = [Self::Command, Self::Alt, Self::Off];
+
+    /// Held right now, alone.
+    pub fn held(self, m: egui::Modifiers) -> bool {
+        match self {
+            Self::Command => m.command && !m.alt && !m.shift,
+            Self::Alt => m.alt && !m.command && !m.ctrl && !m.shift,
+            Self::Off => false,
+        }
+    }
 }
 
 fn default_toggle_notes() -> Shortcut {
@@ -817,6 +896,14 @@ impl Default for Shortcuts {
             dictate: default_dictate(),
             toggle_notes: default_toggle_notes(),
             plain_clipboard: false,
+            zoom_in: default_zoom_in(),
+            zoom_out: default_zoom_out(),
+            zoom_reset: default_zoom_reset(),
+            text_bigger: default_text_bigger(),
+            text_smaller: default_text_smaller(),
+            text_reset: default_text_reset(),
+            zoom_wheel: ZoomWheel::default(),
+            text_wheel: default_text_wheel(),
         }
     }
 }

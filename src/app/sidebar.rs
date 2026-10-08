@@ -1338,6 +1338,16 @@ impl App {
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
         // Its first icon level with the panel's title, under the logo (the slots are 40 high).
         self.category_strip(ui, strip, strip.min.y + top + LOGO_H + SECTION_HEADER_H / 2.0 - 20.0);
+        // The version, at the bottom of the strip: small, and smaller still if it doesn't fit.
+        let version = format!("v{}", update::VERSION);
+        let mut size = 9.5;
+        let mut galley = ui.painter().layout_no_wrap(version.clone(), FontId::proportional(size), self.theme.text_muted);
+        while galley.size().x > STRIP_W - 8.0 && size > 6.5 {
+            size -= 0.5;
+            galley = ui.painter().layout_no_wrap(version.clone(), FontId::proportional(size), self.theme.text_muted);
+        }
+        let at = Pos2::new(strip.center().x - galley.size().x / 2.0, strip.max.y - 12.0 - galley.size().y / 2.0);
+        ui.painter().galley(at, galley, self.theme.text_muted.gamma_multiply(0.7));
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
         // The logo leads home (the typing game).

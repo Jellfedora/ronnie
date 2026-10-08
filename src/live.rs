@@ -80,6 +80,9 @@ pub struct Match {
     pub rematch: Rematch,
     /// The rematch, once both asked.
     pub next: Option<String>,
+    /// The chat: who wrote (their pseudo), what, the player's own.
+    #[serde(default)]
+    pub chat: Vec<(Option<String>, String, bool)>,
 }
 
 impl Match {
@@ -108,6 +111,8 @@ enum Cmd {
     Move(String, usize),
     Leave(String),
     Rematch(String),
+    /// A message to the other player, in the match.
+    Say(String, String),
     /// The match to fetch every second (None: none, out of the page).
     Watch(Option<String>),
     Board,
@@ -260,6 +265,15 @@ impl Live {
         }
     }
 
+    /// A message in the match's chat, shown at once (floor's answer follows).
+    pub fn say(&mut self, text: &str) {
+        if let Some(game) = &mut self.game {
+            game.chat.push((None, text.to_owned(), true));
+            let id = game.id.clone();
+            self.send(Cmd::Say(id, text.to_owned()));
+        }
+    }
+
     /// The match shown in the page (None: the page left it).
     pub fn watch(&mut self, id: Option<String>) {
         if id.is_none() {
@@ -383,6 +397,11 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
             }
             Some(Cmd::Rematch(id)) => {
                 if let Some(m) = result(call(&agent, "POST", format!("{base}/matches/{id}/rematch"), token, None), &mut out).and_then(|v| serde_json::from_value::<Match>(v).ok()) {
+                    out.push(Event::Match(m));
+                }
+            }
+            Some(Cmd::Say(id, text)) => {
+                if let Some(m) = result(call(&agent, "POST", format!("{base}/matches/{id}/chat"), token, Some(json!({ "text": text }))), &mut out).and_then(|v| serde_json::from_value::<Match>(v).ok()) {
                     out.push(Event::Match(m));
                 }
             }

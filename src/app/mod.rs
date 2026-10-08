@@ -21,6 +21,7 @@ mod backup;
 mod bigtext;
 mod complete;
 mod blob;
+mod chat;
 mod dbview;
 mod easter;
 mod editor;
@@ -293,6 +294,8 @@ pub struct App {
     active: usize,
     theme: Theme,
     fonts: FontSet,
+    /// The wheel turned toward the zoom, not yet a whole step.
+    zoom_wheel: f32,
     rename: Option<Rename>,
     focus_terminal: bool,
     /// Terminal contents saved: the output they had then, and when last saved.
@@ -903,10 +906,16 @@ enum ShortcutAction {
     ToggleSidebar,
     ToggleNotes,
     Dictate,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    TextBigger,
+    TextSmaller,
+    TextReset,
 }
 
 impl ShortcutAction {
-    const ALL: [ShortcutAction; 14] = [
+    const ALL: [ShortcutAction; 20] = [
         Self::NewTab,
         Self::ClosePane,
         Self::SplitRight,
@@ -921,6 +930,12 @@ impl ShortcutAction {
         Self::ToggleSidebar,
         Self::ToggleNotes,
         Self::Dictate,
+        Self::ZoomIn,
+        Self::ZoomOut,
+        Self::ZoomReset,
+        Self::TextBigger,
+        Self::TextSmaller,
+        Self::TextReset,
     ];
 
     fn label(self, t: &Strings) -> &'static str {
@@ -939,6 +954,12 @@ impl ShortcutAction {
             Self::ToggleSidebar => t.toggle_sidebar,
             Self::ToggleNotes => t.notes_toggle,
             Self::Dictate => t.shortcut_dictate,
+            Self::ZoomIn => t.shortcut_zoom_in,
+            Self::ZoomOut => t.shortcut_zoom_out,
+            Self::ZoomReset => t.shortcut_zoom_reset,
+            Self::TextBigger => t.shortcut_text_bigger,
+            Self::TextSmaller => t.shortcut_text_smaller,
+            Self::TextReset => t.shortcut_text_reset,
         }
     }
 
@@ -958,6 +979,12 @@ impl ShortcutAction {
             Self::ToggleSidebar => &s.toggle_sidebar,
             Self::ToggleNotes => &s.toggle_notes,
             Self::Dictate => &s.dictate,
+            Self::ZoomIn => &s.zoom_in,
+            Self::ZoomOut => &s.zoom_out,
+            Self::ZoomReset => &s.zoom_reset,
+            Self::TextBigger => &s.text_bigger,
+            Self::TextSmaller => &s.text_smaller,
+            Self::TextReset => &s.text_reset,
         }
     }
 
@@ -977,6 +1004,12 @@ impl ShortcutAction {
             Self::ToggleSidebar => &mut s.toggle_sidebar,
             Self::ToggleNotes => &mut s.toggle_notes,
             Self::Dictate => &mut s.dictate,
+            Self::ZoomIn => &mut s.zoom_in,
+            Self::ZoomOut => &mut s.zoom_out,
+            Self::ZoomReset => &mut s.zoom_reset,
+            Self::TextBigger => &mut s.text_bigger,
+            Self::TextSmaller => &mut s.text_smaller,
+            Self::TextReset => &mut s.text_reset,
         }
     }
 }
@@ -1007,6 +1040,7 @@ impl App {
             active: 0,
             theme,
             fonts: FontSet { size: 14.0, line_height: 1.2 },
+            zoom_wheel: 0.0,
             rename: None,
             focus_terminal: true,
             scrollback_seq: HashMap::new(),
@@ -2270,6 +2304,20 @@ impl App {
         self.focus_terminal = true;
     }
 
+    /// The interface `step` bigger (negative: smaller), by tenths; 0: back to normal size.
+    fn zoom_by(&mut self, ctx: &egui::Context, step: f32) {
+        let zoom = if step == 0.0 { 1.0 } else { ((self.config.settings.ui_zoom + step) * 10.0).round() / 10.0 };
+        self.config.settings.ui_zoom = zoom.clamp(*config::UI_ZOOMS.start(), *config::UI_ZOOMS.end());
+        ctx.set_zoom_factor(self.config.settings.ui_zoom);
+    }
+
+    /// The terminals' text `step` points bigger (negative: smaller); 0: back to the default size.
+    fn text_by(&mut self, step: f32) {
+        let size = if step == 0.0 { config::default_font_size() } else { self.config.settings.font_size + step };
+        self.config.settings.font_size = size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
+        self.fonts.size = self.config.settings.font_size;
+    }
+
     fn handle_shortcuts(&mut self, ui: &Ui) {
         // A shortcut is being recorded in the settings: keys are for it.
         if self.shortcut_capture.is_some() {
@@ -2304,6 +2352,31 @@ impl App {
         // The usual Cmd+, opens the settings too.
         if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma))) {
             fired.push(ShortcutAction::OpenSettings);
+        }
+        // Zooming in on "+": "=" too (the same key, without Shift, on a US keyboard).
+        if let Some(plus) = shortcuts.zoom_in.parse().filter(|k| k.logical_key == Key::Plus)
+            && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(plus.modifiers, Key::Equals)))
+        {
+            fired.push(ShortcutAction::ZoomIn);
+        }
+        if let Some(plus) = shortcuts.text_bigger.parse().filter(|k| k.logical_key == Key::Plus)
+            && ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(plus.modifiers, Key::Equals)))
+        {
+            fired.push(ShortcutAction::TextBigger);
+        }
+        // The zoom works on every page.
+        let zoom_action = |a: &ShortcutAction| matches!(a, ShortcutAction::ZoomIn | ShortcutAction::ZoomOut | ShortcutAction::ZoomReset | ShortcutAction::TextBigger | ShortcutAction::TextSmaller | ShortcutAction::TextReset);
+        let zooms: Vec<ShortcutAction> = fired.iter().copied().filter(zoom_action).collect();
+        fired.retain(|a| !zoom_action(a));
+        for zoom in zooms {
+            match zoom {
+                ShortcutAction::ZoomIn => self.zoom_by(ui.ctx(), 0.1),
+                ShortcutAction::ZoomOut => self.zoom_by(ui.ctx(), -0.1),
+                ShortcutAction::ZoomReset => self.zoom_by(ui.ctx(), 0.0),
+                ShortcutAction::TextBigger => self.text_by(1.0),
+                ShortcutAction::TextSmaller => self.text_by(-1.0),
+                _ => self.text_by(0.0),
+            }
         }
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         // The file manager hides the terminals: their actions would act on panes the user can't see.
@@ -2409,6 +2482,8 @@ impl App {
                         self.toggle_files(self.active, show);
                     }
                 }
+                // Done above, on every page.
+                ShortcutAction::ZoomIn | ShortcutAction::ZoomOut | ShortcutAction::ZoomReset | ShortcutAction::TextBigger | ShortcutAction::TextSmaller | ShortcutAction::TextReset => {}
             }
         }
         // The dictation shortcut held down: listening until it is let go of.
@@ -2449,13 +2524,38 @@ impl App {
         {
             self.select((self.active + self.tabs.len() - 1) % self.tabs.len());
         }
-        // Size of the whole interface: Cmd + / Cmd - / Cmd 0 (Ctrl elsewhere), by steps of 10 %.
-        let zoom = [(Key::Plus, 0.1), (Key::Equals, 0.1), (Key::Minus, -0.1), (Key::Num0, 0.0)];
-        for (key, step) in zoom {
-            if ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))) {
-                let zoom = if step == 0.0 { 1.0 } else { ((self.config.settings.ui_zoom + step) * 10.0).round() / 10.0 };
-                self.config.settings.ui_zoom = zoom.clamp(*config::UI_ZOOMS.start(), *config::UI_ZOOMS.end());
-                ui.ctx().set_zoom_factor(self.config.settings.ui_zoom);
+        // The wheel with a modifier held: the interface's zoom, or the terminals' text (taken from what's
+        // under the pointer, so the terminal doesn't scroll meanwhile). A notch, or a trackpad's 40
+        // points, is a step.
+        let (interface, text) = (self.config.settings.shortcuts.zoom_wheel, self.config.settings.shortcuts.text_wheel);
+        let (wheel, for_text) = ui.input_mut(|i| {
+            let for_text = !interface.held(i.modifiers) && text.held(i.modifiers);
+            if !interface.held(i.modifiers) && !for_text {
+                return (0.0, false);
+            }
+            let mut lines = 0.0;
+            i.events.retain(|e| match e {
+                egui::Event::MouseWheel { unit, delta, .. } => {
+                    lines += match unit {
+                        egui::MouseWheelUnit::Point => delta.y / 40.0,
+                        egui::MouseWheelUnit::Line => delta.y,
+                        egui::MouseWheelUnit::Page => delta.y * 3.0,
+                    };
+                    false
+                }
+                _ => true,
+            });
+            i.smooth_scroll_delta = Vec2::ZERO;
+            (lines, for_text)
+        });
+        self.zoom_wheel += wheel;
+        let steps = self.zoom_wheel.trunc();
+        if steps != 0.0 {
+            self.zoom_wheel -= steps;
+            if for_text {
+                self.text_by(steps);
+            } else {
+                self.zoom_by(ui.ctx(), steps * 0.1);
             }
         }
         let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];

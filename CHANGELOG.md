@@ -2,6 +2,25 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.22.0] - 2026-10-08
+
+### Nouveautés
+
+- **Ronnie.io plus coriace** : les bots ont maintenant chacun leur caractère. Le fermier mange ses granules et fuit tôt, le chasseur se divise pour te prendre en visant là où tu vas, l'opportuniste guette tes morceaux quand tu viens de te diviser, le campeur se cache sous les virus. Ils peuvent aussi grossir un peu plus que le plus gros joueur : il y a toujours plus gros que toi.
+  - **Prime** : premier depuis une minute, ta tête est mise à prix (une cible dorée sur ta bulle) et les bots te chassent. Tiens une minute de plus et elle tombe.
+  - Deux nouveaux **événements** : la **zone** se resserre et ce qui reste dehors fond ; un **trou noir** s'ouvre, attire tout ce qui passe près et avale les petits.
+  - Deux nouveaux **bonus** : le **fantôme** traverse les virus, la zone et le trou noir ; la **mine** se pose derrière toi avec E et fait éclater le premier qui passe dessus.
+  - Échap met maintenant la partie en **pause**, comme P ; la carte de pause a un bouton « Quitter la partie ».
+- **Chat dans les jeux** à plusieurs : à côté de la grille du Puissance 4 en ligne, avec l'autre joueur (il suit dans la revanche) ; en haut à gauche dans Ronnie.io dès que vous êtes au moins deux, Entrée pour écrire.
+- **Zoom à la molette** : ⌘ + molette agrandit ou réduit toute l'interface (Ctrl + molette sous Linux et Windows), ⌥ + molette seulement le texte des terminaux (Alt + molette). Le texte des terminaux a aussi ses raccourcis, ⌘ ⌥ + / ⌘ ⌥ − / ⌘ ⌥ 0.
+- **Raccourcis du zoom modifiables** dans Réglages → Raccourcis, comme ceux de la molette ; un bouton « Tout réinitialiser » remet tous les raccourcis d'origine.
+- Le **numéro de version** s'affiche en bas de la colonne des catégories.
+
+### Corrections
+
+- Les notifications de fin de commande et de Claude arrivent aussi quand la fenêtre de Ronnie est réduite ou cachée.
+- Sur macOS, le menu Fenêtre a les entrées du système (déplacer vers un autre écran, remplir, juxtaposer) : de quoi ramener une fenêtre restée sur un écran débranché.
+
 ## [0.21.0] - 2026-10-07
 
 ### Nouveautés

@@ -1627,6 +1627,18 @@ impl App {
         let theme = self.theme.clone();
         egui::ScrollArea::vertical().max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
             ui.set_width(ui.available_width() - 12.0);
+            // Everything back to the defaults (the clipboard's choice is a setting, not a shortcut: kept).
+            let changed = config::Shortcuts { plain_clipboard: defaults.plain_clipboard, ..picked.shortcuts.clone() } != defaults;
+            if changed {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let all = egui::Button::new(egui::RichText::new(format!("↺  {}", t.shortcut_reset_all)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0));
+                    if ui.add(all).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        picked.shortcuts = config::Shortcuts { plain_clipboard: picked.shortcuts.plain_clipboard, ..defaults.clone() };
+                        self.shortcut_capture = None;
+                    }
+                });
+                ui.add_space(6.0);
+            }
             card(ui, &theme, None, |ui| {
                 for (i, action) in ShortcutAction::ALL.into_iter().enumerate() {
                     if i > 0 {
@@ -1655,6 +1667,39 @@ impl App {
                 }
             });
             let mac = cfg!(target_os = "macos");
+            // The wheel, with a modifier: the interface's zoom, the terminals' text.
+            card(ui, &theme, None, |ui| {
+                let name = |w: config::ZoomWheel| match w {
+                    config::ZoomWheel::Command => format!("{} + {}", if mac { "⌘" } else { "Ctrl" }, t.shortcut_wheel),
+                    config::ZoomWheel::Alt => format!("{} + {}", if mac { "⌥" } else { "Alt" }, t.shortcut_wheel),
+                    config::ZoomWheel::Off => t.shortcut_wheel_off.to_owned(),
+                };
+                let s = &mut picked.shortcuts;
+                let conflict = s.text_wheel != config::ZoomWheel::Off && s.text_wheel == s.zoom_wheel;
+                let rows = [
+                    (t.shortcut_wheel_zoom, t.shortcut_wheel_zoom_desc, defaults.zoom_wheel, "zoom-wheel"),
+                    (t.shortcut_text_wheel, if conflict { t.shortcut_wheel_conflict } else { t.shortcut_text_wheel_desc }, defaults.text_wheel, "text-wheel"),
+                ];
+                for (k, (label, desc, default, id)) in rows.into_iter().enumerate() {
+                    if k > 0 {
+                        divider(ui, &theme);
+                    }
+                    let value = if k == 0 { &mut s.zoom_wheel } else { &mut s.text_wheel };
+                    setting_row(ui, &theme, label, Some(desc), |ui| {
+                        egui::ComboBox::from_id_salt(id).selected_text(name(*value)).width(150.0).show_ui(ui, |ui| {
+                            for w in config::ZoomWheel::ALL {
+                                ui.selectable_value(value, w, name(w));
+                            }
+                        });
+                        if *value != default {
+                            let reset = egui::Button::new(egui::RichText::new("↺").size(14.0).color(theme.text_muted)).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::splat(30.0));
+                            if ui.add(reset).on_hover_text(t.shortcut_reset).clicked() {
+                                *value = default;
+                            }
+                        }
+                    });
+                }
+            });
             // Outside macOS (where ⌘ C / ⌘ V copy and paste): Ctrl alone too, or only Ctrl+Shift (plain
             // Ctrl+C interrupting the program).
             if !mac {
@@ -1670,7 +1715,6 @@ impl App {
                 (t.paste, if mac { "⌘ V" } else if plain { "Ctrl+V   Ctrl+Shift+V" } else { "Ctrl+Shift+V" }),
                 (t.shortcut_move_pane, if mac { "⌘ ← ↑ → ↓" } else { "Ctrl+Alt+← ↑ → ↓" }),
                 (t.shortcut_clear_line, if mac { "⌘ ⌫" } else { "Ctrl+U" }),
-                (t.shortcut_zoom, if mac { "⌘ +   ⌘ −   ⌘ 0" } else { "Ctrl++   Ctrl+−   Ctrl+0" }),
             ];
             card(ui, &theme, Some(t.shortcut_fixed), |ui| {
                 for (i, (label, keys)) in fixed.into_iter().enumerate() {

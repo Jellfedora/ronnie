@@ -21,6 +21,10 @@ pub const FX_MAGNET: u8 = 2;
 pub const FX_SHIELD: u8 = 4;
 /// The player put the game on pause: protected, still.
 pub const FX_PAUSED: u8 = 8;
+/// Through the viruses, the zone and the black hole.
+pub const FX_GHOST: u8 = 16;
+/// A bounty on the player's head: the bots hunt them.
+pub const FX_BOUNTY: u8 = 32;
 /// The pellets' color during the golden rain.
 pub const GOLD: u8 = 99;
 /// floor's delay is measured this often.
@@ -54,12 +58,20 @@ pub struct Frame {
     /// The mass ejected: x, y, color.
     pub ejected: Vec<(f32, f32, u8)>,
     pub viruses: Vec<(f32, f32)>,
-    /// x, y, kind (0 speed, 1 magnet, 2 shield).
+    /// x, y, kind (0 speed, 1 magnet, 2 shield, 3 ghost, 4 mine).
     pub bonuses: Vec<(f32, f32, u8)>,
-    /// The player's effects: seconds left of speed, magnet, shield.
-    pub fx: Option<[f32; 3]>,
-    /// The event going on ("rain", "boss"), and its seconds left.
+    /// The mines laid: x, y, color.
+    pub mines: Vec<(f32, f32, u8)>,
+    /// The player's effects: seconds left of speed, magnet, shield, ghost.
+    pub fx: Option<[f32; 4]>,
+    /// The mines the player carries.
+    pub carried: u32,
+    /// The event going on ("rain", "boss", "zone", "hole"), and its seconds left.
     pub event: Option<(String, u32)>,
+    /// The zone: its center and radius (outside, cells melt).
+    pub zone: Option<(f32, f32, f32)>,
+    /// The black hole's center.
+    pub hole: Option<(f32, f32)>,
     /// When it came.
     pub at: Instant,
 }
@@ -107,18 +119,33 @@ pub struct Death {
 pub struct Kill {
     pub by: (String, u32),
     pub victim: (String, u32),
-    /// "boss" or "ronnie".
+    /// "boss", "ronnie", "bounty" (a head with a bounty) or "hole" (by the black hole).
     pub special: Option<String>,
     pub at: Instant,
 }
 
-/// An event that started or ended ("rain", "boss", "ronnie").
+/// An event that started or ended ("rain", "boss", "zone", "hole", "ronnie", "bounty").
 #[derive(Clone, Debug)]
 pub struct Notice {
     pub kind: String,
     pub on: bool,
+    /// The bounty's player.
+    pub name: String,
+    /// The bounty lifted because the player held on.
+    pub held: bool,
     pub at: Instant,
 }
+
+/// A message in the chat: who, what, when it came.
+#[derive(Clone, Debug)]
+pub struct Said {
+    pub from: String,
+    pub text: String,
+    pub at: Instant,
+}
+
+/// Kept in the chat.
+const CHAT: usize = 30;
 
 /// What a frame of the app gets once.
 #[derive(Default)]
@@ -148,6 +175,8 @@ pub enum Status {
     Failed(Option<String>),
 }
 
+// Read once and handed over boxed (see Event): the frame's size doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize)]
 #[serde(tag = "t")]
 enum Wire {
@@ -167,9 +196,17 @@ enum Wire {
         e: Vec<f32>,
         v: Vec<f32>,
         b: Vec<f32>,
+        #[serde(default)]
+        m: Vec<f32>,
         n: HashMap<String, (String, u8, String)>,
         fx: Option<[f32; 3]>,
+        #[serde(default)]
+        fy: Option<(f32, u32)>,
         ev: Option<(String, u32)>,
+        #[serde(default)]
+        z: Option<(f32, f32, f32)>,
+        #[serde(default)]
+        bh: Option<(f32, f32)>,
     },
     #[serde(rename = "board")]
     Board { l: Vec<(String, u32, bool, bool)>, me: Option<(u32, u32)>, online: u32 },
@@ -188,13 +225,22 @@ enum Wire {
     #[serde(rename = "kill")]
     Kill { by: (String, u32), victim: (String, u32), special: Option<String> },
     #[serde(rename = "event")]
-    Event { kind: String, on: bool },
+    Event {
+        kind: String,
+        on: bool,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        held: bool,
+    },
     #[serde(rename = "bonus")]
     Bonus { kind: String },
     #[serde(rename = "badge")]
     Badge {},
     #[serde(rename = "pong")]
     Pong { n: u64 },
+    #[serde(rename = "chat")]
+    Chat { from: String, text: String },
     #[serde(rename = "error")]
     Error { error: String },
 }
@@ -234,6 +280,7 @@ pub struct Online {
     pub death: Option<Death>,
     pub feed: Vec<Kill>,
     pub notices: Vec<Notice>,
+    pub chat: Vec<Said>,
     /// A join asked, not answered yet.
     pub joining: bool,
     /// floor's delay, there and back (seconds).
@@ -344,6 +391,16 @@ impl Online {
         self.send(json!({ "t": "eject" }));
     }
 
+    /// To the chat (floor sends it to everyone, the player included).
+    pub fn say(&self, text: &str) {
+        self.send(json!({ "t": "say", "text": text }));
+    }
+
+    /// A mine laid behind the player (if they carry one).
+    pub fn mine(&self) {
+        self.send(json!({ "t": "mine" }));
+    }
+
     /// Out of the world, to watch.
     pub fn leave(&self) {
         self.send(json!({ "t": "leave" }));
@@ -421,7 +478,7 @@ impl Online {
                 self.joining = false;
                 self.death = None;
             }
-            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, n, fx, ev } => {
+            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, z, bh } => {
                 for (id, named) in n {
                     if let Ok(id) = id.parse() {
                         self.names.insert(id, named);
@@ -437,7 +494,10 @@ impl Online {
                 let ejected = groups(&e, 3).map(|k| (k[0], k[1], k[2] as u8)).collect();
                 let viruses = groups(&v, 2).map(|k| (k[0], k[1])).collect();
                 let bonuses = groups(&b, 3).map(|k| (k[0], k[1], k[2] as u8)).collect();
-                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, fx, event: ev, at });
+                let mines = groups(&m, 3).map(|k| (k[0], k[1], k[2] as u8)).collect();
+                let fx = fx.map(|[speed, magnet, shield]| [speed, magnet, shield, fy.map_or(0.0, |(ghost, _)| ghost)]);
+                let carried = fy.map_or(0, |(_, n)| n);
+                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, event: ev, zone: z, hole: bh, at });
             }
             Wire::Board { l, me, online } => self.board = Some(Board { leaders: l, me, online }),
             Wire::Records { l, me, skins } => {
@@ -461,12 +521,17 @@ impl Online {
                 let extra = self.feed.len().saturating_sub(FEED);
                 self.feed.drain(..extra);
             }
-            Wire::Event { kind, on } => {
+            Wire::Event { kind, on, name, held } => {
                 news.ronnie |= on && kind == "ronnie";
                 self.notices.retain(|n| n.kind != kind);
-                self.notices.push(Notice { kind, on, at });
+                self.notices.push(Notice { kind, on, name, held, at });
             }
             Wire::Bonus { kind } => news.bonus = Some(kind),
+            Wire::Chat { from, text } => {
+                self.chat.push(Said { from, text, at });
+                let extra = self.chat.len().saturating_sub(CHAT);
+                self.chat.drain(..extra);
+            }
             Wire::Badge {} => news.badge = true,
             Wire::Pong { n } => {
                 if let Some(sent) = self.pings.remove(&n) {
@@ -565,6 +630,16 @@ mod tests {
         assert_eq!(o.names[&3], ("Dio".to_owned(), 5, "flames".to_owned()));
         assert_eq!(f.bonuses, vec![(50.0, 60.0, 2)]);
         assert_eq!(f.event, Some(("rain".to_owned(), 12)));
+        assert_eq!(f.fx, Some([0.0, 0.0, 3.5, 0.0]));
+        // The zone, the mines, the ghost and the mines carried.
+        let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"m":[300,310,4],"n":{},"fx":[0,0,0],"fy":[2.5,1],"ev":["zone",30],"z":[2000,2100,900],"bh":null}"#;
+        o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
+        let f = o.frame.clone().unwrap();
+        assert_eq!((f.mines, f.fx, f.carried, f.zone, f.hole), (vec![(300.0, 310.0, 4)], Some([0.0, 0.0, 0.0, 2.5]), 1, Some((2000.0, 2100.0, 900.0)), None));
+        o.take(serde_json::from_str(r#"{"t":"event","kind":"bounty","on":true,"name":"Dio"}"#).unwrap(), at, &mut news, &mut closed);
+        assert_eq!((o.notices[0].name.as_str(), o.notices[0].held), ("Dio", false));
+        o.take(serde_json::from_str(r#"{"t":"chat","from":"Dio","text":"salut"}"#).unwrap(), at, &mut news, &mut closed);
+        assert_eq!((o.chat[0].from.as_str(), o.chat[0].text.as_str()), ("Dio", "salut"));
         // The next frame: only the changes.
         let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[9,1,2,3],"gx":[1],"e":[],"v":[],"b":[],"n":{},"fx":null,"ev":null}"#;
         o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
