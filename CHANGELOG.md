@@ -2,6 +2,14 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.22.1] - 2026-10-09
+
+Version pour Windows seulement.
+
+### Corrections
+
+- Sous Windows, Ronnie s'arrêtait au démarrage, sans ouvrir de fenêtre, sur certains PC à carte graphique Intel : leur pilote Vulkan plantait. Ronnie dessine maintenant avec DirectX 12.
+
 ## [0.22.0] - 2026-10-08
 
 ### Nouveautés

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Publishes a new version: ./scripts/release.sh 0.2.0
+# Publishes a new version: ./scripts/release.sh 0.2.0 [macos] [linux] [windows]
+# Without platforms, it is built for all three; with some, only for those (a fix for one system).
 # Bumps Cargo.toml, commits, tags vX.Y.Z and pushes; GitHub Actions then builds the macOS, Linux and
 # Windows archives and publishes the release, which running apps offer to install.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-version=${1:?usage: scripts/release.sh X.Y.Z}
+version=${1:?usage: scripts/release.sh X.Y.Z [macos] [linux] [windows]}
+shift
+for p in "$@"; do
+  [[ $p =~ ^(macos|linux|windows)$ ]] || { echo "plateforme inconnue : $p (macos, linux ou windows)" >&2; exit 1; }
+done
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version invalide : $version (attendu X.Y.Z)" >&2; exit 1; }
 [[ -z $(git status --porcelain) ]] || { echo "des modifications ne sont pas commitées" >&2; exit 1; }
 [[ $(git branch --show-current) == main ]] || { echo "à lancer depuis main" >&2; exit 1; }
@@ -15,6 +20,8 @@ sed -i.bak "1,/^version = \".*\"/s/^version = \".*\"/version = \"$version\"/" Ca
 rm -f Cargo.toml.bak
 cargo check --quiet # refreshes Cargo.lock
 git commit -am "Release v$version"
-git tag -a "v$version" -m "Ronnie $version"
+message="Ronnie $version"
+[[ $# -eq 0 ]] || message+=$'\n\n'"platforms: $*"
+git tag -a "v$version" -m "$message"
 git push origin main "v$version"
 echo "v$version poussée : suis la compilation dans l'onglet Actions du repo."

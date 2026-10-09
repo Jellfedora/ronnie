@@ -226,7 +226,16 @@ fn main() -> eframe::Result {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
     }
 
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    // Windows: DirectX 12, not Vulkan. Some Intel Vulkan drivers (igvk64.dll) crash as soon as wgpu loads them,
+    // before any window. WGPU_BACKEND still picks another one.
+    #[cfg(windows)]
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::GL;
+        options.wgpu_options.wgpu_setup = setup.into();
+    }
     let result = eframe::run_native(
         "Ronnie",
         options,

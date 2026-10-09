@@ -12,15 +12,42 @@ permissions:
   contents: read
 
 jobs:
+  # The runners to build on: all of them, or those the tag's message names after "platforms:"
+  # (scripts/release.sh X.Y.Z windows), for a fix only one system needs. Apps on the others then find
+  # no archive for them in the latest release and stay where they are, until the next full release.
+  platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          message=""
+          if [ "$(echo "$ref" | jq -r .object.type)" = tag ]; then
+            message=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(echo "$ref" | jq -r .object.sha)" --jq .message)
+          fi
+          wanted=$(echo "$message" | sed -n 's/^platforms: *//p' | head -1)
+          [ -n "$wanted" ] || wanted="macos linux windows"
+          # The newest macOS image: the app still runs from macOS 11 (LSMinimumSystemVersion).
+          # Oldest supported Ubuntu: the binary then works on older glibc versions too.
+          matrix=$(for p in $wanted; do
+            case $p in
+              macos) echo '{"os":"macos-latest"}' ;;
+              linux) echo '{"os":"ubuntu-22.04"}' ;;
+              windows) echo '{"os":"windows-latest"}' ;;
+              *) echo "unknown platform: $p" >&2; exit 1 ;;
+            esac
+          done | jq -sc '{include: .}')
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+          echo "Platforms: $wanted"
+
   build:
+    needs: platforms
     strategy:
-      matrix:
-        include:
-          # The newest image: the app still runs from macOS 11 (LSMinimumSystemVersion).
-          - os: macos-latest
-          # Oldest supported runner: the binary then works on older glibc versions too.
-          - os: ubuntu-22.04
-          - os: windows-latest
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
