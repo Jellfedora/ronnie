@@ -47,11 +47,13 @@ mod settings;
 mod scorecard;
 mod sidebar;
 mod tour;
+mod tree;
 
 /// The strip of category icons, on the left of the sidebar.
 const STRIP_W: f32 = 52.0;
 /// The sidebar unfolded: the strip, and the panel listing the category picked.
-const SIDEBAR_WIDTH: f32 = STRIP_W + 216.0;
+/// The sidebar's panel (beside its strip), but the file tree's, as wide as dragged.
+const PANEL_W: f32 = 216.0;
 /// The folded sidebar: room for the macOS window buttons, then badges.
 const RAIL_WIDTH: f32 = 72.0;
 /// Window title: dev builds are told apart from the installed app.
@@ -381,6 +383,10 @@ pub struct App {
     sidebar_seen: (Option<usize>, bool, bool, bool),
     /// The notes, the same in every window.
     notes: notes::Notes,
+    /// The sidebar's file tree.
+    tree: tree::FileTree,
+    /// The folded sidebar's category shown beside it.
+    rail_flyout: Option<sidebar::Flyout>,
     media_keys: crate::media_keys::MediaKeys,
     /// A MariaDB / MySQL server runs on this machine (offered in the sidebar while none is set up).
     local_db: bool,
@@ -1088,6 +1094,8 @@ impl App {
             notes_page: false,
             sidebar_seen: (None, false, false, false),
             notes: notes::Notes::load(),
+            tree: tree::FileTree::default(),
+            rail_flyout: None,
             library: library::Library::default(),
             media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {
                 use raw_window_handle::HasWindowHandle;
@@ -1560,6 +1568,25 @@ impl App {
         self.new_windows.push(slot);
     }
 
+    /// `game` shown in another window (a game shows in one window at a time): brings that window to the front.
+    fn show_game_elsewhere(&mut self, game: four::HomeGame) -> bool {
+        let Some(w) = self.others.iter().chain(&self.new_windows).find(|w| w.home.is_some() && w.home_game && w.home_which == game) else { return false };
+        self.ctx.send_viewport_cmd_to(w.viewport, ViewportCommand::Focus);
+        true
+    }
+
+    /// Opens `game` in a new window, taken from the window that showed it (which goes back to its home page,
+    /// or closes when it has nothing else).
+    fn game_to_new_window(&mut self, game: four::HomeGame) {
+        if self.home_game && self.home_which == game {
+            self.home_game = false;
+        }
+        for w in self.others.iter_mut().filter(|w| w.home_game && w.home_which == game) {
+            w.home_game = false;
+        }
+        self.new_window(|app| app.open_home_game(game));
+    }
+
     /// Takes tab `index` out of this window (to move it to another), keeping its programs running.
     fn take_tab(&mut self, index: usize) -> Option<Tab> {
         if index >= self.tabs.len() {
@@ -1961,7 +1988,7 @@ impl App {
         let screen = ctx.content_rect();
         let place = self.config.settings.toast_position;
         // On the left: next to the sidebar, not over it.
-        let sidebar_w = if self.config.settings.sidebar_folded { RAIL_WIDTH } else { SIDEBAR_WIDTH };
+        let sidebar_w = if self.config.settings.sidebar_folded { RAIL_WIDTH } else { self.sidebar_width() };
         let (left, right) = (screen.min.x + sidebar_w + 16.0, screen.max.x - 16.0);
         let mut edge = if place.top() { screen.min.y + 16.0 } else { screen.max.y - 16.0 };
         let mut go = None;
@@ -2056,10 +2083,15 @@ impl App {
     }
 
     fn new_tab(&mut self, ctx: &egui::Context) {
-        let history = Uuid::new_v4();
         // Starts in the directory of the terminal in front, when it is a local one.
         let cwd = self.tabs.get(self.active).filter(|t| t.ssh.is_none()).and_then(|t| t.panes.get(&t.focused)).and_then(Terminal::cwd);
-        if let Some((id, term)) = self.spawn(ctx, cwd.as_deref(), None, history) {
+        self.new_tab_in(ctx, cwd.as_deref());
+    }
+
+    /// A new local tab, its terminal in `cwd`.
+    fn new_tab_in(&mut self, ctx: &egui::Context, cwd: Option<&Path>) {
+        let history = Uuid::new_v4();
+        if let Some((id, term)) = self.spawn(ctx, cwd, None, history) {
             let mut tab = Tab::new(Node::Leaf(id), HashMap::from([(id, term)]));
             tab.histories.insert(id, history);
             self.tabs.push(tab);
@@ -3508,8 +3540,9 @@ impl App {
             }
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
-            // Its last tab closed: the window goes too.
-            let closing = self.window_closing || self.tabs.is_empty();
+            // Its last tab closed, out of a game, the notes and the music: the window goes too.
+            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page;
+            let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {
                 while !self.tabs.is_empty() {
                     self.close_tab(0);
@@ -3590,7 +3623,8 @@ impl App {
         // sliding under the edge, a light running along it.
         let folded = self.config.settings.sidebar_folded;
         let open = ui.ctx().animate_bool_with_time_and_easing(egui::Id::new("sidebar-open"), !folded, 0.38, motion::in_out_cubic);
-        let width = RAIL_WIDTH + (SIDEBAR_WIDTH - RAIL_WIDTH) * open;
+        let full_w = self.sidebar_width();
+        let width = RAIL_WIDTH + (full_w - RAIL_WIDTH) * open;
         let theme = self.theme.clone();
         egui::Panel::left("sidebar")
             .exact_size(width)
@@ -3604,7 +3638,7 @@ impl App {
                     return self.sidebar(ui);
                 }
                 let panel = ui.max_rect();
-                let full = Rect::from_min_size(Pos2::new(panel.min.x - (SIDEBAR_WIDTH - width) * 0.6, panel.min.y), Vec2::new(SIDEBAR_WIDTH, panel.height()));
+                let full = Rect::from_min_size(Pos2::new(panel.min.x - (full_w - width) * 0.6, panel.min.y), Vec2::new(full_w, panel.height()));
                 let mut moving = ui.new_child(egui::UiBuilder::new().max_rect(full).layout(egui::Layout::top_down(egui::Align::Min)));
                 moving.set_clip_rect(panel);
                 self.sidebar(&mut moving);
@@ -4390,6 +4424,7 @@ impl App {
         crate::awake::configure(&self.config.settings.keep_active);
         if dialogs_here {
             self.confirm_reset_window(ui.ctx());
+            self.tree_windows(ui.ctx());
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
             self.live_frame(ui.ctx());

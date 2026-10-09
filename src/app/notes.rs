@@ -365,14 +365,6 @@ impl Notes {
         rows
     }
 
-    /// The name of a row of the sidebar.
-    pub(super) fn entry_name(&self, entry: Entry, t: &Strings) -> String {
-        match entry {
-            Entry::Place(place) => self.place_name(place, t),
-            Entry::Note(id) => self.note(id).and_then(|n| title_of(&n.text)).unwrap_or(t.notes_new).to_owned(),
-        }
-    }
-
     /// Whether a row of the sidebar is the one shown.
     pub(super) fn entry_shown(&self, entry: Entry) -> bool {
         match entry {

@@ -68,6 +68,10 @@ const PINK: Color32 = Color32::from_rgb(255, 105, 180);
 const GOLDEN: Color32 = Color32::from_rgb(255, 200, 40);
 const BOSS: Color32 = Color32::from_rgb(150, 20, 30);
 const HOLE: Color32 = Color32::from_rgb(150, 90, 230);
+const METEOR: Color32 = Color32::from_rgb(255, 110, 40);
+/// The night: how dark, and how far around the player's cells it stays light (world units).
+const NIGHT_DARK: f32 = 0.94;
+const NIGHT_SIGHT: f32 = 280.0;
 
 /// A cell's color: its player's, or its skin's own.
 fn cell_color(theme: &Theme, k: u8, skin: &str) -> Color32 {
@@ -108,6 +112,22 @@ fn bonus_name(t: &Strings, kind: &str) -> &'static str {
         "mine" => t.blob_fx_mine,
         _ => t.blob_fx_shield,
     }
+}
+
+/// An event's banner: its words and color (None: an event from a newer floor).
+fn event_look(kind: &str, t: &Strings, theme: &Theme) -> Option<(&'static str, Color32)> {
+    Some(match kind {
+        "rain" => (t.blob_rain, GOLDEN),
+        "boss" => (t.blob_boss, theme.ansi[1]),
+        "zone" => (t.blob_zone, theme.ansi[1]),
+        "hole" => (t.blob_hole, HOLE),
+        "rush" => (t.blob_rush, bonus_color(bonus_kind("speed"), theme)),
+        "night" => (t.blob_night, theme.ansi[4]),
+        "meteors" => (t.blob_meteors, METEOR),
+        "hill" => (t.blob_hill, theme.ansi[3]),
+        "feast" => (t.blob_feast, theme.ansi[2]),
+        _ => return None,
+    })
 }
 
 /// A bonus's number on the wire, from its name.
@@ -277,24 +297,29 @@ impl App {
         if paused {
             self.blob_paused(ui, rect, &theme, t);
         }
-        if chat {
-            self.blob_chat(ui, rect, alive, &theme, t);
-        }
-
         let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
         if !alive && ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).fill(theme.chrome_bg.gamma_multiply(0.8)).corner_radius(6.0)).clicked() {
             self.home_game = false;
             self.blob.online.disconnect();
         }
-        if !alive {
-            self.blob_card(ui, rect, now, account.is_some(), &theme, t);
+        let invites = if alive { None } else { self.blob_card(ui, rect, now, account.is_some(), &theme, t) };
+        if chat {
+            self.blob_chat(ui, rect, alive, invites, &theme, t);
         }
     }
 
     /// The messages top left; the field while watching, or opened by Enter while playing (it closes
-    /// once sent, back to the game).
-    fn blob_chat(&mut self, ui: &mut Ui, rect: Rect, alive: bool, theme: &Theme, t: &Strings) {
-        let area = Rect::from_min_size(Pos2::new(rect.min.x + 14.0, rect.min.y + 56.0), Vec2::new((rect.width() * 0.4).clamp(220.0, 340.0), 210.0));
+    /// once sent, back to the game). Between two lives, under the players to invite (`invites`) when
+    /// there is room, not hidden behind them.
+    fn blob_chat(&mut self, ui: &mut Ui, rect: Rect, alive: bool, invites: Option<Rect>, theme: &Theme, t: &Strings) {
+        let mut area = Rect::from_min_size(Pos2::new(rect.min.x + 14.0, rect.min.y + 56.0), Vec2::new((rect.width() * 0.4).clamp(220.0, 340.0), 210.0));
+        if let Some(invites) = invites {
+            let top = invites.max.y + 12.0;
+            let room = rect.max.y - 14.0 - top;
+            if room >= 100.0 {
+                area = Rect::from_min_size(Pos2::new(invites.min.x, top), Vec2::new(invites.width(), room.min(210.0)));
+            }
+        }
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
         let lines: Vec<super::chat::Line> = self.blob.online.chat.iter().map(|s| super::chat::Line { from: &s.from, text: &s.text, mine: pseudo == Some(s.from.as_str()), age: Some(s.at.elapsed().as_secs_f32()) }).collect();
         let sent = self.blob.chat.ui(ui, area, &lines, !alive, !alive, "blob", theme, t);
@@ -477,6 +502,9 @@ impl App {
         }
         painter.rect_stroke(world, 0.0, Stroke::new(2.0, theme.accent.gamma_multiply(0.4)), egui::StrokeKind::Outside);
 
+        let event = frame.event.as_ref().map(|(kind, _)| kind.as_str());
+        // The feast: the pellets worth more, bigger.
+        let feast = if event == Some("feast") { 1.6 } else { 1.0 };
         let seen = view.expand(30.0);
         for &(x, y, k) in blob.online.pellets.values() {
             if !seen.contains(Pos2::new(x, y)) {
@@ -488,7 +516,7 @@ impl App {
                 painter.circle_filled(at, (8.0 * scale).max(2.5), GOLDEN.gamma_multiply(twinkle));
                 painter.circle_filled(at + Vec2::new(-2.0, -2.0) * scale, (2.5 * scale).max(1.0), Color32::WHITE.gamma_multiply(0.7));
             } else {
-                painter.circle_filled(at, (5.0 * scale).max(1.5), hue(theme, k));
+                painter.circle_filled(at, (5.0 * scale * feast).max(1.5), hue(theme, k));
             }
         }
         for &(x, y, k) in &frame.ejected {
@@ -504,11 +532,28 @@ impl App {
         if let Some((x, y)) = frame.hole {
             paint_hole(&painter, to_screen(Pos2::new(x, y)), scale, now);
         }
+        // The hill: a golden circle on the ground, its edge turning.
+        if let Some((x, y, r)) = frame.hill {
+            let at = to_screen(Pos2::new(x, y));
+            let r = r * scale;
+            let gold = theme.ansi[3];
+            painter.circle_filled(at, r, gold.gamma_multiply(0.08 + 0.03 * ((now * 2.0).sin() as f32)));
+            let turn = (now * 0.4) as f32;
+            for k in 0..24 {
+                let a = turn + k as f32 / 24.0 * std::f32::consts::TAU;
+                let dir = Vec2::angled(a);
+                painter.line_segment([at + dir * r, at + Vec2::angled(a + 0.13) * r], Stroke::new(3.0, gold.gamma_multiply(0.75)));
+            }
+        }
 
         // The cells, the smaller first; their skins and effects, their names on them, the masses of the
         // player's.
         let mut cells: Vec<_> = frame.cells.iter().filter_map(|c| blob.shown.get(&c.id).map(|s| (c, *s))).collect();
         cells.sort_by(|a, b| a.0.mass.total_cmp(&b.0.mass));
+        // Each player's largest cell (the last one, smaller first): the name above it when it no longer fits inside.
+        let largest: std::collections::HashMap<_, _> = cells.iter().map(|(c, _)| (c.owner, c.id)).collect();
+        // The rush: everyone fast, everyone with the speed's trail.
+        let rush = event == Some("rush");
         for (cell, s) in cells {
             let at = to_screen(s.pos);
             let r = s.radius * scale;
@@ -523,7 +568,7 @@ impl App {
                 let pull = (s.radius + 120.0 + s.radius * 0.3) * scale;
                 paint_ring(&painter, at, pull, theme.ansi[4].gamma_multiply(0.35), now);
             }
-            if cell.fx & FX_SPEED != 0 {
+            if cell.fx & FX_SPEED != 0 || rush {
                 // Ghosts behind it.
                 let back = blob.speeds.get(&cell.id).copied().unwrap_or(Vec2::ZERO) * scale;
                 for k in 1..=3 {
@@ -540,15 +585,23 @@ impl App {
             if cell.fx & FX_BOUNTY != 0 {
                 paint_crosshair(&painter, at, r + 10.0, GOLDEN, now);
             }
-            if r > 14.0 && !name.is_empty() {
-                let size = (r * 0.36).clamp(9.0, 42.0);
+            if !name.is_empty() {
+                // Readable however far the view is zoomed out.
+                let size = (r * 0.36).clamp(11.0, 42.0);
                 let galley = painter.layout_no_wrap(name.to_owned(), FontId::proportional(size), Color32::WHITE);
-                if galley.size().x < r * 2.2 {
+                let inside = r > 14.0 && galley.size().x < r * 2.2;
+                if inside {
                     let p = at - galley.size() / 2.0;
                     painter.galley(p + Vec2::new(1.0, 1.0), painter.layout_no_wrap(name.to_owned(), FontId::proportional(size), Color32::from_black_alpha(160)), Color32::BLACK);
                     painter.galley(p, galley, Color32::WHITE);
+                } else if largest.get(&cell.owner) == Some(&cell.id) {
+                    // Too small for it: above the cell.
+                    let font = FontId::proportional(11.5);
+                    let p = at - Vec2::new(0.0, r + 9.0);
+                    painter.text(p + Vec2::new(1.0, 1.0), Align2::CENTER_CENTER, name, font.clone(), Color32::from_black_alpha(170));
+                    painter.text(p, Align2::CENTER_CENTER, name, font, Color32::WHITE.gamma_multiply(0.92 * faded));
                 }
-                if Some(cell.owner) == frame.me && r > 26.0 {
+                if inside && Some(cell.owner) == frame.me && r > 26.0 {
                     painter.text(at + Vec2::new(0.0, size * 0.85), Align2::CENTER_CENTER, format!("{}", cell.mass.round()), FontId::proportional(size * 0.55), Color32::WHITE.gamma_multiply(0.85));
                 }
             }
@@ -575,30 +628,90 @@ impl App {
             let pulse = 0.6 + 0.4 * ((now * 4.0).sin() as f32);
             painter.circle_stroke(at, r, Stroke::new(3.0, theme.ansi[1].gamma_multiply(0.8 * pulse)));
         }
+
+        // The night: dark but around the player's cells (around the middle while watching), coming
+        // and going softly.
+        let night = ui.ctx().animate_bool_with_time(ui.id().with("blob-night"), event == Some("night"), 1.5);
+        if night > 0.0 {
+            let (around, sight) = match frame.cells.iter().filter(|c| Some(c.owner) == frame.me).filter_map(|c| blob.shown.get(&c.id)).map(|s| (s.pos, s.radius)).collect::<Vec<_>>() {
+                mine if !mine.is_empty() => {
+                    let reach = mine.iter().map(|(p, r)| p.distance(cam) + r).fold(0.0, f32::max);
+                    (to_screen(cam), (reach + NIGHT_SIGHT) * scale)
+                }
+                _ => (rect.center(), NIGHT_SIGHT * 1.5 * scale),
+            };
+            paint_night(&painter, rect, around, sight, NIGHT_DARK * night);
+        }
+
+        // The meteors: a circle on the ground filling up until they hit, then the blast.
+        let late = frame.at.elapsed().as_secs_f32();
+        for &(x, y, r, left) in &frame.meteors {
+            let at = to_screen(Pos2::new(x, y));
+            let r = r * scale;
+            let left = left - late;
+            if left > 0.0 {
+                let k = (1.0 - left / 2.0).clamp(0.0, 1.0);
+                painter.circle_filled(at, r, METEOR.gamma_multiply(0.08 + 0.17 * k));
+                painter.circle_filled(at, r * k, METEOR.gamma_multiply(0.22));
+                let blink = if left < 0.6 { 0.5 + 0.5 * ((now * 20.0).sin() as f32) } else { 1.0 };
+                painter.circle_stroke(at, r, Stroke::new(2.5, METEOR.gamma_multiply(0.9 * blink)));
+                // The rock coming down, from the top right.
+                let rock = at + Vec2::new(1.0, -1.6) * left * 220.0 * scale.max(0.4);
+                painter.line_segment([rock, rock + Vec2::new(1.0, -1.6) * 40.0 * scale.max(0.4)], Stroke::new(4.0, METEOR.gamma_multiply(0.5)));
+                painter.circle_filled(rock, (12.0 * scale).max(4.0), METEOR);
+            } else {
+                let age = (-left / 0.6).clamp(0.0, 1.0);
+                painter.circle_filled(at, r * (0.8 + 0.5 * age), METEOR.gamma_multiply(0.7 * (1.0 - age)));
+                painter.circle_filled(at, r * 0.5 * (1.0 - age), Color32::from_rgb(255, 230, 160).gamma_multiply(1.0 - age));
+            }
+        }
     }
 
-    /// The players in the world, the largest first (top right); the player's place below, out of
-    /// the first ten.
+    /// The players in the world, the largest first (top right), as many as fit in the height; the
+    /// player's place below when it is further down. The players who aren't bots in a color of their own.
     fn blob_leaders(&self, ui: &Ui, rect: Rect, theme: &Theme, t: &Strings) {
         let Some(board) = self.blob.online.board.as_ref().filter(|_| self.blob.online.frame.is_some()) else { return };
         let painter = ui.painter_at(rect);
-        let me = board.me.filter(|(rank, _)| *rank as usize > board.leaders.len());
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(t.game_you);
+        let mut lines: Vec<(u32, &str, u32, bool, bool)> = board.leaders.iter().enumerate().map(|(k, (name, mass, me, bot))| (k as u32 + 1, name.as_str(), *mass, *me, *bot)).collect();
+        // The player's line when floor sent only the first ones.
+        if let Some((rank, mass)) = board.me.filter(|(rank, _)| *rank as usize > board.leaders.len()) {
+            lines.push((rank, pseudo, mass, true, false));
+        }
+        // Too many for the height: the first ones, then the player's line if it is further down.
+        let room = (((rect.height() - 28.0 - 40.0 - 8.0) / 19.0).floor() as usize).max(3);
+        if lines.len() > room {
+            let mine = lines.iter().position(|l| l.3).filter(|&i| i >= room);
+            let keep = if mine.is_some() { room - 1 } else { room };
+            let mine = mine.map(|i| lines[i]);
+            lines.truncate(keep);
+            lines.extend(mine);
+        }
+        let gap = lines.windows(2).any(|w| w[1].0 > w[0].0 + 1);
         let w = 190.0;
-        let h = 40.0 + (board.leaders.len() + usize::from(me.is_some())) as f32 * 19.0 + if me.is_some() { 8.0 } else { 0.0 };
+        let h = 40.0 + lines.len() as f32 * 19.0 + if gap { 8.0 } else { 0.0 };
         let area = Rect::from_min_size(Pos2::new(rect.max.x - w - 14.0, rect.min.y + 14.0), Vec2::new(w, h));
         painter.rect_filled(area, 10.0, theme.chrome_bg.gamma_multiply(0.82));
         painter.text(Pos2::new(area.min.x + 12.0, area.min.y + 16.0), Align2::LEFT_CENTER, t.blob_leaders, FontId::proportional(13.0), theme.text);
         painter.text(Pos2::new(area.max.x - 12.0, area.min.y + 16.0), Align2::RIGHT_CENTER, t.four_online.replace("{n}", &board.online.to_string()), FontId::proportional(11.0), theme.text_muted);
-        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(t.game_you);
-        let lines = board.leaders.iter().enumerate().map(|(k, (name, mass, me, bot))| (k as u32 + 1, name.as_str(), *mass, *me, *bot));
         let mut y = area.min.y + 40.0;
-        for (rank, name, mass, mine, bot) in lines.chain(me.map(|(rank, mass)| (rank, pseudo, mass, true, false))) {
-            if rank as usize > board.leaders.len() {
-                // Below the first ten: a gap, then the player's line.
+        let mut last = 0;
+        for (rank, name, mass, mine, bot) in lines {
+            if rank > last + 1 {
+                // Lines left out: a gap, then the player's line.
                 painter.text(Pos2::new(area.center().x, y - 6.0), Align2::CENTER_CENTER, "···", FontId::proportional(11.0), theme.text_muted);
                 y += 8.0;
             }
-            let color = if mine { theme.accent } else if name == "Ronnie" { PINK } else { theme.text_muted };
+            last = rank;
+            let color = if mine {
+                theme.accent
+            } else if name == "Ronnie" {
+                PINK
+            } else if bot {
+                theme.text_muted
+            } else {
+                theme.ansi[6]
+            };
             // A bot: a small badge after its name.
             let badge = if bot { 30.0 } else { 0.0 };
             let mut job = egui::text::LayoutJob::simple_singleline(format!("{rank}. {name}"), FontId::proportional(12.5), color);
@@ -677,14 +790,15 @@ impl App {
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
         if let Some(notice) = online.notices.iter().rev().find(|n| (n.on || n.held) && n.at.elapsed().as_secs_f32() < 5.0) {
             let (text, color) = match notice.kind.as_str() {
-                "rain" => (t.blob_rain.to_owned(), GOLDEN),
-                "boss" => (t.blob_boss.to_owned(), theme.ansi[1]),
-                "zone" => (t.blob_zone.to_owned(), theme.ansi[1]),
-                "hole" => (t.blob_hole.to_owned(), HOLE),
                 "bounty" if !notice.on => (t.blob_bounty_held.replace("{n}", &notice.name), GOLDEN),
                 "bounty" if pseudo == Some(notice.name.as_str()) => (t.blob_bounty_you.to_owned(), GOLDEN),
                 "bounty" => (t.blob_bounty.replace("{n}", &notice.name), GOLDEN),
-                _ => (t.blob_ronnie.to_owned(), PINK),
+                "ronnie" => (t.blob_ronnie.to_owned(), PINK),
+                kind => match event_look(kind, t, theme) {
+                    Some((text, color)) => (text.to_owned(), color),
+                    // An event from a newer floor.
+                    None => return,
+                },
             };
             let age = notice.at.elapsed().as_secs_f32();
             let pop = out_back((age / 0.5).min(1.0));
@@ -694,12 +808,7 @@ impl App {
             return;
         }
         if let Some((kind, left)) = &frame.event {
-            let (text, color) = match kind.as_str() {
-                "rain" => (t.blob_rain, GOLDEN),
-                "zone" => (t.blob_zone, theme.ansi[1]),
-                "hole" => (t.blob_hole, HOLE),
-                _ => (t.blob_boss, theme.ansi[1]),
-            };
+            let Some((text, color)) = event_look(kind, t, theme) else { return };
             banner(&painter, at, &format!("{text}  {left} s"), color, theme);
         }
     }
@@ -751,7 +860,12 @@ impl App {
         let map = Rect::from_min_size(Pos2::new(rect.max.x - 14.0 - 120.0, rect.max.y - 14.0 - 120.0), Vec2::splat(120.0));
         painter.rect_filled(map, 8.0, panel);
         painter.rect_stroke(map, 8.0, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
-        if let Some((cam, _)) = self.blob.cam {
+        if let Some((x, y, r)) = frame.hill {
+            painter.circle_stroke(map.min + Vec2::new(x, y) / size * map.width(), (r / size * map.width()).max(4.0), Stroke::new(1.5, theme.ansi[3]));
+        }
+        // The night: the map goes out.
+        let night = frame.event.as_ref().is_some_and(|(kind, _)| kind == "night");
+        if let Some((cam, _)) = self.blob.cam.filter(|_| !night) {
             let at = map.min + cam.to_vec2() / size * map.width();
             painter.circle_filled(at, 4.0, theme.accent);
             painter.circle_stroke(at, 7.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.5)));
@@ -760,7 +874,8 @@ impl App {
 
     /// Between two lives, over the world watched: the title and how to play, or how the last life
     /// ended; the skins; play (Enter). The records below, the players online to invite on the left.
-    fn blob_card(&mut self, ui: &mut Ui, rect: Rect, now: f64, has_pseudo: bool, theme: &Theme, t: &Strings) {
+    /// Returns where the players to invite are.
+    fn blob_card(&mut self, ui: &mut Ui, rect: Rect, now: f64, has_pseudo: bool, theme: &Theme, t: &Strings) -> Option<Rect> {
         use crate::blob::Status;
         let status = self.blob.online.status.clone();
         let death = self.blob.online.death.clone();
@@ -781,8 +896,9 @@ impl App {
             let panel = Rect::from_min_size(Pos2::new(card.min.x, card.max.y + 12.0), Vec2::new(width, panel_h));
             paint_records(painter, panel, records, room, pop, theme, t);
         }
-        if ready && card.min.x - 16.0 - 230.0 > rect.min.x + 16.0 {
-            self.blob_invites(ui, Rect::from_min_size(Pos2::new(card.min.x - 16.0 - 230.0, card.min.y), Vec2::new(230.0, card_h)), pop, theme, t);
+        let invites = (ready && card.min.x - 16.0 - 230.0 > rect.min.x + 16.0).then(|| Rect::from_min_size(Pos2::new(card.min.x - 16.0 - 230.0, card.min.y), Vec2::new(230.0, card_h)));
+        if let Some(area) = invites {
+            self.blob_invites(ui, area, pop, theme, t);
         }
         painter.rect_filled(card.translate(Vec2::new(0.0, 6.0)), 16.0, Color32::from_black_alpha((60.0 * pop) as u8));
         painter.rect_filled(card, 16.0, theme.chrome_bg.gamma_multiply(0.94 * pop));
@@ -834,7 +950,7 @@ impl App {
                 self.ask_pseudo();
             }
             painter.text(line - Vec2::new(0.0, 34.0), Align2::CENTER_CENTER, t.four_need_pseudo, FontId::proportional(12.0), theme.text_muted);
-            return;
+            return invites;
         }
         match status {
             Status::Off | Status::Connecting => {
@@ -862,6 +978,7 @@ impl App {
                 }
             }
         }
+        invites
     }
 
     /// The skins in a row, centered on `at`: the one picked ringed, the locked ones dimmed with a lock
@@ -1267,6 +1384,22 @@ fn paint_mine(painter: &egui::Painter, at: Pos2, r: f32, color: Color32, now: f6
 }
 
 /// The black hole: a dark core, a glowing ring and arms turning around it.
+/// Dark over `rect` but within `sight` of `around`, the edge soft.
+fn paint_night(painter: &egui::Painter, rect: Rect, around: Pos2, sight: f32, dark: f32) {
+    let color = |a: f32| Color32::from_rgba_unmultiplied(3, 4, 12, (255.0 * a) as u8);
+    // The soft edge: rings darker and darker, from 70 % of the sight to past it.
+    let steps = 10;
+    let (from, to) = (sight * 0.7, sight * 1.15);
+    let w = (to - from) / steps as f32;
+    for k in 0..steps {
+        let a = dark * ((k as f32 + 1.0) / steps as f32).powf(1.5);
+        painter.circle_stroke(around, from + w * (k as f32 + 0.5), Stroke::new(w + 0.5, color(a)));
+    }
+    // Beyond: a ring wide enough to cover the screen.
+    let far = rect.size().length() + (around - rect.center()).length();
+    painter.circle_stroke(around, to + far / 2.0, Stroke::new(far, color(dark)));
+}
+
 fn paint_hole(painter: &egui::Painter, at: Pos2, scale: f32, now: f64) {
     let core = 70.0 * scale;
     let t = now as f32;

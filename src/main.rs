@@ -15,6 +15,7 @@ mod live;
 mod log;
 mod media_keys;
 mod notify;
+mod openwith;
 #[cfg(target_os = "macos")]
 mod menu;
 mod mssql;

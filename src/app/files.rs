@@ -252,6 +252,40 @@ enum Status {
     Closed(String),
 }
 
+/// Which program to open a file with.
+#[derive(Clone)]
+pub(super) enum OpenWith {
+    Default,
+    App(crate::openwith::App),
+    /// Asked to the user.
+    Choose,
+}
+
+impl OpenWith {
+    pub(super) fn launch(&self, path: &std::path::Path) {
+        match self {
+            OpenWith::Default => crate::openwith::open(path),
+            OpenWith::App(app) => crate::openwith::open_with(path, app),
+            OpenWith::Choose => crate::openwith::choose(path),
+        }
+    }
+}
+
+/// What the sidebar's file tree has done by a file manager of this computer, as from its local panel
+/// (the same dialogs, questions about names taken, archives). The items of one are in the same folder.
+pub(super) enum TreeOp {
+    /// Asks where to.
+    Move(Vec<std::path::PathBuf>),
+    /// Dropped onto a folder: moved, or copied (from elsewhere, or with ⌥).
+    MoveInto(Vec<std::path::PathBuf>, std::path::PathBuf),
+    CopyInto(Vec<std::path::PathBuf>, std::path::PathBuf),
+    Duplicate(Vec<std::path::PathBuf>),
+    Compress(Vec<std::path::PathBuf>),
+    Permissions(Vec<std::path::PathBuf>),
+    Sizes(Vec<std::path::PathBuf>),
+    Delete(Vec<std::path::PathBuf>),
+}
+
 /// What the file manager asks its tab to do.
 pub(super) enum FilesAction {
     None,
@@ -316,6 +350,11 @@ pub(super) struct FileManager {
     /// Remote items being downloaded to a temporary folder, dragged out from there once they are (the
     /// transfer, and the files to drag).
     preparing: Option<(u64, Vec<std::path::PathBuf>)>,
+    /// Remote files being downloaded to a temporary folder, to open with a program once there.
+    opening: Vec<(u64, std::path::PathBuf, OpenWith)>,
+    /// Counts the local folder's readings: what shows these files elsewhere (the sidebar's tree) reads
+    /// them again when it changes.
+    pub(super) readings: u64,
 }
 
 impl FileManager {
@@ -357,6 +396,8 @@ impl FileManager {
             promise_queue: std::collections::VecDeque::new(),
             promise_moves: HashMap::new(),
             preparing: None,
+            opening: Vec::new(),
+            readings: 0,
         };
         fm.read_local();
         fm
@@ -371,6 +412,13 @@ impl FileManager {
         fm.active = Side::Local;
         fm.terminal_dir = Some(dir.to_owned());
         fm.read_local();
+        fm
+    }
+
+    /// The sidebar tree's file manager, never shown (see `TreeOp`).
+    pub(super) fn for_tree(dir: &str, ctx: &egui::Context) -> Self {
+        let mut fm = Self::local(dir);
+        fm.ctx = Some(ctx.clone());
         fm
     }
 
@@ -424,9 +472,88 @@ impl FileManager {
         }
     }
 
+    /// Does what the sidebar's tree asks (see `TreeOp`).
+    pub(super) fn tree_op(&mut self, op: TreeOp, t: &Strings) {
+        self.error = None;
+        // The local panel in the items' folder, for what works on names there.
+        let names_in = |fm: &mut Self, paths: &[std::path::PathBuf]| -> Vec<String> {
+            if let Some(dir) = paths.first().and_then(|p| p.parent()) {
+                fm.open_dir(Side::Local, dir.display().to_string());
+            }
+            paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect()
+        };
+        let text = |paths: &[std::path::PathBuf]| paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
+        match op {
+            TreeOp::Move(paths) => {
+                let dir = paths.first().and_then(|p| p.parent()).map(|d| d.display().to_string()).unwrap_or_default();
+                self.dialog = Some(Dialog::Move { side: Side::Local, from: text(&paths), text: dir.clone(), dir });
+            }
+            TreeOp::MoveInto(paths, dir) => {
+                names_in(self, &paths);
+                self.move_paths(Side::Local, text(&paths), &dir.display().to_string());
+            }
+            TreeOp::CopyInto(paths, dir) => self.import(Side::Local, paths, dir.display().to_string(), t),
+            TreeOp::Duplicate(paths) => {
+                let names = names_in(self, &paths);
+                self.duplicate(Side::Local, &names, t);
+            }
+            TreeOp::Compress(paths) => {
+                let names = names_in(self, &paths);
+                self.compress(Side::Local, names, t);
+            }
+            TreeOp::Permissions(paths) => {
+                let names = names_in(self, &paths);
+                let chosen: Vec<&Entry> = self.local.entries.iter().filter(|e| names.contains(&e.name)).collect();
+                let modes: Vec<Option<u32>> = chosen.iter().map(|e| e.mode).collect();
+                let any_dir = chosen.iter().any(|e| e.is_dir);
+                self.dialog = Some(Dialog::Chmod { side: Side::Local, edit: Box::new(PermEdit::new(names, &modes, any_dir, None)) });
+            }
+            TreeOp::Sizes(paths) => {
+                let names = names_in(self, &paths);
+                let ctx = self.ctx.clone();
+                self.count_sizes(Side::Local, &names, ctx);
+            }
+            TreeOp::Delete(paths) => {
+                let names = names_in(self, &paths);
+                self.dialog = Some(Dialog::Delete { side: Side::Local, names });
+            }
+        }
+    }
+
+    /// The dialogs of what the tree asked for.
+    pub(super) fn tree_dialogs(&mut self, ctx: &egui::Context, theme: &Theme, t: &Strings) {
+        self.dialog_ui(ctx, theme, t);
+    }
+
+    /// The size counted of a local folder: None while counting.
+    pub(super) fn local_size(&self, path: &std::path::Path) -> Option<&Option<Result<u64, String>>> {
+        self.dir_sizes.get(&(Side::Local, path.display().to_string()))
+    }
+
+    /// Archives being made, or copies.
+    pub(super) fn working(&self) -> bool {
+        !self.zips.is_empty()
+    }
+
+    pub(super) fn take_error(&mut self) -> Option<String> {
+        self.error.take()
+    }
+
+    /// Opens a file of this computer in the editor, its folder in the local panel.
+    pub(super) fn edit_local(&mut self, path: &std::path::Path, t: &Strings) {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
+        self.open_dir(Side::Local, dir.display().to_string());
+        self.edit(Side::Local, &name.to_string_lossy(), t);
+    }
+
     /// Opens `name` of `side` in the editor.
     fn edit(&mut self, side: Side, name: &str, t: &Strings) {
         let path = self.path_of(side, name);
+        // A document of another program (Excel, Word, PDF...): opened with it, as the system would.
+        if side == Side::Local && crate::openwith::is_binary(std::path::Path::new(&path)) {
+            crate::openwith::open(std::path::Path::new(&path));
+            return;
+        }
         let size = self.panel(side).entries.iter().find(|e| e.name == name).map_or(0, |e| e.size);
         if size > sftp::MAX_EDIT {
             self.view(side, name);
@@ -632,6 +759,7 @@ impl FileManager {
     }
 
     fn read_local(&mut self) {
+        self.readings += 1;
         let path = std::path::PathBuf::from(&self.local.path);
         match std::fs::read_dir(&path) {
             Ok(dir) => {
@@ -659,6 +787,7 @@ impl FileManager {
         }
         self.feed_viewer();
         self.poll_drag_out();
+        self.poll_opening();
         let Some(conn) = &self.conn else { return };
         for event in conn.poll() {
             match event {
@@ -915,6 +1044,38 @@ impl FileManager {
                 self.preparing = Some((id, payload.names.iter().map(|n| dir.join(n)).collect()));
             }
         }
+    }
+
+    /// Opens `name` of `side` with a program: a remote file once downloaded to a temporary folder.
+    fn open_with(&mut self, side: Side, name: &str, how: OpenWith) {
+        let path = self.path_of(side, name);
+        if side == Side::Local {
+            how.launch(std::path::Path::new(&path));
+            return;
+        }
+        let dir = drag_out_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.error = Some(format!("{} : {e}", dir.display()));
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(Request::Download { id, remote: vec![path], local_dir: dir.clone(), overwrite: true });
+        self.transfers.push(Transfer { id, upload: false, zip: false, label: name.to_owned(), done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
+        self.opening.push((id, dir.join(name), how));
+    }
+
+    /// Downloaded files to open: opened once there.
+    fn poll_opening(&mut self) {
+        let transfers = &self.transfers;
+        self.opening.retain(|(id, path, how)| match transfers.iter().find(|t| t.id == *id).map(|t| &t.state) {
+            Some(TransferState::Done(_)) => {
+                how.launch(path);
+                false
+            }
+            Some(TransferState::Queued | TransferState::Running) => true,
+            _ => false,
+        });
     }
 
     /// Promised items to download where they were dropped; prepared ones to drag out once downloaded.
@@ -1740,6 +1901,33 @@ impl FileManager {
                         out.view = Some(entry.name.clone());
                         ui.close();
                     }
+                    if editable && selection.len() == 1 {
+                        let remote = side == Side::Remote;
+                        let mut chosen = None;
+                        let button = ui.button(t.open);
+                        if (if remote { button.on_hover_text(t.files_open_remote) } else { button }).clicked() {
+                            chosen = Some(OpenWith::Default);
+                        }
+                        ui.menu_button(t.files_open_with, |ui| {
+                            ui.set_min_width(180.0);
+                            // Asked only while this submenu is open.
+                            let apps = if remote { crate::openwith::apps_for_name(&entry.name) } else { crate::openwith::apps_for(&std::path::Path::new(&panel.path).join(&entry.name)) };
+                            for app in apps {
+                                let label = if app.default { format!("{}  ({})", app.name, t.files_open_default) } else { app.name.clone() };
+                                if ui.button(label).clicked() {
+                                    chosen = Some(OpenWith::App(app));
+                                }
+                            }
+                            ui.separator();
+                            if ui.button(t.files_open_other).clicked() {
+                                chosen = Some(OpenWith::Choose);
+                            }
+                        });
+                        if let Some(how) = chosen {
+                            out.open = Some((entry.name.clone(), how));
+                            ui.close();
+                        }
+                    }
                     if entry.is_dir && ui.button(t.open).clicked() {
                         out.go = Some(match side {
                             Side::Local => std::path::Path::new(&panel.path).join(&entry.name).display().to_string(),
@@ -1929,6 +2117,9 @@ impl FileManager {
         }
         if let Some(name) = out.edit {
             self.edit(side, &name, t);
+        }
+        if let Some((name, how)) = out.open {
+            self.open_with(side, &name, how);
         }
     }
 
@@ -2574,6 +2765,8 @@ struct PanelOut {
     dialog: Option<Dialog>,
     /// A file to open in the editor.
     edit: Option<String>,
+    /// A file to open with another program.
+    open: Option<(String, OpenWith)>,
     duplicate: Option<Vec<String>>,
     view: Option<String>,
     compress: Option<Vec<String>>,
@@ -3022,7 +3215,7 @@ pub(super) fn paint_file_icon(painter: &egui::Painter, rect: Rect, name: &str, i
 }
 
 /// "12,3 Mo" / "12.3 MB".
-fn format_size(bytes: u64, t: &Strings) -> String {
+pub(super) fn format_size(bytes: u64, t: &Strings) -> String {
     let units = [t.unit_b, t.unit_kb, t.unit_mb, t.unit_gb, t.unit_tb];
     let mut value = bytes as f64;
     let mut unit = 0;

@@ -66,12 +66,17 @@ pub struct Frame {
     pub fx: Option<[f32; 4]>,
     /// The mines the player carries.
     pub carried: u32,
-    /// The event going on ("rain", "boss", "zone", "hole"), and its seconds left.
+    /// The event going on ("rain", "boss", "zone", "hole", "rush", "night", "meteors", "hill", "feast"),
+    /// and its seconds left.
     pub event: Option<(String, u32)>,
     /// The zone: its center and radius (outside, cells melt).
     pub zone: Option<(f32, f32, f32)>,
     /// The black hole's center.
     pub hole: Option<(f32, f32)>,
+    /// The meteors: x, y, radius, seconds before they hit (negative: since they hit).
+    pub meteors: Vec<(f32, f32, f32, f32)>,
+    /// The hill: its center and radius (inside, cells grow).
+    pub hill: Option<(f32, f32, f32)>,
     /// When it came.
     pub at: Instant,
 }
@@ -207,6 +212,10 @@ enum Wire {
         z: Option<(f32, f32, f32)>,
         #[serde(default)]
         bh: Option<(f32, f32)>,
+        #[serde(default)]
+        mt: Option<Vec<f32>>,
+        #[serde(default)]
+        hl: Option<(f32, f32, f32)>,
     },
     #[serde(rename = "board")]
     Board { l: Vec<(String, u32, bool, bool)>, me: Option<(u32, u32)>, online: u32 },
@@ -478,7 +487,7 @@ impl Online {
                 self.joining = false;
                 self.death = None;
             }
-            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, z, bh } => {
+            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, z, bh, mt, hl } => {
                 for (id, named) in n {
                     if let Ok(id) = id.parse() {
                         self.names.insert(id, named);
@@ -497,7 +506,8 @@ impl Online {
                 let mines = groups(&m, 3).map(|k| (k[0], k[1], k[2] as u8)).collect();
                 let fx = fx.map(|[speed, magnet, shield]| [speed, magnet, shield, fy.map_or(0.0, |(ghost, _)| ghost)]);
                 let carried = fy.map_or(0, |(_, n)| n);
-                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, event: ev, zone: z, hole: bh, at });
+                let meteors = groups(&mt.unwrap_or_default(), 4).map(|k| (k[0], k[1], k[2], k[3] / 10.0)).collect();
+                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, event: ev, zone: z, hole: bh, meteors, hill: hl, at });
             }
             Wire::Board { l, me, online } => self.board = Some(Board { leaders: l, me, online }),
             Wire::Records { l, me, skins } => {
@@ -636,6 +646,15 @@ mod tests {
         o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
         let f = o.frame.clone().unwrap();
         assert_eq!((f.mines, f.fx, f.carried, f.zone, f.hole), (vec![(300.0, 310.0, 4)], Some([0.0, 0.0, 0.0, 2.5]), 1, Some((2000.0, 2100.0, 900.0)), None));
+        assert!(f.meteors.is_empty() && f.hill.is_none());
+        // The meteors (tenths of seconds on the wire) and the hill.
+        let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"ev":["meteors",30],"mt":[500,600,180,15,900,900,150,-3],"hl":null}"#;
+        o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
+        let f = o.frame.clone().unwrap();
+        assert_eq!(f.meteors, vec![(500.0, 600.0, 180.0, 1.5), (900.0, 900.0, 150.0, -0.3)]);
+        let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"ev":["hill",40],"mt":null,"hl":[2000,1800,420]}"#;
+        o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
+        assert_eq!(o.frame.clone().unwrap().hill, Some((2000.0, 1800.0, 420.0)));
         o.take(serde_json::from_str(r#"{"t":"event","kind":"bounty","on":true,"name":"Dio"}"#).unwrap(), at, &mut news, &mut closed);
         assert_eq!((o.notices[0].name.as_str(), o.notices[0].held), ("Dio", false));
         o.take(serde_json::from_str(r#"{"t":"chat","from":"Dio","text":"salut"}"#).unwrap(), at, &mut news, &mut closed);

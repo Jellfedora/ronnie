@@ -1265,7 +1265,7 @@ impl App {
         card(ui, theme, Some(t.sidebar_setting), |ui| {
             ui.label(egui::RichText::new(t.sidebar_setting_desc).size(12.5).color(theme.text_muted));
             ui.add_space(4.0);
-            for (k, category) in Category::ALL.into_iter().enumerate() {
+            for (k, category) in Category::ordered(&picked.category_order).into_iter().enumerate() {
                 if k > 0 {
                     divider(ui, theme);
                 }

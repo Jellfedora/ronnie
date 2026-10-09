@@ -2,6 +2,23 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.23.0] - 2026-10-09
+
+### Nouveautés
+
+- **Catégorie « Fichiers »** dans la colonne de gauche : les dossiers de l'ordinateur en arborescence, comme l'explorateur de VS Code.
+  - Un **champ de recherche** cherche dans tous les sous-dossiers ; clic droit sur un dossier → « Rechercher dans ce dossier » pour ne chercher que dedans.
+  - Double-clic sur un fichier texte : il s'ouvre dans l'éditeur de Ronnie ; un document (Excel, Word, PDF, images…) s'ouvre avec son application.
+  - Les mêmes possibilités que les fichiers d'un terminal : glisser-déposer pour déplacer (⌥ pour copier), « Déplacer vers… », dupliquer, compresser, permissions, taille d'un dossier, renommer et créer en place, supprimer. Sélection de plusieurs éléments avec ⌘ clic et Shift clic.
+  - Des fichiers glissés depuis le Finder y sont copiés ; des éléments glissés hors de la fenêtre vont dans le Finder ou une autre application.
+  - Le dossier de départ se choisit dans le menu ⋯ (un dossier, celui du terminal, le dossier personnel), ou par clic droit → « Partir de ce dossier ». Fichiers cachés à afficher ou non, « Ouvrir un terminal ici ».
+  - La colonne s'élargit en tirant sur son bord (double-clic : largeur d'origine).
+- **Ouvrir avec** dans les fichiers d'un terminal : le double-clic ouvre un document avec l'application par défaut du système, et le clic droit propose « Ouvrir avec ▸ » avec les applications compatibles, comme dans le Finder, l'Explorateur Windows ou le bureau Linux (« Autre application… » pour en choisir une autre). Un fichier d'un serveur est téléchargé puis ouvert (une copie : les modifications ne repartent pas sur le serveur).
+- **Les icônes de la colonne de gauche se réorganisent** en les faisant glisser ; l'ordre est gardé.
+- **Sidebar repliée** : seulement les icônes des grandes sections ; au survol, un panneau affiche ce que la sidebar dépliée listerait (un clic le garde ouvert).
+- **Les jeux dans une nouvelle fenêtre** : clic droit sur un jeu → « Ouvrir dans une nouvelle fenêtre ». Une fenêtre qui affiche un jeu, les notes ou la musique ne se ferme plus quand son dernier onglet se ferme.
+- **Ronnie.io** : cinq nouveaux événements. Le **rush**, où tout le monde va plus vite ; la **nuit**, où l'on ne voit plus qu'autour de soi ; la **pluie de météorites**, qui font éclater ce qui est dessous ; le **roi de la colline**, un cercle où l'on grossit ; le **festin**, où les granules valent trois fois plus.
+
 ## [0.22.1] - 2026-10-09
 
 Version pour Windows seulement.

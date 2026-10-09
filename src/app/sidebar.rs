@@ -113,7 +113,7 @@ impl App {
     pub(super) fn categories(&self) -> Vec<Category> {
         let s = &self.config.settings;
         let music = !s.subsonic.url.is_empty() && s.subsonic.password_saved;
-        let shown: Vec<Category> = Category::ALL.into_iter().filter(|c| !s.hidden_categories.contains(c) && (*c != Category::Music || music)).collect();
+        let shown: Vec<Category> = Category::ordered(&s.category_order).into_iter().filter(|c| !s.hidden_categories.contains(c) && (*c != Category::Music || music)).collect();
         if shown.is_empty() { vec![Category::Local] } else { shown }
     }
 
@@ -153,6 +153,10 @@ impl App {
         } else {
             return;
         };
+        // The file tree stays while its files open in local tabs.
+        if category == Category::Local && self.category() == Category::Files {
+            return;
+        }
         if self.categories().contains(&category) {
             self.config.settings.sidebar_category = category;
         }
@@ -160,14 +164,33 @@ impl App {
 
     /// The strip of category icons, on the left of the sidebar: a click shows a category in the
     /// panel; on the one shown, it folds the sidebar.
-    fn category_strip(&mut self, ui: &Ui, strip: Rect, top: f32) {
+    /// Folded (`rail`): a click pins the flyout of a category instead; the one under the pointer is
+    /// returned, with its slot.
+    fn category_strip(&mut self, ui: &Ui, strip: Rect, top: f32, rail: bool) -> Option<(Category, Rect)> {
         let t = self.t();
-        let shown = self.category();
+        let flyout = self.rail_flyout.as_ref().map(|f| f.category);
+        let shown = if rail { flyout.unwrap_or_else(|| self.category()) } else { self.category() };
+        let mut hovered = None;
         let mut y = top;
-        for category in self.categories() {
+        let shown_list = self.categories();
+        let mut moved = None;
+        for &category in &shown_list {
             let slot = Rect::from_center_size(Pos2::new(strip.center().x, y + 20.0), Vec2::splat(40.0));
             y += 46.0;
-            let resp = ui.interact(slot, ui.id().with(("category", category as u8)), Sense::click());
+            // Dragged up or down: the categories make way for it.
+            let resp = ui.interact(slot, ui.id().with(("category", category as u8)), Sense::click_and_drag());
+            if resp.hovered() {
+                hovered = Some((category, slot));
+            }
+            if resp.dragged()
+                && let Some(py) = ui.input(|i| i.pointer.interact_pos()).map(|p| p.y)
+            {
+                let to = (((py - top) / 46.0).floor().max(0.0) as usize).min(shown_list.len() - 1);
+                if shown_list[to] != category {
+                    moved = Some((category, shown_list[to]));
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
             let active = category == shown;
             if active {
                 ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
@@ -196,6 +219,16 @@ impl App {
                 ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
                 ui.painter().circle_filled(dot, 3.0, self.theme.accent);
             }
+            if rail {
+                // The flyout shows its name.
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    match &mut self.rail_flyout {
+                        Some(f) if f.category == category => f.pinned = !f.pinned,
+                        _ => self.rail_flyout = Some(Flyout { category, away: None, pinned: true }),
+                    }
+                }
+                continue;
+            }
             let hint = if active { format!("{}  ·  {}", category_name(t, category), t.fold_sidebar) } else { category_name(t, category).to_owned() };
             if resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 if active {
@@ -205,6 +238,18 @@ impl App {
                 }
             }
         }
+        // Takes the place of the one under the pointer (hidden ones keep theirs among the others).
+        if let Some((category, onto)) = moved {
+            let mut order = Category::ordered(&self.config.settings.category_order);
+            let from = order.iter().position(|c| *c == category);
+            let to = order.iter().position(|c| *c == onto);
+            if let (Some(from), Some(to)) = (from, to) {
+                order.remove(from);
+                order.insert(to, category);
+                self.config.settings.category_order = order;
+            }
+        }
+        hovered
     }
 
     /// The "Games" category: Speed Metal (with the best score), Puissance 4 (with the players online),
@@ -219,7 +264,7 @@ impl App {
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
         let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
         let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
-        let mut open = None;
+        let (mut open, mut new_window) = (None, None);
         let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
         for (game, name, note) in [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)] {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
@@ -240,12 +285,22 @@ impl App {
             if resp.clicked() {
                 open = Some(game);
             }
+            resp.context_menu(|ui| menu_item(ui, &format!("⧉  {}", t.new_window_open), game, &mut new_window));
         }
-        match open {
-            Some(HomeGame::SpeedMetal) => self.open_game(),
-            Some(HomeGame::Four) => self.open_four(),
-            Some(HomeGame::Blob) => self.open_blob(),
-            None => {}
+        if let Some(game) = new_window {
+            self.game_to_new_window(game);
+        } else if let Some(game) = open.filter(|&g| !self.show_game_elsewhere(g)) {
+            self.open_home_game(game);
+        }
+    }
+
+    /// Opens `game` on this window's home page.
+    pub(super) fn open_home_game(&mut self, game: super::four::HomeGame) {
+        use super::four::HomeGame;
+        match game {
+            HomeGame::SpeedMetal => self.open_game(),
+            HomeGame::Four => self.open_four(),
+            HomeGame::Blob => self.open_blob(),
         }
     }
 
@@ -616,110 +671,11 @@ impl App {
             self.config.settings.sidebar_folded = false;
         }
 
-        // What the sidebar lists, section by section.
-        let kind = |local: bool| {
-            let of_kind = |id: &Uuid| if local { self.config.profiles.iter().any(|p| p.id == *id) } else { self.config.ssh.iter().any(|h| h.id == *id) };
-            let mut ids: Vec<Uuid> = self.config.ungrouped.iter().copied().filter(of_kind).collect();
-            for g in self.config.groups.iter().filter(|g| g.local == local) {
-                ids.extend(g.items.iter().copied().filter(of_kind));
-            }
-            ids
-        };
-        let plain: Vec<RailEntry> = (0..self.tabs.len())
-            .filter(|&i| {
-                let tab = &self.tabs[i];
-                tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none()
-            })
-            .map(RailEntry::Tab)
-            .collect();
-        let shown = self.categories();
-        let sections: Vec<(RailSection, &str, Vec<RailEntry>)> = [
-            (RailSection::Local, t.terminals, plain.into_iter().chain(kind(true).into_iter().map(RailEntry::Item)).collect()),
-            (RailSection::Ssh, t.profiles, kind(false).into_iter().map(RailEntry::Item).collect()),
-            (RailSection::Db, t.db_section, self.config.databases.iter().map(|c| RailEntry::Db(c.id)).collect()),
-            (RailSection::Notes, t.notes, self.notes.entries(t).into_iter().map(|(e, ..)| RailEntry::Note(e)).collect()),
-        ]
-        .into_iter()
-        // Those hidden in the settings stay out.
-        .filter(|(section, ..)| shown.contains(&match section {
-            RailSection::Local => Category::Local,
-            RailSection::Ssh => Category::Ssh,
-            RailSection::Db => Category::Db,
-            RailSection::Notes => Category::Notes,
-        }))
-        .collect();
-
+        // The categories, as in the strip of the sidebar: the one under the pointer shows what it
+        // lists beside, over what is there.
         let footer = bar.max.y - 54.0;
-        let list = Rect::from_min_max(Pos2::new(bar.min.x, unfold.max.y + 8.0), Pos2::new(bar.max.x - 1.0, footer));
-        let mut action: Option<TabAction> = None;
-        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list));
-        list_ui.spacing_mut().scroll = egui::style::ScrollStyle { bar_width: 4.0, floating_allocated_width: 2.0, dormant_handle_opacity: 0.5, ..egui::style::ScrollStyle::thin() };
-        egui::ScrollArea::vertical().id_salt("rail-scroll").auto_shrink(false).show(&mut list_ui, |ui| {
-            let origin = ui.max_rect().min;
-            let mut y = origin.y;
-            for (k, (section, title, entries)) in sections.iter().enumerate() {
-                // Each section: a line, its "+" (with the section's name on hover), then its badges.
-                if k > 0 {
-                    ui.painter().hline(bar.min.x + 14.0..=bar.max.x - 14.0, y + 2.0, Stroke::new(1.0, self.theme.tab_hover));
-                    y += 8.0;
-                }
-                // The section's icon (lit when the tab shown is in it), and its "+".
-                let here = self.shown_tab().is_some() && entries.iter().any(|e| self.rail_open(*e) == self.shown_tab());
-                let icon_rect = Rect::from_center_size(Pos2::new(cx - 11.0, y + 12.0), Vec2::splat(22.0));
-                let color = if here { self.theme.accent } else { self.theme.text_muted };
-                match section {
-                    RailSection::Local => paint_prompt_icon(ui.painter(), icon_rect.center(), color),
-                    RailSection::Ssh => paint_server_icon(ui.painter(), icon_rect.center(), color),
-                    RailSection::Db => super::dbview::paint_db_icon(ui.painter(), icon_rect.center(), color),
-                    RailSection::Notes => super::notes::paint_notes_icon(ui.painter(), icon_rect.center(), if self.notes_page { self.theme.accent } else { color }),
-                }
-                let collapsed = *self.collapsed(*section);
-                let icon = ui.interact(icon_rect, ui.id().with(("rail-section", k)), Sense::click());
-                if collapsed || icon.hovered() {
-                    ui.painter().rect_filled(icon_rect, 5.0, self.theme.tab_hover.gamma_multiply(if icon.hovered() { 1.0 } else { 0.6 }));
-                }
-                let hint = if collapsed { format!("{title} ({})  ·  {}", entries.len(), t.unfold_section) } else { format!("{title}  ·  {}", t.fold_section) };
-                if icon.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    let c = self.collapsed(*section);
-                    *c = !*c;
-                }
-                let plus_rect = Rect::from_center_size(Pos2::new(cx + 13.0, y + 12.0), Vec2::splat(20.0));
-                y += 26.0;
-                let plus = icon_button(ui, ui.painter(), plus_rect, &format!("rail-plus-{k}"), &self.theme, paint_plus);
-                match section {
-                    RailSection::Local => {
-                        if plus.on_hover_text(format!("{}  ·  {} ({})", title, t.new_tab, self.config.settings.shortcuts.new_tab.label())).clicked() {
-                            action = Some(TabAction::New);
-                        }
-                    }
-                    RailSection::Ssh => {
-                        let plus = plus.on_hover_text(*title);
-                        egui::Popup::menu(&plus).width(210.0).show(|ui| {
-                            menu_item(ui, t.new_host, TabAction::NewHost, &mut action);
-                            menu_item(ui, t.new_group, TabAction::NewGroup(false), &mut action);
-                        });
-                    }
-                    RailSection::Notes => {
-                        let plus = plus.on_hover_text(*title);
-                        egui::Popup::menu(&plus).width(200.0).show(|ui| {
-                            menu_item(ui, t.notes_new, TabAction::Notes(super::notes::Action::NewNote), &mut action);
-                            menu_item(ui, t.notes_new_folder, TabAction::Notes(super::notes::Action::NewFolder), &mut action);
-                        });
-                    }
-                    RailSection::Db => {
-                        if plus.on_hover_text(format!("{}  ·  {}", title, t.db_new_connection)).clicked() {
-                            action = Some(if self.config.databases.is_empty() && self.local_db { TabAction::AddLocalDb } else { TabAction::NewDb });
-                        }
-                    }
-                }
-                for entry in entries.iter().filter(|_| !collapsed) {
-                    let slot = Rect::from_center_size(Pos2::new(cx, y + 18.0), Vec2::new(46.0, 36.0));
-                    y += 40.0;
-                    self.rail_entry(ui, *entry, slot, bar.min.x, &mut action);
-                }
-            }
-            ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + 6.0)), Sense::hover());
-        });
+        let hovered = self.category_strip(ui, bar, unfold.max.y + 14.0, true);
+        self.rail_flyout_ui(ui, bar, hovered);
 
         ui.painter().hline(bar.min.x + 16.0..=bar.max.x - 16.0, footer + 2.0, Stroke::new(1.0, self.theme.tab_hover));
         let gear = Rect::from_center_size(Pos2::new(cx, bar.max.y - 26.0), Vec2::splat(32.0));
@@ -731,108 +687,102 @@ impl App {
         if settings.on_hover_text(t.settings).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.settings_dialog = true;
         }
-        self.apply_tab_action(ui, action, &[]);
     }
 
-    /// Whether a section of the sidebar is folded to its title.
-    fn collapsed(&mut self, section: RailSection) -> &mut bool {
-        let s = &mut self.config.settings;
-        match section {
-            RailSection::Local => &mut s.local_collapsed,
-            RailSection::Ssh => &mut s.ssh_collapsed,
-            RailSection::Db => &mut s.db_collapsed,
-            RailSection::Notes => &mut s.notes_collapsed,
+    /// The width of the panel listing `category`.
+    pub(super) fn panel_width(&self, category: Category) -> f32 {
+        match category {
+            Category::Files => self.config.settings.files_width.clamp(PANEL_W, 900.0),
+            _ => PANEL_W,
         }
     }
 
-    /// The tab an entry of the folded sidebar is open in.
-    fn rail_open(&self, entry: RailEntry) -> Option<usize> {
-        match entry {
-            RailEntry::Tab(i) => Some(i),
-            RailEntry::Item(id) => self.item(id).and_then(|item| item.open),
-            RailEntry::Db(id) => self.tabs.iter().position(|tab| tab.db == Some(id)),
-            RailEntry::Note(_) => None,
-        }
+    /// The sidebar's width unfolded: its strip and the panel of the category shown.
+    pub(super) fn sidebar_width(&self) -> f32 {
+        STRIP_W + self.panel_width(self.category())
     }
 
-    /// One badge of the folded sidebar: an open tab, a profile or host, or a database connection.
-    fn rail_entry(&self, ui: &mut Ui, entry: RailEntry, slot: Rect, left: f32, action: &mut Option<TabAction>) {
-        let t = self.t();
-        let (name, color, ssh, open, hint, click) = match entry {
-            RailEntry::Tab(i) => {
-                let tab = &self.tabs[i];
-                (tab.title().to_owned(), tab.color, false, Some(i), tab.title().to_owned(), TabAction::Select(i))
+    /// A handle on the edge at `x` of the file tree's panel: dragged, it widens or narrows it.
+    fn resize_handle(&mut self, ctx: &egui::Context, x: f32, y: egui::Rangef) {
+        let rect = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, y);
+        egui::Area::new(egui::Id::new("files-resize")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
+            let resp = ui.allocate_rect(Rect::from_min_size(rect.min, rect.size()), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+            if resp.hovered() || resp.dragged() {
+                ui.painter().vline(x, y, Stroke::new(2.0, self.theme.accent));
             }
-            RailEntry::Item(id) => {
-                let Some(item) = self.item(id) else { return };
-                let hint = format!("{}\n{}", item.name, item.hint);
-                (item.name, item.color, item.ssh, item.open, hint, TabAction::OpenItem(id))
+            if resp.dragged() {
+                // Not wider than most of the window.
+                let most = (ctx.content_rect().width() * 0.7).max(PANEL_W);
+                let width = self.config.settings.files_width.clamp(PANEL_W, 900.0) + resp.drag_delta().x;
+                self.config.settings.files_width = width.clamp(PANEL_W, most.min(900.0));
             }
-            RailEntry::Db(id) => {
-                let Some(c) = self.config.databases.iter().find(|c| c.id == id) else { return };
-                let open = self.tabs.iter().position(|tab| tab.db == Some(id));
-                (c.name.clone(), c.color, false, open, format!("{}\n{}", c.name, c.address()), TabAction::OpenDb(id))
-            }
-            RailEntry::Note(entry) => {
-                let name = self.notes.entry_name(entry, t);
-                let click = match entry {
-                    super::notes::Entry::Place(place) => super::notes::Action::Place(place),
-                    super::notes::Entry::Note(id) => super::notes::Action::Open(id),
-                };
-                (name.clone(), None, false, None, name, TabAction::Notes(click))
-            }
-        };
-        let resp = ui.interact(slot, ui.id().with(("rail", entry)), Sense::click());
-        let active = match entry {
-            RailEntry::Note(entry) => self.notes_page && self.notes.entry_shown(entry),
-            _ => open.is_some() && open == self.shown_tab(),
-        };
-        if active {
-            ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
-            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(left + 3.0, slot.min.y + 8.0), Vec2::new(3.0, slot.height() - 16.0)), 1.5, self.theme.accent);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(slot, 9.0, self.theme.tab_hover.gamma_multiply(0.75));
-        }
-        if open.and_then(|i| self.live.get(i)).is_some_and(|l| l.is_some()) {
-            paint_live(ui, ui.painter(), slot.center(), &self.theme);
-        }
-        if let RailEntry::Note(entry) = entry {
-            paint_entry_icon(ui.painter(), slot.center(), entry, if active { self.theme.accent } else { self.theme.text_muted });
-        } else {
-            paint_badge(ui.painter(), slot.center(), &name, color, ssh, open.is_some(), active, &self.theme);
-        }
-        let done = open.and_then(|i| self.tabs.get(i)).and_then(|tab| tab.done.as_ref());
-        if let Some(done) = done {
-            paint_done(ui.painter(), slot.right_top() + Vec2::new(-6.0, 7.0), done.ok, &self.theme);
-        }
-        let hint = match done {
-            Some(d) => format!("{hint}\n{}", d.summary),
-            None => hint,
-        };
-        let resp = resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand);
-        if resp.clicked() {
-            *action = Some(click);
-        }
-        resp.context_menu(|ui| match entry {
-            RailEntry::Tab(i) => self.tab_menu(ui, i, action),
-            RailEntry::Item(id) => {
-                if let Some(item) = self.item(id) {
-                    self.item_menu(ui, id, &item, action);
-                }
-            }
-            RailEntry::Note(super::notes::Entry::Place(place)) => self.place_menu(ui, place, action),
-            RailEntry::Note(super::notes::Entry::Note(id)) => self.loose_note_menu(ui, id, action),
-            RailEntry::Db(id) => {
-                ui.set_min_width(170.0);
-                menu_item(ui, t.connect, TabAction::OpenDb(id), action);
-                menu_item(ui, t.edit, TabAction::EditDb(id), action);
-                ui.separator();
-                if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
-                    *action = Some(TabAction::DeleteDb(id));
-                    ui.close();
-                }
+            if resp.double_clicked() {
+                self.config.settings.files_width = PANEL_W;
             }
         });
+    }
+
+    /// The panel of the folded sidebar's category under the pointer (or pinned by a click): what the
+    /// sidebar would list, floating beside the rail. It goes once the pointer has left it a moment.
+    fn rail_flyout_ui(&mut self, ui: &Ui, rail: Rect, hovered: Option<(Category, Rect)>) {
+        let ctx = ui.ctx().clone();
+        let now = ui.input(|i| i.time);
+        if let Some((category, _)) = hovered {
+            match &mut self.rail_flyout {
+                Some(f) if f.category == category => f.away = None,
+                // Another one pinned stays until a click elsewhere.
+                Some(f) if f.pinned => {}
+                _ => self.rail_flyout = Some(Flyout { category, away: None, pinned: false }),
+            }
+        }
+        let Some(category) = self.rail_flyout.as_ref().map(|f| f.category) else { return };
+        let width = self.panel_width(category);
+        let panel = Rect::from_min_max(Pos2::new(rail.max.x + 6.0, rail.min.y + 8.0), Pos2::new(rail.max.x + 6.0 + width, rail.max.y - 8.0));
+        let mut action: Option<TabAction> = None;
+        let theme = self.theme.clone();
+        egui::Area::new(egui::Id::new("rail-flyout")).order(egui::Order::Foreground).fixed_pos(panel.min).show(&ctx, |ui| {
+            ui.painter().add(egui::Shadow { offset: [4, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(110) }.as_shape(panel, 10.0));
+            ui.painter().rect_filled(panel, 10.0, theme.chrome_bg);
+            ui.painter().rect_stroke(panel, 10.0, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+            ui.set_min_size(panel.size());
+            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(panel.shrink2(Vec2::new(0.0, 8.0))));
+            inner.spacing_mut().scroll = egui::style::ScrollStyle { bar_width: 4.0, floating_allocated_width: 2.0, dormant_handle_opacity: 0.5, ..egui::style::ScrollStyle::thin() };
+            egui::ScrollArea::vertical().id_salt(("rail-flyout-scroll", category as u8)).auto_shrink(false).show(&mut inner, |ui| {
+                let origin = ui.max_rect().min;
+                let mut y = origin.y;
+                let tab_rects = self.panel_content(ui, category, origin.x + SIDEBAR_PAD, width - 2.0 * SIDEBAR_PAD, &mut y, &mut action);
+                ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + SIDEBAR_PAD)), Sense::hover());
+                self.apply_tab_action(ui, action.take(), &tab_rects);
+            });
+        });
+
+        if category == Category::Files {
+            self.resize_handle(&ctx, panel.max.x, panel.y_range());
+        }
+        // Stays while used: under the pointer, a menu or a dialog of it open, something dragged, a
+        // field of it typed in.
+        let pointer = ctx.pointer_hover_pos();
+        let over = pointer.is_some_and(|p| panel.contains(p) || (p.x <= rail.max.x + 6.0 && hovered.is_some()));
+        let typing = ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).is_some_and(|r| panel.contains_rect(r.rect));
+        let busy = egui::Popup::is_any_open(&ctx) || ctx.memory(|m| m.top_modal_layer().is_some()) || ctx.dragged_id().is_some() || ui.input(|i| !i.raw.hovered_files.is_empty());
+        let Some(f) = self.rail_flyout.as_mut() else { return };
+        let clicked_out = ui.input(|i| i.pointer.any_pressed()) && pointer.is_some_and(|p| !panel.contains(p) && !rail.contains(p));
+        if ui.input(|i| i.key_pressed(Key::Escape)) && !typing {
+            self.rail_flyout = None;
+        } else if f.pinned {
+            if clicked_out && !busy {
+                self.rail_flyout = None;
+            }
+        } else if over || typing || busy {
+            f.away = None;
+        } else {
+            let since = *f.away.get_or_insert(now);
+            if now - since > 0.35 {
+                self.rail_flyout = None;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(60));
+            }
+        }
     }
 
     /// The "Databases" section: the saved connections (the local server offered while there is none).
@@ -1337,7 +1287,7 @@ impl App {
         // macOS: the traffic lights don't scale with the interface zoom, so the space kept for them doesn't either.
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
         // Its first icon level with the panel's title, under the logo (the slots are 40 high).
-        self.category_strip(ui, strip, strip.min.y + top + LOGO_H + SECTION_HEADER_H / 2.0 - 20.0);
+        self.category_strip(ui, strip, strip.min.y + top + LOGO_H + SECTION_HEADER_H / 2.0 - 20.0, false);
         // The version, at the bottom of the strip: small, and smaller still if it doesn't fit.
         let version = format!("v{}", update::VERSION);
         let mut size = 9.5;
@@ -1371,6 +1321,11 @@ impl App {
         let card_top = self.music_card(ui, left, row_w, card_top);
         let card_top = if self.category() == Category::Games { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
+        // The file tree's panel widens from its edge.
+        // Not while it folds or unfolds (cut by the window's edge then).
+        if category == Category::Files && ui.clip_rect().max.x >= whole.max.x - 0.5 {
+            self.resize_handle(&ui.ctx().clone(), whole.max.x - 1.0, whole.y_range());
+        }
 
         // Footer: settings button, always visible.
         let button = Rect::from_min_max(Pos2::new(left, footer_top + 5.0), Pos2::new(left + row_w, bar.max.y - 7.0));
@@ -1405,33 +1360,44 @@ impl App {
             .auto_shrink(false)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded);
         scroll.show(&mut scroll_ui, |ui| {
+            let origin = ui.max_rect().min;
+            let mut y = origin.y;
+            let tab_rects = self.panel_content(ui, category, left, row_w, &mut y, &mut action);
+            // Content height, so the scroll area knows how far it can go.
+            ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
+            self.apply_tab_action(ui, action, &tab_rects);
+        });
+    }
+
+    /// What the sidebar's panel lists for `category`, from `y` down (also in the folded sidebar's
+    /// flyout). The slots of the local tabs, for a tab dragged over them.
+    pub(super) fn panel_content(&mut self, ui: &mut Ui, category: Category, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) -> Vec<(usize, Rect)> {
+        let t = self.t();
         let base_painter = ui.painter().clone();
         // The dragged tab is painted above its neighbours.
         let drag_painter = base_painter.clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, ui.id().with("tab-drag")));
-        let origin = ui.max_rect().min;
-        let mut y = origin.y;
 
         // Local terminals: open tabs that are neither a profile nor an SSH host, then local profiles.
         let local = category == Category::Local;
         if local {
             let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
-            if self.section_header(ui, t.cat_local, Pos2::new(left, y), row_w, &new_hint) {
-                action = Some(TabAction::New);
+            if self.section_header(ui, t.cat_local, Pos2::new(left, *y), row_w, &new_hint) {
+                *action = Some(TabAction::New);
             }
-            y += SECTION_HEADER_H;
+            *y += SECTION_HEADER_H;
         }
 
         let is_plain = |tab: &Tab| tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none() && local;
-        let first_y = y;
+        let first_y = *y;
         let local_count = self.tabs.iter().filter(|t| is_plain(t)).count();
         let mut tab_rects: Vec<(usize, Rect)> = Vec::with_capacity(local_count);
         for i in 0..self.tabs.len() {
             if !is_plain(&self.tabs[i]) {
                 continue;
             }
-            let slot = Rect::from_min_size(Pos2::new(left, y), Vec2::new(row_w, ROW_H));
+            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
             tab_rects.push((i, slot));
-            y += ROW_H + ROW_GAP;
+            *y += ROW_H + ROW_GAP;
 
             let id = ui.id().with(("tab", i));
             let resp = ui.interact(slot, id, Sense::click_and_drag());
@@ -1511,9 +1477,9 @@ impl App {
                     self.rename = None;
                     self.focus_terminal = true;
                 } else if enter {
-                    action = Some(TabAction::Rename(i, true));
+                    *action = Some(TabAction::Rename(i, true));
                 } else if edit.lost_focus() {
-                    action = Some(TabAction::Rename(i, false));
+                    *action = Some(TabAction::Rename(i, false));
                 }
             } else {
                 let text_color = if active { self.theme.text } else { self.theme.text_muted };
@@ -1537,7 +1503,7 @@ impl App {
                 painter.line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], stroke);
                 painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], stroke);
                 if close.clicked() {
-                    action = Some(TabAction::Close(i));
+                    *action = Some(TabAction::Close(i));
                 }
             }
 
@@ -1545,13 +1511,13 @@ impl App {
                 action.get_or_insert(TabAction::Select(i));
             }
             if resp.double_clicked() {
-                action = Some(TabAction::StartRename(i));
+                *action = Some(TabAction::StartRename(i));
             }
             if resp.middle_clicked() {
-                action = Some(TabAction::Close(i));
+                *action = Some(TabAction::Close(i));
             }
             if dragging {
-                action = Some(TabAction::DragOver(i, rect.center().y));
+                *action = Some(TabAction::DragOver(i, rect.center().y));
             }
             if resp.drag_stopped() {
                 self.tab_grab = None;
@@ -1559,24 +1525,21 @@ impl App {
             let hint = [live.map(|program| format!("▶ {program}")), self.tabs[i].done.as_ref().map(|d| d.summary.clone())];
             let hint: Vec<String> = hint.into_iter().flatten().collect();
             let resp = if hint.is_empty() { resp } else { resp.on_hover_text(hint.join("\n")) };
-            resp.context_menu(|ui| self.tab_menu(ui, i, &mut action));
+            resp.context_menu(|ui| self.tab_menu(ui, i, action));
         }
 
         // Local profiles sit with the terminals, in their own groups.
         match category {
-            Category::Local => self.profiles_section(ui, left, row_w, &mut y, &mut action, true),
-            Category::Ssh => self.profiles_section(ui, left, row_w, &mut y, &mut action, false),
-            Category::Db => self.db_section(ui, left, row_w, &mut y, &mut action),
-            Category::Music => self.music_section(ui, left, row_w, &mut y),
-            Category::Notes => self.notes_section(ui, left, row_w, &mut y, &mut action),
-            Category::Games => self.games_section(ui, left, row_w, &mut y),
+            Category::Local => self.profiles_section(ui, left, row_w, y, action, true),
+            Category::Ssh => self.profiles_section(ui, left, row_w, y, action, false),
+            Category::Db => self.db_section(ui, left, row_w, y, action),
+            Category::Music => self.music_section(ui, left, row_w, y),
+            Category::Notes => self.notes_section(ui, left, row_w, y, action),
+            Category::Files => self.files_section(ui, left, row_w, y),
+            Category::Games => self.games_section(ui, left, row_w, y),
         }
 
-        // Content height, so the scroll area knows how far it can go.
-        ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
-
-        self.apply_tab_action(ui, action, &tab_rects);
-        });
+        tab_rects
     }
 
     /// Carries out what was clicked in the sidebar (folded or not). `tab_rects`: the slots of the
@@ -1842,6 +1805,7 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
 pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
     match category {
         Category::Local => t.cat_local,
+        Category::Files => t.cat_files,
         Category::Ssh => t.profiles,
         Category::Db => t.db_section,
         Category::Music => t.music_nav,
@@ -1854,6 +1818,7 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
 fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Category, color: Color32) {
     match category {
         Category::Local => paint_prompt_icon(painter, c, color),
+        Category::Files => super::notes::paint_folder_icon(painter, c, color),
         Category::Ssh => paint_server_icon(painter, c, color),
         Category::Db => super::dbview::paint_db_icon(painter, c, color),
         Category::Music => super::music::paint_note(painter, c, color),
@@ -1892,26 +1857,6 @@ fn paint_unfold(painter: &egui::Painter, c: Pos2, color: Color32) {
 }
 
 
-/// A badge of the folded sidebar.
-#[derive(Clone, Copy, Debug, Hash)]
-enum RailEntry {
-    /// A local tab that is no profile.
-    Tab(usize),
-    /// A profile or an SSH host.
-    Item(Uuid),
-    Db(Uuid),
-    /// A folder of notes, a note in no folder, or their bin.
-    Note(super::notes::Entry),
-}
-
-/// The icon of a row of the notes: a folder, a page for a note, a bin.
-fn paint_entry_icon(painter: &egui::Painter, c: Pos2, entry: super::notes::Entry, color: Color32) {
-    match entry {
-        super::notes::Entry::Place(place) => paint_place_icon(painter, c, place, color),
-        super::notes::Entry::Note(_) => super::notes::paint_notes_icon(painter, c, color),
-    }
-}
-
 /// The icon of a folder of notes: a page for "Notes", a folder for the others, a bin.
 fn paint_place_icon(painter: &egui::Painter, c: Pos2, place: super::notes::Place, color: Color32) {
     use super::notes::{paint_folder_icon, paint_notes_icon, paint_trash_icon, Place};
@@ -1922,13 +1867,13 @@ fn paint_place_icon(painter: &egui::Painter, c: Pos2, place: super::notes::Place
     }
 }
 
-/// A section of the sidebar (folded or not).
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum RailSection {
-    Local,
-    Ssh,
-    Db,
-    Notes,
+/// The panel of a category shown beside the folded sidebar.
+pub(super) struct Flyout {
+    pub category: Category,
+    /// Since when the pointer is away from it.
+    pub away: Option<f64>,
+    /// Opened by a click: stays until a click elsewhere.
+    pub pinned: bool,
 }
 
 /// A terminal prompt (">_" in a window): the local section of the folded sidebar.

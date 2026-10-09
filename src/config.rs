@@ -589,6 +589,18 @@ pub struct Settings {
     /// Categories left out of the sidebar.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_categories: Vec<Category>,
+    /// The order of the categories, as dragged in the strip (empty: the usual one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub category_order: Vec<Category>,
+    /// The folder the sidebar's file tree starts from (None: the home folder).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_root: Option<String>,
+    /// The width of the file tree's panel, as dragged.
+    #[serde(default = "default_files_width")]
+    pub files_width: f32,
+    /// Hidden files (".git"...) shown in the file tree.
+    #[serde(default)]
+    pub files_hidden: bool,
 }
 
 /// A category of the sidebar: an icon in its strip, and what the panel next to it lists.
@@ -597,6 +609,8 @@ pub struct Settings {
 pub enum Category {
     #[default]
     Local,
+    /// This computer's folders as a tree.
+    Files,
     Ssh,
     Db,
     Music,
@@ -605,7 +619,19 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [Category::Local, Category::Ssh, Category::Db, Category::Music, Category::Notes, Category::Games];
+    pub const ALL: [Category; 7] = [Category::Local, Category::Files, Category::Ssh, Category::Db, Category::Music, Category::Notes, Category::Games];
+
+    /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
+    /// their usual place.
+    pub fn ordered(order: &[Category]) -> Vec<Category> {
+        let mut all: Vec<Category> = Vec::with_capacity(Self::ALL.len());
+        for c in order.iter().chain(Self::ALL.iter()) {
+            if !all.contains(c) {
+                all.push(*c);
+            }
+        }
+        all
+    }
 }
 
 /// The music server (Navidrome, Gonic, Airsonic… any that speaks the Subsonic API); its password is
@@ -680,6 +706,10 @@ fn default_notify_after() -> u64 {
 }
 
 pub const UI_ZOOMS: std::ops::RangeInclusive<f32> = 0.6..=2.0;
+
+fn default_files_width() -> f32 {
+    216.0
+}
 
 fn default_zoom() -> f32 {
     1.0
@@ -989,7 +1019,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false }
     }
 }
 
