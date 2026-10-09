@@ -1,6 +1,6 @@
 //! Ronnie.io, in the games: the world floor runs for everyone (see blob.rs), drawn around the player.
 //! The pointer steers, Space splits, W ejects some mass, E lays a mine; watching between two lives, with the skin
-//! picked and the players online to invite.
+//! picked and the players online to invite, or with the card put away (a player followed, or the whole map).
 //!
 //! floor's frames come 20 times a second, a little late: the player's own cells are drawn where they
 //! are going (toward the pointer, by floor's delay), the others carried on at their speed, both eased
@@ -46,6 +46,14 @@ pub(super) struct Blob {
     followed: Option<String>,
     /// The chat, with two players or more connected.
     chat: super::chat::Chat,
+    /// Watching the game between two lives, the card put away.
+    spectating: bool,
+    /// Where cells just went through a portal (in the world), and when: a ring spreads at both ends.
+    warps: Vec<(Pos2, f64)>,
+    /// The Upside Down: how far the world is turned over (1, as it is; -1, upside down), for the pointer.
+    flip: f32,
+    /// When the Demogorgon last caught the player (the screen flashes red).
+    grabbed_at: Option<f64>,
 }
 
 /// A cell's radius, from its mass (as floor's).
@@ -69,6 +77,15 @@ const GOLDEN: Color32 = Color32::from_rgb(255, 200, 40);
 const BOSS: Color32 = Color32::from_rgb(150, 20, 30);
 const HOLE: Color32 = Color32::from_rgb(150, 90, 230);
 const METEOR: Color32 = Color32::from_rgb(255, 110, 40);
+/// A portal's radius (floor's PORTAL_R), how far a cell must jump to be seen as gone through one, how
+/// long the ring lasts.
+const PORTAL_R: f32 = 70.0;
+/// The Upside Down's red; how near the Demogorgon shows fully, and from how far it shows at all.
+const UPSIDE: Color32 = Color32::from_rgb(170, 20, 35);
+const DEMO_SEEN: f32 = 380.0;
+const DEMO_GONE: f32 = 750.0;
+const WARP_JUMP: f32 = 600.0;
+const WARP_RING: f64 = 0.6;
 /// The night: how dark, and how far around the player's cells it stays light (world units).
 const NIGHT_DARK: f32 = 0.94;
 const NIGHT_SIGHT: f32 = 280.0;
@@ -126,6 +143,9 @@ fn event_look(kind: &str, t: &Strings, theme: &Theme) -> Option<(&'static str, C
         "meteors" => (t.blob_meteors, METEOR),
         "hill" => (t.blob_hill, theme.ansi[3]),
         "feast" => (t.blob_feast, theme.ansi[2]),
+        "viruses" => (t.blob_viruses, theme.ansi[2]),
+        "portals" => (t.blob_portals, portal_color(0, theme)),
+        "upside" => (t.blob_upside, UPSIDE),
         _ => return None,
     })
 }
@@ -147,7 +167,7 @@ fn eater<'a>(t: &Strings, by: &'a str) -> &'a str {
 }
 
 /// The game's little sounds, made on the spot: a gulp (the player ate someone), a rising chime (a bonus),
-/// sparkles (Ronnie).
+/// sparkles (Ronnie), a growl (the Demogorgon caught the player).
 struct Sound {
     _device: rodio::MixerDeviceSink,
     mixer: rodio::mixer::Mixer,
@@ -158,6 +178,7 @@ enum Sfx {
     Gulp,
     Bonus,
     Sparkle,
+    Growl,
 }
 
 impl Sound {
@@ -174,6 +195,7 @@ impl Sound {
         let notes: &[(f32, f32, f32, f32)] = match sfx {
             Sfx::Gulp => &[(520.0, 160.0, 0.16, 0.5)],
             Sfx::Bonus => &[(660.0, 660.0, 0.07, 0.3), (880.0, 880.0, 0.07, 0.3), (1320.0, 1320.0, 0.12, 0.3)],
+            Sfx::Growl => &[(140.0, 55.0, 0.45, 0.7), (90.0, 40.0, 0.3, 0.5)],
             Sfx::Sparkle => &[(1568.0, 1568.0, 0.06, 0.22), (2093.0, 2093.0, 0.06, 0.22), (2637.0, 2637.0, 0.06, 0.22), (3136.0, 3136.0, 0.18, 0.2)],
         };
         let mut samples = Vec::new();
@@ -267,6 +289,10 @@ impl App {
         if news.ronnie {
             self.blob_sound(Sfx::Sparkle);
         }
+        if news.grabbed {
+            self.blob_sound(Sfx::Growl);
+            self.blob.grabbed_at = Some(now);
+        }
         if news.badge {
             self.blob_sound(Sfx::Sparkle);
             self.config.settings.blob_skin = "ronnie".to_owned();
@@ -279,10 +305,17 @@ impl App {
         }
         let alive = self.blob.online.alive();
         self.fold_for_game(alive);
+        if alive {
+            self.blob.spectating = false;
+        }
+        let connected = matches!(self.blob.online.status, crate::blob::Status::Ready | crate::blob::Status::Reconnecting(_));
+        let watching = !alive && self.blob.spectating && account.is_some() && connected;
 
         self.blob_world(ui, rect, dt, now, &theme);
         // The leaderboard, the kill feed, the events: playing or watching.
-        self.blob_leaders(ui, rect, &theme, t);
+        if let Some(id) = self.blob_leaders(ui, rect, watching, &theme, t) {
+            self.blob.online.watch(crate::blob::Watch::Player(id));
+        }
         self.blob_feed(ui, rect, alive, &theme, t);
         self.blob_banner(ui, rect, now, &theme, t);
         let paused = self.blob.online.paused();
@@ -302,7 +335,10 @@ impl App {
             self.home_game = false;
             self.blob.online.disconnect();
         }
-        let invites = if alive { None } else { self.blob_card(ui, rect, now, account.is_some(), &theme, t) };
+        let invites = if alive || watching { None } else { self.blob_card(ui, rect, now, account.is_some(), &theme, t) };
+        if watching {
+            self.blob_spectator(ui, rect, now, &theme, t);
+        }
         if chat {
             self.blob_chat(ui, rect, alive, invites, &theme, t);
         }
@@ -337,7 +373,10 @@ impl App {
         let Some((cam, height)) = self.blob.cam else { return };
         let scale = rect.height() / height;
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p)) {
-            let world = cam + (p - rect.center()) / scale;
+            // Upside down, the pointer turned over too (not dividing by almost nothing mid-turn).
+            let flip = if self.blob.flip.abs() < 0.25 { 0.25_f32.copysign(self.blob.flip) } else { self.blob.flip };
+            let d = (p - rect.center()) / scale;
+            let world = cam + Vec2::new(d.x, d.y / flip);
             self.blob.aim = Some(world);
             // Often enough to follow it, not more (and again now and then: the cells move under it).
             let due = self.blob.aimed.is_none_or(|(at, last)| now - at > 0.2 || (now - at > 0.03 && (last - world).length() > 2.0));
@@ -457,7 +496,13 @@ impl App {
                 siblings.filter_map(|c| blob.shown.get(&c.id)).min_by(|a, b| a.pos.distance(place).total_cmp(&b.pos.distance(place))).map(|s| Shown { pos: s.pos, radius: r })
             });
             let ease = 1.0 - (-dt * if mine { 20.0 } else { 16.0 }).exp();
-            let s = match from {
+            // Far from where it was drawn: through a portal, there at once (not sliding across the map).
+            let warped = before.is_some_and(|b| b.pos.distance(target.pos) > WARP_JUMP);
+            if let Some(b) = before.filter(|_| warped) {
+                blob.warps.push((b.pos, now));
+                blob.warps.push((target.pos, now));
+            }
+            let s = match from.filter(|_| !warped) {
                 Some(s) => Shown { pos: s.pos + (target.pos - s.pos) * ease, radius: s.radius + (target.radius - s.radius) * ease },
                 None => target,
             };
@@ -478,16 +523,24 @@ impl App {
         };
         blob.cam = Some((cam, height));
         let scale = rect.height() / height;
-        let to_screen = |p: Pos2| rect.center() + (p - cam) * scale;
+        // The Upside Down: the world turns over (top to bottom, like a card), and back at the end.
+        let upside = frame.events.iter().any(|(kind, _)| kind == "upside");
+        let turned = ui.ctx().animate_bool_with_time(ui.id().with("blob-upside"), upside, 1.2);
+        let flip = (std::f32::consts::PI * turned * turned * (3.0 - 2.0 * turned)).cos();
+        blob.flip = flip;
+        let to_screen = |p: Pos2| {
+            let d = (p - cam) * scale;
+            rect.center() + Vec2::new(d.x, d.y * flip)
+        };
 
         // Outside the world, darker; the grid inside.
         let size = blob.online.size.max(1.0);
-        let world = Rect::from_min_max(to_screen(Pos2::ZERO), to_screen(Pos2::new(size, size)));
+        let world = Rect::from_two_pos(to_screen(Pos2::ZERO), to_screen(Pos2::new(size, size)));
         painter.rect_filled(rect, 0.0, super::sidebar::lerp_color(theme.bg, Color32::BLACK, 0.3));
         painter.rect_filled(world, 0.0, theme.bg);
         let grid = theme.text.gamma_multiply(0.05);
         let step = 50.0;
-        let view = Rect::from_center_size(cam, rect.size() / scale).intersect(Rect::from_min_max(Pos2::ZERO, Pos2::new(size, size)));
+        let view = Rect::from_center_size(cam, Vec2::new(rect.width(), rect.height() / flip.abs().max(0.05)) / scale).intersect(Rect::from_min_max(Pos2::ZERO, Pos2::new(size, size)));
         let mut x = (view.min.x / step).ceil() * step;
         while x <= view.max.x {
             let sx = to_screen(Pos2::new(x, 0.0)).x;
@@ -502,9 +555,9 @@ impl App {
         }
         painter.rect_stroke(world, 0.0, Stroke::new(2.0, theme.accent.gamma_multiply(0.4)), egui::StrokeKind::Outside);
 
-        let event = frame.event.as_ref().map(|(kind, _)| kind.as_str());
+        let going = |kind: &str| frame.events.iter().any(|(k, _)| k == kind);
         // The feast: the pellets worth more, bigger.
-        let feast = if event == Some("feast") { 1.6 } else { 1.0 };
+        let feast = if going("feast") { 1.6 } else { 1.0 };
         let seen = view.expand(30.0);
         for &(x, y, k) in blob.online.pellets.values() {
             if !seen.contains(Pos2::new(x, y)) {
@@ -532,6 +585,19 @@ impl App {
         if let Some((x, y)) = frame.hole {
             paint_hole(&painter, to_screen(Pos2::new(x, y)), scale, now);
         }
+        // The portals, each pair its color; a ring spreading where a cell went through.
+        for (k, &(x, y)) in frame.portals.iter().enumerate() {
+            let at = to_screen(Pos2::new(x, y));
+            let r = PORTAL_R * scale;
+            if rect.expand(r * 3.0).contains(at) {
+                paint_portal(&painter, at, r, portal_color(k / 2, theme), now, k % 2 == 1);
+            }
+        }
+        blob.warps.retain(|(_, at)| now - at < WARP_RING);
+        for &(pos, at) in &blob.warps {
+            let k = ((now - at) / WARP_RING) as f32;
+            painter.circle_stroke(to_screen(pos), (40.0 + 160.0 * out_cubic(k)) * scale, Stroke::new(3.0 * (1.0 - k), theme.accent.gamma_multiply(1.0 - k)));
+        }
         // The hill: a golden circle on the ground, its edge turning.
         if let Some((x, y, r)) = frame.hill {
             let at = to_screen(Pos2::new(x, y));
@@ -553,7 +619,10 @@ impl App {
         // Each player's largest cell (the last one, smaller first): the name above it when it no longer fits inside.
         let largest: std::collections::HashMap<_, _> = cells.iter().map(|(c, _)| (c.owner, c.id)).collect();
         // The rush: everyone fast, everyone with the speed's trail.
-        let rush = event == Some("rush");
+        let rush = going("rush");
+        // Who sees the Demogorgon: the player's cells, or the middle while watching.
+        let eyes: Vec<Pos2> = frame.cells.iter().filter(|c| Some(c.owner) == frame.me).filter_map(|c| blob.shown.get(&c.id).map(|s| s.pos)).collect();
+        let mut dread = 0.0_f32;
         for (cell, s) in cells {
             let at = to_screen(s.pos);
             let r = s.radius * scale;
@@ -561,6 +630,16 @@ impl App {
                 continue;
             }
             let (name, k, skin) = blob.online.names.get(&cell.owner).map_or(("", 0, "plain"), |(n, k, s)| (n.as_str(), *k, s.as_str()));
+            // The Demogorgon: seen only up close, nameless.
+            if skin == "demo" {
+                let near = if eyes.is_empty() { s.pos.distance(cam) } else { eyes.iter().map(|e| e.distance(s.pos)).fold(f32::MAX, f32::min) } - s.radius;
+                let seen = ((DEMO_GONE - near) / (DEMO_GONE - DEMO_SEEN)).clamp(0.0, 1.0);
+                dread = dread.max(((DEMO_GONE * 1.6 - near) / (DEMO_GONE * 1.6 - DEMO_SEEN)).clamp(0.0, 1.0));
+                if seen > 0.0 {
+                    paint_demo(&painter, at, r, now, seen);
+                }
+                continue;
+            }
             // On pause: faded, out of the game for now; a ghost, see-through.
             let faded = if cell.fx & FX_PAUSED != 0 { 0.4 } else if cell.fx & FX_GHOST != 0 { 0.5 + 0.1 * ((now * 4.0).sin() as f32) } else { 1.0 };
             let color = cell_color(theme, k, skin).gamma_multiply(faded);
@@ -629,9 +708,30 @@ impl App {
             painter.circle_stroke(at, r, Stroke::new(3.0, theme.ansi[1].gamma_multiply(0.8 * pulse)));
         }
 
+        // The Upside Down: reddened, spores floating up; the lights flickering as the Demogorgon comes near.
+        if turned > 0.0 {
+            painter.rect_filled(rect, 0.0, UPSIDE.gamma_multiply(0.16 * turned));
+            for k in 0..80_u32 {
+                let h = |n: u32| ((k.wrapping_mul(2_654_435_761).wrapping_add(n.wrapping_mul(40_503))) % 10_000) as f32 / 10_000.0;
+                let rise = 12.0 + 30.0 * h(1);
+                let x = rect.min.x + rect.width() * h(2) + 14.0 * ((now as f32) * (0.4 + h(3)) + h(4) * 6.0).sin();
+                let y = rect.max.y - (rect.height() * h(5) + now as f32 * rise).rem_euclid(rect.height());
+                painter.circle_filled(Pos2::new(x, y), 1.2 + 1.8 * h(6), Color32::from_rgb(220, 210, 215).gamma_multiply(0.35 * turned));
+            }
+        }
+        if dread > 0.0 {
+            let t = now as f32;
+            let out = if (t * 13.0).sin() * (t * 7.3).sin() > 0.35 { 0.55 } else { 0.08 };
+            painter.rect_filled(rect, 0.0, Color32::from_black_alpha((255.0 * out * dread) as u8));
+        }
+        if let Some(at) = blob.grabbed_at.filter(|at| now - at < 0.7) {
+            let k = 1.0 - ((now - at) / 0.7) as f32;
+            painter.rect_filled(rect, 0.0, UPSIDE.gamma_multiply(0.45 * k));
+        }
+
         // The night: dark but around the player's cells (around the middle while watching), coming
         // and going softly.
-        let night = ui.ctx().animate_bool_with_time(ui.id().with("blob-night"), event == Some("night"), 1.5);
+        let night = ui.ctx().animate_bool_with_time(ui.id().with("blob-night"), going("night"), 1.5);
         if night > 0.0 {
             let (around, sight) = match frame.cells.iter().filter(|c| Some(c.owner) == frame.me).filter_map(|c| blob.shown.get(&c.id)).map(|s| (s.pos, s.radius)).collect::<Vec<_>>() {
                 mine if !mine.is_empty() => {
@@ -669,8 +769,10 @@ impl App {
 
     /// The players in the world, the largest first (top right), as many as fit in the height; the
     /// player's place below when it is further down. The players who aren't bots in a color of their own.
-    fn blob_leaders(&self, ui: &Ui, rect: Rect, theme: &Theme, t: &Strings) {
-        let Some(board) = self.blob.online.board.as_ref().filter(|_| self.blob.online.frame.is_some()) else { return };
+    fn blob_leaders(&self, ui: &Ui, rect: Rect, watching: bool, theme: &Theme, t: &Strings) -> Option<u32> {
+        let frame = self.blob.online.frame.as_ref()?;
+        let board = self.blob.online.board.as_ref()?;
+        let mut clicked = None;
         let painter = ui.painter_at(rect);
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(t.game_you);
         let mut lines: Vec<(u32, &str, u32, bool, bool)> = board.leaders.iter().enumerate().map(|(k, (name, mass, me, bot))| (k as u32 + 1, name.as_str(), *mass, *me, *bot)).collect();
@@ -703,6 +805,18 @@ impl App {
                 y += 8.0;
             }
             last = rank;
+            // Watching: a line followed on a click, the one followed marked.
+            let id = board.ids.get(rank as usize - 1).copied().filter(|_| watching && !mine);
+            if let Some(id) = id {
+                let row = Rect::from_min_max(Pos2::new(area.min.x + 4.0, y - 9.5), Pos2::new(area.max.x - 4.0, y + 9.5));
+                let response = ui.interact(row, ui.id().with(("blob-follow", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if frame.followed == Some(id) || response.hovered() {
+                    painter.rect_filled(row, 5.0, theme.accent.gamma_multiply(if frame.followed == Some(id) { 0.16 } else { 0.08 }));
+                }
+                if response.clicked() {
+                    clicked = Some(id);
+                }
+            }
             let color = if mine {
                 theme.accent
             } else if name == "Ronnie" {
@@ -727,6 +841,7 @@ impl App {
             painter.text(Pos2::new(area.max.x - 12.0, y), Align2::RIGHT_CENTER, mass.to_string(), FontId::monospace(11.5), color);
             y += 19.0;
         }
+        clicked
     }
 
     /// Who ate whom, bottom left (above the mass while playing), the last ones fading.
@@ -773,7 +888,7 @@ impl App {
         }
     }
 
-    /// The event going on, at the top: announced big as it starts, then with its seconds left; Ronnie
+    /// The events going on, at the top: announced big as they start, then with their seconds left; Ronnie
     /// appearing; the connection coming back.
     fn blob_banner(&self, ui: &Ui, rect: Rect, now: f64, theme: &Theme, t: &Strings) {
         let painter = ui.painter_at(rect);
@@ -807,9 +922,12 @@ impl App {
             paint_metal(&painter, at + Vec2::new(0.0, 30.0), Align2::CENTER_CENTER, &text, size, color, alpha);
             return;
         }
-        if let Some((kind, left)) = &frame.event {
-            let Some((text, color)) = event_look(kind, t, theme) else { return };
+        // The events going on, one under the other.
+        let mut at = at;
+        for (kind, left) in &frame.events {
+            let Some((text, color)) = event_look(kind, t, theme) else { continue };
             banner(&painter, at, &format!("{text}  {left} s"), color, theme);
+            at.y += 34.0;
         }
     }
 
@@ -863,13 +981,65 @@ impl App {
         if let Some((x, y, r)) = frame.hill {
             painter.circle_stroke(map.min + Vec2::new(x, y) / size * map.width(), (r / size * map.width()).max(4.0), Stroke::new(1.5, theme.ansi[3]));
         }
+        for (k, &(x, y)) in frame.portals.iter().enumerate() {
+            painter.circle_filled(map.min + Vec2::new(x, y) / size * map.width(), 3.0, portal_color(k / 2, theme));
+        }
         // The night: the map goes out.
-        let night = frame.event.as_ref().is_some_and(|(kind, _)| kind == "night");
+        let night = frame.events.iter().any(|(kind, _)| kind == "night");
         if let Some((cam, _)) = self.blob.cam.filter(|_| !night) {
             let at = map.min + cam.to_vec2() / size * map.width();
             painter.circle_filled(at, 4.0, theme.accent);
             painter.circle_stroke(at, 7.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.5)));
         }
+    }
+
+    /// Watching, the card put away: who is followed (bottom middle) and the keys: ← → the one after or
+    /// before on the leaderboard, C the whole map (again: back to the first), Enter to play, Escape back
+    /// to the card. Not while typing in the chat.
+    fn blob_spectator(&mut self, ui: &mut Ui, rect: Rect, now: f64, theme: &Theme, t: &Strings) {
+        use crate::blob::Watch;
+        if !self.blob.chat.typing {
+            let (before, after, map, play, back) = ui.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::C),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            });
+            if before || after {
+                self.blob.online.watch(Watch::Next(if after { 1 } else { -1 }));
+            }
+            if map {
+                let watch = if self.blob.online.watching == Watch::Map { Watch::Leader } else { Watch::Map };
+                self.blob.online.watch(watch);
+            }
+            if back {
+                self.blob.spectating = false;
+            }
+            if play && now - self.blob.died_at > 0.6 && self.blob.online.status == crate::blob::Status::Ready {
+                let skin = self.config.settings.blob_skin.clone();
+                self.blob.online.join(&skin);
+                self.blob.aimed = None;
+                self.blob.aim = None;
+            }
+        }
+        let online = &self.blob.online;
+        let Some(frame) = &online.frame else { return };
+        let (name, color) = match frame.followed.and_then(|id| online.names.get(&id)) {
+            Some((name, hue_k, skin)) => (name.as_str(), if name == "Ronnie" { PINK } else { cell_color(theme, *hue_k, skin) }),
+            None => (t.blob_watch_map, theme.text),
+        };
+        let painter = ui.painter_at(rect);
+        let title = painter.layout_no_wrap(t.blob_watching.replace("{n}", name), FontId::proportional(15.0), color);
+        let help = painter.layout_no_wrap(t.blob_watch_help.to_owned(), FontId::proportional(11.5), theme.text_muted);
+        let width = title.size().x.max(help.size().x) + 32.0;
+        let panel = Rect::from_center_size(Pos2::new(rect.center().x, rect.max.y - 14.0 - 30.0), Vec2::new(width, 60.0));
+        painter.rect_filled(panel, 12.0, theme.chrome_bg.gamma_multiply(0.86));
+        painter.rect_stroke(panel, 12.0, Stroke::new(1.0, color.gamma_multiply(0.4)), egui::StrokeKind::Inside);
+        painter.galley(Pos2::new(panel.center().x - title.size().x / 2.0, panel.min.y + 10.0), title, color);
+        painter.galley(Pos2::new(panel.center().x - help.size().x / 2.0, panel.max.y - 10.0 - help.size().y), help, theme.text_muted);
     }
 
     /// Between two lives, over the world watched: the title and how to play, or how the last life
@@ -970,6 +1140,12 @@ impl App {
                 let enter = !self.blob.chat.typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
                 // A short pause after a death: the Space pressed to flee doesn't replay at once.
                 let ready = now - self.blob.died_at > 0.6 && status == Status::Ready;
+                // Play, and beside it, watch with the card put away.
+                let button = Rect::from_center_size(Pos2::new(mid - 50.0, line.y), Vec2::new(150.0, 36.0));
+                let look = Rect::from_center_size(Pos2::new(mid + 85.0, line.y), Vec2::new(100.0, 36.0));
+                if ui.put(look, egui::Button::new(egui::RichText::new(t.blob_watch).size(13.5)).corner_radius(8.0)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.blob.spectating = true;
+                }
                 if (ui.put(button, play).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || enter) && ready {
                     let skin = self.config.settings.blob_skin.clone();
                     self.blob.online.join(&skin);
@@ -1398,6 +1574,56 @@ fn paint_night(painter: &egui::Painter, rect: Rect, around: Pos2, sight: f32, da
     // Beyond: a ring wide enough to cover the screen.
     let far = rect.size().length() + (around - rect.center()).length();
     painter.circle_stroke(around, to + far / 2.0, Stroke::new(far, color(dark)));
+}
+
+/// The Demogorgon (`alpha`: how much it shows): a dark body, its head opening in five petals, teeth inside.
+fn paint_demo(painter: &egui::Painter, at: Pos2, r: f32, now: f64, alpha: f32) {
+    let t = now as f32;
+    let skin = Color32::from_rgb(52, 22, 26).gamma_multiply(alpha);
+    let flesh = Color32::from_rgb(196, 58, 64).gamma_multiply(alpha);
+    let dark = Color32::from_rgb(70, 8, 16).gamma_multiply(alpha);
+    painter.circle_filled(at, r * 1.25, UPSIDE.gamma_multiply(0.12 * alpha));
+    painter.circle_filled(at, r, skin);
+    // The petals, opening and closing.
+    let open = 0.55 + 0.45 * (t * 2.2).sin().abs();
+    let turn = t * 0.3;
+    for k in 0..5 {
+        let a = turn + k as f32 / 5.0 * std::f32::consts::TAU;
+        let base = r * 0.22;
+        let tip = r * (0.55 + 0.4 * open);
+        let side = 0.55;
+        let petal = vec![at + Vec2::angled(a - side) * base, at + Vec2::angled(a - side * 0.4) * tip * 0.8, at + Vec2::angled(a) * tip, at + Vec2::angled(a + side * 0.4) * tip * 0.8, at + Vec2::angled(a + side) * base];
+        painter.add(egui::Shape::convex_polygon(petal, flesh, Stroke::new((r * 0.03).max(1.0), dark)));
+    }
+    // The mouth, ringed with teeth.
+    painter.circle_filled(at, r * 0.24 * open, Color32::from_rgb(12, 2, 4).gamma_multiply(alpha));
+    for k in 0..12 {
+        let a = k as f32 / 12.0 * std::f32::consts::TAU - turn * 2.0;
+        painter.circle_filled(at + Vec2::angled(a) * r * 0.27 * open, (r * 0.03).max(1.0), Color32::from_rgb(235, 225, 210).gamma_multiply(alpha));
+    }
+}
+
+/// A pair of portals' color (both the same).
+fn portal_color(pair: usize, theme: &Theme) -> Color32 {
+    if pair.is_multiple_of(2) { theme.ansi[6] } else { theme.ansi[5] }
+}
+
+/// A portal: a glow, rings turning (the twin the other way), a dark middle.
+fn paint_portal(painter: &egui::Painter, at: Pos2, r: f32, color: Color32, now: f64, twin: bool) {
+    let t = now as f32 * if twin { -1.0 } else { 1.0 };
+    painter.circle_filled(at, r * 1.9, color.gamma_multiply(0.06));
+    painter.circle_filled(at, r * 1.35, color.gamma_multiply(0.1));
+    for ring in 0..3 {
+        let rr = r * (1.0 - ring as f32 * 0.22);
+        let turn = t * (1.5 + ring as f32 * 0.8);
+        for k in 0..6 {
+            let a = turn + k as f32 / 6.0 * std::f32::consts::TAU;
+            let points: Vec<Pos2> = (0..=6).map(|j| at + Vec2::angled(a + j as f32 * 0.07) * rr).collect();
+            painter.add(egui::Shape::line(points, Stroke::new((r * 0.08).max(1.5), color.gamma_multiply(0.85 - ring as f32 * 0.2))));
+        }
+    }
+    painter.circle_filled(at, r * 0.4, Color32::from_rgb(6, 8, 16));
+    painter.circle_stroke(at, r * 0.4, Stroke::new((r * 0.05).max(1.0), color.gamma_multiply(0.5 + 0.3 * (t * 4.0).sin().abs())));
 }
 
 fn paint_hole(painter: &egui::Painter, at: Pos2, scale: f32, now: f64) {

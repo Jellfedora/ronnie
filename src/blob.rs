@@ -66,9 +66,11 @@ pub struct Frame {
     pub fx: Option<[f32; 4]>,
     /// The mines the player carries.
     pub carried: u32,
-    /// The event going on ("rain", "boss", "zone", "hole", "rush", "night", "meteors", "hill", "feast"),
-    /// and its seconds left.
-    pub event: Option<(String, u32)>,
+    /// The events going on ("rain", "boss", "zone", "hole", "rush", "night", "meteors", "hill", "feast"),
+    /// two at most, the oldest first, and their seconds left.
+    pub events: Vec<(String, u32)>,
+    /// Who the camera follows while watching (none: the whole map).
+    pub followed: Option<u32>,
     /// The zone: its center and radius (outside, cells melt).
     pub zone: Option<(f32, f32, f32)>,
     /// The black hole's center.
@@ -77,6 +79,8 @@ pub struct Frame {
     pub meteors: Vec<(f32, f32, f32, f32)>,
     /// The hill: its center and radius (inside, cells grow).
     pub hill: Option<(f32, f32, f32)>,
+    /// The portals, two by two (each leads to its twin).
+    pub portals: Vec<(f32, f32)>,
     /// When it came.
     pub at: Instant,
 }
@@ -85,6 +89,8 @@ pub struct Frame {
 #[derive(Clone, Debug, Default)]
 pub struct Board {
     pub leaders: Vec<(String, u32, bool, bool)>,
+    /// The players' ids, line by line (empty from an older floor).
+    pub ids: Vec<u32>,
     /// The player's place and mass, in the world.
     pub me: Option<(u32, u32)>,
     /// Players connected (in the world or watching).
@@ -164,6 +170,8 @@ pub struct News {
     pub badge: bool,
     /// Ronnie appeared.
     pub ronnie: bool,
+    /// The Demogorgon caught the player.
+    pub grabbed: bool,
     /// Skins just unlocked.
     pub unlocked: Vec<String>,
 }
@@ -209,6 +217,10 @@ enum Wire {
         fy: Option<(f32, u32)>,
         ev: Option<(String, u32)>,
         #[serde(default)]
+        es: Option<Vec<(String, u32)>>,
+        #[serde(default)]
+        fo: Option<u32>,
+        #[serde(default)]
         z: Option<(f32, f32, f32)>,
         #[serde(default)]
         bh: Option<(f32, f32)>,
@@ -216,9 +228,17 @@ enum Wire {
         mt: Option<Vec<f32>>,
         #[serde(default)]
         hl: Option<(f32, f32, f32)>,
+        #[serde(default)]
+        pt: Option<Vec<f32>>,
     },
     #[serde(rename = "board")]
-    Board { l: Vec<(String, u32, bool, bool)>, me: Option<(u32, u32)>, online: u32 },
+    Board {
+        l: Vec<(String, u32, bool, bool)>,
+        #[serde(default)]
+        ids: Vec<u32>,
+        me: Option<(u32, u32)>,
+        online: u32,
+    },
     #[serde(rename = "records")]
     Records { l: Vec<(String, u32, bool)>, me: Option<(u32, u32)>, skins: Vec<Skin> },
     #[serde(rename = "dead")]
@@ -246,6 +266,8 @@ enum Wire {
     Bonus { kind: String },
     #[serde(rename = "badge")]
     Badge {},
+    #[serde(rename = "grabbed")]
+    Grabbed {},
     #[serde(rename = "pong")]
     Pong { n: u64 },
     #[serde(rename = "chat")]
@@ -292,11 +314,37 @@ pub struct Online {
     pub chat: Vec<Said>,
     /// A join asked, not answered yet.
     pub joining: bool,
+    /// Who the player follows while watching.
+    pub watching: Watch,
     /// floor's delay, there and back (seconds).
     pub rtt: f32,
     pings: HashMap<u64, Instant>,
     next_ping: u64,
     last_ping: Option<Instant>,
+}
+
+/// Who a player watching follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Watch {
+    /// The first on the leaderboard.
+    #[default]
+    Leader,
+    Player(u32),
+    /// The one after (1) or before (-1) the one followed, on the leaderboard (floor picks them).
+    Next(i8),
+    /// The whole map.
+    Map,
+}
+
+impl Watch {
+    fn wire(self) -> serde_json::Value {
+        match self {
+            Watch::Leader => json!({ "t": "watch", "id": null }),
+            Watch::Player(id) => json!({ "t": "watch", "id": id }),
+            Watch::Next(by) => json!({ "t": "watch", "by": by }),
+            Watch::Map => json!({ "t": "watch", "id": "map" }),
+        }
+    }
 }
 
 /// floor's WebSocket address, from its HTTP one.
@@ -415,6 +463,12 @@ impl Online {
         self.send(json!({ "t": "leave" }));
     }
 
+    /// Who to follow while watching (kept for a reconnection).
+    pub fn watch(&mut self, watch: Watch) {
+        self.watching = watch;
+        self.send(watch.wire());
+    }
+
     /// The player is in the world.
     pub fn alive(&self) -> bool {
         self.frame.as_ref().is_some_and(|f| f.me.is_some())
@@ -479,15 +533,18 @@ impl Online {
                 self.size = size;
                 self.skins = skins;
                 self.status = Status::Ready;
-                // A new connection: floor sends the pellets and the names again.
+                // A new connection: floor sends the pellets and the names again, and forgot who to follow.
                 self.pellets.clear();
                 self.names.clear();
+                if let Watch::Player(_) | Watch::Map = self.watching {
+                    self.send(self.watching.wire());
+                }
             }
             Wire::Joined {} => {
                 self.joining = false;
                 self.death = None;
             }
-            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, z, bh, mt, hl } => {
+            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, es, fo, z, bh, mt, hl, pt } => {
                 for (id, named) in n {
                     if let Ok(id) = id.parse() {
                         self.names.insert(id, named);
@@ -506,10 +563,20 @@ impl Online {
                 let mines = groups(&m, 3).map(|k| (k[0], k[1], k[2] as u8)).collect();
                 let fx = fx.map(|[speed, magnet, shield]| [speed, magnet, shield, fy.map_or(0.0, |(ghost, _)| ghost)]);
                 let carried = fy.map_or(0, |(_, n)| n);
+                let portals = groups(&pt.unwrap_or_default(), 2).map(|k| (k[0], k[1])).collect();
                 let meteors = groups(&mt.unwrap_or_default(), 4).map(|k| (k[0], k[1], k[2], k[3] / 10.0)).collect();
-                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, event: ev, zone: z, hole: bh, meteors, hill: hl, at });
+                // Moved to the next one: following them now (again after a reconnection).
+                let before = self.frame.as_ref().and_then(|f| f.followed);
+                if let (Watch::Next(_), Some(id)) = (self.watching, fo)
+                    && fo != before
+                {
+                    self.watching = Watch::Player(id);
+                }
+                // All the events from a newer floor, the first one only from an older one.
+                let events = es.unwrap_or_else(|| ev.into_iter().collect());
+                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, events, followed: fo, zone: z, hole: bh, meteors, hill: hl, portals, at });
             }
-            Wire::Board { l, me, online } => self.board = Some(Board { leaders: l, me, online }),
+            Wire::Board { l, ids, me, online } => self.board = Some(Board { leaders: l, ids, me, online }),
             Wire::Records { l, me, skins } => {
                 self.records = Some(Records { leaders: l, me });
                 let had: Vec<&str> = self.skins.iter().filter(|s| s.3).map(|s| s.0.as_str()).collect();
@@ -543,6 +610,7 @@ impl Online {
                 self.chat.drain(..extra);
             }
             Wire::Badge {} => news.badge = true,
+            Wire::Grabbed {} => news.grabbed = true,
             Wire::Pong { n } => {
                 if let Some(sent) = self.pings.remove(&n) {
                     // Eased: one slow answer doesn't throw the prediction.
@@ -639,7 +707,7 @@ mod tests {
         assert_eq!(o.pellets.len(), 2);
         assert_eq!(o.names[&3], ("Dio".to_owned(), 5, "flames".to_owned()));
         assert_eq!(f.bonuses, vec![(50.0, 60.0, 2)]);
-        assert_eq!(f.event, Some(("rain".to_owned(), 12)));
+        assert_eq!(f.events, vec![("rain".to_owned(), 12)]);
         assert_eq!(f.fx, Some([0.0, 0.0, 3.5, 0.0]));
         // The zone, the mines, the ghost and the mines carried.
         let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"m":[300,310,4],"n":{},"fx":[0,0,0],"fy":[2.5,1],"ev":["zone",30],"z":[2000,2100,900],"bh":null}"#;
@@ -655,6 +723,17 @@ mod tests {
         let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"ev":["hill",40],"mt":null,"hl":[2000,1800,420]}"#;
         o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
         assert_eq!(o.frame.clone().unwrap().hill, Some((2000.0, 1800.0, 420.0)));
+        // Two events at once, watching someone.
+        let text = r#"{"t":"s","me":null,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"ev":["night",20],"es":[["night",20],["rush",8]],"fo":12}"#;
+        o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
+        let f = o.frame.clone().unwrap();
+        assert_eq!((f.events, f.followed), (vec![("night".to_owned(), 20), ("rush".to_owned(), 8)], Some(12)));
+        o.take(serde_json::from_str(r#"{"t":"board","l":[["Dio",50,false,false]],"ids":[12],"me":null,"online":1}"#).unwrap(), at, &mut news, &mut closed);
+        assert_eq!(o.board.as_ref().unwrap().ids, vec![12]);
+        // The portals, two by two.
+        let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"es":[["portals",40]],"ev":["portals",40],"pt":[100,200,1500,1600,3000,300,600,3500]}"#;
+        o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
+        assert_eq!(o.frame.clone().unwrap().portals, vec![(100.0, 200.0), (1500.0, 1600.0), (3000.0, 300.0), (600.0, 3500.0)]);
         o.take(serde_json::from_str(r#"{"t":"event","kind":"bounty","on":true,"name":"Dio"}"#).unwrap(), at, &mut news, &mut closed);
         assert_eq!((o.notices[0].name.as_str(), o.notices[0].held), ("Dio", false));
         o.take(serde_json::from_str(r#"{"t":"chat","from":"Dio","text":"salut"}"#).unwrap(), at, &mut news, &mut closed);

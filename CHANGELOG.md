@@ -2,6 +2,21 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.24.0] - 2026-10-09
+
+### Nouveautés
+
+- **Ronnie.io bouge plus** : les événements s'enchaînent (le premier au bout de quelques secondes, le suivant peu après la fin du précédent), et parfois **deux en même temps**, affichés l'un sous l'autre.
+- **Trois nouveaux événements** sur Ronnie.io :
+  - **L'Envers** : le plateau se retourne, le monde rougit, des spores flottent… et un **Démogorgon** rôde. On ne le voit que de près, les lumières grésillent quand il approche ; il traque les plus gros et fait éclater ce qu'il attrape. Il fuit les groupes.
+  - **Les portails** : deux paires de trous de ver ; on entre dans l'un, on ressort par son jumeau, lancé. Ils sont aussi sur la mini-carte.
+  - **Les virus en folie** : les virus filent dans tous les sens, rebondissent sur les murs et se multiplient.
+- **Mode spectateur** sur Ronnie.io : « Regarder », à côté de « Jouer », range la carte pour suivre la partie. ← → passent d'un joueur à l'autre, un clic sur le classement suit ce joueur, C montre toute la carte, Entrée lance une partie, Échap revient.
+
+### Corrections
+
+- Ronnie.io : les bots ne restent plus collés contre les murs quand ils fuient ; ils longent le mur ou se dégagent vers le milieu.
+
 ## [0.23.0] - 2026-10-09
 
 ### Nouveautés
