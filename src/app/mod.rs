@@ -2978,8 +2978,9 @@ fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, u: &crate::clau
 /// What the strip above a pane shows.
 enum Header<'a> {
     /// A local pane: its working directory (when known and shown), the local servers announced by its
-    /// program, and whether it is in a git repository (Some: whether its changes are shown).
-    Local(Option<&'a Path>, &'a [LocalUrl], Option<bool>),
+    /// program, whether it is in a git repository (Some: whether its changes are shown), and where that
+    /// repository is hosted.
+    Local(Option<&'a Path>, &'a [LocalUrl], Option<bool>, Option<&'a git::Forge>),
     /// An SSH pane: the host, with a reconnect button.
     Ssh(&'a str),
 }
@@ -3058,7 +3059,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         max_w -= 30.0;
     }
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
-    if let Header::Local(_, urls, git) = header {
+    if let Header::Local(_, urls, git, forge) = header {
         clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label())).clicked();
         right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
@@ -3089,6 +3090,33 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
                     ui.close();
                 }
             });
+            right -= 30.0;
+            max_w -= 30.0;
+        }
+        // Hosted on GitHub or GitLab: its page in the browser.
+        if let Some(forge) = forge {
+            let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+            let resp = ui.interact(at, egui::Id::new(("pane-forge", id)), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(at, 5.0, theme.tab_hover);
+            }
+            let logo = Rect::from_center_size(at.center(), Vec2::splat(15.0));
+            let tint = if resp.hovered() { theme.text } else { color };
+            match forge.kind {
+                git::ForgeKind::GitHub => {
+                    let key = egui::Id::new("github-mark");
+                    let texture = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(key)).unwrap_or_else(|| {
+                        let texture = load_png(ui.ctx(), "github-mark", include_bytes!("../../assets/icon/github-mark.png"));
+                        ui.ctx().data_mut(|d| d.insert_temp(key, texture.clone()));
+                        texture
+                    });
+                    ui.painter().image(texture.id(), logo, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
+                }
+                git::ForgeKind::GitLab => git::paint_gitlab_icon(ui.painter(), logo, tint),
+            }
+            if resp.on_hover_text(format!("{}\n{}", forge.name, forge.url)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                crate::terminal::open_url(&forge.url);
+            }
             right -= 30.0;
             max_w -= 30.0;
         }
@@ -3134,12 +3162,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     let ssh = matches!(header, Header::Ssh(_));
     let (text, tooltip) = match header {
         Header::Ssh(host) => (host.to_owned(), None),
-        Header::Local(None, _, _) if name.is_none() => {
+        Header::Local(None, _, _, _) if name.is_none() => {
             clicks.focus = resp.clicked();
             return clicks;
         }
-        Header::Local(None, _, _) => (String::new(), None),
-        Header::Local(Some(cwd), _, _) => {
+        Header::Local(None, _, _, _) => (String::new(), None),
+        Header::Local(Some(cwd), _, _, _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
                 Some(rest) => ("~", rest),
@@ -3922,6 +3950,8 @@ impl App {
                     let urls = if local { term.local_urls(ui.ctx()).to_vec() } else { Vec::new() };
                     // The repository of a local pane's folder, if any.
                     let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::git_root) } else { None };
+                    // Its GitHub or GitLab page.
+                    let forge = repo.as_deref().and_then(git::forge);
                     let git_open = tab.git.contains_key(&id);
                     // Claude Code in the foreground: its plan's usage in the strip, once known.
                     let claude_running = local && term.live_program(ui.ctx()).is_some_and(crate::claude::is_claude);
@@ -3941,7 +3971,7 @@ impl App {
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let git_state = (repo.is_some() || git_open).then_some(git_open);
-                        let header = if local { Header::Local(cwd.as_deref(), &urls, git_state) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
+                        let header = if local { Header::Local(cwd.as_deref(), &urls, git_state, forge.as_ref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
                         let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {

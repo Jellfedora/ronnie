@@ -76,6 +76,108 @@ pub(super) fn git_root(dir: &Path) -> Option<PathBuf> {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum ForgeKind {
+    GitHub,
+    GitLab,
+}
+
+/// Where a repository is hosted, from its `origin` remote: shown as a logo in the pane's strip.
+#[derive(Clone, PartialEq, Debug)]
+pub(super) struct Forge {
+    pub kind: ForgeKind,
+    /// Its web page: "https://github.com/user/repo".
+    pub url: String,
+    /// "user/repo".
+    pub name: String,
+}
+
+/// The forge of the repository `root` (from `repo_root`), when GitHub or GitLab. Read from `.git/config`
+/// without running `git`, and remembered a few seconds as it is asked at every frame.
+pub(super) fn forge(root: &Path) -> Option<Forge> {
+    type Forges = HashMap<PathBuf, (Instant, Option<Forge>)>;
+    static CACHE: Mutex<Option<Forges>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, forge)) = cache.get(root)
+        && at.elapsed() < Duration::from_secs(5)
+    {
+        return forge.clone();
+    }
+    let forge = git_dir_config(root).and_then(|c| origin_url(&c)).and_then(|u| forge_of(&u));
+    if cache.len() > 256 {
+        cache.clear();
+    }
+    cache.insert(root.to_path_buf(), (Instant::now(), forge.clone()));
+    forge
+}
+
+/// The repository's `config`. In a worktree or a submodule `.git` is a file ("gitdir: …"), and a
+/// worktree's config is in the main repository (its `commondir`).
+fn git_dir_config(root: &Path) -> Option<String> {
+    let dot_git = root.join(".git");
+    let dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let dir = root.join(text.trim().strip_prefix("gitdir:")?.trim());
+        match std::fs::read_to_string(dir.join("commondir")) {
+            Ok(common) => dir.join(common.trim()),
+            Err(_) => dir,
+        }
+    };
+    std::fs::read_to_string(dir.join("config")).ok()
+}
+
+/// The URL of the `origin` remote, else of the first one.
+fn origin_url(config: &str) -> Option<String> {
+    let mut remote: Option<String> = None;
+    let mut urls: Vec<(String, String)> = Vec::new();
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            // [remote "origin"]
+            remote = line.strip_prefix("[remote")
+                .and_then(|r| r.trim().strip_suffix(']'))
+                .map(|r| r.trim().trim_matches('"').to_owned());
+        } else if let Some(name) = &remote
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "url"
+        {
+            urls.push((name.clone(), value.trim().trim_matches('"').to_owned()));
+        }
+    }
+    let origin = urls.iter().position(|(n, _)| n == "origin").unwrap_or(0);
+    (!urls.is_empty()).then(|| urls.swap_remove(origin).1)
+}
+
+/// The forge of a remote URL: "git@github.com:user/repo.git", "ssh://git@gitlab.com:2222/group/repo",
+/// "https://user:token@github.com/user/repo.git"...
+fn forge_of(url: &str) -> Option<Forge> {
+    let (host, path) = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?,
+        // scp style: "git@github.com:user/repo.git".
+        None => url.split_once(':')?,
+    };
+    // Without the user ("git@", "user:token@") and the port.
+    let host = host.rsplit('@').next()?;
+    let host = host.split(':').next()?.to_lowercase();
+    let kind = if host.contains("github") {
+        ForgeKind::GitHub
+    } else if host.contains("gitlab") {
+        ForgeKind::GitLab
+    } else {
+        return None;
+    };
+    // An alias of ~/.ssh/config such as "github.com-perso" stands for github.com.
+    let host = ["github.com", "gitlab.com"].into_iter().find(|h| host.starts_with(h)).map(str::to_owned).unwrap_or(host);
+    let name = path.trim_matches('/');
+    let name = name.strip_suffix(".git").unwrap_or(name).to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    Some(Forge { kind, url: format!("https://{host}/{name}"), name })
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Status {
     Modified,
     Added,
@@ -1971,9 +2073,46 @@ pub(super) fn paint_branch_icon(painter: &egui::Painter, rect: Rect, color: Colo
     }
 }
 
+/// GitLab's tanuki: a fox head, its two ears up and its chin down.
+pub(super) fn paint_gitlab_icon(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let s = rect.width() / 24.0;
+    let at = |x: f32, y: f32| rect.min + Vec2::new(x * s, y * s);
+    let mut mesh = egui::Mesh::default();
+    // The face, then each ear.
+    let points = [at(12.0, 22.0), at(1.0, 13.5), at(6.5, 10.0), at(17.5, 10.0), at(23.0, 13.5), at(3.5, 2.5), at(20.5, 2.5)];
+    for p in points {
+        mesh.colored_vertex(p, color);
+    }
+    for [a, b, c] in [[0, 1, 2], [0, 2, 3], [0, 3, 4], [1, 5, 2], [3, 6, 4]] {
+        mesh.add_triangle(a, b, c);
+    }
+    painter.add(mesh);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_forges() {
+        let f = forge_of("git@github.com:jlecointe/ronnie.git").unwrap();
+        assert_eq!(f, Forge { kind: ForgeKind::GitHub, url: "https://github.com/jlecointe/ronnie".into(), name: "jlecointe/ronnie".into() });
+        let f = forge_of("https://user:tok@gitlab.com/group/sub/repo.git").unwrap();
+        assert_eq!((f.kind, f.url.as_str()), (ForgeKind::GitLab, "https://gitlab.com/group/sub/repo"));
+        let f = forge_of("ssh://git@gitlab.example.org:2222/team/app").unwrap();
+        assert_eq!((f.kind, f.url.as_str()), (ForgeKind::GitLab, "https://gitlab.example.org/team/app"));
+        assert_eq!(forge_of("git@github.com-perso:me/x.git").unwrap().url, "https://github.com/me/x");
+        assert_eq!(forge_of("https://bitbucket.org/me/x.git"), None);
+        assert_eq!(forge_of("/srv/git/x.git"), None);
+    }
+
+    #[test]
+    fn reads_origin_url() {
+        let config = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = git@gitlab.com:a/b.git\n[remote \"origin\"]\n\turl = git@github.com:c/d.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n";
+        assert_eq!(origin_url(config).as_deref(), Some("git@github.com:c/d.git"));
+        assert_eq!(origin_url("[remote \"fork\"]\n url = x\n").as_deref(), Some("x"));
+        assert_eq!(origin_url("[core]\n url = x\n"), None);
+    }
 
     #[test]
     fn reads_status() {
