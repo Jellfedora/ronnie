@@ -1563,17 +1563,27 @@ fn paint_mine(painter: &egui::Painter, at: Pos2, r: f32, color: Color32, now: f6
 /// Dark over `rect` but within `sight` of `around`, the edge soft.
 fn paint_night(painter: &egui::Painter, rect: Rect, around: Pos2, sight: f32, dark: f32) {
     let color = |a: f32| Color32::from_rgba_unmultiplied(3, 4, 12, (255.0 * a) as u8);
-    // The soft edge: rings darker and darker, from 70 % of the sight to past it.
-    let steps = 10;
+    // A mesh in three circles: clear up to 70 % of the sight, darker and darker to past it, then dark
+    // as far as the screen's corners.
     let (from, to) = (sight * 0.7, sight * 1.15);
-    let w = (to - from) / steps as f32;
-    for k in 0..steps {
-        let a = dark * ((k as f32 + 1.0) / steps as f32).powf(1.5);
-        painter.circle_stroke(around, from + w * (k as f32 + 0.5), Stroke::new(w + 0.5, color(a)));
+    let far = to + rect.size().length() + (around - rect.center()).length();
+    let rings = [(from, color(0.0)), (to, color(dark)), (far, color(dark))];
+    let n = 96;
+    let mut mesh = egui::Mesh::default();
+    for k in 0..n {
+        let dir = Vec2::angled(k as f32 / n as f32 * std::f32::consts::TAU);
+        for &(r, c) in &rings {
+            mesh.colored_vertex(around + dir * r, c);
+        }
     }
-    // Beyond: a ring wide enough to cover the screen.
-    let far = rect.size().length() + (around - rect.center()).length();
-    painter.circle_stroke(around, to + far / 2.0, Stroke::new(far, color(dark)));
+    for k in 0..n {
+        let (a, b) = (k * 3, (k + 1) % n * 3);
+        for ring in 0..2 {
+            mesh.add_triangle(a + ring, b + ring, a + ring + 1);
+            mesh.add_triangle(b + ring, b + ring + 1, a + ring + 1);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// The Demogorgon (`alpha`: how much it shows): a dark body, its head opening in five petals, teeth inside.
