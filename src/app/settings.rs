@@ -1303,6 +1303,10 @@ impl App {
             setting_row(ui, theme, t.clipboard_from_programs, Some(t.clipboard_desc), |ui| {
                 toggle(ui, theme, &mut picked.clipboard_from_programs);
             });
+            divider(ui, theme);
+            setting_row(ui, theme, t.health_row, Some(t.health_desc), |ui| {
+                toggle(ui, theme, &mut picked.server_health);
+            });
         });
         card(ui, theme, Some(t.set_typing), |ui| {
             setting_row(ui, theme, t.path_suggestions, Some(t.path_suggestions_desc), |ui| {

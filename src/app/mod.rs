@@ -448,6 +448,9 @@ pub struct App {
     confirm_reset: bool,
     /// Hands saved SSH passwords to the ssh processes of this window's panes (Unix).
     askpass: crate::askpass::Server,
+    /// The health of the SSH servers open in a tab, and those whose full disk was told.
+    health: crate::health::Monitors,
+    disk_alerted: std::collections::HashSet<Uuid>,
     /// Questions from ssh processes without a terminal (SFTP): password, new host key.
     ssh_prompts: std::sync::mpsc::Receiver<crate::askpass::Prompt>,
     /// The one being answered, and what is typed.
@@ -1124,6 +1127,8 @@ impl App {
             live: Vec::new(),
             _instance_lock: None,
             askpass: crate::askpass::Server::start(),
+            health: Default::default(),
+            disk_alerted: Default::default(),
             ssh_prompts: std::sync::mpsc::channel().1,
             ssh_prompt: None,
             uploads: Vec::new(),
@@ -1418,6 +1423,9 @@ impl App {
     /// Restarts panes of a tab (a new ssh session replaces the old or ended one).
     fn reconnect(&mut self, ctx: &egui::Context, index: usize, panes: &[PaneId]) {
         let launch = self.launch_for(index);
+        if let Some(host) = self.tabs.get(index).and_then(|t| t.ssh) {
+            self.health.retry(host);
+        }
         let Some(tab) = self.tabs.get_mut(index) else { return };
         for &id in panes {
             let history = tab.history_path(id);
@@ -1921,6 +1929,45 @@ impl App {
         }
         if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.show_files) {
             tab.done = None;
+        }
+    }
+
+    /// Watches the health of the servers with a connected SSH pane (in any window), and tells when one
+    /// of their disks is almost full.
+    fn watch_servers(&mut self, ctx: &egui::Context) {
+        if !self.config.settings.server_health {
+            self.health.clear();
+            return;
+        }
+        let tabs = self.tabs.iter().chain(self.others.iter().chain(&self.new_windows).flat_map(|w| &w.tabs));
+        let ids: std::collections::HashSet<Uuid> = tabs.filter(|t| t.panes.keys().any(|p| !t.dead.contains(p))).filter_map(|t| t.ssh).collect();
+        let open: Vec<&crate::ssh::SshHost> = self.config.ssh.iter().filter(|h| ids.contains(&h.id)).collect();
+        self.health.keep(&open, &self.askpass, ctx);
+
+        let mut full = Vec::new();
+        for (host, monitor) in self.health.iter() {
+            let Some((stats, _)) = monitor.stats() else { continue };
+            let Some(percent) = stats.disk_percent() else { continue };
+            // Told once, again only after it went back under 85 %.
+            if percent >= 90.0 && self.disk_alerted.insert(host.id) {
+                let mount = stats.disk.map(|(_, _, m)| m).unwrap_or_default();
+                full.push((host.id, host.name.clone(), mount, percent));
+            } else if percent < 85.0 {
+                self.disk_alerted.remove(&host.id);
+            }
+        }
+        let t = self.t();
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let style = self.config.settings.notify_style;
+        for (id, name, mount, percent) in full {
+            let body = t.health_disk_full_body.replace("{host}", &name).replace("{m}", &mount).replace("{p}", &format!("{percent:.0}"));
+            let tab = self.tabs.iter().position(|t| t.ssh == Some(id));
+            if let Some(tab) = tab.filter(|_| focused && style.in_app()) {
+                self.toasts.push(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now() });
+            }
+            if !focused || style.system() || tab.is_none() {
+                crate::notify::send(t.health_disk_full, &body);
+            }
         }
     }
 
@@ -2975,14 +3022,75 @@ fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, u: &crate::clau
     Some(w)
 }
 
+/// The badge of an SSH server's health in a pane's strip, ending at `right`: its width, if it fits.
+#[allow(clippy::too_many_arguments)]
+fn health_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, s: &crate::health::Stats, age: Duration, theme: &Theme, t: &Strings) -> Option<f32> {
+    let (mem, disk) = (s.mem_percent(), s.disk_percent());
+    // The processor busy for a moment is nothing to worry about: yellow at most.
+    let worst = mem.into_iter().chain(disk).fold(0.0, f32::max);
+    let color = if worst >= 90.0 { theme.ansi[1] } else if worst >= 80.0 || s.cpu.is_some_and(|c| c >= 90.0) { theme.ansi[3] } else { theme.accent };
+    // Not heard from for a while (network down, server busy): faded.
+    let stale = age > Duration::from_secs(20);
+    let color = if stale { color.gamma_multiply(0.5) } else { color };
+    let mut parts = Vec::new();
+    match (s.cpu, s.load) {
+        (Some(cpu), _) => parts.push(format!("CPU {cpu:.0} %")),
+        (None, Some(load)) => parts.push(format!("load {load:.2}")),
+        _ => {}
+    }
+    if let Some(p) = mem {
+        parts.push(format!("RAM {p:.0} %"));
+    }
+    if let (Some(p), Some((_, _, mount))) = (disk, &s.disk) {
+        parts.push(format!("{mount} {p:.0} %"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let units = t.health_units;
+    let mut tip = vec![t.health_title.to_owned()];
+    if let Some(cpu) = s.cpu {
+        tip.push(t.health_cpu.replace("{p}", &format!("{cpu:.0}")));
+    }
+    if let Some(load) = s.load {
+        let cores = s.cores.map(|n| t.health_cores.replace("{n}", &n.to_string())).unwrap_or_default();
+        tip.push(format!("{}{cores}", t.health_load.replace("{l}", &format!("{load:.2}"))));
+    }
+    if let (Some((used, total)), Some(p)) = (s.mem, mem) {
+        tip.push(t.health_mem.replace("{u}", &crate::health::bytes(used, units)).replace("{t}", &crate::health::bytes(total, units)).replace("{p}", &format!("{p:.0}")));
+    }
+    if let (Some((used, total, mount)), Some(p)) = (&s.disk, disk) {
+        tip.push(t.health_disk.replace("{m}", mount).replace("{u}", &crate::health::bytes(*used, units)).replace("{t}", &crate::health::bytes(*total, units)).replace("{p}", &format!("{p:.0}")));
+    }
+    if let Some(up) = s.uptime {
+        let (d, h, m) = (up.as_secs() / 86400, up.as_secs() / 3600 % 24, up.as_secs() / 60 % 60);
+        let text = if d > 0 { t.health_days.replace("{d}", &d.to_string()).replace("{h}", &h.to_string()) } else { t.health_hours.replace("{h}", &h.to_string()).replace("{m}", &m.to_string()) };
+        tip.push(t.health_uptime.replace("{d}", &text));
+    }
+    tip.push(t.health_read.replace("{n}", &age.as_secs().to_string()));
+    let font = FontId::monospace(12.0);
+    let galley = ui.painter().layout_no_wrap(parts.join("  "), font, color);
+    let w = galley.size().x + 16.0;
+    if right - w < rect.min.x + rect.width() / 3.0 {
+        return None;
+    }
+    let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
+    let resp = ui.interact(at, egui::Id::new(("pane-health", id)), Sense::hover());
+    ui.painter().rect_filled(at, 4.0, theme.tab_active);
+    ui.painter().rect_stroke(at, 4.0, Stroke::new(1.0, color.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+    ui.painter().galley(Pos2::new(at.min.x + 8.0, at.center().y - galley.size().y / 2.0), galley, color);
+    resp.on_hover_text(tip.join("\n"));
+    Some(w)
+}
+
 /// What the strip above a pane shows.
 enum Header<'a> {
     /// A local pane: its working directory (when known and shown), the local servers announced by its
     /// program, whether it is in a git repository (Some: whether its changes are shown), and where that
     /// repository is hosted.
     Local(Option<&'a Path>, &'a [LocalUrl], Option<bool>, Option<&'a git::Forge>),
-    /// An SSH pane: the host, with a reconnect button.
-    Ssh(&'a str),
+    /// An SSH pane: the host, with a reconnect button, and the server's health with how old it is.
+    Ssh(&'a str, Option<&'a (crate::health::Stats, Duration)>),
 }
 
 /// Strip above a pane: its working directory (home as `~`, leading folders elided to fit) or its SSH
@@ -3147,7 +3255,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             }
         }
     }
-    if let Header::Ssh(_) = header {
+    if let Header::Ssh(_, health) = header {
         clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned()).clicked();
         right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
@@ -3156,12 +3264,19 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
         clicks.files = resp.clicked();
         files_menu(&resp, &mut clicks);
+        right -= 34.0;
         max_w -= 96.0;
+        if let Some((stats, age)) = health {
+            if let Some(w) = health_badge(ui, rect, right, id, stats, *age, theme, t) {
+                right -= w + 6.0;
+                max_w = right - rect.min.x - 16.0;
+            }
+        }
     }
 
-    let ssh = matches!(header, Header::Ssh(_));
+    let ssh = matches!(header, Header::Ssh(..));
     let (text, tooltip) = match header {
-        Header::Ssh(host) => (host.to_owned(), None),
+        Header::Ssh(host, _) => (host.to_owned(), None),
         Header::Local(None, _, _, _) if name.is_none() => {
             clicks.focus = resp.clicked();
             return clicks;
@@ -3793,6 +3908,7 @@ impl App {
                 let host = tab.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id));
                 let connecting = host.map(|h| strings.connecting.replace("{host}", &h.name).replace("{address}", &h.address())).unwrap_or_default();
                 let ssh_label = host.map(|h| format!("{}  ·  {}", h.name, h.address())).unwrap_or_default();
+                let health = tab.ssh.filter(|_| self.config.settings.server_health).and_then(|id| self.health.get(id)).and_then(|m| m.stats());
                 let mut pane_action = None;
                 let mut reconnect: Option<Vec<PaneId>> = None;
                 let mut relaunch: Option<(PaneId, bool)> = None;
@@ -3971,7 +4087,7 @@ impl App {
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let git_state = (repo.is_some() || git_open).then_some(git_open);
-                        let header = if local { Header::Local(cwd.as_deref(), &urls, git_state, forge.as_ref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label)) };
+                        let header = if local { Header::Local(cwd.as_deref(), &urls, git_state, forge.as_ref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
                         let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
@@ -4553,6 +4669,7 @@ impl eframe::App for App {
     // Claude done are worth telling.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finished_commands(ctx);
+        self.watch_servers(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

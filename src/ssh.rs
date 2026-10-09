@@ -318,7 +318,7 @@ impl SshHost {
 }
 
 /// Single quotes for sh (also read right by zsh, bash and fish).
-fn sh_quote(s: &str) -> String {
+pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

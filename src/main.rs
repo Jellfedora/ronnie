@@ -10,6 +10,7 @@ mod connect4;
 mod db;
 mod dragout;
 mod floor;
+mod health;
 mod i18n;
 mod live;
 mod log;
