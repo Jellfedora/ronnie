@@ -21,6 +21,7 @@ mod imp;
 /// What a key (or the system's player controls) asks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only sent by the macOS player controls
     Toggle,
     Play,
     Pause,

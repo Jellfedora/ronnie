@@ -552,7 +552,7 @@ impl App {
         }
         self.focus_terminal = true;
         if run && !commands.is_empty() {
-            self.relaunch(ctx, index, id);
+            self.relaunch(ctx, index, id, true);
         }
     }
 

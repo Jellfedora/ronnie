@@ -25,12 +25,14 @@ mod x11;
 
 /// A remote file or folder dragged out (macOS: promised, downloaded once dropped).
 #[derive(Clone, Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only read by the macOS drag
 pub struct RemoteItem {
     pub name: String,
     pub is_dir: bool,
 }
 
 /// What a drag of remote files asks of the file manager.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only sent by the macOS drag
 pub enum Ask {
     /// Download the item `index` of the drag into `dir`; `done` is told when it's over.
     Download { index: usize, dir: PathBuf, done: Sender<Result<(), String>> },

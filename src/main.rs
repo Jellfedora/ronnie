@@ -20,6 +20,7 @@ mod openwith;
 mod menu;
 mod mssql;
 mod subsonic;
+mod sysmon;
 mod pane;
 mod screens;
 mod sftp;

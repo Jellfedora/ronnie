@@ -676,6 +676,9 @@ impl App {
         let footer = bar.max.y - 54.0;
         let hovered = self.category_strip(ui, bar, unfold.max.y + 14.0, true);
         self.rail_flyout_ui(ui, bar, hovered);
+        // The machine's resources at its bottom, above the settings.
+        let below_categories = unfold.max.y + 14.0 + 46.0 * self.categories().len() as f32;
+        self.resources_gauges(ui, egui::Rangef::new(bar.min.x + 12.0, bar.max.x - 12.0), below_categories, footer - 10.0);
 
         ui.painter().hline(bar.min.x + 16.0..=bar.max.x - 16.0, footer + 2.0, Stroke::new(1.0, self.theme.tab_hover));
         let gear = Rect::from_center_size(Pos2::new(cx, bar.max.y - 26.0), Vec2::splat(32.0));
@@ -1287,7 +1290,11 @@ impl App {
         // macOS: the traffic lights don't scale with the interface zoom, so the space kept for them doesn't either.
         let top = if cfg!(target_os = "macos") { SIDEBAR_TOP / ui.ctx().zoom_factor() } else { SIDEBAR_TOP };
         // Its first icon level with the panel's title, under the logo (the slots are 40 high).
-        self.category_strip(ui, strip, strip.min.y + top + LOGO_H + SECTION_HEADER_H / 2.0 - 20.0, false);
+        let strip_top = strip.min.y + top + LOGO_H + SECTION_HEADER_H / 2.0 - 20.0;
+        self.category_strip(ui, strip, strip_top, false);
+        // The machine's resources at its bottom, above the version.
+        let below_categories = strip_top + 46.0 * self.categories().len() as f32;
+        self.resources_gauges(ui, egui::Rangef::new(strip.min.x + 7.0, strip.max.x - 7.0), below_categories, strip.max.y - 28.0);
         // The version, at the bottom of the strip: small, and smaller still if it doesn't fit.
         let version = format!("v{}", update::VERSION);
         let mut size = 9.5;

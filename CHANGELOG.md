@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.25.0] - 2026-10-11
+
+### Nouveautés
+
+- **Les ressources de la machine** en bas de la colonne de gauche, sous les catégories : processeur et carte graphique avec leur dernière minute en courbe, mémoire et disque le plus rempli. Au survol, le détail : chaque disque, l'espace utilisé, ce qui est lu et écrit par seconde. Aussi dans la sidebar repliée ; se désactive dans les réglages (« Ressources de la machine »).
+- **Recharger le shell** dans le menu d'un terminal local : un shell neuf, dans le même dossier, sans relancer les commandes de démarrage.
+
+### Corrections
+
+- Ronnie.io : la nuit assombrit bien toute la carte jusqu'aux coins de l'écran.
+
 ## [0.24.0] - 2026-10-09
 
 ### Nouveautés

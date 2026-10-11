@@ -1248,6 +1248,10 @@ impl App {
                 toggle(ui, theme, &mut picked.home_tips);
             });
             divider(ui, theme);
+            setting_row(ui, theme, t.resources_setting, Some(t.resources_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.resources_panel);
+            });
+            divider(ui, theme);
             setting_row(ui, theme, t.tour_setting, Some(t.tour_setting_desc), |ui| {
                 if ui.add(egui::Button::new(egui::RichText::new(t.tour_replay).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
                     self.tour = Some(super::tour::Tour::new());

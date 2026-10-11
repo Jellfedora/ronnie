@@ -42,6 +42,7 @@ mod sql;
 mod upload;
 mod sqlcomplete;
 mod popups;
+mod resources;
 mod viewer;
 mod settings;
 mod scorecard;
@@ -344,6 +345,8 @@ pub struct App {
     backup: Option<backup::BackupDialog>,
     /// Listening to the user, for Claude Code in that pane.
     dictation: Option<(PaneId, crate::voice::Dictation)>,
+    /// Reads the machine's resources while their panel shows.
+    sysmon: Option<crate::sysmon::Monitor>,
     /// What was dictated was typed in that pane: Enter follows, a moment later (typed with the text,
     /// Claude Code would take it for a pasted line break).
     dictation_enter: Option<(PaneId, Instant)>,
@@ -1075,6 +1078,7 @@ impl App {
             games_seen: false,
             backup: None,
             dictation: None,
+            sysmon: None,
             dictation_enter: None,
             dictation_last: false,
             dictation_typed: 0,
@@ -1426,8 +1430,9 @@ impl App {
         self.focus_terminal = true;
     }
 
-    /// Starts pane `id` again (a fresh shell, where it was) and types its startup commands once ready.
-    fn relaunch(&mut self, ctx: &egui::Context, index: usize, id: PaneId) {
+    /// Starts pane `id` again (a fresh shell, where it was) and, with `startup`, types its startup
+    /// commands once ready.
+    fn relaunch(&mut self, ctx: &egui::Context, index: usize, id: PaneId, startup: bool) {
         let launch = self.launch_for(index);
         let Some(tab) = self.tabs.get_mut(index) else { return };
         let cwd = tab.panes.get(&id).and_then(Terminal::cwd).or_else(|| tab.cwds.get(&id).cloned());
@@ -1438,7 +1443,11 @@ impl App {
                 tab.dead.remove(&id);
                 tab.pending.retain(|p| *p != id);
                 tab.git.remove(&id);
-                tab.startup_due.insert(id, Instant::now());
+                if startup {
+                    tab.startup_due.insert(id, Instant::now());
+                } else {
+                    tab.startup_due.remove(&id);
+                }
                 tab.focused = id;
             }
             Err(e) => self.error = Some(format!("{e:#}")),
@@ -3341,6 +3350,8 @@ enum PaneAction {
     Startup(PaneId),
     /// Start the pane again, with its startup commands.
     Relaunch(PaneId),
+    /// A fresh shell in place of the pane's, in its folder (no startup commands).
+    Restart(PaneId),
     /// Open closed pane k (see `App::closed_panes`) next to this one.
     Reopen(PaneId, usize),
 }
@@ -3385,6 +3396,7 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
         item(ui, true, t.files_open_here, shortcuts.toggle_files.label(), PaneAction::Files(id));
         // An SSH pane's directory is on the server.
         item(ui, true, t.open_location, String::new(), PaneAction::Reveal(id));
+        item(ui, true, t.restart_shell, String::new(), PaneAction::Restart(id));
     } else {
         item(ui, true, t.files_open, shortcuts.toggle_files.label(), PaneAction::Files(id));
         item(ui, true, t.reconnect, String::new(), PaneAction::Reconnect(id));
@@ -3751,7 +3763,7 @@ impl App {
                 let ssh_label = host.map(|h| format!("{}  ·  {}", h.name, h.address())).unwrap_or_default();
                 let mut pane_action = None;
                 let mut reconnect: Option<Vec<PaneId>> = None;
-                let mut relaunch: Option<PaneId> = None;
+                let mut relaunch: Option<(PaneId, bool)> = None;
                 let mut reopen: Option<(PaneId, usize)> = None;
                 let mut close_dead = None;
                 let mut open_search = None;
@@ -4045,7 +4057,7 @@ impl App {
                             reconnect = Some(vec![id]);
                         }
                         if clicks.relaunch {
-                            relaunch = Some(id);
+                            relaunch = Some((id, true));
                         }
                         body
                     } else {
@@ -4317,7 +4329,8 @@ impl App {
                     Some(PaneAction::Startup(id)) => {
                         self.startup_edit = Some((self.viewport, self.active, id, tab.startup.get(&id).cloned().unwrap_or_default()));
                     }
-                    Some(PaneAction::Relaunch(id)) => relaunch = Some(id),
+                    Some(PaneAction::Relaunch(id)) => relaunch = Some((id, true)),
+                    Some(PaneAction::Restart(id)) => relaunch = Some((id, false)),
                     Some(PaneAction::Reopen(id, k)) => reopen = Some((id, k)),
                     Some(PaneAction::CopyPath(id)) => {
                         let path = tab.panes.get(&id).and_then(|term| pane_path(term, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|s| s.id == h)), tab.files.as_deref()));
@@ -4363,8 +4376,8 @@ impl App {
                 if let Some(panes) = reconnect {
                     self.reconnect(ui.ctx(), self.active, &panes);
                 }
-                if let Some(id) = relaunch {
-                    self.relaunch(ui.ctx(), self.active, id);
+                if let Some((id, startup)) = relaunch {
+                    self.relaunch(ui.ctx(), self.active, id, startup);
                 }
                 if let Some((id, k)) = reopen {
                     self.reopen_pane(ui.ctx(), self.active, id, k);
