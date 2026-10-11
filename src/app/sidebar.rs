@@ -10,8 +10,19 @@ impl App {
         if !self.home_game || self.home_which != super::four::HomeGame::SpeedMetal {
             self.game.leave();
             if self.home_game && self.home_which == super::four::HomeGame::Blob {
+                // Its minutes of the half-day of work up: out of the game.
+                if let Some(p) = self.game_locked(super::four::HomeGame::Blob) {
+                    self.blob_leave();
+                    self.fold_for_game(false);
+                    self.locked_page(ui, rect, super::four::HomeGame::Blob, &p);
+                    return;
+                }
                 // It folds the sidebar itself, during a life.
                 self.blob_page(ui, rect);
+                let dt = ui.input(|i| i.stable_dt).min(0.1);
+                if let Some(left) = self.count_blob(dt) {
+                    self.paint_blob_left(ui, rect, left);
+                }
                 return;
             }
             self.fold_for_game(false);
@@ -20,6 +31,14 @@ impl App {
             } else {
                 self.home_dashboard(ui, rect);
             }
+            return;
+        }
+        // Its round of the half-day of work played: none more (one under way or just over stays).
+        let locked = self.game_locked(super::four::HomeGame::SpeedMetal);
+        self.game.locked = locked.is_some();
+        if let Some(p) = locked.filter(|_| self.game.idle()) {
+            self.fold_for_game(false);
+            self.locked_page(ui, rect, super::four::HomeGame::SpeedMetal, &p);
             return;
         }
         let t = self.t();
@@ -51,6 +70,9 @@ impl App {
         let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, pseudo.unwrap_or(&settings.player_name));
         // During a round the sidebar folds away, and unfolds after (if it was open).
         self.fold_for_game(self.game.playing());
+        if self.game.playing() {
+            self.count_round(super::four::HomeGame::SpeedMetal);
+        }
         if let Some(on) = out.sound {
             self.config.settings.game_sound = Some(on);
             self.save_config();
@@ -266,7 +288,14 @@ impl App {
         let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
         let (mut open, mut new_window) = (None, None);
         let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
-        for (game, name, note) in [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)] {
+        // Played enough this half-day of work: when it's back, in place of the note.
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)];
+        for (game, _, note) in &mut games {
+            if let Some(p) = self.game_locked(*game) {
+                *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
+            }
+        }
+        for (game, name, note) in games {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
             *y += slot.height() + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("game", game as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);

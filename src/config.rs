@@ -604,6 +604,24 @@ pub struct Settings {
     /// Hidden files (".git"...) shown in the file tree.
     #[serde(default)]
     pub files_hidden: bool,
+    /// What was played in the half-day of work under way (see `crate::playtime`).
+    #[serde(default)]
+    pub game_usage: GameUsage,
+}
+
+/// The games played in a half-day of work.
+/// (Each field defaults: a field deleted by hand doesn't break the config, the seal catches it.)
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct GameUsage {
+    /// Which one (`crate::playtime::Period::key`); another one starts afresh.
+    pub period: String,
+    pub speed_metal: bool,
+    pub four: bool,
+    pub blob_secs: u32,
+    /// Its HMAC (`crate::playtime`): an edit by hand shows.
+    #[serde(default)]
+    pub seal: String,
 }
 
 /// A category of the sidebar: an icon in its strip, and what the panel next to it lists.
@@ -1022,7 +1040,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, game_usage: GameUsage::default() }
     }
 }
 

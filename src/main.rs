@@ -22,6 +22,7 @@ mod mssql;
 mod subsonic;
 mod sysmon;
 mod pane;
+mod playtime;
 mod screens;
 mod sftp;
 mod shell;

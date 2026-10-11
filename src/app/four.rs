@@ -150,6 +150,8 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let mut answer = None;
+        // Played enough this half-day of work: only to decline.
+        let locked = self.game_locked(if blob { HomeGame::Blob } else { HomeGame::Four }).map(|p| t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent));
         let modal = egui::Modal::new(egui::Id::new("four-invite")).frame(frame).show(ctx, |ui| {
             ui.set_width(400.0);
@@ -168,7 +170,7 @@ impl App {
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let play = egui::Button::new(egui::RichText::new(t.four_play).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0));
-                if ui.add(play).clicked() {
+                if ui.add_enabled(locked.is_none(), play).on_disabled_hover_text(locked.as_deref().unwrap_or_default()).clicked() {
                     answer = Some(true);
                 }
                 if ui.add(egui::Button::new(egui::RichText::new(t.four_decline).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
@@ -197,6 +199,19 @@ impl App {
 
     /// The page: the lobby, or a game.
     pub(super) fn four_page(&mut self, ui: &mut Ui, rect: Rect) {
+        // A game under way is the half-day of work's; once played, the lobby gives way.
+        let in_game = match &self.four.mode {
+            Mode::Ai(game) => game.winner.is_none(),
+            Mode::Online => self.versus.game.as_ref().is_some_and(|g| !g.over),
+            Mode::Lobby => false,
+        };
+        if in_game {
+            self.count_round(HomeGame::Four);
+        } else if matches!(self.four.mode, Mode::Lobby)
+            && let Some(p) = self.game_locked(HomeGame::Four)
+        {
+            return self.locked_page(ui, rect, HomeGame::Four, &p);
+        }
         let t = self.t();
         let theme = self.theme.clone();
         let now = ui.input(|i| i.time);
@@ -388,6 +403,11 @@ impl App {
 
     /// A game against the computer; the last one's discs fall out of the grid first.
     fn new_ai_game(&mut self, now: f64) {
+        // Played enough this half-day of work: to the lobby, which says why.
+        if self.game_locked(HomeGame::Four).is_some() {
+            self.four.mode = Mode::Lobby;
+            return;
+        }
         let you = if self.four.you_start { 1 } else { 2 };
         self.four.you_start = !self.four.you_start;
         self.four.clearing = match &self.four.mode {
@@ -557,7 +577,12 @@ impl App {
             }
             let label = if game.rematch.you { t.four_rematch_asked } else { t.four_rematch };
             if bottom_button(ui, body, label, &theme, !game.rematch.you) && !game.rematch.you {
-                self.versus.rematch();
+                if self.game_locked(HomeGame::Four).is_some() {
+                    self.versus.watch(None);
+                    self.four.mode = Mode::Lobby;
+                } else {
+                    self.versus.rematch();
+                }
             }
         }
     }

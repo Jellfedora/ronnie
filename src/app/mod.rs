@@ -43,6 +43,7 @@ mod upload;
 mod sqlcomplete;
 mod popups;
 mod resources;
+mod playtime;
 mod viewer;
 mod settings;
 mod scorecard;
@@ -347,6 +348,8 @@ pub struct App {
     dictation: Option<(PaneId, crate::voice::Dictation)>,
     /// Reads the machine's resources while their panel shows.
     sysmon: Option<crate::sysmon::Monitor>,
+    /// Seconds on Ronnie.io not yet counted (see `playtime`).
+    blob_played: f32,
     /// What was dictated was typed in that pane: Enter follows, a moment later (typed with the text,
     /// Claude Code would take it for a pasted line break).
     dictation_enter: Option<(PaneId, Instant)>,
@@ -1079,6 +1082,7 @@ impl App {
             backup: None,
             dictation: None,
             sysmon: None,
+            blob_played: 0.0,
             dictation_enter: None,
             dictation_last: false,
             dictation_typed: 0,

@@ -243,6 +243,15 @@ impl App {
         }
     }
 
+    /// Out of the game for good (not on pause): floor takes the player out.
+    pub(super) fn blob_leave(&mut self) {
+        if self.blob.online.connected() {
+            self.blob.online.disconnect();
+            self.blob.shown.clear();
+            self.blob.cam = None;
+        }
+    }
+
     fn blob_sound(&mut self, sfx: Sfx) {
         if self.config.settings.game_sound == Some(false) {
             return;

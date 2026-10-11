@@ -182,6 +182,8 @@ pub(super) struct Game {
     clipboard: Option<arboard::Clipboard>,
     /// The name typed on a card, to save.
     renamed: Option<String>,
+    /// Played enough this half-day of work (see `crate::playtime`): no new round.
+    pub(super) locked: bool,
 }
 
 /// The letter without its accent: "é" typed as "e" counts.
@@ -239,6 +241,11 @@ impl Game {
 
     /// Play asked: the first time, whether to have sound first.
     fn play(&mut self, now: f64, list: &'static [&'static str], sound: Option<bool>) {
+        // Back to the start, where the page says why.
+        if self.locked {
+            self.state = State::Idle;
+            return;
+        }
         match sound {
             None => self.state = State::AskSound,
             Some(on) => self.start(now, list, on),
@@ -253,6 +260,11 @@ impl Game {
     /// The round's length as shown: "1 min", "1 min 08 s".
     pub(super) fn length_text(&self) -> String {
         round_time(self.length())
+    }
+
+    /// Waiting for a round (no round on, none just over).
+    pub fn idle(&self) -> bool {
+        matches!(self.state, State::Idle | State::AskSound)
     }
 
     /// A round is on (its countdown included).
