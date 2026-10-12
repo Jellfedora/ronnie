@@ -222,10 +222,11 @@ impl App {
             }
             let color = if active { self.theme.accent } else if resp.hovered() { self.theme.text } else { self.theme.text_muted };
             paint_category_icon(ui.painter(), slot.center(), category, color);
-            // The tabs open in it: how many, and a long command ended in one (✓ or ✗).
+            // The tabs open in it: how many have a program running, and a long command ended in one (✓ or ✗).
             let open: Vec<usize> = (0..self.tabs.len()).filter(|&i| matches!(category, Category::Local | Category::Ssh | Category::Db) && self.tab_category(i) == category).collect();
-            if !open.is_empty() {
-                let galley = ui.painter().layout_no_wrap(open.len().to_string(), FontId::proportional(9.5), self.theme.text);
+            let running = open.iter().filter(|&&i| matches!(self.live.get(i), Some(Some(_)))).count();
+            if running > 0 {
+                let galley = ui.painter().layout_no_wrap(running.to_string(), FontId::proportional(9.5), self.theme.text);
                 let pill = Rect::from_center_size(slot.right_bottom() + Vec2::new(-8.0, -8.0), Vec2::new((galley.size().x + 7.0).max(14.0), 14.0));
                 ui.painter().rect_filled(pill, 7.0, self.theme.chrome_bg);
                 ui.painter().rect_filled(pill.shrink(1.0), 6.0, if active { self.theme.accent.gamma_multiply(0.3) } else { self.theme.tab_hover });
@@ -568,11 +569,11 @@ impl App {
         let active = item.open.is_some() && item.open == self.shown_tab();
         paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
         let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
+        paint_badge(painter, dot, &item.name, item.color, item.ssh, item.open.is_some(), active, &self.theme);
         let live = item.open.and_then(|i| self.live.get(i).cloned().flatten());
         if live.is_some() {
-            paint_live(ui, painter, dot, &self.theme);
+            paint_live(ui, painter, dot, item.ssh, &self.theme);
         }
-        paint_badge(painter, dot, &item.name, item.color, item.ssh, item.open.is_some(), active, &self.theme);
 
         let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
         let show_close = item.open.is_some() && (active || hovered);
@@ -1459,11 +1460,11 @@ impl App {
 
             paint_row_bg(&painter, rect, active || dragging, row_hovered, &self.theme);
             let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
+            paint_badge(&painter, dot, tab.title(), tab.color, false, true, active, &self.theme);
             let live = self.live.get(i).cloned().flatten();
             if live.is_some() {
-                paint_live(ui, &painter, dot, &self.theme);
+                paint_live(ui, &painter, dot, false, &self.theme);
             }
-            paint_badge(&painter, dot, tab.title(), tab.color, false, true, active, &self.theme);
 
             let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
             let show_close = active || row_hovered;

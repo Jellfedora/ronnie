@@ -2756,13 +2756,18 @@ fn load_png(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandl
     ctx.load_texture(name, image, egui::TextureOptions::LINEAR)
 }
 
-/// Green halo around a tab's dot while a program runs in it. It breathes slowly while the window is
-/// focused, and holds still otherwise (animating an unseen badge would keep the app redrawing).
-fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, theme: &Theme) {
+/// Green border on a tab's badge (its rounded square, or the circle of an SSH host) while a program
+/// runs in it. It breathes slowly while the window is focused, and holds still otherwise (animating
+/// an unseen badge would keep the app redrawing).
+fn paint_live(ui: &Ui, painter: &egui::Painter, dot: Pos2, ssh: bool, theme: &Theme) {
     let focused = ui.input(|i| i.focused);
     let phase = if focused { (ui.input(|i| i.time) * std::f64::consts::TAU / 2.0).sin() as f32 * 0.5 + 0.5 } else { 0.6 };
-    painter.circle_filled(dot, 7.5, theme.ansi[2].gamma_multiply(0.10 + 0.18 * phase));
-    painter.circle_stroke(dot, 6.5, Stroke::new(1.2, theme.ansi[2].gamma_multiply(0.45 + 0.5 * phase)));
+    let stroke = Stroke::new(1.3, theme.ansi[2].gamma_multiply(0.45 + 0.5 * phase));
+    if ssh {
+        painter.circle_stroke(dot, 10.0, stroke);
+    } else {
+        painter.rect_stroke(egui::Rect::from_center_size(dot, egui::Vec2::splat(20.0)), 6.0, stroke, egui::StrokeKind::Inside);
+    }
     if focused {
         ui.ctx().request_repaint_after(Duration::from_millis(250));
     }
