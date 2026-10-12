@@ -3628,13 +3628,14 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
-    /// The scripts copying and deleting on the server, run by sh here.
+    /// The scripts copying and deleting on the server, run by sh here (a Unix one: Windows paths are no
+    /// server's).
+    #[cfg(unix)]
     #[test]
     fn copies_and_deletes_with_server_commands() {
         let base = std::env::temp_dir().join(format!("ronnie-sh-{}", std::process::id()));
         std::fs::create_dir_all(base.join("it's dir/sub")).unwrap();
         std::fs::write(base.join("it's dir/sub/a.txt"), b"hello").unwrap();
-        #[cfg(unix)]
         std::os::unix::fs::symlink("sub/a.txt", base.join("it's dir/link")).unwrap();
         let root = base.canonicalize().unwrap().display().to_string();
         let sh = |script: &str| std::process::Command::new("sh").arg("-c").arg(script).output().unwrap();
@@ -3642,7 +3643,6 @@ mod tests {
         let pair = (sftp::join(&root, "it's dir"), sftp::join(&root, "copy"));
         assert!(sh(&copy_script(std::slice::from_ref(&pair), false)).status.success());
         assert_eq!(std::fs::read(base.join("copy/sub/a.txt")).unwrap(), b"hello");
-        #[cfg(unix)]
         assert!(base.join("copy/link").symlink_metadata().unwrap().file_type().is_symlink(), "links stay links");
         let again = sh(&copy_script(std::slice::from_ref(&pair), false));
         assert!(!again.status.success() && String::from_utf8_lossy(&again.stderr).contains("already exists"));

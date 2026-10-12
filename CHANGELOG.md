@@ -2,7 +2,7 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
-## [0.27.0] - 2026-10-12
+## [0.27.1] - 2026-10-12
 
 ### Nouveautés
 
