@@ -621,12 +621,13 @@ impl App {
             return;
         }
 
-        let color = if active || (item.open.is_some() && hovered) {
+        // Open: its name in full; closed: dimmed, so the open ones stand out even with nothing running.
+        let color = if active || item.open.is_some() {
             self.theme.text
-        } else if item.open.is_some() || hovered {
+        } else if hovered {
             self.theme.text_muted
         } else {
-            self.theme.text_muted.gamma_multiply(0.75)
+            self.theme.text_muted.gamma_multiply(0.6)
         };
         let mut job = egui::text::LayoutJob::simple_singleline(item.name.clone(), FontId::proportional(13.0), color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
@@ -1810,14 +1811,14 @@ pub(super) fn paint_row_bg(painter: &egui::Painter, rect: Rect, active: bool, ho
 pub(super) fn paint_badge(painter: &egui::Painter, c: Pos2, name: &str, color: Option<Color32>, ssh: bool, open: bool, active: bool, theme: &crate::theme::Theme) {
     let tint = color.unwrap_or(theme.text_muted);
     let r = Rect::from_center_size(c, Vec2::splat(20.0));
-    let fill = tint.gamma_multiply(if active { 0.32 } else if open { 0.22 } else { 0.12 });
+    let fill = tint.gamma_multiply(if active { 0.36 } else if open { 0.28 } else { 0.08 });
     if ssh {
         painter.circle_filled(c, 10.0, fill);
     } else {
         painter.rect_filled(r, 6.0, fill);
     }
     let initial: String = name.chars().find(|ch| ch.is_alphanumeric()).map(|ch| ch.to_uppercase().collect()).unwrap_or_else(|| "·".into());
-    let text = if open || active { tint } else { tint.gamma_multiply(0.75) };
+    let text = if open || active { tint } else { tint.gamma_multiply(0.5) };
     painter.text(c + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, initial, FontId::proportional(11.0), text);
     if open && ssh {
         let dot = c + Vec2::new(7.0, 7.0);
