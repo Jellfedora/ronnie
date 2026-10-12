@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use russh_sftp::client::SftpSession;
+use russh_sftp::client::fs::File;
 use russh_sftp::protocol::FileAttributes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc as tmpsc;
@@ -625,16 +626,22 @@ async fn duplicate(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
             sftp.create_dir(target.clone()).await.with_context(|| format!("creating {target}"))?;
         } else {
             let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::EXCLUDE | russh_sftp::protocol::OpenFlags::WRITE;
-            let mut src = sftp.open(path.clone()).await.with_context(|| format!("opening {path}"))?;
-            let mut dst = sftp.open_with_flags(target.clone(), flags).await.with_context(|| format!("creating {target}"))?;
-            loop {
-                let n = src.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
-                if n == 0 {
-                    break;
-                }
-                dst.write_all(&buf[..n]).await.with_context(|| format!("writing {target}"))?;
-            }
-            dst.close().await?;
+            let src = sftp.open(path.clone()).await.with_context(|| format!("opening {path}"))?;
+            closing(src, async |src| {
+                let dst = sftp.open_with_flags(target.clone(), flags).await.with_context(|| format!("creating {target}"))?;
+                closing(dst, async |dst| {
+                    loop {
+                        let n = src.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
+                        if n == 0 {
+                            break;
+                        }
+                        dst.write_all(&buf[..n]).await.with_context(|| format!("writing {target}"))?;
+                    }
+                    Ok(())
+                })
+                .await
+            })
+            .await?;
         }
         if let Some(mode) = attrs.permissions {
             let _ = sftp.set_metadata(target, FileAttributes { permissions: Some(mode & 0o7777), ..FileAttributes::empty() }).await;
@@ -643,44 +650,62 @@ async fn duplicate(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
+/// Runs `work` on `file`, then closes it whatever happened. russh-sftp counts the open handles against
+/// the server's limit (OpenSSH announces about a thousand) but never takes back a file closed by a drop:
+/// after enough of them, every opening and listing fails with "handle limit reached".
+async fn closing<T>(mut file: File, work: impl AsyncFnOnce(&mut File) -> Result<T>) -> Result<T> {
+    let result = work(&mut file).await;
+    let closed = file.close().await;
+    let value = result?;
+    closed?;
+    Ok(value)
+}
+
 /// Largest part of a file read at once.
 pub const MAX_RANGE: u64 = 8 * 1024 * 1024;
 
 /// (offset, bytes, file size).
 async fn read_range(sftp: &SftpSession, path: &str, offset: u64, len: u64, tail: bool) -> Result<(u64, Vec<u8>, u64)> {
     use tokio::io::AsyncSeekExt;
-    let mut file = sftp.open(path).await.with_context(|| format!("opening {path}"))?;
-    let size = file.metadata().await.ok().and_then(|a| a.size).unwrap_or(0);
-    let len = len.min(MAX_RANGE);
-    let offset = if tail { size.saturating_sub(len) } else { offset.min(size) };
-    file.seek(std::io::SeekFrom::Start(offset)).await?;
-    let mut data = Vec::with_capacity(len as usize);
-    (&mut file).take(len).read_to_end(&mut data).await.with_context(|| format!("reading {path}"))?;
-    Ok((offset, data, size))
+    let file = sftp.open(path).await.with_context(|| format!("opening {path}"))?;
+    closing(file, async |file| {
+        let size = file.metadata().await.ok().and_then(|a| a.size).unwrap_or(0);
+        let len = len.min(MAX_RANGE);
+        let offset = if tail { size.saturating_sub(len) } else { offset.min(size) };
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        let mut data = Vec::with_capacity(len as usize);
+        file.take(len).read_to_end(&mut data).await.with_context(|| format!("reading {path}"))?;
+        Ok((offset, data, size))
+    })
+    .await
 }
 
 async fn read_file(sftp: &SftpSession, path: &str, emit: &Emitter) -> Result<(Vec<u8>, Option<i64>)> {
     let attrs = sftp.metadata(path).await.with_context(|| format!("reading {path}"))?;
     anyhow::ensure!(!attrs.is_dir(), "{path} is a folder");
     anyhow::ensure!(attrs.size.unwrap_or(0) <= MAX_EDIT, "too big to edit ({} MB at most)", MAX_EDIT / (1024 * 1024));
-    let mut file = sftp.open(path).await.with_context(|| format!("opening {path}"))?;
+    let file = sftp.open(path).await.with_context(|| format!("opening {path}"))?;
     let total = attrs.size.unwrap_or(0);
     let mut data = Vec::with_capacity(total as usize);
     let mut buf = vec![0u8; CHUNK];
     let mut last = Instant::now();
-    loop {
-        let n = file.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
-        if n == 0 {
-            break;
+    closing(file, async |file| {
+        loop {
+            let n = file.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            // Not more than the limit (a hostile server could send endless data).
+            anyhow::ensure!(data.len() as u64 <= MAX_EDIT, "too big to edit");
+            if last.elapsed() > Duration::from_millis(150) {
+                last = Instant::now();
+                emit.send(Event::FileProgress { path: path.to_owned(), done: data.len() as u64, total });
+            }
         }
-        data.extend_from_slice(&buf[..n]);
-        // Not more than the limit (a hostile server could send endless data).
-        anyhow::ensure!(data.len() as u64 <= MAX_EDIT, "too big to edit");
-        if last.elapsed() > Duration::from_millis(150) {
-            last = Instant::now();
-            emit.send(Event::FileProgress { path: path.to_owned(), done: data.len() as u64, total });
-        }
-    }
+        Ok(())
+    })
+    .await?;
     anyhow::ensure!(data.len() as u64 <= MAX_EDIT, "too big to edit");
     Ok((data, attrs.mtime.map(i64::from)))
 }
@@ -695,9 +720,8 @@ async fn write_file(sftp: &SftpSession, path: &str, data: &[u8], mtime: Option<i
     }
     // Written in place, so the file keeps its owner and permissions.
     let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::TRUNCATE | russh_sftp::protocol::OpenFlags::WRITE;
-    let mut file = sftp.open_with_flags(path, flags).await.with_context(|| format!("opening {path}"))?;
-    file.write_all(data).await.with_context(|| format!("writing {path}"))?;
-    file.close().await?;
+    let file = sftp.open_with_flags(path, flags).await.with_context(|| format!("opening {path}"))?;
+    closing(file, async |file| file.write_all(data).await.with_context(|| format!("writing {path}"))).await?;
     Ok(Some(sftp.metadata(path).await.ok().and_then(|a| a.mtime.map(i64::from))))
 }
 
@@ -742,10 +766,10 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
         // Written aside, then moved into place: an error or a cancel never leaves a truncated file.
         let part = local.with_file_name(format!(".{}.ronnie-part", local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
         let expected = attrs.size.unwrap_or(u64::MAX);
-        let mut src = sftp.open(remote.clone()).await.with_context(|| format!("opening {remote}"))?;
-        let mut dst = tokio::fs::File::create(&part).await.with_context(|| format!("creating {}", part.display()))?;
-        let mut received = 0u64;
-        let copied: Result<()> = async {
+        let src = sftp.open(remote.clone()).await.with_context(|| format!("opening {remote}"))?;
+        let copied: Result<()> = closing(src, async |src| {
+            let mut dst = tokio::fs::File::create(&part).await.with_context(|| format!("creating {}", part.display()))?;
+            let mut received = 0u64;
             loop {
                 anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
                 let n = src.read(&mut buf).await.with_context(|| format!("reading {remote}"))?;
@@ -760,9 +784,8 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
             }
             dst.flush().await?;
             Ok(())
-        }
+        })
         .await;
-        drop(dst);
         if let Err(e) = copied {
             let _ = tokio::fs::remove_file(&part).await;
             return Err(e);
@@ -818,8 +841,8 @@ async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwri
             continue;
         }
         let mut src = tokio::fs::File::open(&local).await.with_context(|| format!("opening {}", local.display()))?;
-        let mut dst = sftp.create(remote.clone()).await.with_context(|| format!("creating {remote}"))?;
-        let copied: Result<()> = async {
+        let dst = sftp.create(remote.clone()).await.with_context(|| format!("creating {remote}"))?;
+        let copied: Result<()> = closing(dst, async |dst| {
             loop {
                 anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
                 let n = src.read(&mut buf).await.with_context(|| format!("reading {}", local.display()))?;
@@ -831,11 +854,10 @@ async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwri
             }
             dst.shutdown().await.with_context(|| format!("writing {remote}"))?;
             Ok(())
-        }
+        })
         .await;
         // No truncated file left on the server (a later try would skip it as "existing").
         if let Err(e) = copied {
-            drop(dst);
             let _ = sftp.remove_file(remote.clone()).await;
             return Err(e);
         }
@@ -929,6 +951,36 @@ mod tests {
         conn.send(Request::Remove(vec![join(&remote_s, "renamed")]));
         wait(&conn, |e| matches!(e, Event::Changed));
         assert!(std::fs::read_dir(&remote).unwrap().next().is_none(), "deleted recursively");
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// More files than the server allows open handles: each one is closed (russh-sftp forgets the dropped ones).
+    #[test]
+    fn downloads_more_files_than_the_handle_limit() {
+        if server().is_none() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("ronnie-handles-{}", std::process::id()));
+        let (remote, back) = (base.join("remote/many"), base.join("back"));
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::create_dir_all(&back).unwrap();
+        for i in 0..1500 {
+            std::fs::write(remote.join(format!("{i}.txt")), b"x").unwrap();
+        }
+        let remote_s = remote.canonicalize().unwrap().display().to_string();
+
+        // Few file descriptors: the server announces a limit of a few hundred handles.
+        let script = format!("ulimit -n 256; exec {}", server().unwrap());
+        let conn = Connection::open(&egui::Context::default(), "/bin/sh", &["-c".into(), script], &[]).unwrap();
+        wait(&conn, |e| matches!(e, Event::Connected { .. }));
+        conn.send(Request::Download { id: 1, remote: vec![remote_s.clone()], local_dir: back.clone(), overwrite: false });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 1, .. })) else { unreachable!() };
+        result.unwrap();
+        assert_eq!(std::fs::read_dir(back.join("many")).unwrap().count(), 1500);
+        // And browsing still works afterwards.
+        conn.send(Request::List(remote_s));
+        wait(&conn, |e| matches!(e, Event::Listing { .. }));
 
         std::fs::remove_dir_all(&base).unwrap();
     }
