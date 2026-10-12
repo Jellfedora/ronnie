@@ -2,8 +2,9 @@
 //! afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
 //! 18:00 — 17:20 on Fridays — and at the weekend). Not a setting: Ronnie is for work first.
 //!
-//! What was played is kept in the config file, sealed (an HMAC of this machine and user): edited or
-//! deleted during working hours, it counts as all played for the half-day.
+//! What was played is kept in the config file, sealed (an HMAC of this machine and user): edited
+//! during working hours, it counts as all played for the half-day. A record never written (the first
+//! start of a version with the limit) starts afresh.
 
 use chrono::{Datelike, NaiveDateTime, NaiveTime, Weekday};
 use sha2::{Digest, Sha256};
@@ -46,10 +47,11 @@ pub fn period(now: NaiveDateTime) -> Option<Period> {
 }
 
 /// What was played in the half-day `now` is in, the record checked: a new half-day starts afresh, a
-/// record edited or deleted counts as all played. Sealed again when changed.
+/// record edited counts as all played. Sealed again when changed.
 pub fn checked(usage: &mut GameUsage, now: NaiveDateTime) -> Option<Period> {
     let p = period(now);
-    let valid = usage.seal == seal(usage);
+    // Never written: nothing played yet (it locked every game at the first start, unplayed).
+    let valid = usage.seal == seal(usage) || *usage == GameUsage::default();
     let fresh = |period: &str| GameUsage { period: period.to_owned(), ..GameUsage::default() };
     let wanted = match &p {
         // Out of working hours nothing is limited: a record to trust again from here.
@@ -102,10 +104,14 @@ mod tests {
     }
 
     #[test]
-    fn edited_or_deleted_counts_as_played() {
+    fn edited_counts_as_played() {
         let monday = on(2026, 10, 12, 9, 0);
         let mut usage = GameUsage::default();
-        // Deleted (or never written) during working hours: all played.
+        // Never written (the first start with the limit): nothing played yet.
+        checked(&mut usage, monday);
+        assert!(!usage.speed_metal && !usage.four && usage.blob_secs == 0 && usage.period == "2026-10-12 am");
+        // Edited by hand without a seal: all played.
+        let mut usage = GameUsage { period: "2026-10-12 am".into(), ..GameUsage::default() };
         checked(&mut usage, monday);
         assert!(usage.speed_metal && usage.four && usage.blob_secs == BLOB_SECS);
         // Trusted again out of working hours, fresh at the next half-day.
