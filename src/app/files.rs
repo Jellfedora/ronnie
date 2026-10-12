@@ -170,6 +170,11 @@ impl Kind {
 /// How long a change goes on before it gets a line in the queue (the quick ones stay out of it).
 const SHOW_AFTER: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Printed by the scripts run on the server before anything else (see `run_on_server`).
+const SHELL_MARK: &str = "RONNIE_SH";
+/// The result of a script the server didn't run: it has no shell for this account.
+const NO_SHELL: &str = "\u{0}no shell";
+
 struct Transfer {
     id: u64,
     kind: Kind,
@@ -378,6 +383,8 @@ pub(super) struct FileManager {
     jobs: Vec<(u64, Side, std::sync::mpsc::Receiver<ZipResult>)>,
     /// Changes going on whose line isn't shown yet (see SHOW_AFTER).
     pending: Vec<Transfer>,
+    /// What to ask the SFTP session for instead, if the server runs no commands (by job).
+    fallbacks: HashMap<u64, Request>,
     /// The local panel's share of the width, moved by dragging the line between the panels.
     split: f32,
     /// The queue's height once dragged.
@@ -431,6 +438,7 @@ impl FileManager {
             askpass: None,
             jobs: Vec::new(),
             pending: Vec::new(),
+            fallbacks: HashMap::new(),
             dir_cache: HashMap::new(),
             completion_pending: HashSet::new(),
             split: 0.5,
@@ -816,7 +824,7 @@ impl FileManager {
 
     /// Handles what the session sent. Called every frame, for every tab (transfers go on in the background).
     pub fn poll(&mut self, t: &Strings) {
-        self.poll_jobs();
+        self.poll_jobs(t);
         self.show_pending();
         let mut counted = Vec::new();
         self.local_sizing.retain(|(path, rx)| match rx.try_recv() {
@@ -1238,57 +1246,76 @@ impl FileManager {
         let stem = if names.len() == 1 { names[0].clone() } else { t.files_archive.to_owned() };
         let out = (1..).map(|n| if n == 1 { format!("{stem}.zip") } else { format!("{stem} {n}.zip") }).find(|c| !taken.contains(c)).unwrap();
         let dir = self.panel(side).path.clone();
+        let id = self.next_id;
+        self.next_id += 1;
+        match side {
+            Side::Local => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = self.ctx.clone();
+                let (dir, names, out) = (std::path::PathBuf::from(dir), names, out.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(zip_local(&dir, &names, &out));
+                    if let Some(ctx) = ctx {
+                        ctx.request_repaint();
+                    }
+                });
+                self.jobs.push((id, side, rx));
+            }
+            Side::Remote => {
+                if self.ssh_host.is_none() {
+                    return;
+                }
+                self.run_on_server(id, zip_script(&dir, &names, &out), None, t);
+            }
+        }
+        self.transfers.push(Transfer::new(id, Kind::Zip, out, TransferState::Running));
+    }
+
+    /// Runs `script` with sh on the server, in the background, as the work of line `id`: nothing goes
+    /// through this computer. `fallback`: sent to the SFTP session instead if the account has no shell.
+    fn run_on_server(&mut self, id: u64, script: String, fallback: Option<Request>, t: &Strings) {
+        let Some(host) = self.ssh_host.clone() else { return };
+        // Printed first: missing, no shell ran the script (an account limited to SFTP).
+        let launch = host.exec_command(&format!("sh -c {}", sh_quote(&format!("echo {SHELL_MARK}\n{script}"))));
+        let askpass = self.askpass.clone();
+        let no_zip = t.files_no_zip;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.ctx.clone();
-        let done = move |result: Result<(), String>| {
+        std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new(&launch.program);
+            cmd.args(&launch.args).envs(launch.env.iter().cloned()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            let result = match cmd.spawn() {
+                Ok(child) => {
+                    if let Some(askpass) = &askpass {
+                        askpass.allow_interactive(child.id(), &host);
+                    }
+                    match child.wait_with_output() {
+                        Ok(o) if !String::from_utf8_lossy(&o.stdout).contains(SHELL_MARK) => Err(NO_SHELL.to_owned()),
+                        Ok(o) if o.status.success() => Ok(()),
+                        Ok(o) if o.status.code() == Some(127) && String::from_utf8_lossy(&o.stderr).contains("RONNIE_NO_ZIP") => Err(no_zip.to_owned()),
+                        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().chars().take(300).collect()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                Err(e) => Err(format!("ssh : {e}")),
+            };
             let _ = tx.send(result);
             if let Some(ctx) = ctx {
                 ctx.request_repaint();
             }
-        };
-        match side {
-            Side::Local => {
-                let (dir, names, out) = (std::path::PathBuf::from(dir), names, out.clone());
-                std::thread::spawn(move || done(zip_local(&dir, &names, &out)));
-            }
-            Side::Remote => {
-                let Some(host) = self.ssh_host.clone() else { return };
-                let launch = host.exec_command(&format!("sh -c {}", sh_quote(&zip_script(&dir, &names, &out))));
-                let askpass = self.askpass.clone();
-                let no_zip = t.files_no_zip;
-                std::thread::spawn(move || {
-                    let mut cmd = std::process::Command::new(&launch.program);
-                    cmd.args(&launch.args).envs(launch.env.iter().cloned()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x0800_0000);
-                    }
-                    let result = match cmd.spawn() {
-                        Ok(child) => {
-                            if let Some(askpass) = &askpass {
-                                askpass.allow_interactive(child.id(), &host);
-                            }
-                            match child.wait_with_output() {
-                                Ok(o) if o.status.success() => Ok(()),
-                                Ok(o) if o.status.code() == Some(127) && String::from_utf8_lossy(&o.stderr).contains("RONNIE_NO_ZIP") => Err(no_zip.to_owned()),
-                                Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().chars().take(300).collect()),
-                                Err(e) => Err(e.to_string()),
-                            }
-                        }
-                        Err(e) => Err(format!("ssh : {e}")),
-                    };
-                    done(result);
-                });
-            }
+        });
+        self.jobs.push((id, Side::Remote, rx));
+        if let Some(fallback) = fallback {
+            self.fallbacks.insert(id, fallback);
         }
-        let id = self.next_id;
-        self.next_id += 1;
-        self.transfers.push(Transfer::new(id, Kind::Zip, out, TransferState::Running));
-        self.jobs.push((id, side, rx));
     }
 
-    fn poll_jobs(&mut self) {
+    fn poll_jobs(&mut self, t: &Strings) {
         let mut finished = Vec::new();
         self.jobs.retain(|(id, side, rx)| match rx.try_recv() {
             Ok(result) => {
@@ -1302,6 +1329,16 @@ impl FileManager {
             }
         });
         for (id, side, result) in finished {
+            let fallback = self.fallbacks.remove(&id);
+            if result.as_ref().is_err_and(|e| e == NO_SHELL) {
+                // The same line goes on through SFTP.
+                if let Some(request) = fallback {
+                    self.send(request);
+                    continue;
+                }
+                self.finish(id, Err(t.files_no_shell.to_owned()));
+                continue;
+            }
             self.finish(id, result.map(|_| 0));
             match side {
                 Side::Local => self.read_local(),
@@ -1411,9 +1448,14 @@ impl FileManager {
                     Ok(())
                 });
             }
+            // With cp on the server (fast: nothing goes through this computer), else through SFTP.
             Side::Remote => {
                 let id = self.start_op(Kind::Copy, &froms);
-                self.send(Request::Copy { id, pairs });
+                if self.ssh_host.is_some() {
+                    self.run_on_server(id, copy_script(&pairs), Some(Request::Copy { id, pairs }), t);
+                } else {
+                    self.send(Request::Copy { id, pairs });
+                }
             }
         }
     }
@@ -1590,7 +1632,7 @@ impl FileManager {
         }
     }
 
-    fn delete(&mut self, side: Side, names: &[String]) {
+    fn delete(&mut self, side: Side, names: &[String], t: &Strings) {
         let paths: Vec<String> = names.iter().map(|n| self.path_of(side, n)).collect();
         match side {
             Side::Local => self.local_op(Kind::Delete, &paths.clone(), move || {
@@ -1604,9 +1646,13 @@ impl FileManager {
                 }
                 outcome
             }),
+            // With rm on the server (one command instead of a request per item), else through SFTP.
             Side::Remote => {
                 let id = self.start_op(Kind::Delete, &paths);
-                self.send(Request::Remove { id, paths });
+                match remove_script(&paths) {
+                    Some(script) if self.ssh_host.is_some() => self.run_on_server(id, script, Some(Request::Remove { id, paths }), t),
+                    _ => self.send(Request::Remove { id, paths }),
+                }
             }
         }
     }
@@ -2631,7 +2677,7 @@ impl FileManager {
                     }
                 }
             }
-            (Dialog::Delete { side, names }, _) => self.delete(side, &names),
+            (Dialog::Delete { side, names }, _) => self.delete(side, &names, t),
             (Dialog::Move { side, from, dir, copy: true, .. }, _) => self.copy_into(side, from, &dir, t),
             (Dialog::Move { side, from, dir, .. }, _) => self.move_paths(side, from, &dir),
             (Dialog::Chmod { side, edit }, _) if edit.invalid => {
@@ -2951,6 +2997,25 @@ impl Columns {
 /// Single quotes for sh.
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Copies each `from` to its `to` on the server with cp (links copied as links, modes and dates kept),
+/// never over an existing item.
+fn copy_script(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(from, to)| {
+            let (from, to) = (sh_quote(from), sh_quote(to));
+            format!("if [ -e {to} ] || [ -L {to} ]; then printf '%s already exists\\n' {to} >&2; exit 1; fi\ncp -Rp -- {from} {to} || exit 1")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Deletes `paths` on the server with rm; None for a path that isn't plainly inside a folder ("/", "..").
+fn remove_script(paths: &[String]) -> Option<String> {
+    let plain = |p: &String| p.starts_with('/') && p.split('/').skip(1).all(|part| !part.is_empty() && part != "." && part != "..");
+    paths.iter().all(plain).then(|| format!("rm -rf -- {}", paths.iter().map(|p| sh_quote(p)).collect::<Vec<_>>().join(" ")))
 }
 
 /// The sh script making `out` from `names` in `dir`, on the server: Info-ZIP's zip if there, else
@@ -3501,6 +3566,33 @@ mod tests {
             let again = std::process::Command::new("sh").arg("-c").arg(&script).status().unwrap();
             assert!(!again.success(), "never over an existing archive");
         }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The scripts copying and deleting on the server, run by sh here.
+    #[test]
+    fn copies_and_deletes_with_server_commands() {
+        let base = std::env::temp_dir().join(format!("ronnie-sh-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("it's dir/sub")).unwrap();
+        std::fs::write(base.join("it's dir/sub/a.txt"), b"hello").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("sub/a.txt", base.join("it's dir/link")).unwrap();
+        let root = base.canonicalize().unwrap().display().to_string();
+        let sh = |script: &str| std::process::Command::new("sh").arg("-c").arg(script).output().unwrap();
+
+        let pair = (sftp::join(&root, "it's dir"), sftp::join(&root, "copy"));
+        assert!(sh(&copy_script(std::slice::from_ref(&pair))).status.success());
+        assert_eq!(std::fs::read(base.join("copy/sub/a.txt")).unwrap(), b"hello");
+        #[cfg(unix)]
+        assert!(base.join("copy/link").symlink_metadata().unwrap().file_type().is_symlink(), "links stay links");
+        let again = sh(&copy_script(&[pair]));
+        assert!(!again.status.success() && String::from_utf8_lossy(&again.stderr).contains("already exists"));
+
+        assert!(remove_script(&["/".into()]).is_none());
+        assert!(remove_script(&[sftp::join(&root, "..")]).is_none());
+        let script = remove_script(&[sftp::join(&root, "copy"), sftp::join(&root, "it's dir")]).unwrap();
+        assert!(sh(&script).status.success());
+        assert!(std::fs::read_dir(&base).unwrap().next().is_none());
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
