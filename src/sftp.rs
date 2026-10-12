@@ -72,8 +72,9 @@ pub enum Request {
     /// stays) if false; None: nothing is moved, MoveConflict tells which exist (and no Finished comes).
     /// Finished tells how many items stayed.
     Move { id: u64, from: Vec<String>, dir: String, overwrite: Option<bool> },
-    /// Copies files or folders (recursively) on the server: each `from` to its `to`, which must be free.
-    Copy { id: u64, pairs: Vec<(String, String)> },
+    /// Copies files or folders (recursively) on the server: each `from` to its `to`. What exists there:
+    /// replaced if `replace` (a folder merged with a folder), else an error.
+    Copy { id: u64, pairs: Vec<(String, String)>, replace: bool },
     /// The total size of what these folders hold (each: DirSize).
     DirSize(Vec<String>),
     /// An empty file (refused if the name is taken).
@@ -562,7 +563,7 @@ async fn run_op(sftp: &SftpSession, op: Request, emit: &Emitter, cancels: &Cance
     let result = match op {
         Request::Remove { paths, .. } => remove(sftp, &paths, &mut progress, &cancel).await.map(|_| 0),
         Request::Chmod { paths, change, recursive, scope, .. } => chmod(sftp, &paths, change, recursive, scope, &mut progress, &cancel).await.map(|_| 0),
-        Request::Copy { pairs, .. } => copy(sftp, &pairs, &mut progress, &cancel).await.map(|_| 0),
+        Request::Copy { pairs, replace, .. } => copy(sftp, &pairs, replace, &mut progress, &cancel).await.map(|_| 0),
         Request::Move { from, dir, overwrite, .. } => move_items(sftp, id, from, dir, overwrite, emit, &cancel).await.transpose().unwrap_or(Ok(u64::MAX)),
         _ => Ok(0),
     };
@@ -671,13 +672,21 @@ impl Progress<'_> {
 
 const CHUNK: usize = 256 * 1024;
 
-/// Copies each `from` (a file, or a folder and everything in it, symbolic links aside) to its `to`,
-/// which must not exist yet. Everything goes through this computer.
-async fn copy(sftp: &SftpSession, pairs: &[(String, String)], progress: &mut Progress<'_>, cancel: &AtomicBool) -> Result<()> {
+/// Copies each `from` (a file, or a folder and everything in it, symbolic links aside) to its `to`.
+/// What exists there: replaced if `replace` (a folder merged with a folder), else an error. Everything
+/// goes through this computer.
+async fn copy(sftp: &SftpSession, pairs: &[(String, String)], replace: bool, progress: &mut Progress<'_>, cancel: &AtomicBool) -> Result<()> {
     let mut plan = Vec::new();
     for (from, to) in pairs {
-        anyhow::ensure!(!sftp.try_exists(to.clone()).await.unwrap_or(true), "{to} already exists");
         anyhow::ensure!(!to.starts_with(&format!("{}/", from.trim_end_matches('/'))), "{from}: can't be copied into itself");
+        if let Ok(there) = sftp.symlink_metadata(to.clone()).await {
+            anyhow::ensure!(replace, "{to} already exists");
+            let source = sftp.symlink_metadata(from.clone()).await.with_context(|| format!("reading {from}"))?;
+            // A folder onto a folder is merged; anything else goes first.
+            if !(source.is_dir() && there.is_dir()) {
+                remove(sftp, std::slice::from_ref(to), &mut Progress::quiet(), cancel).await?;
+            }
+        }
         // Parents come before what they hold.
         for (path, attrs) in walk(sftp, from, false).await? {
             let relative = path.strip_prefix(from.as_str()).unwrap_or("").trim_start_matches('/');
@@ -694,9 +703,14 @@ async fn copy(sftp: &SftpSession, pairs: &[(String, String)], progress: &mut Pro
     for (path, target, attrs) in plan {
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
         if attrs.is_dir() {
-            sftp.create_dir(target.clone()).await.with_context(|| format!("creating {target}"))?;
+            // Merged: the folders already there stay.
+            let there = replace && sftp.symlink_metadata(target.clone()).await.is_ok_and(|a| a.is_dir());
+            if !there {
+                sftp.create_dir(target.clone()).await.with_context(|| format!("creating {target}"))?;
+            }
         } else {
-            let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::EXCLUDE | russh_sftp::protocol::OpenFlags::WRITE;
+            use russh_sftp::protocol::OpenFlags;
+            let flags = OpenFlags::CREATE | OpenFlags::WRITE | if replace { OpenFlags::TRUNCATE } else { OpenFlags::EXCLUDE };
             let src = sftp.open(path.clone()).await.with_context(|| format!("opening {path}"))?;
             closing(src, async |src| {
                 let dst = sftp.open_with_flags(target.clone(), flags).await.with_context(|| format!("creating {target}"))?;
@@ -1141,7 +1155,7 @@ mod tests {
         wait(&conn, |e| matches!(e, Event::Changed));
         assert_eq!(std::fs::read(base.join("new.txt")).unwrap(), b"");
 
-        conn.send(Request::Copy { id: 1, pairs: vec![(join(&root, "dir"), join(&root, "dir copy")), (join(&root, "new.txt"), join(&root, "dir/new.txt"))] });
+        conn.send(Request::Copy { id: 1, replace: false, pairs: vec![(join(&root, "dir"), join(&root, "dir copy")), (join(&root, "new.txt"), join(&root, "dir/new.txt"))] });
         let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 1, .. })) else { unreachable!() };
         result.unwrap();
         assert_eq!(std::fs::read(base.join("dir copy/sub/a.txt")).unwrap(), b"hello");
@@ -1149,12 +1163,21 @@ mod tests {
         assert!(base.join("dir/new.txt").exists());
 
         // Never over an existing item, nor into itself.
-        conn.send(Request::Copy { id: 2, pairs: vec![(join(&root, "new.txt"), join(&root, "dir/new.txt"))] });
+        conn.send(Request::Copy { id: 2, replace: false, pairs: vec![(join(&root, "new.txt"), join(&root, "dir/new.txt"))] });
         let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 2, .. })) else { unreachable!() };
         assert!(result.unwrap_err().contains("already exists"));
-        conn.send(Request::Copy { id: 3, pairs: vec![(join(&root, "dir"), join(&root, "dir/sub/dir"))] });
+        conn.send(Request::Copy { id: 3, replace: false, pairs: vec![(join(&root, "dir"), join(&root, "dir/sub/dir"))] });
         let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 3, .. })) else { unreachable!() };
         assert!(result.unwrap_err().contains("into itself"));
+
+        // Replaced: the folder merged, the file in both overwritten.
+        std::fs::write(base.join("dir copy/sub/a.txt"), b"old").unwrap();
+        std::fs::write(base.join("dir copy/mine.txt"), b"kept").unwrap();
+        conn.send(Request::Copy { id: 4, replace: true, pairs: vec![(join(&root, "dir"), join(&root, "dir copy"))] });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 4, .. })) else { unreachable!() };
+        result.unwrap();
+        assert_eq!(std::fs::read(base.join("dir copy/sub/a.txt")).unwrap(), b"hello");
+        assert_eq!(std::fs::read(base.join("dir copy/mine.txt")).unwrap(), b"kept");
 
         // Never over an existing name.
         conn.send(Request::CreateFile(join(&root, "new.txt")));

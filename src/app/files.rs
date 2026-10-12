@@ -211,6 +211,8 @@ enum Dialog {
     Conflict { from: Side, names: Vec<String>, target: String, existing: Vec<String> },
     /// Some of the items moved into folder `dir` (a path) already exist there; `from`: their paths.
     MoveConflict { side: Side, from: Vec<String>, dir: String, existing: Vec<String> },
+    /// Some of the items copied (`pairs`: from, to) already exist where they go.
+    CopyConflict { side: Side, pairs: Vec<(String, String)>, existing: Vec<String> },
     /// Files dragged from the Finder onto a folder where some names exist.
     ImportConflict { side: Side, paths: Vec<std::path::PathBuf>, dir: String, existing: Vec<String> },
     /// A remote item dragged out (promised) onto a folder where its name exists.
@@ -1411,27 +1413,53 @@ impl FileManager {
             taken.insert(copy.clone());
             pairs.push((self.path_of(side, name), self.path_of(side, &copy)));
         }
-        self.copy_paths(side, pairs, t);
+        self.copy_paths(side, pairs, false, t);
     }
 
-    /// Copies the items at paths `from` into folder `dir`, under their names (which must be free there).
+    /// Copies the items at paths `from` into folder `dir`, under their names; those already there are
+    /// asked about first (unless answered for the session).
     fn copy_into(&mut self, side: Side, from: Vec<String>, dir: &str, t: &Strings) {
-        let pairs = from
+        let names: Vec<String> = from.iter().map(|p| Self::name_of(side, p)).collect();
+        let pairs: Vec<(String, String)> = from
             .into_iter()
-            .map(|path| {
-                let name = path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+            .zip(&names)
+            .map(|(path, name)| {
                 let to = match side {
-                    Side::Local => std::path::Path::new(dir).join(&name).display().to_string(),
-                    Side::Remote => sftp::join(dir, &name),
+                    Side::Local => std::path::Path::new(dir).join(name).display().to_string(),
+                    Side::Remote => sftp::join(dir, name),
                 };
                 (path, to)
             })
             .collect();
-        self.copy_paths(side, pairs, t);
+        // The folder was just shown by the dialog: its listing is known (else cp refuses what exists).
+        let existing: Vec<String> = match side {
+            Side::Local => pairs.iter().zip(&names).filter(|((_, to), _)| std::path::Path::new(to).symlink_metadata().is_ok()).map(|(_, n)| n.clone()).collect(),
+            Side::Remote => {
+                let there: HashSet<String> = self.remote_entries(dir).unwrap_or_default().into_iter().map(|(n, _)| n).collect();
+                names.iter().filter(|n| there.contains(*n)).cloned().collect()
+            }
+        };
+        match (existing.is_empty(), session_choice()) {
+            (true, _) => self.copy_paths(side, pairs, false, t),
+            (false, Some(replace)) => self.copy_now(side, pairs, &existing, replace, t),
+            (false, None) => self.dialog = Some(Dialog::CopyConflict { side, pairs, existing }),
+        }
     }
 
-    /// Copies each `from` to its `to` (which must be free), in the background.
-    fn copy_paths(&mut self, side: Side, pairs: Vec<(String, String)>, t: &Strings) {
+    /// Copies, the items whose names are `existing` where they go replaced (folders merged), or left out.
+    fn copy_now(&mut self, side: Side, mut pairs: Vec<(String, String)>, existing: &[String], replace: bool, t: &Strings) {
+        if !replace {
+            pairs.retain(|(_, to)| !existing.contains(&Self::name_of(side, to)));
+            if pairs.is_empty() {
+                return;
+            }
+        }
+        self.copy_paths(side, pairs, replace, t);
+    }
+
+    /// Copies each `from` to its `to`, in the background. What exists there: replaced if `replace` (a
+    /// folder merged with a folder), else an error.
+    fn copy_paths(&mut self, side: Side, pairs: Vec<(String, String)>, replace: bool, t: &Strings) {
         let froms: Vec<String> = pairs.iter().map(|(from, _)| from.clone()).collect();
         match side {
             Side::Local => {
@@ -1443,7 +1471,8 @@ impl FileManager {
                         if from.is_dir() && !from.is_symlink() && to.starts_with(from) {
                             return Err(format!("{} : {into_itself}", from.display()));
                         }
-                        copy_local(from, to).map_err(|e| format!("{} : {e}", from.display()))?;
+                        let copied = if replace { copy_local_over(from, to) } else { copy_local(from, to) };
+                        copied.map_err(|e| format!("{} : {e}", from.display()))?;
                     }
                     Ok(())
                 });
@@ -1452,9 +1481,9 @@ impl FileManager {
             Side::Remote => {
                 let id = self.start_op(Kind::Copy, &froms);
                 if self.ssh_host.is_some() {
-                    self.run_on_server(id, copy_script(&pairs), Some(Request::Copy { id, pairs }), t);
+                    self.run_on_server(id, copy_script(&pairs, replace), Some(Request::Copy { id, pairs, replace }), t);
                 } else {
-                    self.send(Request::Copy { id, pairs });
+                    self.send(Request::Copy { id, pairs, replace });
                 }
             }
         }
@@ -2572,9 +2601,13 @@ impl FileManager {
                     title(ui, t.files_permissions.trim_end_matches('…'));
                     perm_ui(ui, edit, theme, t);
                 }
-                Dialog::Conflict { existing, .. } | Dialog::MoveConflict { existing, .. } | Dialog::ImportConflict { existing, .. } => {
+                Dialog::Conflict { existing, .. } | Dialog::MoveConflict { existing, .. } | Dialog::CopyConflict { existing, .. } | Dialog::ImportConflict { existing, .. } => {
                     title(ui, &t.files_conflict_title.replace("{n}", &existing.len().to_string()));
                     list(ui, existing);
+                    if matches!(dialog, Dialog::CopyConflict { .. }) {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(t.files_copy_merge_hint).size(12.0).color(theme.text_muted));
+                    }
                     if matches!(dialog, Dialog::MoveConflict { .. }) {
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new(t.files_merge_hint).size(12.0).color(theme.text_muted));
@@ -2595,7 +2628,7 @@ impl FileManager {
                     }
                 };
                 match dialog {
-                    Dialog::Conflict { .. } | Dialog::MoveConflict { .. } | Dialog::ImportConflict { .. } => {
+                    Dialog::Conflict { .. } | Dialog::MoveConflict { .. } | Dialog::CopyConflict { .. } | Dialog::ImportConflict { .. } => {
                         if ui.add(button(t.files_overwrite, Some(theme.accent))).clicked() {
                             outcome = Some(Outcome::Confirm);
                         }
@@ -2704,6 +2737,10 @@ impl FileManager {
             (Dialog::MoveConflict { side, from, dir, .. }, outcome) => {
                 self.remember(outcome);
                 self.move_now(side, from, dir, outcome == Outcome::Confirm);
+            }
+            (Dialog::CopyConflict { side, pairs, existing }, outcome) => {
+                self.remember(outcome);
+                self.copy_now(side, pairs, &existing, outcome == Outcome::Confirm, t);
             }
             (Dialog::ImportConflict { side, paths, dir, .. }, outcome) => {
                 self.remember(outcome);
@@ -2999,14 +3036,20 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Copies each `from` to its `to` on the server with cp (links copied as links, modes and dates kept),
-/// never over an existing item.
-fn copy_script(pairs: &[(String, String)]) -> String {
+/// Copies each `from` to its `to` on the server with cp (links copied as links, modes and dates kept).
+/// What exists there: replaced if `replace` (a folder merged with a folder), else an error.
+fn copy_script(pairs: &[(String, String)], replace: bool) -> String {
     pairs
         .iter()
         .map(|(from, to)| {
             let (from, to) = (sh_quote(from), sh_quote(to));
-            format!("if [ -e {to} ] || [ -L {to} ]; then printf '%s already exists\\n' {to} >&2; exit 1; fi\ncp -Rp -- {from} {to} || exit 1")
+            let there = if replace {
+                format!("if [ -d {from} ] && [ ! -L {from} ] && [ -d {to} ] && [ ! -L {to} ]; then cp -Rp -- {from}/. {to}/ || exit 1; continue; fi\nrm -rf -- {to} || exit 1")
+            } else {
+                format!("printf '%s already exists\\n' {to} >&2; exit 1")
+            };
+            // In a loop of one, for "continue".
+            format!("for _ in 1; do\nif [ -e {to} ] || [ -L {to} ]; then\n{there}\nfi\ncp -Rp -- {from} {to} || exit 1\ndone")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -3106,6 +3149,22 @@ fn move_aside(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<(
 }
 
 /// Copies a file or a folder tree (symbolic links are copied as links), never over something existing.
+/// Copies `from` to `to`, replacing what is there: a folder onto a folder is merged.
+fn copy_local_over(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let (Ok(source), Ok(target)) = (from.symlink_metadata(), to.symlink_metadata()) else {
+        return copy_local(from, to);
+    };
+    if source.is_dir() && target.is_dir() {
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_local_over(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if target.is_dir() { std::fs::remove_dir_all(to) } else { std::fs::remove_file(to) }?;
+    copy_local(from, to)
+}
+
 fn copy_local(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     if to.symlink_metadata().is_ok() {
         return Err(std::io::ErrorKind::AlreadyExists.into());
@@ -3581,12 +3640,24 @@ mod tests {
         let sh = |script: &str| std::process::Command::new("sh").arg("-c").arg(script).output().unwrap();
 
         let pair = (sftp::join(&root, "it's dir"), sftp::join(&root, "copy"));
-        assert!(sh(&copy_script(std::slice::from_ref(&pair))).status.success());
+        assert!(sh(&copy_script(std::slice::from_ref(&pair), false)).status.success());
         assert_eq!(std::fs::read(base.join("copy/sub/a.txt")).unwrap(), b"hello");
         #[cfg(unix)]
         assert!(base.join("copy/link").symlink_metadata().unwrap().file_type().is_symlink(), "links stay links");
-        let again = sh(&copy_script(&[pair]));
+        let again = sh(&copy_script(std::slice::from_ref(&pair), false));
         assert!(!again.status.success() && String::from_utf8_lossy(&again.stderr).contains("already exists"));
+        // Replaced: a folder merged (what only the copy has stays), a file overwritten, a file onto a folder.
+        std::fs::write(base.join("copy/sub/a.txt"), b"old").unwrap();
+        std::fs::write(base.join("copy/only-here.txt"), b"kept").unwrap();
+        std::fs::write(base.join("file.txt"), b"new").unwrap();
+        std::fs::create_dir_all(base.join("was-a-dir/x")).unwrap();
+        let replaced = sh(&copy_script(&[pair.clone(), (sftp::join(&root, "file.txt"), sftp::join(&root, "was-a-dir"))], true));
+        assert!(replaced.status.success(), "{}", String::from_utf8_lossy(&replaced.stderr));
+        assert_eq!(std::fs::read(base.join("copy/sub/a.txt")).unwrap(), b"hello");
+        assert_eq!(std::fs::read(base.join("copy/only-here.txt")).unwrap(), b"kept");
+        assert_eq!(std::fs::read(base.join("was-a-dir")).unwrap(), b"new");
+        std::fs::remove_file(base.join("file.txt")).unwrap();
+        std::fs::remove_file(base.join("was-a-dir")).unwrap();
 
         assert!(remove_script(&["/".into()]).is_none());
         assert!(remove_script(&[sftp::join(&root, "..")]).is_none());
