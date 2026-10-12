@@ -1252,7 +1252,7 @@ impl App {
         if !app.config.settings.splash {
             app.splash = None;
         }
-        if !app.config.settings.tour_seen {
+        if app.config.settings.tour_version < tour::VERSION {
             app.tour = Some(tour::Tour::new());
         }
         // Claude's usage on by default (an installed Ronnie: a dev build's path mustn't stay there).
@@ -2814,64 +2814,212 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
-/// Startup splash, `t` seconds in: the letters of "Ronnie" drop in one by one, an accent line and the
-/// version appear, then everything fades out. Returns false once it is over.
+/// Startup splash, `t` seconds in: two spotlights sweep in, the letters of "Ronnie" slam down one by one
+/// (the screen shakes, sparks fly), a flash and a shock wave on the last one, a shine across the name, an
+/// electric line that settles, the motto typed out; embers rise all along. Then it switches off like an
+/// old tube screen, squashed into a line, then a dot. Returns false once it is over.
 fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, strings: &Strings) -> bool {
-    let warning = strings.alpha_warning;
-    const LETTERS: f32 = 0.13; // delay between two letters
-    const DROP: f32 = 0.55; // duration of a letter's fall
-    const FADE_START: f32 = 3.0;
-    const END: f32 = 3.6;
+    const FIRST: f32 = 0.5; // the first letter starts falling
+    const LETTERS: f32 = 0.12; // delay between two letters
+    const DROP: f32 = 0.34; // duration of a letter's fall
+    const EXIT: f32 = 4.4; // the screen switches off
+    const END: f32 = 4.85;
     if t >= END {
         return false;
     }
-    let fade = 1.0 - ((t - FADE_START) / (END - FADE_START)).clamp(0.0, 1.0);
-    let ease_out_back = |x: f32| {
-        let (c1, c3) = (1.70158, 2.70158);
-        1.0 + c3 * (x - 1.0).powi(3) + c1 * (x - 1.0).powi(2)
-    };
-    painter.rect_filled(screen, 0.0, theme.chrome_bg.gamma_multiply(fade));
+    let ease_out = |x: f32| 1.0 - (1.0 - x).powi(3);
+    let fade = 1.0 - ((t - EXIT) / 0.12).clamp(0.0, 1.0);
+    let base = theme.chrome_bg.lerp_to_gamma(Color32::BLACK, 0.45);
 
-    let size = (screen.width() / 7.0).clamp(56.0, 110.0);
-    let center = screen.center() - Vec2::new(0.0, size * 0.25);
-    // Soft glow behind the name, swelling once the letters have landed.
-    let landed = ((t - 0.9) / 0.6).clamp(0.0, 1.0);
-    for k in 0..12 {
-        let r = size * (0.6 + k as f32 * 0.22) * (0.8 + 0.2 * landed);
-        painter.circle_filled(center, r, theme.accent.gamma_multiply(0.012 * landed * fade));
+    // Switching off: the screen squashed into a bright line, then the line into a dot, the app behind.
+    let off = ((t - EXIT) / (END - EXIT)).clamp(0.0, 1.0);
+    if off > 0.0 {
+        let squash = (off / 0.55).min(1.0);
+        let height = (screen.height() * (1.0 - squash.powi(2))).max(2.0);
+        let width = screen.width() * (1.0 - ((off - 0.55) / 0.35).clamp(0.0, 1.0).powi(2));
+        let glow = Color32::WHITE.gamma_multiply(squash.powi(3) * 0.9);
+        if width > 1.0 {
+            let band = Rect::from_center_size(screen.center(), Vec2::new(width, height));
+            painter.rect_filled(band, 0.0, base.lerp_to_gamma(Color32::WHITE, squash.powi(4) * 0.85));
+            if squash >= 1.0 {
+                painter.rect_filled(band.expand2(Vec2::new(0.0, 3.0)), 3.0, glow.gamma_multiply(0.3));
+            }
+        }
+        let dot = ((off - 0.8) / 0.2).clamp(0.0, 1.0);
+        if off > 0.55 {
+            painter.circle_filled(screen.center(), 4.0 + 6.0 * (1.0 - dot), Color32::WHITE.gamma_multiply((1.0 - dot) * 0.8));
+        }
+        if fade <= 0.0 {
+            return true;
+        }
+    } else {
+        painter.rect_filled(screen, 0.0, base);
     }
 
+    let size = (screen.width() / 7.0).clamp(56.0, 110.0);
     let font = FontId::new(size, egui::FontFamily::Name("metal".into()));
     let widths: Vec<f32> = "Ronnie".chars().map(|c| painter.layout_no_wrap(c.to_string(), font.clone(), Color32::WHITE).size().x).collect();
-    let mut x = center.x - widths.iter().sum::<f32>() / 2.0;
+    let word = widths.iter().sum::<f32>();
+    let landing = |i: usize| FIRST + i as f32 * LETTERS + DROP;
+    let last_landing = landing(widths.len() - 1);
+
+    // Each landing shakes the screen a moment, the last one harder.
+    let mut shake = 0.0;
+    for i in 0..widths.len() {
+        let d = t - landing(i);
+        if (0.0..0.22).contains(&d) {
+            let strength = if i + 1 == widths.len() { 0.11 } else { 0.05 };
+            shake += (1.0 - d / 0.22).powi(2) * size * strength;
+        }
+    }
+    let jolt = Vec2::new((t * 91.0).sin(), (t * 73.0).cos()) * shake;
+    let center = screen.center() - Vec2::new(0.0, size * 0.25) + jolt;
+
+    // Embers rising from the bottom, flickering.
+    for k in 0..48u32 {
+        let speed = 0.12 + 0.2 * noise(k * 3 + 1);
+        let rise = (t * speed + noise(k * 3 + 2)) % 1.0;
+        let x = screen.min.x + screen.width() * noise(k * 3) + (t * 1.3 + k as f32).sin() * 14.0;
+        let y = screen.max.y + 10.0 - rise * (screen.height() + 20.0);
+        let flicker = 0.6 + 0.4 * (t * 9.0 + k as f32 * 1.7).sin();
+        let alpha = (1.0 - rise).powf(0.7) * flicker * fade * (t / 0.8).min(1.0);
+        let color = theme.ansi[3].lerp_to_gamma(theme.accent, noise(k * 7));
+        painter.circle_filled(Pos2::new(x, y), 1.0 + 1.6 * noise(k * 5), color.gamma_multiply(alpha * 0.8));
+    }
+
+    // Two spotlights from above, sweeping in and crossing behind the name, swaying a little.
+    let sweep = ease_out((t / 1.2).min(1.0));
+    let ground = center.y + size * 1.1;
+    for side in [-1.0f32, 1.0] {
+        let from = Pos2::new(screen.center().x + side * screen.width() * 0.36, screen.min.y - 20.0);
+        let aim = screen.center().x - side * (screen.width() * 0.7 * (1.0 - sweep)) - side * size * 0.35 + (t * 1.1 + side).sin() * size * 0.25;
+        for (spread, alpha) in [(0.5, 0.05), (0.85, 0.03), (1.3, 0.015)] {
+            let half = size * spread;
+            let cone = vec![from, Pos2::new(aim - half, ground), Pos2::new(aim + half, ground)];
+            painter.add(egui::Shape::convex_polygon(cone, theme.accent.lerp_to_gamma(Color32::WHITE, 0.5).gamma_multiply(alpha * sweep * fade), Stroke::NONE));
+        }
+    }
+
+    // Soft glow behind the name, swelling once the letters have landed, then breathing.
+    let landed = ((t - last_landing) / 0.5).clamp(0.0, 1.0);
+    let breath = 1.0 + 0.04 * (t * 2.2).sin() * landed;
+    for k in 0..12 {
+        let r = size * (0.6 + k as f32 * 0.22) * (0.8 + 0.2 * landed) * breath;
+        painter.circle_filled(center, r, theme.accent.gamma_multiply(0.014 * landed * fade));
+    }
+
+    // The letters, slamming down; a blur above them while they fall.
+    let mut x = center.x - word / 2.0;
+    let mut starts = Vec::with_capacity(widths.len());
     for (i, c) in "Ronnie".chars().enumerate() {
-        let p = ((t - i as f32 * LETTERS) / DROP).clamp(0.0, 1.0);
+        starts.push(x);
+        let p = ((t - FIRST - i as f32 * LETTERS) / DROP).clamp(0.0, 1.0);
         if p > 0.0 {
-            let y = center.y - (1.0 - ease_out_back(p)) * size * 0.9;
-            paint_metal(painter, Pos2::new(x, y), Align2::LEFT_CENTER, &c.to_string(), size, theme.accent, p.min(1.0) * fade);
+            let fall = (center.y - screen.min.y + size) * (1.0 - p * p);
+            let at = Pos2::new(x, center.y - fall);
+            if p < 1.0 {
+                for (k, alpha) in [(1.0, 0.25), (2.0, 0.12)] {
+                    painter.text(at - Vec2::new(0.0, k * size * 0.22), Align2::LEFT_CENTER, c, font.clone(), theme.accent.gamma_multiply(alpha));
+                }
+            }
+            paint_metal(painter, at, Align2::LEFT_CENTER, &c.to_string(), size, theme.accent, fade);
         }
         x += widths[i];
     }
 
-    // Accent line growing from the middle, then the version under it.
-    let line = ((t - 1.1) / 0.45).clamp(0.0, 1.0);
+    // Sparks from under each letter as it lands, falling back.
+    for (i, w) in widths.iter().enumerate() {
+        let d = t - landing(i);
+        if !(0.0..0.6).contains(&d) {
+            continue;
+        }
+        let origin = Pos2::new(starts[i] + w / 2.0, center.y + size * 0.32);
+        for k in 0..12u32 {
+            let seed = i as u32 * 97 + k * 13;
+            let angle = std::f32::consts::PI * (1.05 + 0.9 * noise(seed));
+            let speed = size * (2.0 + 3.0 * noise(seed + 1));
+            let velocity = Vec2::angled(angle) * speed + Vec2::new(0.0, size * 7.0 * d);
+            let at = origin + Vec2::angled(angle) * speed * d + Vec2::new(0.0, size * 3.5 * d * d);
+            let life = 1.0 - d / 0.6;
+            let color = Color32::WHITE.lerp_to_gamma(theme.ansi[3], 1.0 - life).gamma_multiply(life * fade);
+            painter.line_segment([at, at - velocity.normalized() * size * 0.09 * life], Stroke::new(1.6, color));
+        }
+    }
+
+    // The last landing: a flash and a shock wave.
+    let d = t - last_landing;
+    if (0.0..0.6).contains(&d) {
+        painter.rect_filled(screen, 0.0, Color32::WHITE.gamma_multiply(0.18 * (1.0 - d / 0.25).max(0.0)));
+        let ring = size * (0.6 + d * 7.0);
+        painter.circle_stroke(center, ring, Stroke::new(3.0 * (1.0 - d / 0.6), theme.accent.lerp_to_gamma(Color32::WHITE, 0.4).gamma_multiply((1.0 - d / 0.6) * fade)));
+    }
+
+    // A shine sweeping across the name, slanted: strips of the band, each a little further along.
+    let shine = (t - last_landing - 0.3) / 0.8;
+    if (0.0..1.0).contains(&shine) {
+        let top = center.y - size * 0.6;
+        let strips = 10;
+        let strip_h = size * 1.2 / strips as f32;
+        for s in 0..strips {
+            let y = top + s as f32 * strip_h;
+            let mid = center.x - word / 2.0 - size * 0.6 + (word + size * 1.2) * shine - s as f32 * strip_h * 0.45;
+            let band = Rect::from_min_max(Pos2::new(mid - size * 0.12, y), Pos2::new(mid + size * 0.12, y + strip_h + 0.5));
+            let clipped = painter.with_clip_rect(band.intersect(painter.clip_rect()));
+            for (i, c) in "Ronnie".chars().enumerate() {
+                clipped.text(Pos2::new(starts[i], center.y), Align2::LEFT_CENTER, c, font.clone(), Color32::WHITE.gamma_multiply(0.75 * fade));
+            }
+        }
+    }
+
+    // An electric line growing from the middle, crackling, then settling.
+    let line = ((t - last_landing - 0.05) / 0.45).clamp(0.0, 1.0);
+    let y = center.y + size * 0.62;
     if line > 0.0 {
-        let half = size * 1.6 * (1.0 - (1.0 - line).powi(3));
-        let y = center.y + size * 0.62;
-        painter.hline(center.x - half..=center.x + half, y, Stroke::new(2.0, theme.accent.gamma_multiply(fade)));
-        let version = ((t - 1.4) / 0.4).clamp(0.0, 1.0) * fade;
-        painter.text(Pos2::new(center.x, y + 22.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
-        // Alpha: not for production work.
-        let alpha = ((t - 1.6) / 0.4).clamp(0.0, 1.0) * fade;
-        let galley = painter.layout(warning.to_owned(), FontId::proportional(12.5), theme.ansi[3].gamma_multiply(alpha), (screen.width() - 48.0).min(460.0));
-        let box_rect = Rect::from_center_size(Pos2::new(center.x, y + 62.0), galley.size() + Vec2::new(24.0, 14.0));
+        let half = size * 1.6 * ease_out(line);
+        let calm = ((t - last_landing - 0.55) / 0.35).clamp(0.0, 1.0);
+        let seed = (t * 24.0) as u32;
+        let points: Vec<Pos2> = (0..=28)
+            .map(|k| {
+                let f = k as f32 / 28.0;
+                let jitter = (noise(seed * 31 + k) - 0.5) * size * 0.16 * (1.0 - calm) * (f * std::f32::consts::PI).sin();
+                Pos2::new(center.x - half + 2.0 * half * f, y + jitter)
+            })
+            .collect();
+        painter.add(egui::Shape::line(points.clone(), Stroke::new(6.0, theme.accent.gamma_multiply(0.22 * fade))));
+        painter.add(egui::Shape::line(points, Stroke::new(2.0, theme.accent.lerp_to_gamma(Color32::WHITE, 0.6 * (1.0 - calm)).gamma_multiply(fade))));
+    }
+
+    // The motto, typed like at a prompt, a block cursor blinking after it.
+    let typing = t - last_landing - 0.4;
+    if typing > 0.0 {
+        let mut format = egui::TextFormat::simple(FontId::monospace(15.0), theme.text.gamma_multiply(fade));
+        format.extra_letter_spacing = 2.0;
+        let full = painter.layout_job(egui::text::LayoutJob::single_section(strings.ronnie_motto.to_owned(), format.clone()));
+        let typed: String = strings.ronnie_motto.chars().take((typing / 0.06) as usize).collect();
+        let done = typed.chars().count() == strings.ronnie_motto.chars().count();
+        let galley = painter.layout_job(egui::text::LayoutJob::single_section(typed, format));
+        let at = Pos2::new(center.x - full.size().x / 2.0, y + 26.0 - full.size().y / 2.0);
+        let cursor_x = at.x + galley.size().x + 3.0;
+        painter.galley(at, galley, theme.text);
+        if !done || (t * 2.5) % 1.0 < 0.55 {
+            painter.rect_filled(Rect::from_min_size(Pos2::new(cursor_x, at.y + 1.0), Vec2::new(8.0, full.size().y - 2.0)), 1.0, theme.cursor.gamma_multiply(fade));
+        }
+    }
+
+    // The version, then the alpha warning: not for production work.
+    let version = ((t - last_landing - 0.6) / 0.4).clamp(0.0, 1.0) * fade;
+    painter.text(Pos2::new(center.x, y + 54.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
+    let alpha = ((t - last_landing - 0.8) / 0.4).clamp(0.0, 1.0) * fade;
+    if alpha > 0.0 {
+        let galley = painter.layout(strings.alpha_warning.to_owned(), FontId::proportional(12.5), theme.ansi[3].gamma_multiply(alpha), (screen.width() - 48.0).min(460.0));
+        let box_rect = Rect::from_center_size(Pos2::new(center.x, y + 94.0), galley.size() + Vec2::new(24.0, 14.0));
         painter.rect_filled(box_rect, 8.0, theme.ansi[3].gamma_multiply(0.10 * alpha));
         painter.rect_stroke(box_rect, 8.0, Stroke::new(1.0, theme.ansi[3].gamma_multiply(0.45 * alpha)), egui::StrokeKind::Inside);
         painter.galley(box_rect.center() - galley.size() / 2.0, galley, theme.ansi[3].gamma_multiply(alpha));
     }
 
     // At the bottom: made with love, the heart beating.
-    let credit = ((t - 1.8) / 0.5).clamp(0.0, 1.0) * fade;
+    let credit = ((t - last_landing - 0.9) / 0.5).clamp(0.0, 1.0) * fade;
     if credit > 0.0 {
         let font = FontId::proportional(11.5);
         let color = theme.text_muted.gamma_multiply(credit);
@@ -2894,7 +3042,27 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, st
         x += heart_w + gap;
         painter.galley(Pos2::new(x, y - after.size().y / 2.0), after, color);
     }
+
+    // Scan lines, like an old tube screen.
+    if off <= 0.0 {
+        let mut y = screen.min.y;
+        while y < screen.max.y {
+            painter.hline(screen.x_range(), y, Stroke::new(1.0, Color32::from_black_alpha(22)));
+            y += 3.0;
+        }
+    }
     true
+}
+
+/// A steady pseudo-random number in [0, 1) for `n`: the splash's embers and sparks.
+fn noise(n: u32) -> f32 {
+    let mut x = n.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    x = x.wrapping_mul(0x297A_2D39);
+    x ^= x >> 15;
+    (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
 /// ❤, drawn (the fonts may lack it): two round lobes on a point.

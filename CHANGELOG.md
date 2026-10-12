@@ -2,6 +2,24 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.27.0] - 2026-10-12
+
+### Nouveautés
+
+- **Un nouvel écran de démarrage** : deux projecteurs balaient la scène, les lettres de Ronnie s'écrasent une à une dans une gerbe d'étincelles, un éclair se pose sous le nom et « Un terminal métal » se tape au clavier, avant que l'écran ne s'éteigne comme un vieux téléviseur.
+- **La visite guidée refaite** pour le Ronnie d'aujourd'hui, en 10 étapes : la colonne des catégories, le panneau, les splits, la barre du panneau, les serveurs SSH et leurs fichiers, les bases de données, Claude Code, les notes, la musique et les jeux. Elle s'affiche une fois après la mise à jour, et se revoit dans les réglages.
+- **« Copier vers… »** dans les fichiers, à côté de « Déplacer… ». Comme pour le déplacement, il demande quoi faire des noms déjà présents : remplacer (les dossiers sont fusionnés) ou ignorer, si besoin pour toute la session.
+- **Les longues opérations sur les fichiers dans la file des transferts** : supprimer, déplacer, copier ou changer les permissions affiche une ligne avec la progression quand ça dure, qu'on peut arrêter, et la navigation continue pendant ce temps.
+- **Copier et supprimer sur un serveur se fait sur le serveur** (avec `cp` et `rm` par SSH), sans que chaque fichier fasse l'aller-retour avec l'ordinateur : beaucoup plus rapide. Par SFTP comme avant quand le compte n'a pas de shell.
+- **Les profils et les hôtes ouverts ressortent dans la barre latérale**, même quand rien n'y tourne : leur nom en entier, les fermés estompés.
+
+### Corrections
+
+- Les transferts de nombreux fichiers n'échouent plus avec « handle limit reached ».
+- Les suppressions et les changements de permissions sur un serveur vont plus vite, plusieurs fichiers à la fois.
+- Les jeux ne sont plus tous bloqués au premier lancement pendant les heures de travail.
+- Le badge d'une catégorie compte les onglets où un programme tourne, et non plus les onglets ouverts ; son animation suit sa bordure.
+
 ## [0.26.0] - 2026-10-12
 
 ### Nouveautés

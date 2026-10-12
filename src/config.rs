@@ -540,9 +540,9 @@ pub struct Settings {
     /// The machine's resources (CPU, GPU, memory, disks) at the bottom of the strip of categories.
     #[serde(default = "default_true")]
     pub resources_panel: bool,
-    /// The tour of the features was shown (or skipped): not shown again at launch.
+    /// The version of the tour of the features last shown (or skipped): a newer one is shown at launch.
     #[serde(default)]
-    pub tour_seen: bool,
+    pub tour_version: u32,
     /// The home page's cards of SSH hosts and of database connections.
     #[serde(default = "default_true")]
     pub home_hosts: bool,
@@ -1043,7 +1043,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_seen: false, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, game_usage: GameUsage::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, game_usage: GameUsage::default() }
     }
 }
 

@@ -1853,7 +1853,7 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
 }
 
 /// The icon of a category, in the sidebar's strip.
-fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Category, color: Color32) {
+pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Category, color: Color32) {
     match category {
         Category::Local => paint_prompt_icon(painter, c, color),
         Category::Files => super::notes::paint_folder_icon(painter, c, color),
