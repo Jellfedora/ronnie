@@ -2,6 +2,14 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.26.0] - 2026-10-12
+
+### Nouveautés
+
+- **La santé des serveurs SSH** dans la barre de leurs panes : processeur, mémoire et disque le plus plein, relus toutes les 5 s par une connexion discrète (en jaune à partir de 80 %, en rouge à partir de 90 %). Au survol, la charge, le détail et depuis quand le serveur est allumé. Une notification quand un disque dépasse 90 %. Se désactive dans les réglages (« Santé des serveurs SSH »).
+- **Le logo GitHub ou GitLab** dans la barre d'un terminal local ouvert dans un dépôt : un clic ouvre la page du dépôt.
+- **Les jeux limités pendant les heures de travail** (8 h 30 - 12 h, 14 h - 18 h, jusqu'à 17 h 20 le vendredi) : une partie de Speed Metal et de Puissance 4 par matinée et par après-midi, 10 minutes de Ronnie.io, puis une page qui dit quand ils reviennent.
+
 ## [0.25.0] - 2026-10-11
 
 ### Nouveautés
