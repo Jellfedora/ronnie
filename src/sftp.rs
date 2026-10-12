@@ -59,22 +59,25 @@ pub enum Request {
     List(String),
     Mkdir(String),
     Rename(String, String),
+    // The long changes (Remove, Chmod, Move, Copy) run beside browsing and transfers: Progress as they go
+    // (items, bytes for Copy), then Finished and Changed. They can be cancelled, Move aside.
     /// Files and directories (recursively).
-    Remove(Vec<String>),
+    Remove { id: u64, paths: Vec<String> },
     /// Each item gets `change` applied to its own mode (recursively: those `scope` picks).
-    Chmod { paths: Vec<String>, change: ModeChange, recursive: bool, scope: Scope },
+    Chmod { id: u64, paths: Vec<String>, change: ModeChange, recursive: bool, scope: Scope },
     Download { id: u64, remote: Vec<String>, local_dir: PathBuf, overwrite: bool },
     Upload { id: u64, local: Vec<PathBuf>, remote_dir: String, overwrite: bool },
     /// Moves `from` (paths) into the directory `dir`. Items already there: a folder is merged (its
     /// contents moved into the one there), a file replaced if `overwrite` is true, kept (the one moved
-    /// stays) if false; None: nothing is moved, MoveConflict tells which exist.
-    Move { from: Vec<String>, dir: String, overwrite: Option<bool> },
+    /// stays) if false; None: nothing is moved, MoveConflict tells which exist (and no Finished comes).
+    /// Finished tells how many items stayed.
+    Move { id: u64, from: Vec<String>, dir: String, overwrite: Option<bool> },
+    /// Copies files or folders (recursively) on the server: each `from` to its `to`, which must be free.
+    Copy { id: u64, pairs: Vec<(String, String)> },
     /// The total size of what these folders hold (each: DirSize).
     DirSize(Vec<String>),
     /// An empty file (refused if the name is taken).
     CreateFile(String),
-    /// Copies a file or folder (recursively) on the server, to a name that must be free.
-    Duplicate { from: String, to: String },
     /// Part of a file (the viewer of big files): `len` bytes from `offset`, or the last `len` if `tail`.
     ReadRange { path: String, offset: u64, len: u64, tail: bool },
     /// A file to edit (at most `MAX_EDIT` bytes).
@@ -96,7 +99,7 @@ pub enum Event {
     /// The total size of the files under a folder, or why it couldn't be counted.
     DirSize { path: String, result: Result<u64, String> },
     /// Nothing moved: these names already exist in `dir`.
-    MoveConflict { from: Vec<String>, dir: String, existing: Vec<String> },
+    MoveConflict { id: u64, from: Vec<String>, dir: String, existing: Vec<String> },
     Error(String),
     Progress { id: u64, done: u64, total: u64, current: String },
     /// Done: how many files were skipped because they already existed, or why it failed.
@@ -111,6 +114,16 @@ pub enum Event {
     FileWritten { path: String, result: Result<Option<i64>, String>, conflict: bool },
     /// The connection is over (with ssh's last words, if any).
     Closed(String),
+}
+
+impl Request {
+    /// The line in the queue of transfers and long changes.
+    fn id(&self) -> Option<u64> {
+        match self {
+            Request::Download { id, .. } | Request::Upload { id, .. } | Request::Remove { id, .. } | Request::Chmod { id, .. } | Request::Move { id, .. } | Request::Copy { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 /// Largest file the editor opens.
@@ -268,7 +281,6 @@ impl Connection {
                     },
                     Request::Mkdir(path) => sftp.create_dir(path).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                     Request::Rename(from, to) => sftp.rename(from, to).await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
-                    Request::Move { from, dir, overwrite } => move_items(&sftp, from, dir, overwrite, &emit).await,
                     // In the background: a big tree takes a while to go through.
                     Request::DirSize(paths) => {
                         let (sftp, emit) = (sftp.clone(), emit.clone());
@@ -280,26 +292,17 @@ impl Connection {
                         });
                         Ok(())
                     }
-                    Request::Remove(paths) => remove(&sftp, &paths).await.map(|_| emit.send(Event::Changed)),
-                    Request::Chmod { paths, change, recursive, scope } => chmod(&sftp, &paths, change, recursive, scope).await.map(|_| emit.send(Event::Changed)),
+                    op @ (Request::Remove { .. } | Request::Chmod { .. } | Request::Move { .. } | Request::Copy { .. }) => {
+                        let (sftp, emit, cancels) = (sftp.clone(), emit.clone(), session_cancels.clone());
+                        tokio::spawn(async move { run_op(&sftp, op, &emit, &cancels).await });
+                        Ok(())
+                    }
                     Request::CreateFile(path) => {
                         let flags = russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::EXCLUDE | russh_sftp::protocol::OpenFlags::WRITE;
                         match sftp.open_with_flags(path.clone(), flags).await {
                             Ok(file) => file.close().await.map_err(anyhow::Error::from).map(|_| emit.send(Event::Changed)),
                             Err(e) => Err(anyhow::Error::from(e).context(format!("creating {path}"))),
                         }
-                    }
-                    // In the background: copying goes through this computer and may take a while.
-                    Request::Duplicate { from, to } => {
-                        let (sftp, emit) = (sftp.clone(), emit.clone());
-                        tokio::spawn(async move {
-                            let result = duplicate(&sftp, &from, &to).await;
-                            if let Err(e) = result {
-                                emit.send(Event::Error(format!("{e:#}")));
-                            }
-                            emit.send(Event::Changed);
-                        });
-                        Ok(())
                     }
                     Request::ReadRange { path, offset, len, tail } => {
                         let result = read_range(&sftp, &path, offset, len, tail).await.map_err(|e| format!("{e:#}"));
@@ -337,8 +340,8 @@ impl Connection {
 
     pub fn send(&self, request: Request) {
         // A transfer's cancel flag exists from the start, so that cancelling it works even while queued.
-        if let Request::Download { id, .. } | Request::Upload { id, .. } = &request {
-            self.cancels.lock().unwrap().insert(*id, Arc::default());
+        if let Some(id) = request.id() {
+            self.cancels.lock().unwrap().insert(id, Arc::default());
         }
         let _ = self.requests.send(request);
     }
@@ -494,7 +497,8 @@ fn base_name(path: &str) -> &str {
     path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
 }
 
-async fn move_items(sftp: &SftpSession, from: Vec<String>, dir: String, overwrite: Option<bool>, emit: &Emitter) -> Result<()> {
+/// How many items stayed; None when some names exist in `dir` and nobody said what to do (MoveConflict sent).
+async fn move_items(sftp: &SftpSession, id: u64, from: Vec<String>, dir: String, overwrite: Option<bool>, emit: &Emitter, cancel: &AtomicBool) -> Result<Option<u64>> {
     let Some(overwrite) = overwrite else {
         let mut existing = Vec::new();
         for path in &from {
@@ -504,21 +508,17 @@ async fn move_items(sftp: &SftpSession, from: Vec<String>, dir: String, overwrit
             }
         }
         if !existing.is_empty() {
-            emit.send(Event::MoveConflict { from, dir, existing });
-            return Ok(());
+            emit.send(Event::MoveConflict { id, from, dir, existing });
+            return Ok(None);
         }
-        return Box::pin(move_items(sftp, from, dir, Some(false), emit)).await;
+        return Box::pin(move_items(sftp, id, from, dir, Some(false), emit, cancel)).await;
     };
-    let mut result = Ok(());
+    let mut kept = 0;
     for path in &from {
-        let to = join(&dir, base_name(path));
-        if let Err(e) = move_entry(sftp, path.clone(), to, overwrite).await {
-            result = Err(e);
-            break;
-        }
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
+        kept += move_entry(sftp, path.clone(), join(&dir, base_name(path)), overwrite).await?;
     }
-    emit.send(Event::Changed);
-    result.map(|_| ())
+    Ok(Some(kept))
 }
 
 /// Moves `from` to `to`: renamed if `to` is free; folders merged; a file there replaced if `overwrite`.
@@ -548,25 +548,79 @@ fn move_entry(sftp: &SftpSession, from: String, to: String, overwrite: bool) -> 
         if !overwrite {
             return Ok(1);
         }
-        remove(sftp, std::slice::from_ref(&to)).await?;
+        remove(sftp, std::slice::from_ref(&to), &mut Progress::quiet(), &AtomicBool::new(false)).await?;
         sftp.rename(from.clone(), to).await.with_context(|| format!("moving {from}"))?;
         Ok(0)
     })
 }
 
-async fn remove(sftp: &SftpSession, paths: &[String]) -> Result<()> {
-    for root in paths {
-        let mut all = walk(sftp, root, false).await?;
-        // Contents before their directory.
-        all.reverse();
-        for (path, attrs) in all {
-            if attrs.is_dir() { sftp.remove_dir(path.clone()).await } else { sftp.remove_file(path.clone()).await }.with_context(|| format!("deleting {path}"))?;
-        }
+/// A long change, beside browsing and transfers: Progress as it goes, then Finished and Changed.
+async fn run_op(sftp: &SftpSession, op: Request, emit: &Emitter, cancels: &Cancels) {
+    let id = op.id().unwrap_or_default();
+    let cancel = cancels.lock().unwrap().get(&id).cloned().unwrap_or_default();
+    let mut progress = Progress { id, emit: Some(emit), total: 0, done: 0, last: Instant::now() };
+    let result = match op {
+        Request::Remove { paths, .. } => remove(sftp, &paths, &mut progress, &cancel).await.map(|_| 0),
+        Request::Chmod { paths, change, recursive, scope, .. } => chmod(sftp, &paths, change, recursive, scope, &mut progress, &cancel).await.map(|_| 0),
+        Request::Copy { pairs, .. } => copy(sftp, &pairs, &mut progress, &cancel).await.map(|_| 0),
+        Request::Move { from, dir, overwrite, .. } => move_items(sftp, id, from, dir, overwrite, emit, &cancel).await.transpose().unwrap_or(Ok(u64::MAX)),
+        _ => Ok(0),
+    };
+    cancels.lock().unwrap().remove(&id);
+    // Asked what to do with the names already there: the move comes again, under another id.
+    if matches!(result, Ok(u64::MAX)) {
+        return;
+    }
+    if result.is_ok() {
+        emit.send(Event::Progress { id, done: progress.total, total: progress.total, current: String::new() });
+    }
+    emit.send(Event::Finished { id, result: result.map_err(|e| format!("{e:#}")) });
+    emit.send(Event::Changed);
+}
+
+/// Requests sent at once by the long changes: one at a time, each waiting for the server's answer, a
+/// folder of thousands of files took ages to delete.
+const IN_FLIGHT: usize = 32;
+
+/// Runs `work` on each item, IN_FLIGHT at once, counting each one done (`work` gives its path).
+async fn in_flight<T, F: Future<Output = Result<String>>>(items: Vec<T>, progress: &mut Progress<'_>, cancel: &AtomicBool, work: impl FnMut(T) -> F) -> Result<()> {
+    use futures_util::StreamExt;
+    let mut running = futures_util::stream::iter(items.into_iter().map(work)).buffer_unordered(IN_FLIGHT);
+    while let Some(done) = running.next().await {
+        progress.add(1, &done?);
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
     }
     Ok(())
 }
 
-async fn chmod(sftp: &SftpSession, paths: &[String], change: ModeChange, recursive: bool, scope: Scope) -> Result<()> {
+async fn remove(sftp: &SftpSession, paths: &[String], progress: &mut Progress<'_>, cancel: &AtomicBool) -> Result<()> {
+    let mut all = Vec::new();
+    for root in paths {
+        all.extend(walk(sftp, root, false).await?);
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
+    }
+    progress.total = all.len() as u64;
+    let (mut dirs, files): (Vec<_>, Vec<_>) = all.into_iter().partition(|(_, attrs)| attrs.is_dir());
+    in_flight(files, progress, cancel, async |(path, _)| {
+        sftp.remove_file(path.clone()).await.with_context(|| format!("deleting {path}"))?;
+        Ok(path)
+    })
+    .await?;
+    // Then the folders, emptied: the deepest first, those as deep together.
+    let depth = |path: &str| path.matches('/').count();
+    dirs.sort_by_key(|(path, _)| std::cmp::Reverse(depth(path)));
+    for level in dirs.chunk_by(|(a, _), (b, _)| depth(a) == depth(b)) {
+        in_flight(level.to_vec(), progress, cancel, async |(path, _)| {
+            sftp.remove_dir(path.clone()).await.with_context(|| format!("deleting {path}"))?;
+            Ok(path)
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn chmod(sftp: &SftpSession, paths: &[String], change: ModeChange, recursive: bool, scope: Scope, progress: &mut Progress<'_>, cancel: &AtomicBool) -> Result<()> {
+    let mut all = Vec::new();
     for root in paths {
         // Recursively, links are skipped: chmod follows them, and they may point anywhere (~/.ssh...).
         let targets: Vec<(String, FileAttributes)> = if recursive {
@@ -578,50 +632,67 @@ async fn chmod(sftp: &SftpSession, paths: &[String], change: ModeChange, recursi
         } else {
             vec![(root.clone(), sftp.metadata(root.clone()).await.with_context(|| format!("reading {root}"))?)]
         };
-        for (path, attrs) in targets {
-            let mode = change.apply(attrs.permissions.unwrap_or(0o644));
-            let attrs = FileAttributes { permissions: Some(mode), ..FileAttributes::empty() };
-            sftp.set_metadata(path.clone(), attrs).await.with_context(|| format!("changing the permissions of {path}"))?;
-        }
+        all.extend(targets);
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
     }
-    Ok(())
+    progress.total = all.len() as u64;
+    in_flight(all, progress, cancel, async |(path, attrs)| {
+        let mode = change.apply(attrs.permissions.unwrap_or(0o644));
+        let attrs = FileAttributes { permissions: Some(mode), ..FileAttributes::empty() };
+        sftp.set_metadata(path.clone(), attrs).await.with_context(|| format!("changing the permissions of {path}"))?;
+        Ok(path)
+    })
+    .await
 }
 
 /// Throttled progress reports.
 struct Progress<'a> {
     id: u64,
-    emit: &'a Emitter,
+    /// None: nothing reported (a part of another change).
+    emit: Option<&'a Emitter>,
     total: u64,
     done: u64,
     last: Instant,
 }
 
 impl Progress<'_> {
+    fn quiet() -> Self {
+        Progress { id: 0, emit: None, total: 0, done: 0, last: Instant::now() }
+    }
+
     fn add(&mut self, n: u64, current: &str) {
         self.done += n;
-        if self.last.elapsed() > Duration::from_millis(150) {
+        if let Some(emit) = self.emit.filter(|_| self.last.elapsed() > Duration::from_millis(150)) {
             self.last = Instant::now();
-            self.emit.send(Event::Progress { id: self.id, done: self.done, total: self.total, current: current.to_owned() });
+            emit.send(Event::Progress { id: self.id, done: self.done, total: self.total, current: current.to_owned() });
         }
     }
 }
 
 const CHUNK: usize = 256 * 1024;
 
-/// Copies `from` (a file, or a folder and everything in it, symbolic links aside) to `to`, which must
-/// not exist yet.
-async fn duplicate(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
-    anyhow::ensure!(!sftp.try_exists(to).await.unwrap_or(true), "{to} already exists");
-    let mut buf = vec![0u8; CHUNK];
-    // Parents come before what they hold.
-    for (path, attrs) in walk(sftp, from, false).await? {
-        let relative = path.strip_prefix(from).unwrap_or("").trim_start_matches('/');
-        let target = if relative.is_empty() { to.to_owned() } else { join(to, relative) };
-        // Links are left out: servers disagree on the order of SSH_FXP_SYMLINK's arguments (OpenSSH has
-        // them reversed), and a link made the wrong way round would land elsewhere.
-        if attrs.is_symlink() {
-            continue;
+/// Copies each `from` (a file, or a folder and everything in it, symbolic links aside) to its `to`,
+/// which must not exist yet. Everything goes through this computer.
+async fn copy(sftp: &SftpSession, pairs: &[(String, String)], progress: &mut Progress<'_>, cancel: &AtomicBool) -> Result<()> {
+    let mut plan = Vec::new();
+    for (from, to) in pairs {
+        anyhow::ensure!(!sftp.try_exists(to.clone()).await.unwrap_or(true), "{to} already exists");
+        anyhow::ensure!(!to.starts_with(&format!("{}/", from.trim_end_matches('/'))), "{from}: can't be copied into itself");
+        // Parents come before what they hold.
+        for (path, attrs) in walk(sftp, from, false).await? {
+            let relative = path.strip_prefix(from.as_str()).unwrap_or("").trim_start_matches('/');
+            let target = if relative.is_empty() { to.clone() } else { join(to, relative) };
+            // Links are left out: servers disagree on the order of SSH_FXP_SYMLINK's arguments (OpenSSH
+            // has them reversed), and a link made the wrong way round would land elsewhere.
+            if !attrs.is_symlink() {
+                plan.push((path, target, attrs));
+            }
         }
+    }
+    progress.total = plan.iter().filter(|(_, _, a)| !a.is_dir()).map(|(_, _, a)| a.size.unwrap_or(0)).sum();
+    let mut buf = vec![0u8; CHUNK];
+    for (path, target, attrs) in plan {
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
         if attrs.is_dir() {
             sftp.create_dir(target.clone()).await.with_context(|| format!("creating {target}"))?;
         } else {
@@ -631,11 +702,13 @@ async fn duplicate(sftp: &SftpSession, from: &str, to: &str) -> Result<()> {
                 let dst = sftp.open_with_flags(target.clone(), flags).await.with_context(|| format!("creating {target}"))?;
                 closing(dst, async |dst| {
                     loop {
+                        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
                         let n = src.read(&mut buf).await.with_context(|| format!("reading {path}"))?;
                         if n == 0 {
                             break;
                         }
                         dst.write_all(&buf[..n]).await.with_context(|| format!("writing {target}"))?;
+                        progress.add(n as u64, &path);
                     }
                     Ok(())
                 })
@@ -741,7 +814,7 @@ async fn download(sftp: &SftpSession, remote: &[String], local_dir: &Path, overw
         }
     }
     let total = plan.iter().filter(|(_, _, a)| !a.is_dir()).map(|(_, _, a)| a.size.unwrap_or(0)).sum();
-    let mut progress = Progress { id, emit, total, done: 0, last: Instant::now() };
+    let mut progress = Progress { id, emit: Some(emit), total, done: 0, last: Instant::now() };
     let mut buf = vec![0u8; CHUNK];
     let mut skipped = 0;
     for (remote, local, attrs) in plan {
@@ -823,7 +896,7 @@ async fn upload(sftp: &SftpSession, local: &[PathBuf], remote_dir: &str, overwri
         }
     }
     let total = plan.iter().map(|(_, _, _, size)| size).sum();
-    let mut progress = Progress { id, emit, total, done: 0, last: Instant::now() };
+    let mut progress = Progress { id, emit: Some(emit), total, done: 0, last: Instant::now() };
     let mut buf = vec![0u8; CHUNK];
     let mut skipped = 0;
     for (local, remote, is_dir, size) in plan {
@@ -934,8 +1007,9 @@ mod tests {
         assert_eq!(names, [("a.txt", false), ("sub", true)]);
 
         // Permissions.
-        conn.send(Request::Chmod { paths: vec![join(&remote_s, "dir/a.txt")], change: ModeChange { set: 0o640, clear: 0o7777 }, recursive: false, scope: Scope::All });
-        wait(&conn, |e| matches!(e, Event::Changed));
+        conn.send(Request::Chmod { id: 9, paths: vec![join(&remote_s, "dir/a.txt")], change: ModeChange { set: 0o640, clear: 0o7777 }, recursive: false, scope: Scope::All });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 9, .. })) else { unreachable!() };
+        result.unwrap();
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(remote.join("dir/a.txt")).unwrap().permissions().mode() & 0o777, 0o640);
 
@@ -948,8 +1022,9 @@ mod tests {
         assert_eq!(std::fs::read(back.join("dir/a.txt")).unwrap(), b"hello");
         conn.send(Request::Rename(join(&remote_s, "dir"), join(&remote_s, "renamed")));
         wait(&conn, |e| matches!(e, Event::Changed));
-        conn.send(Request::Remove(vec![join(&remote_s, "renamed")]));
-        wait(&conn, |e| matches!(e, Event::Changed));
+        conn.send(Request::Remove { id: 3, paths: vec![join(&remote_s, "renamed")] });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 3, .. })) else { unreachable!() };
+        result.unwrap();
         assert!(std::fs::read_dir(&remote).unwrap().next().is_none(), "deleted recursively");
 
         std::fs::remove_dir_all(&base).unwrap();
@@ -979,8 +1054,23 @@ mod tests {
         result.unwrap();
         assert_eq!(std::fs::read_dir(back.join("many")).unwrap().count(), 1500);
         // And browsing still works afterwards.
-        conn.send(Request::List(remote_s));
+        conn.send(Request::List(remote_s.clone()));
         wait(&conn, |e| matches!(e, Event::Listing { .. }));
+
+        // Deleted many at once, counted: every file and the folder.
+        conn.send(Request::Remove { id: 2, paths: vec![remote_s] });
+        let mut last = None;
+        let Event::Finished { result, .. } = wait(&conn, |e| {
+            if let Event::Progress { id: 2, done, total, .. } = e {
+                last = Some((*done, *total));
+            }
+            matches!(e, Event::Finished { id: 2, .. })
+        }) else {
+            unreachable!()
+        };
+        result.unwrap();
+        assert_eq!(last, Some((1501, 1501)));
+        assert!(!remote.exists());
 
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -1051,10 +1141,20 @@ mod tests {
         wait(&conn, |e| matches!(e, Event::Changed));
         assert_eq!(std::fs::read(base.join("new.txt")).unwrap(), b"");
 
-        conn.send(Request::Duplicate { from: join(&root, "dir"), to: join(&root, "dir copy") });
-        wait(&conn, |e| matches!(e, Event::Changed));
+        conn.send(Request::Copy { id: 1, pairs: vec![(join(&root, "dir"), join(&root, "dir copy")), (join(&root, "new.txt"), join(&root, "dir/new.txt"))] });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 1, .. })) else { unreachable!() };
+        result.unwrap();
         assert_eq!(std::fs::read(base.join("dir copy/sub/a.txt")).unwrap(), b"hello");
         assert_eq!(std::fs::read(base.join("dir/sub/a.txt")).unwrap(), b"hello");
+        assert!(base.join("dir/new.txt").exists());
+
+        // Never over an existing item, nor into itself.
+        conn.send(Request::Copy { id: 2, pairs: vec![(join(&root, "new.txt"), join(&root, "dir/new.txt"))] });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 2, .. })) else { unreachable!() };
+        assert!(result.unwrap_err().contains("already exists"));
+        conn.send(Request::Copy { id: 3, pairs: vec![(join(&root, "dir"), join(&root, "dir/sub/dir"))] });
+        let Event::Finished { result, .. } = wait(&conn, |e| matches!(e, Event::Finished { id: 3, .. })) else { unreachable!() };
+        assert!(result.unwrap_err().contains("into itself"));
 
         // Never over an existing name.
         conn.send(Request::CreateFile(join(&root, "new.txt")));

@@ -135,11 +135,44 @@ enum TransferState {
     Failed(String),
 }
 
+/// What a line of the queue does.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Download,
+    Upload,
+    /// A zip archive being made (no progress, no cancel).
+    Zip,
+    Delete,
+    Move,
+    Copy,
+    Chmod,
+}
+
+impl Kind {
+    fn icon(self) -> &'static str {
+        match self {
+            Kind::Download => "↓",
+            Kind::Upload => "↑",
+            Kind::Zip => "📦",
+            Kind::Delete => "🗑",
+            Kind::Move => "➡",
+            Kind::Copy => "⧉",
+            Kind::Chmod => "🔒",
+        }
+    }
+
+    /// Counted in items rather than bytes.
+    fn items(self) -> bool {
+        matches!(self, Kind::Delete | Kind::Move | Kind::Chmod)
+    }
+}
+
+/// How long a change goes on before it gets a line in the queue (the quick ones stay out of it).
+const SHOW_AFTER: std::time::Duration = std::time::Duration::from_millis(400);
+
 struct Transfer {
     id: u64,
-    upload: bool,
-    /// A zip archive being made (no progress, no cancel).
-    zip: bool,
+    kind: Kind,
     label: String,
     done: u64,
     total: u64,
@@ -153,6 +186,12 @@ struct Transfer {
     took: Option<std::time::Duration>,
 }
 
+impl Transfer {
+    fn new(id: u64, kind: Kind, label: String, state: TransferState) -> Self {
+        Transfer { id, kind, label, done: 0, total: 0, current: String::new(), state, started: Instant::now(), rate: 0.0, sample: None, took: None }
+    }
+}
+
 /// A dialog of the file manager.
 enum Dialog {
     Rename { side: Side, from: String, text: String, fresh: bool },
@@ -160,7 +199,8 @@ enum Dialog {
     NewFile { side: Side, text: String, fresh: bool },
     Delete { side: Side, names: Vec<String> },
     /// Items (their paths) to move into a folder picked by browsing from `dir`; `text`: the path typed.
-    Move { side: Side, from: Vec<String>, dir: String, text: String },
+    /// `copy`: copied there instead.
+    Move { side: Side, from: Vec<String>, dir: String, text: String, copy: bool },
     Chmod { side: Side, edit: Box<PermEdit> },
     /// Some of the files to transfer already exist on the other side.
     Conflict { from: Side, names: Vec<String>, target: String, existing: Vec<String> },
@@ -333,8 +373,11 @@ pub(super) struct FileManager {
     /// Folder names for path completion, by side and folder (remote ones asked for in the background).
     dir_cache: HashMap<(bool, String), (Instant, Vec<(String, bool)>)>,
     completion_pending: HashSet<String>,
-    /// Archives being made: their line in the queue, and the result to come.
-    zips: Vec<(u64, Side, std::sync::mpsc::Receiver<ZipResult>)>,
+    /// Work on another thread (archives, local copies and deletions): its line in the queue, and the
+    /// result to come.
+    jobs: Vec<(u64, Side, std::sync::mpsc::Receiver<ZipResult>)>,
+    /// Changes going on whose line isn't shown yet (see SHOW_AFTER).
+    pending: Vec<Transfer>,
     /// The local panel's share of the width, moved by dragging the line between the panels.
     split: f32,
     /// The queue's height once dragged.
@@ -386,7 +429,8 @@ impl FileManager {
             ssh_host: None,
             ctx: None,
             askpass: None,
-            zips: Vec::new(),
+            jobs: Vec::new(),
+            pending: Vec::new(),
             dir_cache: HashMap::new(),
             completion_pending: HashSet::new(),
             split: 0.5,
@@ -486,7 +530,7 @@ impl FileManager {
         match op {
             TreeOp::Move(paths) => {
                 let dir = paths.first().and_then(|p| p.parent()).map(|d| d.display().to_string()).unwrap_or_default();
-                self.dialog = Some(Dialog::Move { side: Side::Local, from: text(&paths), text: dir.clone(), dir });
+                self.dialog = Some(Dialog::Move { side: Side::Local, from: text(&paths), text: dir.clone(), dir, copy: false });
             }
             TreeOp::MoveInto(paths, dir) => {
                 names_in(self, &paths);
@@ -532,7 +576,7 @@ impl FileManager {
 
     /// Archives being made, or copies.
     pub(super) fn working(&self) -> bool {
-        !self.zips.is_empty()
+        !self.jobs.is_empty()
     }
 
     pub(super) fn take_error(&mut self) -> Option<String> {
@@ -737,7 +781,7 @@ impl FileManager {
 
     /// Transfers not finished yet (to warn before closing).
     pub fn busy(&self) -> bool {
-        !self.zips.is_empty() || self.transfers.iter().any(|t| matches!(t.state, TransferState::Queued | TransferState::Running))
+        !self.jobs.is_empty() || !self.pending.is_empty() || self.transfers.iter().any(|t| matches!(t.state, TransferState::Queued | TransferState::Running))
     }
 
     /// The folders to remember for the host: (local, remote).
@@ -772,7 +816,8 @@ impl FileManager {
 
     /// Handles what the session sent. Called every frame, for every tab (transfers go on in the background).
     pub fn poll(&mut self, t: &Strings) {
-        self.poll_zips();
+        self.poll_jobs();
+        self.show_pending();
         let mut counted = Vec::new();
         self.local_sizing.retain(|(path, rx)| match rx.try_recv() {
             Ok(result) => {
@@ -833,7 +878,12 @@ impl FileManager {
                 Event::DirSize { path, result } => {
                     self.dir_sizes.insert((Side::Remote, path), Some(result));
                 }
-                Event::MoveConflict { from, dir, existing } => self.dialog = Some(Dialog::MoveConflict { side: Side::Remote, from, dir, existing }),
+                // Asked first: the move comes again once answered.
+                Event::MoveConflict { id, from, dir, existing } => {
+                    self.pending.retain(|t| t.id != id);
+                    self.transfers.retain(|t| t.id != id);
+                    self.dialog = Some(Dialog::MoveConflict { side: Side::Remote, from, dir, existing });
+                }
                 Event::Error(e) => self.error = Some(e),
                 Event::Range { path, result } => {
                     if let Some(viewer) = self.viewer.as_mut().filter(|v| v.remote && v.path == path) {
@@ -856,7 +906,7 @@ impl FileManager {
                     }
                 }
                 Event::Progress { id, done, total, current } => {
-                    if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                    if let Some(t) = self.transfers.iter_mut().chain(&mut self.pending).find(|t| t.id == id) {
                         // The speed counts from the actual start, not from the time it was queued.
                         if t.state == TransferState::Queued {
                             t.started = Instant::now();
@@ -891,13 +941,7 @@ impl FileManager {
                         }
                         let _ = done.send(outcome);
                     }
-                    if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
-                        t.took = Some(t.started.elapsed());
-                        t.state = match result {
-                            Ok(skipped) => TransferState::Done(skipped),
-                            Err(e) => TransferState::Failed(e),
-                        };
-                    }
+                    self.finish(id, result);
                     // Once the queue is done (not after each of its items).
                     if !self.busy() {
                         self.read_local();
@@ -991,7 +1035,7 @@ impl FileManager {
                 Side::Remote => Request::Download { id, remote: vec![path], local_dir: target.clone().into(), overwrite },
             };
             self.send(request);
-            self.transfers.push(Transfer { id, upload: from == Side::Local, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
+            self.transfers.push(Transfer::new(id, if from == Side::Local { Kind::Upload } else { Kind::Download }, name, TransferState::Queued));
         }
     }
 
@@ -1040,7 +1084,7 @@ impl FileManager {
                 let remote = payload.names.iter().map(|n| self.path_of(Side::Remote, n)).collect();
                 self.send(Request::Download { id, remote, local_dir: dir.clone(), overwrite: true });
                 let label = if payload.names.len() == 1 { payload.names[0].clone() } else { format!("{} …", payload.names[0]) };
-                self.transfers.push(Transfer { id, upload: false, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
+                self.transfers.push(Transfer::new(id, Kind::Download, label, TransferState::Queued));
                 self.preparing = Some((id, payload.names.iter().map(|n| dir.join(n)).collect()));
             }
         }
@@ -1061,7 +1105,7 @@ impl FileManager {
         let id = self.next_id;
         self.next_id += 1;
         self.send(Request::Download { id, remote: vec![path], local_dir: dir.clone(), overwrite: true });
-        self.transfers.push(Transfer { id, upload: false, zip: false, label: name.to_owned(), done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
+        self.transfers.push(Transfer::new(id, Kind::Download, name.to_owned(), TransferState::Queued));
         self.opening.push((id, dir.join(name), how));
     }
 
@@ -1149,7 +1193,7 @@ impl FileManager {
             }
         };
         self.send(Request::Download { id, remote: vec![ask.path], local_dir, overwrite: true });
-        self.transfers.push(Transfer { id, upload: false, zip: false, label: name, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
+        self.transfers.push(Transfer::new(id, Kind::Download, name, TransferState::Queued));
         self.promise_done.insert(id, ask.done);
     }
 
@@ -1240,13 +1284,13 @@ impl FileManager {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.transfers.push(Transfer { id, upload: false, zip: true, label: out, done: 0, total: 0, current: String::new(), state: TransferState::Running, started: Instant::now(), rate: 0.0, sample: None, took: None });
-        self.zips.push((id, side, rx));
+        self.transfers.push(Transfer::new(id, Kind::Zip, out, TransferState::Running));
+        self.jobs.push((id, side, rx));
     }
 
-    fn poll_zips(&mut self) {
+    fn poll_jobs(&mut self) {
         let mut finished = Vec::new();
-        self.zips.retain(|(id, side, rx)| match rx.try_recv() {
+        self.jobs.retain(|(id, side, rx)| match rx.try_recv() {
             Ok(result) => {
                 finished.push((*id, *side, result));
                 false
@@ -1258,17 +1302,7 @@ impl FileManager {
             }
         });
         for (id, side, result) in finished {
-            if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
-                t.state = match result {
-                    Ok(()) => TransferState::Done(0),
-                    Err(e) => TransferState::Failed(e),
-                };
-            } else if let Err(e) = &result {
-                // A job without a line in the queue (files copied from the Finder).
-                if !e.is_empty() {
-                    self.error = Some(e.clone());
-                }
-            }
+            self.finish(id, result.map(|_| 0));
             match side {
                 Side::Local => self.read_local(),
                 Side::Remote => self.list_remote(),
@@ -1276,24 +1310,111 @@ impl FileManager {
         }
     }
 
+    /// A change that may take a while: it gets a line in the queue if still going after SHOW_AFTER.
+    fn start_op(&mut self, kind: Kind, paths: &[String]) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let label = paths.iter().map(|p| p.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(p)).collect::<Vec<_>>().join(", ");
+        self.pending.push(Transfer::new(id, kind, label, TransferState::Running));
+        id
+    }
+
+    /// Runs `work` on another thread (a big folder doesn't freeze the window), as a change of the queue.
+    fn local_op(&mut self, kind: Kind, paths: &[String], work: impl FnOnce() -> ZipResult + Send + 'static) {
+        let id = self.start_op(kind, paths);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+        self.jobs.push((id, Side::Local, rx));
+    }
+
+    /// A line's work is over.
+    fn finish(&mut self, id: u64, result: Result<u64, String>) {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+            t.took = Some(t.started.elapsed());
+            t.state = match result {
+                Ok(n) => TransferState::Done(n),
+                Err(e) => TransferState::Failed(e),
+            };
+            return;
+        }
+        // Done before its line showed, or a job without one (files copied from the Finder): only an error is told.
+        self.pending.retain(|t| t.id != id);
+        if let Err(e) = result
+            && !e.is_empty()
+            && e != "cancelled"
+        {
+            self.error = Some(e);
+        }
+    }
+
+    /// The changes still going on after SHOW_AFTER get their line in the queue.
+    fn show_pending(&mut self) {
+        let now = Instant::now();
+        while let Some(i) = self.pending.iter().position(|t| now.duration_since(t.started) >= SHOW_AFTER) {
+            let t = self.pending.remove(i);
+            self.transfers.push(t);
+        }
+        if let (false, Some(ctx)) = (self.pending.is_empty(), &self.ctx) {
+            ctx.request_repaint_after(SHOW_AFTER);
+        }
+    }
+
     /// Copies each item next to itself: "a copie.txt", "a copie 2.txt"...
     fn duplicate(&mut self, side: Side, names: &[String], t: &Strings) {
         let mut taken: HashSet<String> = self.panel(side).entries.iter().map(|e| e.name.clone()).collect();
+        let mut pairs = Vec::new();
         for name in names {
             let copy = copy_name(name, t.copy_suffix, &taken);
             taken.insert(copy.clone());
-            let (from, to) = (self.path_of(side, name), self.path_of(side, &copy));
-            match side {
-                Side::Local => {
-                    if let Err(e) = copy_local(std::path::Path::new(&from), std::path::Path::new(&to)) {
-                        self.error = Some(format!("{from} : {e}"));
-                    }
-                }
-                Side::Remote => self.send(Request::Duplicate { from, to }),
-            }
+            pairs.push((self.path_of(side, name), self.path_of(side, &copy)));
         }
-        if side == Side::Local {
-            self.read_local();
+        self.copy_paths(side, pairs, t);
+    }
+
+    /// Copies the items at paths `from` into folder `dir`, under their names (which must be free there).
+    fn copy_into(&mut self, side: Side, from: Vec<String>, dir: &str, t: &Strings) {
+        let pairs = from
+            .into_iter()
+            .map(|path| {
+                let name = path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                let to = match side {
+                    Side::Local => std::path::Path::new(dir).join(&name).display().to_string(),
+                    Side::Remote => sftp::join(dir, &name),
+                };
+                (path, to)
+            })
+            .collect();
+        self.copy_paths(side, pairs, t);
+    }
+
+    /// Copies each `from` to its `to` (which must be free), in the background.
+    fn copy_paths(&mut self, side: Side, pairs: Vec<(String, String)>, t: &Strings) {
+        let froms: Vec<String> = pairs.iter().map(|(from, _)| from.clone()).collect();
+        match side {
+            Side::Local => {
+                let into_itself = t.files_into_itself;
+                self.local_op(Kind::Copy, &froms, move || {
+                    for (from, to) in &pairs {
+                        let (from, to) = (std::path::Path::new(from), std::path::Path::new(to));
+                        // Into one of its own folders: the copy would go on copying itself.
+                        if from.is_dir() && !from.is_symlink() && to.starts_with(from) {
+                            return Err(format!("{} : {into_itself}", from.display()));
+                        }
+                        copy_local(from, to).map_err(|e| format!("{} : {e}", from.display()))?;
+                    }
+                    Ok(())
+                });
+            }
+            Side::Remote => {
+                let id = self.start_op(Kind::Copy, &froms);
+                self.send(Request::Copy { id, pairs });
+            }
         }
     }
 
@@ -1404,7 +1525,7 @@ impl FileManager {
                         ctx.request_repaint();
                     }
                 });
-                self.zips.push((id, Side::Local, rx));
+                self.jobs.push((id, Side::Local, rx));
             }
             // One line per item in the queue, as a transfer from the local panel.
             Side::Remote => {
@@ -1413,7 +1534,7 @@ impl FileManager {
                     self.next_id += 1;
                     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.send(Request::Upload { id, local: vec![path], remote_dir: dir.clone(), overwrite });
-                    self.transfers.push(Transfer { id, upload: true, zip: false, label, done: 0, total: 0, current: String::new(), state: TransferState::Queued, started: Instant::now(), rate: 0.0, sample: None, took: None });
+                    self.transfers.push(Transfer::new(id, Kind::Upload, label, TransferState::Queued));
                 }
             }
         }
@@ -1442,7 +1563,10 @@ impl FileManager {
                 }
             }
             // The server tells which exist (MoveConflict), unless answered for the session.
-            Side::Remote => self.send(Request::Move { from, dir, overwrite: session_choice() }),
+            Side::Remote => {
+                let id = self.start_op(Kind::Move, &from);
+                self.send(Request::Move { id, from, dir, overwrite: session_choice() });
+            }
         }
     }
 
@@ -1459,24 +1583,31 @@ impl FileManager {
                 }
                 self.read_local();
             }
-            Side::Remote => self.send(Request::Move { from, dir, overwrite: Some(overwrite) }),
+            Side::Remote => {
+                let id = self.start_op(Kind::Move, &from);
+                self.send(Request::Move { id, from, dir, overwrite: Some(overwrite) });
+            }
         }
     }
 
     fn delete(&mut self, side: Side, names: &[String]) {
         let paths: Vec<String> = names.iter().map(|n| self.path_of(side, n)).collect();
         match side {
-            Side::Local => {
+            Side::Local => self.local_op(Kind::Delete, &paths.clone(), move || {
+                let mut outcome = Ok(());
                 for path in paths {
                     let p = std::path::Path::new(&path);
                     let result = if p.is_dir() && !p.is_symlink() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
                     if let Err(e) = result {
-                        self.error = Some(format!("{path} : {e}"));
+                        outcome = Err(format!("{path} : {e}"));
                     }
                 }
-                self.read_local();
+                outcome
+            }),
+            Side::Remote => {
+                let id = self.start_op(Kind::Delete, &paths);
+                self.send(Request::Remove { id, paths });
             }
-            Side::Remote => self.send(Request::Remove(paths)),
         }
     }
 
@@ -1940,14 +2071,16 @@ impl FileManager {
                         out.dialog = Some(Dialog::Rename { side, from: entry.name.clone(), text: entry.name.clone(), fresh: true });
                         ui.close();
                     }
-                    if ui.add_enabled(side == Side::Local || connected, egui::Button::new(t.files_move)).clicked() {
-                        let path = |n: &String| match side {
-                            Side::Local => std::path::Path::new(&panel.path).join(n).display().to_string(),
-                            Side::Remote => sftp::join(&panel.path, n),
-                        };
-                        let from = selection.iter().map(path).collect();
-                        out.dialog = Some(Dialog::Move { side, from, dir: panel.path.clone(), text: panel.path.clone() });
-                        ui.close();
+                    for (label, copy) in [(t.files_move, false), (t.files_copy_to, true)] {
+                        if ui.add_enabled(side == Side::Local || connected, egui::Button::new(label)).clicked() {
+                            let path = |n: &String| match side {
+                                Side::Local => std::path::Path::new(&panel.path).join(n).display().to_string(),
+                                Side::Remote => sftp::join(&panel.path, n),
+                            };
+                            let from = selection.iter().map(path).collect();
+                            out.dialog = Some(Dialog::Move { side, from, dir: panel.path.clone(), text: panel.path.clone(), copy });
+                            ui.close();
+                        }
                     }
                     if ui.add_enabled(side == Side::Local || connected, egui::Button::new(format!("📦  {}", t.files_compress))).clicked() {
                         out.compress = Some(selection.clone());
@@ -2184,25 +2317,43 @@ impl FileManager {
             egui::ScrollArea::vertical().id_salt("files-queue").auto_shrink(false).stick_to_bottom(true).show_rows(ui, 22.0, self.transfers.len(), |ui, range| {
                 for tr in &self.transfers[range] {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(if tr.zip { "📦" } else if tr.upload { "↑" } else { "↓" }).size(14.0).color(theme.accent));
+                        ui.label(egui::RichText::new(tr.kind.icon()).size(14.0).color(theme.accent));
                         ui.add_sized(Vec2::new(200.0, 18.0), egui::Label::new(egui::RichText::new(&tr.label).size(12.5)).truncate());
                         let fraction = if tr.total > 0 { tr.done as f32 / tr.total as f32 } else { 0.0 };
                         let secs = tr.started.elapsed().as_secs_f64().max(0.1);
+                        // The changes say what they do (the transfers show it by their arrow).
+                        let (doing, did) = match tr.kind {
+                            Kind::Zip => (t.files_compressing, t.files_compressed),
+                            Kind::Delete => (t.files_deleting, t.files_deleted),
+                            Kind::Move => (t.files_moving, t.files_moved),
+                            Kind::Copy => (t.files_copying, t.files_copied),
+                            Kind::Chmod => (t.files_chmoding, t.files_chmoded),
+                            Kind::Download | Kind::Upload => ("", ""),
+                        };
+                        // Nothing counted yet (the folders are being gone through), or nothing to count.
+                        let unknown = tr.state == TransferState::Running && tr.total == 0 && !doing.is_empty();
                         let text = match &tr.state {
-                            TransferState::Running if tr.zip => t.files_compressing.to_owned(),
-                            TransferState::Done(_) if tr.zip => format!("✔  {}", t.files_compressed),
                             TransferState::Queued => t.files_queued.to_owned(),
+                            TransferState::Running if unknown => doing.to_owned(),
+                            TransferState::Running if tr.kind.items() => format!("{doing}  {}", t.files_items_progress.replace("{done}", &tr.done.to_string()).replace("{n}", &tr.total.to_string())),
                             TransferState::Running => {
                                 // The recent speed once known (the average before), and the time left at it.
                                 let speed = if tr.rate > 0.0 { tr.rate } else { tr.done as f64 / secs };
                                 let left = (speed > 0.0 && tr.total > tr.done && secs > 1.0).then(|| (tr.total - tr.done) as f64 / speed);
                                 let eta = left.map(|l| format!("  ·  {}", t.files_eta.replace("{t}", &duration_text(l)))).unwrap_or_default();
-                                format!("{} / {}  ·  {}/s{eta}", format_size(tr.done, t), format_size(tr.total, t), format_size(speed as u64, t))
+                                let doing = if doing.is_empty() { String::new() } else { format!("{doing}  ") };
+                                format!("{doing}{} / {}  ·  {}/s{eta}", format_size(tr.done, t), format_size(tr.total, t), format_size(speed as u64, t))
                             }
                             TransferState::Done(skipped) => {
                                 let took = tr.took.map(|d| format!("  ·  {}", t.files_took.replace("{t}", &duration_text(d.as_secs_f64())))).unwrap_or_default();
                                 let skipped = if *skipped == 0 { String::new() } else { format!("  ·  {}", t.files_skipped.replace("{n}", &skipped.to_string())) };
-                                format!("✔  {}{took}{skipped}", format_size(tr.total, t))
+                                let amount = match tr.kind {
+                                    Kind::Download | Kind::Upload | Kind::Copy => Some(format_size(tr.total, t)),
+                                    _ if tr.kind.items() && tr.total > 0 => Some(t.files_n_items.replace("{n}", &tr.total.to_string())),
+                                    _ => None,
+                                };
+                                let parts: Vec<String> = [(!did.is_empty()).then(|| did.to_owned()), amount].into_iter().flatten().collect();
+                                format!("✔  {}{took}{skipped}", parts.join("  ·  "))
                             }
                             TransferState::Failed(e) if e == "cancelled" => t.files_cancelled.to_owned(),
                             TransferState::Failed(e) => format!("✖  {e}"),
@@ -2213,9 +2364,11 @@ impl FileManager {
                             _ => theme.accent,
                         };
                         let bar_w = (ui.available_width() - 40.0).max(80.0);
-                        let bar = egui::ProgressBar::new(if matches!(tr.state, TransferState::Done(_)) { 1.0 } else { fraction }).text(egui::RichText::new(text).size(11.5)).fill(color.gamma_multiply(0.6)).desired_width(bar_w);
+                        let bar = egui::ProgressBar::new(if matches!(tr.state, TransferState::Done(_)) { 1.0 } else { fraction }).text(egui::RichText::new(text).size(11.5)).fill(color.gamma_multiply(0.6)).desired_width(bar_w).animate(unknown);
                         ui.add(bar).on_hover_text(&tr.current);
-                        if !tr.zip && matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
+                        // Work on this computer's threads can't be stopped, nor a move (mostly instant renames).
+                        let stoppable = !matches!(tr.kind, Kind::Zip | Kind::Move) && !self.jobs.iter().any(|(id, ..)| *id == tr.id);
+                        if stoppable && matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
                             cancel = Some(tr.id);
                         }
                     });
@@ -2301,9 +2454,9 @@ impl FileManager {
                         outcome = Some(Outcome::Confirm);
                     }
                 }
-                Dialog::Move { side, from, dir, text } => {
+                Dialog::Move { side, from, dir, text, copy } => {
                     let side = *side;
-                    title(ui, &t.files_move_title.replace("{n}", &from.len().to_string()));
+                    title(ui, &if *copy { t.files_copy_title } else { t.files_move_title }.replace("{n}", &from.len().to_string()));
                     let names: Vec<String> = from.iter().map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned()).collect();
                     list(ui, &names);
                     ui.add_space(10.0);
@@ -2412,13 +2565,13 @@ impl FileManager {
                             outcome = Some(Outcome::Skip);
                         }
                     }
-                    Dialog::Move { side, from, dir, .. } => {
+                    Dialog::Move { side, from, dir, copy, .. } => {
                         // Not where they are already, nor into one of them.
                         let sep = if *side == Side::Local { std::path::MAIN_SEPARATOR } else { '/' };
                         let inside = |p: &String| dir == p || dir.starts_with(&format!("{}{sep}", p.trim_end_matches(sep)));
                         let here = from.iter().all(|p| FileManager::parent_of(*side, p) == *dir);
                         let enabled = !here && !from.iter().any(inside);
-                        if ui.add_enabled(enabled, button(t.files_move_here, Some(theme.accent))).clicked() {
+                        if ui.add_enabled(enabled, button(if *copy { t.files_copy_here } else { t.files_move_here }, Some(theme.accent))).clicked() {
                             outcome = Some(Outcome::Confirm);
                         }
                     }
@@ -2479,22 +2632,22 @@ impl FileManager {
                 }
             }
             (Dialog::Delete { side, names }, _) => self.delete(side, &names),
+            (Dialog::Move { side, from, dir, copy: true, .. }, _) => self.copy_into(side, from, &dir, t),
             (Dialog::Move { side, from, dir, .. }, _) => self.move_paths(side, from, &dir),
             (Dialog::Chmod { side, edit }, _) if edit.invalid => {
                 // Not applied: keep the dialog open with what was typed.
                 self.dialog = Some(Dialog::Chmod { side, edit });
             }
             (Dialog::Chmod { side: Side::Remote, edit }, _) => {
-                let paths = edit.names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
-                self.send(Request::Chmod { paths, change: edit.change(), recursive: edit.recursive, scope: edit.scope });
+                let paths: Vec<String> = edit.names.iter().map(|n| sftp::join(&self.remote.path, n)).collect();
+                let id = self.start_op(Kind::Chmod, &paths);
+                self.send(Request::Chmod { id, paths, change: edit.change(), recursive: edit.recursive, scope: edit.scope });
             }
             #[cfg(unix)]
             (Dialog::Chmod { side: Side::Local, edit }, _) => {
                 let paths: Vec<std::path::PathBuf> = edit.names.iter().map(|n| std::path::Path::new(&self.local.path).join(n)).collect();
-                if let Err(e) = super::perms::chmod_local(&paths, edit.change(), edit.recursive, edit.scope) {
-                    self.error = Some(e);
-                }
-                self.read_local();
+                let (change, recursive, scope) = (edit.change(), edit.recursive, edit.scope);
+                self.local_op(Kind::Chmod, &edit.names, move || super::perms::chmod_local(&paths, change, recursive, scope));
             }
             #[cfg(not(unix))]
             (Dialog::Chmod { .. }, _) => {}
