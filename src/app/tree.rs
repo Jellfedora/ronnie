@@ -415,6 +415,22 @@ impl App {
         if !self.tree.spring_seen {
             self.tree.spring = None;
         }
+        // Something dragged near the top or the bottom of what shows: the list scrolls, faster closer to
+        // the edge (and past it a little).
+        if egui::DragAndDrop::has_any_payload(ui.ctx()) || os_hover {
+            let shown = ui.clip_rect();
+            let pointer = if os_hover { super::files::drag_pointer(ui.ctx()) } else { ui.input(|i| i.pointer.interact_pos()) };
+            if let Some(p) = pointer.filter(|p| shown.x_range().contains(p.x) && p.y > shown.min.y - 60.0 && p.y < shown.max.y + 60.0) {
+                const EDGE: f32 = 40.0;
+                let up = (shown.min.y + EDGE - p.y).clamp(0.0, EDGE * 1.5);
+                let down = (p.y - (shown.max.y - EDGE)).clamp(0.0, EDGE * 1.5);
+                let speed = (up - down) / EDGE * 14.0;
+                if speed != 0.0 {
+                    ui.scroll_with_delta(Vec2::new(0.0, speed));
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
         // Where what is dragged would go: the folder under it, or the root off the rows.
         let list = Rect::from_min_max(Pos2::new(left, list_top), Pos2::new(left + row_w, (*y).max(ui.clip_rect().max.y)));
         let dragged = egui::DragAndDrop::payload::<TreeDrag>(ui.ctx());
