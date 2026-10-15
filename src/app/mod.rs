@@ -42,6 +42,7 @@ mod sql;
 mod upload;
 mod sqlcomplete;
 mod popups;
+mod profilebar;
 mod resources;
 mod playtime;
 mod viewer;
@@ -126,7 +127,7 @@ pub struct Tab {
     /// menu), the files opened beside its terminals and the one shown (None: the terminals), its
     /// repository in the sidebar, and what is picked there shown instead of the terminals.
     root: Option<PathBuf>,
-    docs: Vec<Box<editor::Editor>>,
+    docs: Vec<editor::Editor>,
     doc: Option<usize>,
     git_side: Option<Box<git::GitView>>,
     show_diff: bool,
@@ -405,6 +406,8 @@ pub struct App {
     tree: tree::FileTree,
     /// The VS Code layout: the sidebar shows git rather than the files.
     ws_git: bool,
+    /// A profile or a group being dragged in the profiles' bar.
+    bar_drag: Option<profilebar::BarDrag>,
     /// The folded sidebar's category shown beside it.
     rail_flyout: Option<sidebar::Flyout>,
     media_keys: crate::media_keys::MediaKeys,
@@ -1121,6 +1124,7 @@ impl App {
             tree: tree::FileTree::default(),
             rail_flyout: None,
             ws_git: false,
+            bar_drag: None,
             library: library::Library::default(),
             media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {
                 use raw_window_handle::HasWindowHandle;
@@ -4042,7 +4046,7 @@ impl App {
                 let mut rect = ui.available_rect_before_wrap();
                 // The VS Code layout: the profiles in a bar on top.
                 if self.ws_bar_shown() {
-                    let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), workspace::BAR_H));
+                    let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), profilebar::BAR_H));
                     self.profiles_bar(ui, bar);
                     rect.min.y = bar.max.y;
                 }
