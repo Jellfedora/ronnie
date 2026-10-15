@@ -2832,9 +2832,8 @@ impl App {
     pub(super) fn poll_files(&mut self) {
         let t = self.t();
         let in_tabs = self.tabs.iter_mut().filter_map(|tab| tab.files.as_deref_mut());
-        let in_windows = self.tool_windows.iter_mut().filter_map(|w| match &mut w.tool {
-            super::Tool::Files(fm, _) => Some(&mut **fm),
-            super::Tool::Git(_) => None,
+        let in_windows = self.tool_windows.iter_mut().map(|w| match &mut w.tool {
+            super::Tool::Files(fm, _) => &mut **fm,
         });
         for fm in in_tabs.chain(in_windows) {
             fm.poll(t);

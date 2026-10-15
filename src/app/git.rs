@@ -1,7 +1,8 @@
-//! Git in a local pane's folder: the files changed and, for the one picked, its content in the last
-//! commit and now, side by side; the history of the branch and what each commit changed; the branches,
-//! to switch to another one or create one. Shown in place of the pane's terminal; it asks the system's
-//! `git`. A folder holding repositories (not one itself) shows them all, one under the other.
+//! Git in a profile's folder: the files changed and, for the one picked, its content in the last commit
+//! and now, side by side; the history of the branch and what each commit changed; the branches, to
+//! switch to another one or create one. The lists show in the sidebar, what is picked in place of the
+//! terminals; it asks the system's `git`. A folder holding repositories (not one itself) shows them all,
+//! one under the other.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -644,14 +645,6 @@ enum Mode {
     Issues,
 }
 
-/// Why the view asks to change where it is shown.
-pub(super) enum Exit {
-    /// Back to the terminal.
-    Back,
-    /// Into a window of its own.
-    Window,
-}
-
 /// A commit picked in the history.
 struct OpenCommit {
     commit: Commit,
@@ -694,8 +687,7 @@ pub(super) struct GitView {
     /// change shown last.
     scroll_to: Option<f32>,
     hunk: usize,
-    /// Widths set by dragging: the list of files, and where the two versions meet (a fraction).
-    list_w: Option<f32>,
+    /// Where the two versions meet (a fraction), as dragged.
     split: f32,
     /// How far both versions are scrolled sideways, and the part of the comparison in sight.
     hscroll: f32,
@@ -747,7 +739,6 @@ impl GitView {
             notice: None,
             scroll_to: None,
             hunk: 0,
-            list_w: None,
             split: 0.5,
             hscroll: 0.0,
             v_offset: 0.0,
@@ -957,173 +948,6 @@ impl GitView {
         &self.root
     }
 
-    /// Draws the view in `rect` (`window`: a window of its own, else in place of a pane's terminal);
-    /// what was asked from its top bar.
-    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings, window: bool) -> Option<Exit> {
-        if !self.repos.is_empty() {
-            return self.repos_ui(ui, rect, theme, t, window);
-        }
-        let ctx = ui.ctx().clone();
-        self.tick(&ctx, t);
-        ui.painter().rect_filled(rect, 0.0, theme.bg);
-        let mut exit = None;
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
-        ui.set_clip_rect(rect);
-        let ui = &mut ui;
-
-        // Top: the repository, its branch (a menu to switch), how far from the server, how many files
-        // changed; fetch, refresh and back.
-        let (bar, _) = ui.allocate_exact_size(Vec2::new(rect.width(), 34.0), Sense::hover());
-        ui.painter().rect_filled(bar, 0.0, theme.chrome_bg);
-        ui.painter().hline(bar.x_range(), bar.max.y, Stroke::new(1.0, theme.tab_hover));
-        let repo = self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut x = bar.min.x + 36.0;
-        if self.nested {
-            // One of a folder's repositories: the folder first, a click goes back to all of them.
-            let folder = self.root.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let label = format!("‹  {folder}");
-            let w = ui.painter().layout_no_wrap(label.clone(), FontId::proportional(13.5), theme.text_muted).size().x + 16.0;
-            let at = Rect::from_min_size(Pos2::new(bar.min.x + 6.0, bar.min.y + 4.0), Vec2::new(w, 26.0));
-            let crumb = egui::Button::new(egui::RichText::new(label).size(13.5).color(theme.text_muted)).frame_when_inactive(false).corner_radius(5.0);
-            if ui.put(at, crumb).on_hover_text(t.git_all_repos).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                exit = Some(Exit::Back);
-            }
-            x = at.max.x + 6.0;
-            let slash = ui.painter().layout_no_wrap("/".into(), FontId::proportional(13.5), theme.text_muted);
-            ui.painter().galley(Pos2::new(x, bar.center().y - slash.size().y / 2.0), slash.clone(), theme.text_muted);
-            x += slash.size().x + 8.0;
-        } else {
-            paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(bar.min.x + 20.0, bar.center().y), Vec2::splat(16.0)), theme.accent);
-        }
-        let galley = ui.painter().layout_no_wrap(repo, FontId::proportional(13.5), theme.text);
-        ui.painter().galley(Pos2::new(x, bar.center().y - galley.size().y / 2.0), galley.clone(), theme.text);
-        x += galley.size().x + 8.0;
-        if self.loaded && self.error.is_none() {
-            x = self.branch_button(ui, Pos2::new(x, bar.center().y), theme, t) + 8.0;
-            let mut job = egui::text::LayoutJob::default();
-            if self.head.ahead > 0 {
-                job.append(&format!("↑{} ", self.head.ahead), 0.0, egui::TextFormat::simple(FontId::monospace(12.0), theme.ansi[2]));
-            }
-            if self.head.behind > 0 {
-                job.append(&format!("↓{} ", self.head.behind), 0.0, egui::TextFormat::simple(FontId::monospace(12.0), theme.ansi[3]));
-            }
-            if !job.is_empty() {
-                let galley = ui.painter().layout_job(job);
-                let at = Rect::from_min_size(Pos2::new(x, bar.center().y - galley.size().y / 2.0), galley.size());
-                ui.painter().galley(at.min, galley, theme.text);
-                let upstream = self.head.upstream.clone().unwrap_or_default();
-                let mut tip = Vec::new();
-                if self.head.ahead > 0 {
-                    tip.push(t.git_ahead.replace("{n}", &self.head.ahead.to_string()).replace("{upstream}", &upstream));
-                }
-                if self.head.behind > 0 {
-                    tip.push(t.git_behind.replace("{n}", &self.head.behind.to_string()).replace("{upstream}", &upstream));
-                }
-                ui.interact(at, egui::Id::new(("git-ahead", &self.root)), Sense::hover()).on_hover_text(tip.join("\n"));
-                x = at.max.x + 4.0;
-            }
-            let count = if self.files.is_empty() { t.git_no_changes.to_owned() } else { t.git_changes.replace("{n}", &self.files.len().to_string()) };
-            let mut job = egui::text::LayoutJob::simple_singleline(format!("·   {count}"), FontId::proportional(12.5), theme.text_muted);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((bar.max.x - 160.0 - x).max(0.0));
-            let galley = ui.painter().layout_job(job);
-            ui.painter().galley(Pos2::new(x, bar.center().y - galley.size().y / 2.0), galley, theme.text);
-        }
-        let button = |ui: &mut Ui, right: f32, text: &str, tip: &str| {
-            let at = Rect::from_min_size(Pos2::new(right - 28.0, bar.min.y + 4.0), Vec2::new(28.0, 26.0));
-            let resp = ui.put(at, egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
-            (resp.clicked(), at)
-        };
-        // In a window: closes it. In a pane: its terminal again, or the view in a window.
-        let mut right = bar.max.x - 6.0;
-        if self.nested {
-            let (back, at) = button(ui, right, "", t.git_all_repos);
-            paint_return_icon(ui.painter(), at.center(), theme.fg);
-            if back {
-                exit = Some(Exit::Back);
-            }
-        } else if window {
-            let (close, at) = button(ui, right, "", t.close);
-            paint_close_icon(ui.painter(), at.center(), theme.fg);
-            if close {
-                exit = Some(Exit::Back);
-            }
-        } else {
-            let (back, at) = button(ui, right, "", t.git_back);
-            paint_return_icon(ui.painter(), at.center(), theme.fg);
-            if back {
-                exit = Some(Exit::Back);
-            }
-            right -= 32.0;
-            let (pop_out, at) = button(ui, right, "", t.new_window_open);
-            paint_window_icon(ui.painter(), at.center(), theme.fg);
-            if pop_out {
-                exit = Some(Exit::Window);
-            }
-        }
-        right -= 32.0;
-        if button(ui, right, "↻", t.git_refresh).0 {
-            self.last_status = None;
-        }
-        right -= 32.0;
-        let (fetch, at) = button(ui, right, "", t.git_fetch);
-        paint_fetch_icon(ui.painter(), at.center(), if self.op_running { theme.text_muted } else { theme.fg });
-        if fetch {
-            self.start(&ctx, Op::Fetch);
-        }
-        if (self.status_running && !self.loaded) || self.op_running {
-            ui.put(Rect::from_center_size(Pos2::new(right - 42.0, bar.center().y), Vec2::splat(14.0)), egui::Spinner::new().size(14.0));
-        }
-
-        // What the last switch or fetch gave.
-        let mut top = bar.max.y + 1.0;
-        if self.notice.as_ref().is_some_and(|(_, failed, at)| !failed && at.elapsed() > Duration::from_secs(5)) {
-            self.notice = None;
-        }
-        if let Some((text, failed, _)) = self.notice.clone() {
-            let color = if failed { theme.ansi[1] } else { theme.ansi[2] };
-            let galley = ui.painter().layout(text, FontId::proportional(12.5), color, rect.width() - 60.0);
-            let strip = Rect::from_min_size(Pos2::new(rect.min.x, top), Vec2::new(rect.width(), galley.size().y + 14.0));
-            ui.painter().rect_filled(strip, 0.0, color.gamma_multiply(0.12));
-            ui.painter().galley(Pos2::new(strip.min.x + 12.0, strip.min.y + 7.0), galley, color);
-            let close = Rect::from_min_size(Pos2::new(strip.max.x - 30.0, strip.min.y + 4.0), Vec2::new(24.0, 22.0));
-            if ui.put(close, egui::Button::new("×").frame_when_inactive(false)).clicked() {
-                self.notice = None;
-            }
-            if !failed {
-                ctx.request_repaint_after(Duration::from_secs(1));
-            }
-            top = strip.max.y;
-        }
-
-        let body = Rect::from_min_max(Pos2::new(rect.min.x, top), rect.max);
-        if let Some(e) = &self.error {
-            let text = if e.contains("No such file") || e.contains("not found") || e.contains("introuvable") { t.git_missing.to_owned() } else { e.clone() };
-            ui.put(body.shrink(20.0), egui::Label::new(egui::RichText::new(text).size(13.0).color(theme.ansi[1])).wrap());
-            return exit;
-        }
-        if !self.loaded {
-            super::loading::screen(ui, body, theme, t.git_loading, Some(&self.root.display().to_string()), None);
-            return exit;
-        }
-
-        // Left: changes or history. Right: the file picked, compared.
-        let list_w = self.list_w.unwrap_or((body.width() * 0.32).clamp(260.0, 380.0)).clamp(200.0, (body.width() - 300.0).max(200.0));
-        let list = Rect::from_min_max(body.min, Pos2::new(body.min.x + list_w, body.max.y));
-        let view = Rect::from_min_max(Pos2::new(list.max.x + 1.0, body.min.y), body.max);
-        ui.painter().rect_filled(list, 0.0, theme.chrome_bg);
-        ui.painter().vline(list.max.x, list.y_range(), Stroke::new(1.0, theme.tab_hover));
-        let tabs = Rect::from_min_size(list.min + Vec2::new(8.0, 8.0), Vec2::new(list.width() - 16.0, 26.0));
-        if let Some(mode) = mode_tabs(ui, tabs, self.mode, &self.root, theme, t) {
-            self.switch_mode(&ctx, mode);
-        }
-        let content = Rect::from_min_max(Pos2::new(list.min.x, tabs.max.y + 6.0), list.max);
-        self.list_ui(ui, content, theme, t);
-        self.view_ui(ui, view, theme, t);
-        if let Some(dx) = splitter(ui, egui::Id::new(("git-list-split", &self.root)), list.max.x, list.y_range(), theme) {
-            self.list_w = Some(list_w + dx);
-        }
-        exit
-    }
 
     /// The mode picked from its tabs: what was shown in it, shown again.
     fn switch_mode(&mut self, ctx: &egui::Context, mode: Mode) {
@@ -1302,8 +1126,18 @@ impl GitView {
             }
             if !job.is_empty() {
                 let galley = ui.painter().layout_job(job);
-                ui.painter().galley(Pos2::new(x, row.center().y - galley.size().y / 2.0), galley.clone(), theme.text);
-                x += galley.size().x + 4.0;
+                let at = Rect::from_min_size(Pos2::new(x, row.center().y - galley.size().y / 2.0), galley.size());
+                ui.painter().galley(at.min, galley, theme.text);
+                let upstream = self.head.upstream.clone().unwrap_or_default();
+                let mut tip = Vec::new();
+                if self.head.ahead > 0 {
+                    tip.push(t.git_ahead.replace("{n}", &self.head.ahead.to_string()).replace("{upstream}", &upstream));
+                }
+                if self.head.behind > 0 {
+                    tip.push(t.git_behind.replace("{n}", &self.head.behind.to_string()).replace("{upstream}", &upstream));
+                }
+                ui.interact(at, egui::Id::new(("git-side-ahead", &self.root)), Sense::hover()).on_hover_text(tip.join("\n"));
+                x = at.max.x + 4.0;
             }
             if !self.files.is_empty() {
                 let n = ui.painter().layout_no_wrap(self.files.len().to_string(), FontId::proportional(11.0), theme.bg);
@@ -1398,89 +1232,6 @@ impl GitView {
         self.repos_list(ui, list, theme, t);
     }
 
-    /// A folder of repositories: each one's branch and changes, one under the other (folded on a click);
-    /// a file picked, compared on the right. A repository opened shows on its own, as usual.
-    fn repos_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings, window: bool) -> Option<Exit> {
-        let ctx = ui.ctx().clone();
-        self.tick(&ctx, t);
-        if let Some(i) = self.open_repo {
-            if let Some(repo) = self.repos.get_mut(i) {
-                if let Some(Exit::Back) = repo.ui(ui, rect, theme, t, window) {
-                    self.open_repo = None;
-                }
-                return None;
-            }
-            self.open_repo = None;
-        }
-
-        ui.painter().rect_filled(rect, 0.0, theme.bg);
-        let mut exit = None;
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
-        ui.set_clip_rect(rect);
-        let ui = &mut ui;
-
-        // Top: the folder, how many repositories; refresh and back.
-        let (bar, _) = ui.allocate_exact_size(Vec2::new(rect.width(), 34.0), Sense::hover());
-        ui.painter().rect_filled(bar, 0.0, theme.chrome_bg);
-        ui.painter().hline(bar.x_range(), bar.max.y, Stroke::new(1.0, theme.tab_hover));
-        paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(bar.min.x + 20.0, bar.center().y), Vec2::splat(16.0)), theme.accent);
-        let name = self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut job = egui::text::LayoutJob::default();
-        job.append(&name, 0.0, egui::TextFormat::simple(FontId::proportional(13.5), theme.text));
-        let changed: usize = self.repos.iter().map(|r| r.files.len()).sum();
-        let count = t.git_repos.replace("{n}", &self.repos.len().to_string());
-        let changes = if changed == 0 { t.git_no_changes.to_owned() } else { t.git_changes.replace("{n}", &changed.to_string()) };
-        job.append(&format!("   ·   {count}   ·   {changes}"), 0.0, egui::TextFormat::simple(FontId::proportional(12.5), theme.text_muted));
-        job.wrap = egui::text::TextWrapping::truncate_at_width((bar.width() - 140.0).max(0.0));
-        let galley = ui.painter().layout_job(job);
-        ui.painter().galley(Pos2::new(bar.min.x + 36.0, bar.center().y - galley.size().y / 2.0), galley, theme.text);
-        let button = |ui: &mut Ui, right: f32, text: &str, tip: &str| {
-            let at = Rect::from_min_size(Pos2::new(right - 28.0, bar.min.y + 4.0), Vec2::new(28.0, 26.0));
-            let resp = ui.put(at, egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
-            (resp.clicked(), at)
-        };
-        let mut right = bar.max.x - 6.0;
-        if window {
-            let (close, at) = button(ui, right, "", t.close);
-            paint_close_icon(ui.painter(), at.center(), theme.fg);
-            if close {
-                exit = Some(Exit::Back);
-            }
-        } else {
-            let (back, at) = button(ui, right, "", t.git_back);
-            paint_return_icon(ui.painter(), at.center(), theme.fg);
-            if back {
-                exit = Some(Exit::Back);
-            }
-            right -= 32.0;
-            let (pop_out, at) = button(ui, right, "", t.new_window_open);
-            paint_window_icon(ui.painter(), at.center(), theme.fg);
-            if pop_out {
-                exit = Some(Exit::Window);
-            }
-        }
-        right -= 32.0;
-        if button(ui, right, "↻", t.git_refresh).0 {
-            for repo in &mut self.repos {
-                repo.last_status = None;
-            }
-        }
-
-        let body = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y + 1.0), rect.max);
-        let list_w = self.list_w.unwrap_or((body.width() * 0.32).clamp(280.0, 420.0)).clamp(220.0, (body.width() - 300.0).max(220.0));
-        let list = Rect::from_min_max(body.min, Pos2::new(body.min.x + list_w, body.max.y));
-        let view = Rect::from_min_max(Pos2::new(list.max.x + 1.0, body.min.y), body.max);
-        ui.painter().rect_filled(list, 0.0, theme.chrome_bg);
-        ui.painter().vline(list.max.x, list.y_range(), Stroke::new(1.0, theme.tab_hover));
-
-        self.repos_list(ui, list, theme, t);
-        if let Some(dx) = splitter(ui, egui::Id::new(("git-repos-split", &self.root)), list.max.x, list.y_range(), theme) {
-            self.list_w = Some(list_w + dx);
-        }
-
-        self.repos_view(ui, view, theme, t);
-        exit
-    }
 
     /// Each repository of the folder, with its files changed (folded on a click), in `list`.
     fn repos_list(&mut self, ui: &mut Ui, list: Rect, theme: &Theme, t: &Strings) {
@@ -2175,39 +1926,8 @@ fn paint_fetch_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
     painter.line_segment([c + Vec2::new(-5.5, 6.0), c + Vec2::new(5.5, 6.0)], stroke);
 }
 
-/// A window with an arrow out of its corner: open in a new window.
-/// A curved arrow going back, to the left: back to the terminal (or to all the repositories).
-fn paint_return_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.6, color);
-    // Half a circle open to the left, from its top to its bottom, then the stem back to the left.
-    let (center, r) = (c + Vec2::new(1.5, 0.5), 4.5);
-    let mut arc: Vec<Pos2> = (0..=12).map(|k| center + Vec2::angled(-std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * k as f32 / 12.0) * r).collect();
-    arc.push(c + Vec2::new(-4.5, 0.5 + r));
-    arc.reverse();
-    painter.add(egui::Shape::line(arc, stroke));
-    // On the top end, a short stem to the left and its head.
-    let tip = center + Vec2::new(-6.5, -r);
-    painter.line_segment([tip, center + Vec2::new(0.0, -r)], stroke);
-    painter.add(egui::Shape::line(vec![tip + Vec2::new(3.0, -3.0), tip, tip + Vec2::new(3.0, 3.0)], stroke));
-}
 
-fn paint_window_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
-    let frame = Rect::from_center_size(c + Vec2::new(-1.0, 1.0), Vec2::splat(10.0));
-    // The frame, open at its top right corner where the arrow leaves.
-    painter.add(egui::Shape::line(vec![Pos2::new(frame.center().x, frame.min.y), frame.left_top(), frame.left_bottom(), frame.right_bottom(), Pos2::new(frame.max.x, frame.center().y)], stroke));
-    let tip = c + Vec2::new(6.0, -6.0);
-    painter.line_segment([c + Vec2::new(0.5, -0.5), tip], stroke);
-    painter.line_segment([tip, tip + Vec2::new(-4.0, 0.0)], stroke);
-    painter.line_segment([tip, tip + Vec2::new(0.0, 4.0)], stroke);
-}
 
-/// ✕, drawn (the font's is smaller than the other icons).
-fn paint_close_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.6, color);
-    painter.line_segment([c + Vec2::new(-5.0, -5.0), c + Vec2::new(5.0, 5.0)], stroke);
-    painter.line_segment([c + Vec2::new(-5.0, 5.0), c + Vec2::new(5.0, -5.0)], stroke);
-}
 
 fn centered_text(ui: &mut Ui, rect: Rect, text: &str, theme: &Theme) {
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(14.0), theme.text_muted);

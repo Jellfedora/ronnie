@@ -115,8 +115,6 @@ pub struct Tab {
     /// terminals.
     files: Option<Box<files::FileManager>>,
     show_files: bool,
-    /// Local panes showing their repository's changes instead of their terminal.
-    git: HashMap<PaneId, Box<git::GitView>>,
     /// Database server this tab browses: its view is shown instead of the terminals (⌘ E switches).
     db: Option<Uuid>,
     db_view: Option<Box<dbview::DbView>>,
@@ -143,7 +141,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, git: HashMap::new(), done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -245,7 +243,6 @@ struct ToolWindow {
 }
 
 enum Tool {
-    Git(Box<git::GitView>),
     /// With the SSH host it browses (None: this computer).
     Files(Box<files::FileManager>, Option<Uuid>),
 }
@@ -257,7 +254,7 @@ impl ToolWindow {
 
     /// What closing it would interrupt.
     fn busy(&self, t: &Strings) -> Vec<String> {
-        let Tool::Files(fm, _) = &self.tool else { return Vec::new() };
+        let Tool::Files(fm, _) = &self.tool;
         let mut busy = Vec::new();
         if fm.busy() {
             busy.push(t.files_transfers.to_lowercase());
@@ -266,11 +263,6 @@ impl ToolWindow {
             busy.push(t.editor_open_tab.to_owned());
         }
         busy
-    }
-
-    fn git(view: Box<git::GitView>) -> Self {
-        let repo = view.root().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self::new(format!("{repo} · git"), Tool::Git(view))
     }
 }
 
@@ -1473,7 +1465,6 @@ impl App {
                 tab.panes.insert(id, term);
                 tab.dead.remove(&id);
                 tab.pending.retain(|p| *p != id);
-                tab.git.remove(&id);
                 if startup {
                     tab.startup_due.insert(id, Instant::now());
                 } else {
@@ -2013,9 +2004,11 @@ impl App {
         for (event, i) in mine {
             let shown = tab_shown(self, i);
             let tab = &mut self.tabs[i];
-            let Some((&pane, _)) = tab.panes.iter().find(|(_, p)| p.token() == Some(event.pane.as_str())) else { continue };
+            if !tab.panes.values().any(|p| p.token() == Some(event.pane.as_str())) {
+                continue;
+            }
             // In front of the user: nothing to tell.
-            let on_screen = shown && !tab.covered() && !tab.show_db && !tab.git.contains_key(&pane);
+            let on_screen = shown && !tab.covered() && !tab.show_db;
             if on_screen && focused {
                 continue;
             }
@@ -3132,9 +3125,7 @@ struct HeaderClicks {
     search: bool,
     commands: bool,
     files: bool,
-    git: bool,
-    /// The git view or the file manager, in a window of its own (right click on their button).
-    git_window: bool,
+    /// The file manager, in a window of its own (right click on its button).
     files_window: bool,
     /// The strip is being dragged (to move the pane onto another).
     drag_started: bool,
@@ -3302,9 +3293,8 @@ fn health_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, s: &crate::heal
 /// What the strip above a pane shows.
 enum Header<'a> {
     /// A local pane: its working directory (when known and shown), the local servers announced by its
-    /// program, whether it is in a git repository (Some: whether its changes are shown), and where that
-    /// repository is hosted.
-    Local(Option<&'a Path>, &'a [LocalUrl], Option<bool>, Option<&'a git::Forge>),
+    /// program, and where its git repository is hosted.
+    Local(Option<&'a Path>, &'a [LocalUrl], Option<&'a git::Forge>),
     /// An SSH pane: the host, with a reconnect button, and the server's health with how old it is.
     Ssh(&'a str, Option<&'a (crate::health::Stats, Duration)>),
 }
@@ -3383,7 +3373,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         max_w -= 30.0;
     }
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
-    if let Header::Local(_, urls, git, forge) = header {
+    if let Header::Local(_, urls, forge) = header {
         clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label())).clicked();
         right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
@@ -3394,29 +3384,6 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         files_menu(&resp, &mut clicks);
         right -= 30.0;
         max_w -= 96.0;
-        // In a repository: its changes, in place of the terminal (drawn: no font has a branch).
-        if let Some(open) = git {
-            let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
-            let resp = ui.interact(at, egui::Id::new(("pane-git", id)), Sense::click());
-            if open || resp.hovered() {
-                ui.painter().rect_filled(at, 5.0, if open { theme.tab_active } else { theme.tab_hover });
-            }
-            git::paint_branch_icon(ui.painter(), Rect::from_center_size(at.center(), Vec2::splat(15.0)), if open { theme.accent } else { color });
-            let resp = resp.on_hover_text(if open { t.git_back } else { t.git_open }).on_hover_cursor(egui::CursorIcon::PointingHand);
-            clicks.git = resp.clicked();
-            resp.context_menu(|ui| {
-                if ui.button(t.new_window_open).clicked() {
-                    clicks.git_window = true;
-                    ui.close();
-                }
-                if open && ui.button(t.git_back).clicked() {
-                    clicks.git = true;
-                    ui.close();
-                }
-            });
-            right -= 30.0;
-            max_w -= 30.0;
-        }
         // Hosted on GitHub or GitLab: its page in the browser.
         if let Some(forge) = forge {
             let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
@@ -3493,12 +3460,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     let ssh = matches!(header, Header::Ssh(..));
     let (text, tooltip) = match header {
         Header::Ssh(host, _) => (host.to_owned(), None),
-        Header::Local(None, _, _, _) if name.is_none() => {
+        Header::Local(None, _, _) if name.is_none() => {
             clicks.focus = resp.clicked();
             return clicks;
         }
-        Header::Local(None, _, _, _) => (String::new(), None),
-        Header::Local(Some(cwd), _, _, _) => {
+        Header::Local(None, _, _) => (String::new(), None),
+        Header::Local(Some(cwd), _, _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
                 Some(rest) => ("~", rest),
@@ -3829,7 +3796,6 @@ impl App {
                 let rect = ui.max_rect();
                 ui.painter().rect_filled(rect, 0.0, theme.bg);
                 match &mut w.tool {
-                    Tool::Git(view) => close = matches!(view.ui(ui, rect, &theme, t, true), Some(git::Exit::Back)),
                     Tool::Files(fm, host) => match fm.ui(ui, rect, &theme, t, &w.title) {
                         files::FilesAction::ShowTerminal => close = true,
                         files::FilesAction::Reconnect => reconnect = *host,
@@ -3888,9 +3854,8 @@ impl App {
                 }
             });
             if let Some(host) = reconnect.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned() {
-                if let Tool::Files(fm, _) = &mut self.tool_windows[k].tool {
-                    fm.connect(&self.ctx, &host, &self.askpass);
-                }
+                let Tool::Files(fm, _) = &mut self.tool_windows[k].tool;
+                fm.connect(&self.ctx, &host, &self.askpass);
             }
             if close {
                 self.tool_windows.remove(k);
@@ -4301,7 +4266,6 @@ impl App {
                     let repo = if local { term.cached_cwd(ui.ctx()).and_then(git::git_root) } else { None };
                     // Its GitHub or GitLab page.
                     let forge = repo.as_deref().and_then(git::forge);
-                    let git_open = tab.git.contains_key(&id);
                     // Claude Code in the foreground: its plan's usage in the strip, once known.
                     let claude_running = local && term.live_program(ui.ctx()).is_some_and(crate::claude::is_claude);
                     let claude_here = claude_running && self.config.settings.claude_usage;
@@ -4314,13 +4278,12 @@ impl App {
                     }
                     let mic = (claude_running && crate::voice::supported()).then(|| self.dictation.as_ref().filter(|(p, _)| *p == id).map(|(_, d)| (d.level(), d.text())));
                     // Split: always a strip, to drag the pane by.
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || git_open || claude.is_some() || mic.is_some() {
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || claude.is_some() || mic.is_some() {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
-                        let git_state = (repo.is_some() || git_open).then_some(git_open);
-                        let header = if local { Header::Local(cwd.as_deref(), &urls, git_state, forge.as_ref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
+                        let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
                         let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
@@ -4416,22 +4379,8 @@ impl App {
                         if clicks.files {
                             open_files = true;
                         }
-                        if clicks.git_window {
-                            // The view shown in the pane moves there, as it was.
-                            if let Some(view) = tab.git.remove(&id).or_else(|| repo.clone().map(|root| Box::new(git::GitView::open(root)))) {
-                                self.tool_windows.push(ToolWindow::git(view));
-                            }
-                        }
                         if clicks.files_window {
                             open_files_window = Some(id);
-                        }
-                        if clicks.git {
-                            if git_open {
-                                tab.git.remove(&id);
-                                self.focus_terminal = true;
-                            } else if let Some(root) = repo.clone() {
-                                tab.git.insert(id, Box::new(git::GitView::open(root)));
-                            }
                         }
                         if clicks.focus {
                             term.request_focus(ui);
@@ -4446,22 +4395,7 @@ impl App {
                     } else {
                         r
                     };
-                    if let Some(view) = tab.git.get_mut(&id) {
-                        // The repository's changes, in place of the terminal.
-                        match view.ui(ui, body, &self.theme, strings, false) {
-                            Some(git::Exit::Back) => {
-                                tab.git.remove(&id);
-                                self.focus_terminal = true;
-                                tab.focused = id;
-                            }
-                            Some(git::Exit::Window) => {
-                                if let Some(view) = tab.git.remove(&id) {
-                                    self.tool_windows.push(ToolWindow::git(view));
-                                }
-                            }
-                            None => {}
-                        }
-                    } else {
+                    {
                         let resp = term.ui(ui, body, &self.theme, &self.fonts);
                         if resp.secondary_clicked() {
                             resp.request_focus();
@@ -4550,9 +4484,6 @@ impl App {
                     }
                 }
                 tab.rects = rects;
-                // Views of panes closed meanwhile.
-                let panes = &tab.panes;
-                tab.git.retain(|id, _| panes.contains_key(id));
 
                 // A pane dragged by its strip: dropped in the middle of another, they swap places; near
                 // one of its edges, it goes on that side of it; near an edge of the whole tab, on that
