@@ -51,14 +51,32 @@ impl Usage {
         let usage = Usage { five_hour: window("five_hour"), seven_day: window("seven_day"), updated: now };
         (usage.five_hour.is_some() || usage.seven_day.is_some()).then_some(usage)
     }
+
+    /// What a session just told, with what was kept (`older`, maybe told by another session): each
+    /// session tells the figures of its own last answer, and an idle one tells them again every minute.
+    /// In the same window the highest figure is the latest (usage only grows in it); a later window
+    /// than the one told is kept (that session's figures are older).
+    fn merged(self, older: Option<&Usage>) -> Usage {
+        let Some(older) = older else { return self };
+        // Claude Code may tell a reset a little apart from one answer to the next.
+        const SAME: i64 = 600;
+        let pick = |new: Option<Window>, old: Option<Window>| match (new, old) {
+            (Some(n), Some(o)) if o.resets_at > n.resets_at + SAME => Some(o),
+            (Some(n), Some(o)) if (o.resets_at - n.resets_at).abs() <= SAME => Some(Window { used_percentage: n.used_percentage.max(o.used_percentage), ..n }),
+            (n, o) => n.or(o),
+        };
+        Usage { five_hour: pick(self.five_hour, older.five_hour), seven_day: pick(self.seven_day, older.seven_day), updated: self.updated }
+    }
 }
 
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// In the installed app's folder, also for a dev build: the usage is the account's, and Claude Code runs
+/// the installed app's status line command.
 fn usage_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|d| d.join("claude-usage.json"))
+    crate::config::official_dir().map(|d| d.join("claude-usage.json"))
 }
 
 /// The status line configured before Ronnie's, kept to run it and to put it back.
@@ -186,6 +204,7 @@ pub fn run_statusline() {
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let status: Value = serde_json::from_slice(&input).unwrap_or(Value::Null);
     if let (Some(usage), Some(path)) = (Usage::from_status(&status, now()), usage_path()) {
+        let usage = usage.merged(read_usage().as_ref());
         if let Ok(text) = serde_json::to_string(&usage) {
             let _ = write_atomic(&path, &text);
         }
@@ -434,6 +453,23 @@ mod tests {
         assert!(is_claude("claude") && is_claude("2.1.286") && !is_claude("node") && !is_claude("vim"));
         assert!(is_ours(Some(&json!({ "type": "command", "command": "/Applications/Ronnie.app/Contents/MacOS/ronnie claude-statusline" }))));
         assert!(!is_ours(Some(&json!({ "type": "command", "command": "~/bin/status.sh" }))));
+    }
+
+    #[test]
+    fn keeps_the_latest_usage() {
+        let w = |used_percentage: f32, resets_at: i64| Some(Window { used_percentage, resets_at });
+        let usage = |five_hour, seven_day| Usage { five_hour, seven_day, updated: 0 };
+        // An idle session telling its old figures again: the higher ones of the same window stay.
+        let kept = usage(w(40.0, 18000), w(12.0, 600000));
+        let merged = usage(w(25.0, 18000), w(11.0, 600030)).merged(Some(&kept));
+        assert_eq!((merged.five_hour, merged.seven_day), (w(40.0, 18000), w(12.0, 600030)));
+        // A session still telling the window before: the later one kept.
+        let merged = usage(w(90.0, 0), w(12.0, 600000)).merged(Some(&kept));
+        assert_eq!(merged.five_hour, w(40.0, 18000));
+        // A new window: its figures, lower as they may be.
+        let merged = usage(w(3.0, 36000), None).merged(Some(&kept));
+        assert_eq!((merged.five_hour, merged.seven_day), (w(3.0, 36000), w(12.0, 600000)));
+        assert_eq!(usage(w(3.0, 36000), None).merged(None).five_hour, w(3.0, 36000));
     }
 
     #[test]

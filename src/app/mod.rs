@@ -3195,6 +3195,9 @@ fn mic_button(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, listening: Option
     w
 }
 
+/// Where the usage badge leads.
+const CLAUDE_URL: &str = "https://claude.ai/";
+
 /// The badge of Claude's plan usage in a pane's strip, ending at `right`: its width, if it fits.
 fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, u: &crate::claude::Usage, theme: &Theme, t: &Strings) -> Option<f32> {
     let now = crate::claude::now();
@@ -3214,6 +3217,7 @@ fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, u: &crate::clau
         tip.push(t.claude_week.replace("{p}", &format!("{:.0}", w.used_now(now))).replace("{when}", &when(w.resets_at)));
     }
     tip.push(t.claude_updated.replace("{n}", &((now - u.updated).max(0) / 60).to_string()));
+    tip.push(t.claude_open.to_owned());
     let tip = tip.join("\n");
     let text = crate::claude::usage_text(u, now);
     let font = FontId::monospace(12.0);
@@ -3223,12 +3227,14 @@ fn claude_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, u: &crate::clau
         return None;
     }
     let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
-    // Not a button: hovered, it tells the details.
-    let resp = ui.interact(at, egui::Id::new(("pane-claude", id)), Sense::hover());
-    ui.painter().rect_filled(at, 4.0, theme.tab_active);
+    // Hovered, it tells the details; clicked, claude.ai opens.
+    let resp = ui.interact(at, egui::Id::new(("pane-claude", id)), Sense::click());
+    ui.painter().rect_filled(at, 4.0, if resp.hovered() { theme.tab_hover } else { theme.tab_active });
     ui.painter().rect_stroke(at, 4.0, Stroke::new(1.0, color.gamma_multiply(0.5)), egui::StrokeKind::Inside);
     ui.painter().galley(Pos2::new(at.min.x + 8.0, at.center().y - galley.size().y / 2.0), galley, color);
-    resp.on_hover_text(tip);
+    if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        crate::terminal::open_url(CLAUDE_URL);
+    }
     Some(w)
 }
 

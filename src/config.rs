@@ -1113,7 +1113,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// The published app's config directory.
-fn official_dir() -> Option<PathBuf> {
+pub fn official_dir() -> Option<PathBuf> {
     let dir = directories::ProjectDirs::from("", "", "ronnie")?.config_dir().to_path_buf();
     // The app used to be called bipbip: carry its profiles and session over.
     if !dir.exists() {
