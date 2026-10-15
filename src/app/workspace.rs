@@ -169,9 +169,17 @@ impl App {
                     job.append(&name, 0.0, egui::TextFormat { font_id: FontId::proportional(10.5), color, extra_letter_spacing: 1.0, ..Default::default() });
                     let galley = chip_painter.layout_job(job);
                     chip_painter.galley(Pos2::new(slot.min.x + 24.0, slot.center().y - galley.size().y / 2.0), galley, color);
-                    if resp.clicked() {
-                        action = Some(TabAction::ToggleGroup(gid));
-                    }
+                    // A click lists all its profiles (a folded group shows only its open ones in the bar).
+                    let items: Vec<Uuid> = self.config.groups[gi].items.iter().copied().filter(|id| self.config.profiles.iter().any(|p| p.id == *id)).collect();
+                    egui::Popup::menu(&resp).width(220.0).show(|ui| {
+                        for id in items {
+                            let Some(item) = self.item(id) else { continue };
+                            let label = if item.open.is_some() { format!("●  {}", item.name) } else { format!("    {}", item.name) };
+                            menu_item(ui, &label, TabAction::OpenItem(id), &mut action);
+                        }
+                        ui.separator();
+                        menu_item(ui, if collapsed { t.ws_group_all } else { t.ws_group_open_only }, TabAction::ToggleGroup(gid), &mut action);
+                    });
                 }
                 Chip::Tab(_) | Chip::Profile(_) => {
                     let (index, id) = match chip {
