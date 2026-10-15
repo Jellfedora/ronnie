@@ -453,13 +453,13 @@ impl App {
             }
         }
 
-        // Folded or not: a switch.
+        // All its profiles in the bar, or only the open ones: a switch.
         menu_line(ui, theme);
         let (row, resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click());
         if resp.hovered() {
             ui.painter().rect_filled(row, 8.0, theme.tab_hover.gamma_multiply(0.7));
         }
-        let on = group.collapsed;
+        let on = !group.collapsed;
         let switch = Rect::from_center_size(Pos2::new(row.max.x - 24.0, row.center().y), Vec2::new(30.0, 17.0));
         let k = ui.ctx().animate_bool_responsive(resp.id, on);
         let fill = Color32::from(egui::lerp(egui::Rgba::from(theme.tab_hover.gamma_multiply(1.6))..=egui::Rgba::from(theme.accent), k));
@@ -467,7 +467,7 @@ impl App {
         let knob = egui::lerp(switch.min.x + 8.5..=switch.max.x - 8.5, k);
         ui.painter().circle_filled(Pos2::new(knob, switch.center().y), 6.0, if on { theme.bg } else { theme.text_muted });
         let label = Rect::from_min_max(Pos2::new(row.min.x + 10.0, row.min.y), Pos2::new(switch.min.x - 8.0, row.max.y));
-        let mut job = egui::text::LayoutJob::simple_singleline(t.ws_group_open_only.to_owned(), FontId::proportional(12.5), theme.fg);
+        let mut job = egui::text::LayoutJob::simple_singleline(t.ws_group_show_all.to_owned(), FontId::proportional(12.5), theme.fg);
         job.wrap = egui::text::TextWrapping::truncate_at_width(label.width());
         let galley = ui.painter().layout_job(job);
         ui.painter().galley(Pos2::new(label.min.x, row.center().y - galley.size().y / 2.0), galley, theme.fg);
