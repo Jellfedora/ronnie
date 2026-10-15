@@ -1267,6 +1267,10 @@ impl App {
             });
         });
         card(ui, theme, Some(t.sidebar_setting), |ui| {
+            setting_row(ui, theme, t.bar_arrows_setting, Some(t.bar_arrows_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.bar_arrows);
+            });
+            divider(ui, theme);
             ui.label(egui::RichText::new(t.sidebar_setting_desc).size(12.5).color(theme.text_muted));
             ui.add_space(4.0);
             for (k, category) in Category::ordered(&picked.category_order).into_iter().enumerate() {

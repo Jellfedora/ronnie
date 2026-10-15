@@ -239,7 +239,7 @@ impl App {
         let step = area.width() * 0.6;
         let mut goal = None;
         for (left, show) in [(true, scroll > 0.5), (false, scroll < max_scroll - 0.5)] {
-            if !show || self.bar_drag.is_some() {
+            if !show || self.bar_drag.is_some() || !self.config.settings.bar_arrows {
                 continue;
             }
             let c = Pos2::new(if left { area.min.x + 11.0 } else { area.max.x - 11.0 }, cy);
