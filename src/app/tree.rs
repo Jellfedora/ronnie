@@ -36,8 +36,12 @@ pub(super) struct FileTree {
     /// The rows in the order drawn: this frame's, and the last one's (for Shift+click).
     order: Vec<PathBuf>,
     last_order: Vec<PathBuf>,
-    /// The folder under what is dragged (from the tree or the Finder), this frame.
+    /// The folder under what is dragged (from the tree or the Finder), this frame, and whether the
+    /// pointer is on a row at all (elsewhere in the list: the root).
     drop_dir: Option<PathBuf>,
+    over_row: bool,
+    /// The rows drawn this frame, to outline the folder something would be dropped into.
+    rects: Vec<(PathBuf, Rect)>,
     /// A file manager of this computer, out of sight, doing what the menus ask (moving, archives,
     /// permissions...) with its dialogs.
     ops: Option<Box<FileManager>>,
@@ -281,6 +285,8 @@ impl App {
         let mut action = None;
         self.tree.last_order = std::mem::take(&mut self.tree.order);
         self.tree.drop_dir = None;
+        self.tree.over_row = false;
+        self.tree.rects.clear();
         // Files from the Finder: the system doesn't move the pointer meanwhile, asked each frame.
         let (os_hover, os_dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
         if os_hover {
@@ -399,25 +405,98 @@ impl App {
             let base = scope.unwrap_or_else(|| root.clone());
             self.search_rows(ui, &base, &query, left, row_w, y, &mut action);
         }
-        // Dropped from the Finder onto a folder (or anywhere else in the list: the root): copied there.
+        // Where what is dragged would go: the folder under it, or the root off the rows.
         let list = Rect::from_min_max(Pos2::new(left, list_top), Pos2::new(left + row_w, (*y).max(ui.clip_rect().max.y)));
+        let dragged = egui::DragAndDrop::payload::<TreeDrag>(ui.ctx());
+        let pointer = if os_hover { super::files::drag_pointer(ui.ctx()) } else { ui.input(|i| i.pointer.interact_pos()) };
+        let in_list = pointer.is_some_and(|p| list.contains(p));
+        let root_fits = dragged.as_ref().is_none_or(|d| !d.0.iter().any(|p| p.parent() == Some(root.as_path())));
+        let target = match &self.tree.drop_dir {
+            Some(dir) => Some(dir.clone()),
+            None if in_list && !self.tree.over_row && root_fits => Some(root.clone()),
+            None => None,
+        };
+        if (dragged.is_some() || os_hover) && in_list {
+            if let Some(dir) = &target {
+                self.paint_drop_target(ui, dir, &root, list, pointer, dragged.as_deref());
+            }
+        }
+        // Dropped from the Finder onto a folder (or anywhere else in the list: the root): copied there.
         if !os_dropped.is_empty() && super::files::drag_pointer(ui.ctx()).is_some_and(|p| list.contains(p)) {
             let dir = self.tree.drop_dir.clone().unwrap_or_else(|| root.clone());
             action = Some(TreeAction::Op(TreeOp::CopyInto(os_dropped, dir)));
+        }
+        // Items of the tree let go off the rows: into the root (on a row, the row takes them).
+        if let (Some(d), Some(dir)) = (&dragged, &target)
+            && !self.tree.over_row
+            && *dir == root
+            && ui.input(|i| i.pointer.any_released())
+        {
+            let copy = ui.input(|i| i.modifiers.alt);
+            let paths = d.0.clone();
+            action = Some(TreeAction::Op(if copy { TreeOp::CopyInto(paths, root.clone()) } else { TreeOp::MoveInto(paths, root.clone()) }));
         }
         // Items of the tree dragged out of the window: to the Finder or another app.
         if let Some(payload) = egui::DragAndDrop::payload::<TreeDrag>(ui.ctx()) {
             let window = ui.ctx().content_rect();
             let outside = ui.input(|i| i.pointer.latest_pos()).is_none_or(|p| !window.shrink(2.0).contains(p));
-            if outside && crate::dragout::button_down() {
-                egui::DragAndDrop::clear_payload(ui.ctx());
-                ui.ctx().stop_dragging();
-                crate::dragout::start_files(&payload.0);
+            if outside {
+                let down = crate::dragout::button_down();
+                crate::log::info(&format!("tree: dragged out of the window ({} items), button down: {down}", payload.0.len()));
+                if down {
+                    egui::DragAndDrop::clear_payload(ui.ctx());
+                    ui.ctx().stop_dragging();
+                    let started = crate::dragout::start_files(&payload.0);
+                    crate::log::info(&format!("tree: system drag started: {started}"));
+                }
             }
         }
         if let Some(action) = action {
             self.tree_action(ui.ctx(), action, &root);
         }
+    }
+
+    /// Where what is dragged would be dropped: the folder `dir` lit, with what it holds on screen (the
+    /// whole list for the root), and beside the pointer what goes where.
+    fn paint_drop_target(&self, ui: &Ui, dir: &Path, root: &Path, list: Rect, pointer: Option<Pos2>, dragged: Option<&TreeDrag>) {
+        let t = self.t();
+        let theme = &self.theme;
+        let block = if dir == root {
+            list.intersect(ui.clip_rect())
+        } else {
+            self.tree.rects.iter().filter(|(p, _)| p.starts_with(dir)).map(|(_, r)| *r).reduce(|a, b| a.union(b)).unwrap_or(Rect::NOTHING)
+        };
+        if block.is_positive() {
+            let painter = ui.painter();
+            painter.rect_filled(block, 6.0, theme.accent.gamma_multiply(0.08));
+            painter.rect_stroke(block, 6.0, Stroke::new(1.5, theme.accent.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+        }
+        let Some(p) = pointer else { return };
+        // What, and where: "name → folder" ("Copy" first with ⌥).
+        let what = match dragged {
+            Some(d) if d.0.len() == 1 => d.0[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            Some(d) => t.tree_items.replace("{n}", &d.0.len().to_string()),
+            None => String::new(),
+        };
+        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
+        let copy = dragged.is_none() || ui.input(|i| i.modifiers.alt);
+        let mut job = egui::text::LayoutJob::default();
+        let font = FontId::proportional(12.5);
+        if copy {
+            job.append(&format!("{}  ", t.tree_drop_copy), 0.0, egui::TextFormat::simple(font.clone(), theme.ansi[3]));
+        }
+        if !what.is_empty() {
+            job.append(&what, 0.0, egui::TextFormat::simple(font.clone(), theme.text));
+            job.append("  →  ", 0.0, egui::TextFormat::simple(font.clone(), theme.text_muted));
+        }
+        job.append(&name, 0.0, egui::TextFormat::simple(font, theme.accent));
+        let top = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tree-drop-label")));
+        let galley = top.layout_job(job);
+        let pill = Rect::from_min_size(p + Vec2::new(14.0, 16.0), galley.size() + Vec2::new(16.0, 10.0));
+        top.rect_filled(pill.translate(Vec2::new(0.0, 2.0)), 7.0, Color32::from_black_alpha(80));
+        top.rect_filled(pill, 7.0, theme.chrome_bg);
+        top.rect_stroke(pill, 7.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        top.galley(pill.min + Vec2::new(8.0, 5.0), galley, theme.text);
     }
 
     /// The tree under `root`: unfolded folders with their items, row after row.
@@ -514,10 +593,12 @@ impl App {
         let pointer = if os_hover { super::files::drag_pointer(ui.ctx()) } else { ui.input(|i| i.pointer.interact_pos()) };
         // Not into itself, nor one of its own folders.
         let fits = dragged.as_ref().is_none_or(|d| !d.0.iter().any(|p| into.starts_with(p) || p.parent() == Some(into.as_path())));
-        let target = (dragged.is_some() || os_hover) && fits && pointer.is_some_and(|p| row.contains(p));
-        if target {
+        let over = (dragged.is_some() || os_hover) && pointer.is_some_and(|p| row.contains(p));
+        self.tree.over_row |= over;
+        if over && fits {
             self.tree.drop_dir = Some(into.clone());
         }
+        self.tree.rects.push((path.to_path_buf(), row));
         if selected && self.tree.reveal {
             self.tree.reveal = false;
             ui.scroll_to_rect(row, Some(egui::Align::Center));
@@ -526,9 +607,6 @@ impl App {
             painter.rect_filled(row, 5.0, theme.accent.gamma_multiply(0.18));
         } else {
             paint_row_bg(painter, row, false, resp.hovered(), &theme);
-        }
-        if target {
-            painter.rect_stroke(row, 5.0, Stroke::new(1.5, theme.accent), egui::StrokeKind::Inside);
         }
         // Dropped here: moved into the folder (copied with ⌥).
         if let Some(payload) = resp.dnd_release_payload::<TreeDrag>()
