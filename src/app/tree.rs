@@ -15,6 +15,8 @@ const INDENT: f32 = 12.0;
 const MAX_RESULTS: usize = 500;
 /// Folders listed again after that long, to show what changed on disk.
 const RELIST: Duration = Duration::from_secs(3);
+/// A closed folder held under something dragged that long opens.
+const SPRING: Duration = Duration::from_millis(800);
 /// The search starts once typing pauses that long.
 const TYPING_PAUSE: Duration = Duration::from_millis(250);
 
@@ -42,6 +44,10 @@ pub(super) struct FileTree {
     over_row: bool,
     /// The rows drawn this frame, to outline the folder something would be dropped into.
     rects: Vec<(PathBuf, Rect)>,
+    /// The closed folder under what is dragged, since when (it opens after `SPRING`), and whether it
+    /// was still under it this frame.
+    spring: Option<(PathBuf, Instant)>,
+    spring_seen: bool,
     /// A file manager of this computer, out of sight, doing what the menus ask (moving, archives,
     /// permissions...) with its dialogs.
     ops: Option<Box<FileManager>>,
@@ -287,6 +293,7 @@ impl App {
         self.tree.drop_dir = None;
         self.tree.over_row = false;
         self.tree.rects.clear();
+        self.tree.spring_seen = false;
         // Files from the Finder: the system doesn't move the pointer meanwhile, asked each frame.
         let (os_hover, os_dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
         if os_hover {
@@ -404,6 +411,9 @@ impl App {
         } else {
             let base = scope.unwrap_or_else(|| root.clone());
             self.search_rows(ui, &base, &query, left, row_w, y, &mut action);
+        }
+        if !self.tree.spring_seen {
+            self.tree.spring = None;
         }
         // Where what is dragged would go: the folder under it, or the root off the rows.
         let list = Rect::from_min_max(Pos2::new(left, list_top), Pos2::new(left + row_w, (*y).max(ui.clip_rect().max.y)));
@@ -599,6 +609,25 @@ impl App {
             self.tree.drop_dir = Some(into.clone());
         }
         self.tree.rects.push((path.to_path_buf(), row));
+        // Held a moment over a closed folder: it opens, to drop deeper.
+        let mut spring = None;
+        if over && item.is_dir && !open && folder.is_none() {
+            self.tree.spring_seen = true;
+            match &self.tree.spring {
+                Some((p, since)) if p == path => {
+                    let held = since.elapsed();
+                    if held >= SPRING {
+                        self.tree.expanded.insert(path.to_path_buf());
+                        self.tree.listings.remove(path);
+                        self.tree.spring = None;
+                    } else {
+                        spring = Some(held.as_secs_f32() / SPRING.as_secs_f32());
+                        ui.ctx().request_repaint();
+                    }
+                }
+                _ => self.tree.spring = Some((path.to_path_buf(), Instant::now())),
+            }
+        }
         if selected && self.tree.reveal {
             self.tree.reveal = false;
             ui.scroll_to_rect(row, Some(egui::Align::Center));
@@ -607,6 +636,11 @@ impl App {
             painter.rect_filled(row, 5.0, theme.accent.gamma_multiply(0.18));
         } else {
             paint_row_bg(painter, row, false, resp.hovered(), &theme);
+        }
+        // How long before the folder opens: filling up under the row.
+        if let Some(k) = spring {
+            let bar = Rect::from_min_size(Pos2::new(row.min.x + 4.0, row.max.y - 3.0), Vec2::new((row.width() - 8.0) * k, 2.0));
+            painter.rect_filled(bar, 1.0, theme.accent);
         }
         // Dropped here: moved into the folder (copied with ⌥).
         if let Some(payload) = resp.dnd_release_payload::<TreeDrag>()
