@@ -287,6 +287,13 @@ impl App {
                 self.config.settings.blob_best = death.best;
                 self.save_config();
             }
+            // The park's theme, for a round past its mass.
+            if death.best >= crate::theme::JURASSIC_UNLOCK && !self.config.settings.jurassic_unlocked {
+                self.config.settings.jurassic_unlocked = true;
+                self.save_config();
+                let t = self.t();
+                self.toasts.push(super::Toast { ok: true, title: t.jurassic_unlocked.to_owned(), body: t.jurassic_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now() });
+            }
         }
         if news.ate > 0 {
             self.blob_sound(Sfx::Gulp);

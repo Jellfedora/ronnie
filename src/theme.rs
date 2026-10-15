@@ -66,8 +66,10 @@ pub const DEFAULT_THEME: &str = "dracula";
 
 /// The theme unlocked by the typing game.
 pub const METAL_THEME: &str = "ronnie-metal";
-/// The theme with the park's own touches.
+/// The theme with the park's own touches, unlocked by Ronnie.io.
 pub const JURASSIC_THEME: &str = "jurassic-park";
+/// Mass to reach in a round of Ronnie.io to unlock it.
+pub const JURASSIC_UNLOCK: u32 = 5000;
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -324,9 +326,10 @@ impl Preset {
         }
     }
 
-    /// Still locked, with this best score at the typing game (never in a dev build, to try it).
-    pub fn locked(&self, best: u32) -> bool {
-        crate::config::OFFICIAL && self.id == METAL_THEME && best < METAL_UNLOCK
+    /// Still locked, with this best score at the typing game, and whether a round of Ronnie.io unlocked
+    /// the park (never in a dev build, to try them).
+    pub fn locked(&self, best: u32, jurassic: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic))
     }
 
     /// The preset with this id, or the default one.

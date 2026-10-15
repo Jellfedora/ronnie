@@ -1595,8 +1595,13 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best) {
-                            theme_card(ui, preset, false, true).on_hover_text(t.theme_locked.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()));
+                        if preset.locked(best, picked.jurassic_unlocked) {
+                            let how = if preset.id == crate::theme::JURASSIC_THEME {
+                                t.theme_locked_blob.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string())
+                            } else {
+                                t.theme_locked.replace("{n}", &crate::theme::METAL_UNLOCK.to_string())
+                            };
+                            theme_card(ui, preset, false, true).on_hover_text(how);
                         } else if theme_card(ui, preset, picked.theme == preset.id, false).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             picked.theme = preset.id.to_owned();
                         }
