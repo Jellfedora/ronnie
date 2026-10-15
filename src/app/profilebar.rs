@@ -103,9 +103,25 @@ impl App {
         let max_scroll = (total - area.width()).max(0.0);
         let scroll_id = ui.id().with("ws-bar-scroll");
         let mut scroll: f32 = ui.data(|d| d.get_temp(scroll_id)).unwrap_or(0.0);
+        // A mouse's wheel (vertical) scrolls it too, as a trackpad does sideways.
+        let goal_id = ui.id().with("ws-bar-goal");
         if ui.rect_contains_pointer(area) {
             let delta = ui.input(|i| i.smooth_scroll_delta);
-            scroll -= delta.x + delta.y;
+            if delta != Vec2::ZERO {
+                scroll -= delta.x + delta.y;
+                ui.data_mut(|d| d.remove::<f32>(goal_id));
+            }
+        }
+        // Gliding to where an arrow sent it.
+        if let Some(goal) = ui.data(|d| d.get_temp::<f32>(goal_id)) {
+            let goal = goal.clamp(0.0, max_scroll);
+            scroll += (goal - scroll) * 0.25;
+            if (goal - scroll).abs() < 0.5 {
+                scroll = goal;
+                ui.data_mut(|d| d.remove::<f32>(goal_id));
+            } else {
+                ui.ctx().request_repaint();
+            }
         }
         if let (Some(_), Some(p)) = (self.bar_drag, pointer) {
             if p.x < area.min.x + 36.0 {
@@ -218,6 +234,28 @@ impl App {
         }
         if scroll < max_scroll - 0.5 {
             fade_edge(&painter, Rect::from_min_max(Pos2::new(area.max.x - 24.0, area.min.y), area.max), theme.chrome_bg, false);
+        }
+        // Arrows on the cut edges, for those without a sideways scroll: half the bar further.
+        let step = area.width() * 0.6;
+        let mut goal = None;
+        for (left, show) in [(true, scroll > 0.5), (false, scroll < max_scroll - 0.5)] {
+            if !show || self.bar_drag.is_some() {
+                continue;
+            }
+            let c = Pos2::new(if left { area.min.x + 11.0 } else { area.max.x - 11.0 }, cy);
+            let r = Rect::from_center_size(c, Vec2::new(22.0, 26.0));
+            let resp = ui.interact(r, ui.id().with(("ws-bar-arrow", left)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            painter.rect_filled(r, 6.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg });
+            painter.rect_stroke(r, 6.0, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+            paint_arrow(&painter, c, left, if resp.hovered() { theme.text } else { theme.text_muted });
+            if resp.clicked() {
+                let from = ui.data(|d| d.get_temp::<f32>(goal_id)).unwrap_or(scroll);
+                goal = Some(if left { from - step } else { from + step }.clamp(0.0, max_scroll));
+            }
+        }
+        if let Some(goal) = goal {
+            ui.data_mut(|d| d.insert_temp(goal_id, goal));
+            ui.ctx().request_repaint();
         }
         painter.vline(plus_rect.min.x - 3.0, egui::Rangef::new(cy - 10.0, cy + 10.0), Stroke::new(1.0, theme.tab_hover));
         let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
@@ -580,6 +618,13 @@ fn paint_group_name(painter: &egui::Painter, rect: Rect, name: &str, color: Colo
 /// The field of a name being typed on a chip.
 fn rename_field(text: &mut String, color: Color32) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text).font(FontId::proportional(13.0)).frame(Frame::NONE).text_color(color)
+}
+
+/// ‹ or › (`left`), as a thin chevron.
+fn paint_arrow(painter: &egui::Painter, c: Pos2, left: bool, color: Color32) {
+    let d = if left { 1.0 } else { -1.0 };
+    let points = vec![c + Vec2::new(2.0 * d, -5.0), c + Vec2::new(-2.5 * d, 0.0), c + Vec2::new(2.0 * d, 5.0)];
+    painter.add(egui::Shape::line(points, Stroke::new(1.6, color)));
 }
 
 /// A band fading from `color` to nothing, over the cut edge of a row of chips (`left`: on the left).
