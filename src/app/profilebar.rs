@@ -50,7 +50,11 @@ impl App {
         let theme = self.theme.clone();
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, theme.chrome_bg);
-        painter.hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(1.0, theme.tab_hover));
+        if theme.jurassic {
+            super::jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 6.0), rect.max));
+        } else {
+            painter.hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(1.0, theme.tab_hover));
+        }
         let mut action: Option<TabAction> = None;
         // Its empty space drags the window (the native title bar is hidden); a right click there makes
         // a group.

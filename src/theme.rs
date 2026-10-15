@@ -20,6 +20,8 @@ pub struct Theme {
     pub dark: bool,
     /// Ronnie Métal: the focused pane glows, panes flash, the cursors are drawn (see `METAL_THEME`).
     pub metal: bool,
+    /// Jurassic Park: safety stripes, the park's logo, ferns (see `app::jurassic`).
+    pub jurassic: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -64,6 +66,8 @@ pub const DEFAULT_THEME: &str = "dracula";
 
 /// The theme unlocked by the typing game.
 pub const METAL_THEME: &str = "ronnie-metal";
+/// The theme with the park's own touches.
+pub const JURASSIC_THEME: &str = "jurassic-park";
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -238,7 +242,7 @@ pub const PRESETS: &[Preset] = &[
     // The park at night: jungle black and moss, khaki text, the amber of the logo's ring, the red of its
     // title for the cursor.
     Preset {
-        id: "jurassic-park",
+        id: JURASSIC_THEME,
         name: "Jurassic Park",
         bg: 0x10160f,
         fg: 0xe9e2c8,
@@ -316,6 +320,7 @@ impl Preset {
             accent,
             dark: self.dark,
             metal: self.id == METAL_THEME,
+            jurassic: self.id == JURASSIC_THEME,
         }
     }
 

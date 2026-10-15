@@ -702,6 +702,8 @@ impl Terminal {
                 }
                 TermEvent::Exit | TermEvent::ChildExit(_) => self.exited.store(true, Ordering::Relaxed),
                 TermEvent::Bell if theme.metal => self.flash(theme.accent),
+                // Jurassic Park: the alarm, in red.
+                TermEvent::Bell if theme.jurassic => self.flash(theme.ansi[1]),
                 _ => {}
             }
         }

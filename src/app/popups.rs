@@ -585,9 +585,16 @@ impl App {
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(self.theme.chrome_bg).stroke(Stroke::new(1.5, self.theme.ansi[1]));
         let modal = egui::Modal::new(egui::Id::new("metal-guard")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
+            // Jurassic Park: safety stripes on top, and Nedry's line.
+            if self.theme.jurassic {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
+                super::jurassic::hazard(ui.painter(), band);
+                ui.add_space(10.0);
+            }
+            let title = if self.theme.jurassic { super::jurassic::MAGIC_WORD } else { t.guard_title };
             ui.horizontal(|ui| {
                 ui.add(egui::Image::new(&hand).fit_to_exact_size(Vec2::splat(34.0)).tint(self.theme.ansi[1]));
-                ui.label(egui::RichText::new(t.guard_title).size(19.0).strong().color(self.theme.ansi[1]));
+                ui.add(egui::Label::new(egui::RichText::new(title).size(19.0).strong().color(self.theme.ansi[1])).wrap());
             });
             ui.add_space(10.0);
             egui::Frame::NONE.fill(self.theme.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {

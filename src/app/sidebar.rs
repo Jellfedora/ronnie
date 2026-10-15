@@ -1355,7 +1355,13 @@ impl App {
         let button = Rect::from_min_max(Pos2::new(left, footer_top + 5.0), Pos2::new(left + row_w, bar.max.y - 7.0));
         let settings = ui.interact(button, ui.id().with("settings-btn"), Sense::click());
         let hot = settings.hovered() || self.settings_dialog;
-        ui.painter().hline(bar.min.x + 12.0..=bar.max.x - 12.0, footer_top, Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.8)));
+        if self.theme.jurassic {
+            // Jurassic Park: ferns at the foot of the panel, safety stripes above the settings.
+            super::jurassic::ferns(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 110.0), Pos2::new(bar.max.x - 1.0, footer_top)), &self.theme);
+            super::jurassic::hazard(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else {
+            ui.painter().hline(bar.min.x + 12.0..=bar.max.x - 12.0, footer_top, Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.8)));
+        }
         ui.painter().rect_filled(button, 8.0, if hot { self.theme.tab_active } else { Color32::TRANSPARENT });
         if hot {
             ui.painter().rect_stroke(button, 8.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.5)), egui::StrokeKind::Inside);

@@ -145,7 +145,11 @@ impl App {
             let hovered = resp.contains_pointer();
             if on {
                 painter.rect_filled(r, 0.0, theme.bg);
-                painter.hline(r.x_range(), r.min.y + 1.0, Stroke::new(2.0, theme.accent));
+                if theme.jurassic {
+                    super::jurassic::hazard(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
+                } else {
+                    painter.hline(r.x_range(), r.min.y + 1.0, Stroke::new(2.0, theme.accent));
+                }
             } else if hovered {
                 painter.rect_filled(r, 0.0, theme.tab_hover.gamma_multiply(0.6));
             }

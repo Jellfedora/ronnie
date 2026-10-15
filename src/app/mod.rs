@@ -32,6 +32,7 @@ mod git;
 mod home;
 mod guard;
 mod issues;
+mod jurassic;
 mod library;
 mod loading;
 mod motion;
@@ -2841,6 +2842,9 @@ fn paint_metal(painter: &egui::Painter, at: Pos2, align: Align2, text: &str, siz
 
 /// The sidebar logo, in the theme's accent color.
 fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
+    if theme.jurassic {
+        return jurassic::logo(painter, rect, theme);
+    }
     paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
@@ -3320,6 +3324,10 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         mesh.add_triangle(0, 1, 2);
         mesh.add_triangle(0, 2, 3);
         painter.add(mesh);
+    }
+    if focused && theme.jurassic {
+        // Jurassic Park: safety stripes under the bar.
+        jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
     }
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
     let font = FontId::monospace(12.0);
@@ -4472,6 +4480,8 @@ impl App {
                             let alpha = [0.95, 0.42, 0.22, 0.11, 0.05][k];
                             ui.painter().rect_stroke(r.shrink(1.0 + k as f32), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(alpha)), egui::StrokeKind::Inside);
                         }
+                    } else if split && self.theme.jurassic {
+                        jurassic::fence(ui.painter(), r, &self.theme);
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     }
