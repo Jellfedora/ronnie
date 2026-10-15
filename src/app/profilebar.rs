@@ -386,24 +386,94 @@ impl App {
         paint_group_name(painter, rect, &name, color);
         paint_chevron(painter, Pos2::new(rect.min.x + 11.0, rect.center().y), !collapsed, color);
         // A click: all its profiles (folded, the bar shows only the open ones).
-        let items: Vec<Uuid> = self.config.groups[gi].items.iter().copied().filter(|id| self.config.profiles.iter().any(|p| p.id == *id)).collect();
-        // Its own id: the right click's menu has the default one, and would open with it.
-        egui::Popup::menu(&resp).id(resp.id.with("projects")).width(220.0).show(|ui| {
-            for id in items {
-                let Some(item) = self.item(id) else { continue };
-                let label = if item.open.is_some() { format!("●  {}", item.name) } else { format!("    {}", item.name) };
-                menu_item(ui, &label, TabAction::OpenItem(id), action);
+        let frame = menu_frame(ui, &theme);
+        egui::Popup::menu(&resp).id(resp.id.with("projects")).frame(frame).gap(6.0).width(250.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.group_menu(ui, gi, action));
+        egui::Popup::context_menu(&resp).frame(frame).width(200.0).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if menu_row(ui, &theme, t.rename, false) {
+                *action = Some(TabAction::StartGroupRename(gid));
             }
-            ui.separator();
-            menu_item(ui, if collapsed { t.ws_group_all } else { t.ws_group_open_only }, TabAction::ToggleGroup(gid), action);
+            if menu_row(ui, &theme, t.new_group, false) {
+                *action = Some(TabAction::NewGroup(true));
+            }
+            menu_line(ui, &theme);
+            if menu_row(ui, &theme, t.delete_group, true) {
+                *action = Some(TabAction::DeleteGroup(gid));
+            }
         });
-        resp.context_menu(|ui| {
-            ui.set_min_width(170.0);
-            menu_item(ui, t.rename, TabAction::StartGroupRename(gid), action);
-            menu_item(ui, t.new_group, TabAction::NewGroup(true), action);
-            ui.separator();
-            menu_item(ui, t.delete_group, TabAction::DeleteGroup(gid), action);
-        });
+    }
+
+    /// The menu of a group's name: its profiles (the one shown lit, the open ones with a dot), a click
+    /// opening one; at the bottom, whether the bar shows only its open ones.
+    fn group_menu(&self, ui: &mut Ui, gi: usize, action: &mut Option<TabAction>) {
+        let t = self.t();
+        let theme = &self.theme;
+        let group = &self.config.groups[gi];
+        let items: Vec<Uuid> = group.items.iter().copied().filter(|id| self.config.profiles.iter().any(|p| p.id == *id)).collect();
+        let shown = self.shown_tab();
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let w = ui.available_width();
+
+        // Its name and how many profiles are open.
+        let (head, _) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::hover());
+        paint_group_name(ui.painter(), head.translate(Vec2::new(-14.0, 0.0)), &group.name.to_uppercase(), theme.text_muted);
+        let open = items.iter().filter(|id| self.tabs.iter().any(|t| t.profile == Some(**id))).count();
+        let count = format!("{open} / {}", items.len());
+        ui.painter().text(Pos2::new(head.max.x - 8.0, head.center().y), Align2::RIGHT_CENTER, count, FontId::proportional(11.0), theme.text_muted.gamma_multiply(0.8));
+
+        for id in items {
+            let Some(item) = self.item(id) else { continue };
+            let (row, resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click());
+            let active = item.open.is_some() && item.open == shown;
+            let tint = item.color.unwrap_or(theme.accent);
+            if active {
+                ui.painter().rect_filled(row, 8.0, tint.gamma_multiply(0.2));
+                ui.painter().rect_filled(Rect::from_min_size(Pos2::new(row.min.x + 2.0, row.min.y + 8.0), Vec2::new(3.0, row.height() - 16.0)), 1.5, tint);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(row, 8.0, theme.tab_hover);
+            }
+            paint_badge(ui.painter(), Pos2::new(row.min.x + 20.0, row.center().y), &item.name, item.color, false, item.open.is_some(), active, theme);
+            let color = if active || resp.hovered() { theme.text } else if item.open.is_some() { theme.fg } else { theme.text_muted };
+            let text = Rect::from_min_max(Pos2::new(row.min.x + 40.0, row.min.y), Pos2::new(row.max.x - 26.0, row.max.y));
+            let mut job = egui::text::LayoutJob::simple_singleline(item.name.clone(), FontId::proportional(13.0), color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(text.width());
+            let galley = ui.painter().layout_job(job);
+            ui.painter().galley(Pos2::new(text.min.x, row.center().y - galley.size().y / 2.0), galley, color);
+            // Open: a green dot (live: a halo, as in the bar).
+            if let Some(i) = item.open {
+                let dot = Pos2::new(row.max.x - 14.0, row.center().y);
+                if self.live.get(i).is_some_and(Option::is_some) {
+                    paint_live(ui, ui.painter(), dot, false, theme);
+                }
+                ui.painter().circle_filled(dot, 3.5, theme.ansi[2]);
+            }
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                *action = Some(TabAction::OpenItem(id));
+                ui.close();
+            }
+        }
+
+        // Folded or not: a switch.
+        menu_line(ui, theme);
+        let (row, resp) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(row, 8.0, theme.tab_hover.gamma_multiply(0.7));
+        }
+        let on = group.collapsed;
+        let switch = Rect::from_center_size(Pos2::new(row.max.x - 24.0, row.center().y), Vec2::new(30.0, 17.0));
+        let k = ui.ctx().animate_bool_responsive(resp.id, on);
+        let fill = Color32::from(egui::lerp(egui::Rgba::from(theme.tab_hover.gamma_multiply(1.6))..=egui::Rgba::from(theme.accent), k));
+        ui.painter().rect_filled(switch, 8.5, fill);
+        let knob = egui::lerp(switch.min.x + 8.5..=switch.max.x - 8.5, k);
+        ui.painter().circle_filled(Pos2::new(knob, switch.center().y), 6.0, if on { theme.bg } else { theme.text_muted });
+        let label = Rect::from_min_max(Pos2::new(row.min.x + 10.0, row.min.y), Pos2::new(switch.min.x - 8.0, row.max.y));
+        let mut job = egui::text::LayoutJob::simple_singleline(t.ws_group_open_only.to_owned(), FontId::proportional(12.5), theme.fg);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(label.width());
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(Pos2::new(label.min.x, row.center().y - galley.size().y / 2.0), galley, theme.fg);
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            *action = Some(TabAction::ToggleGroup(self.config.groups[gi].id));
+        }
     }
 
     /// A tab or a profile: a click shows it (opening the profile), a drag moves the profile, ✕ closes
@@ -597,6 +667,34 @@ impl App {
         }
         true
     }
+}
+
+/// The frame of the bar's menus.
+fn menu_frame(ui: &Ui, theme: &Theme) -> Frame {
+    Frame::popup(&ui.ctx().global_style()).fill(theme.chrome_bg).corner_radius(12.0).inner_margin(egui::Margin::same(6)).stroke(Stroke::new(1.0, theme.tab_hover))
+}
+
+/// A line of the bar's menus; `danger` in red. True when clicked (the menu then closes).
+fn menu_row(ui: &mut Ui, theme: &Theme, label: &str, danger: bool) -> bool {
+    let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    let color = if danger { theme.ansi[1] } else if resp.hovered() { theme.text } else { theme.fg };
+    if resp.hovered() {
+        ui.painter().rect_filled(row, 8.0, if danger { theme.ansi[1].gamma_multiply(0.15) } else { theme.tab_hover });
+    }
+    ui.painter().text(Pos2::new(row.min.x + 10.0, row.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), color);
+    let clicked = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    if clicked {
+        ui.close();
+    }
+    clicked
+}
+
+/// A thin line between parts of a menu.
+fn menu_line(ui: &mut Ui, theme: &Theme) {
+    ui.add_space(3.0);
+    let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(line.x_range().shrink(6.0), line.center().y, Stroke::new(1.0, theme.tab_hover));
+    ui.add_space(3.0);
 }
 
 fn group_name_job(name: &str, color: Color32) -> egui::text::LayoutJob {
