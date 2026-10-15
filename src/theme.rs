@@ -235,6 +235,23 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // The park at night: jungle black and moss, khaki text, the amber of the logo's ring, the red of its
+    // title for the cursor.
+    Preset {
+        id: "jurassic-park",
+        name: "Jurassic Park",
+        bg: 0x10160f,
+        fg: 0xe9e2c8,
+        cursor: 0xe0301e,
+        chrome: 0x0a0f09,
+        surface: 0x26331f,
+        accent: 0xf2a900,
+        ansi: [
+            0x1c2419, 0xd7261e, 0x6fae3a, 0xf2a900, 0x4f8fa8, 0xc0577a, 0x58a98e, 0xd8d0b4, //
+            0x4a5a42, 0xff4a3a, 0x96d35a, 0xffc93c, 0x7fb6cc, 0xe07ea0, 0x7fd0b4, 0xfff6dc,
+        ],
+        dark: true,
+    },
     Preset {
         id: "catppuccin-latte",
         name: "Catppuccin Latte",
