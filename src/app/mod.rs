@@ -280,7 +280,6 @@ struct WindowSlot {
     active: usize,
     rename: Option<Rename>,
     focus_terminal: bool,
-    tab_grab: Option<f32>,
     window_title: String,
     window: Option<WindowState>,
     /// Where and how big the window opened (given once, not to fight the user moving it).
@@ -325,8 +324,6 @@ pub struct App {
     error_shown: Option<(String, f64)>,
     window_title: String,
     next_pane: PaneId,
-    /// While a tab is dragged: pointer x minus the tab's left edge.
-    tab_grab: Option<f32>,
 
     config: Config,
     /// Recently closed tabs, most recent last.
@@ -1081,7 +1078,6 @@ impl App {
             error_shown: None,
             window_title: String::new(),
             next_pane: 1,
-            tab_grab: None,
             config: Config::default(),
             closed: Vec::new(),
             closed_panes: Vec::new(),
@@ -1781,7 +1777,6 @@ impl App {
         swap(&mut self.active, &mut slot.active);
         swap(&mut self.rename, &mut slot.rename);
         swap(&mut self.focus_terminal, &mut slot.focus_terminal);
-        swap(&mut self.tab_grab, &mut slot.tab_grab);
         swap(&mut self.window_title, &mut slot.window_title);
         swap(&mut self.window, &mut slot.window);
         swap(&mut self.opened_at, &mut slot.opened_at);
@@ -3645,7 +3640,6 @@ enum TabAction {
     /// Commit the rename; true when confirmed with Enter (a refused name then keeps the editor open).
     Rename(usize, bool),
     SetColor(usize, Option<Color32>),
-    DragOver(usize, f32),
     Split(usize, Direction),
     DeleteProfile(Uuid),
     NewHost,

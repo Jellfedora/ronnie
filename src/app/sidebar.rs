@@ -175,10 +175,6 @@ impl App {
         } else {
             return;
         };
-        // The file tree stays while its files open in local tabs.
-        if category == Category::Local && self.category() == Category::Files {
-            return;
-        }
         if self.categories().contains(&category) {
             self.config.settings.sidebar_category = category;
         }
@@ -726,8 +722,7 @@ impl App {
     /// The width of the panel listing `category`.
     pub(super) fn panel_width(&self, category: Category) -> f32 {
         match category {
-            Category::Files => self.config.settings.files_width.clamp(PANEL_W, 900.0),
-            Category::Local if self.config.settings.vscode_layout => self.config.settings.files_width.clamp(PANEL_W, 900.0),
+            Category::Local => self.config.settings.files_width.clamp(PANEL_W, 900.0),
             _ => PANEL_W,
         }
     }
@@ -785,13 +780,13 @@ impl App {
             egui::ScrollArea::vertical().id_salt(("rail-flyout-scroll", category as u8)).auto_shrink(false).show(&mut inner, |ui| {
                 let origin = ui.max_rect().min;
                 let mut y = origin.y;
-                let tab_rects = self.panel_content(ui, category, origin.x + SIDEBAR_PAD, width - 2.0 * SIDEBAR_PAD, &mut y, &mut action);
+                self.panel_content(ui, category, origin.x + SIDEBAR_PAD, width - 2.0 * SIDEBAR_PAD, &mut y, &mut action);
                 ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + SIDEBAR_PAD)), Sense::hover());
-                self.apply_tab_action(ui, action.take(), &tab_rects);
+                self.apply_tab_action(ui, action.take());
             });
         });
 
-        if category == Category::Files {
+        if category == Category::Local {
             self.resize_handle(&ctx, panel.max.x, panel.y_range());
         }
         // Stays while used: under the pointer, a menu or a dialog of it open, something dragged, a
@@ -1130,14 +1125,6 @@ impl App {
         menu_item(ui, t.delete, if item.ssh { TabAction::DeleteHost(id) } else { TabAction::DeleteProfile(id) }, action);
     }
 
-    /// The panel's title, with a "+" on the right. Returns true when "+" is clicked.
-    pub(super) fn section_header(&mut self, ui: &Ui, title: &str, pos: Pos2, width: f32, plus_hint: &str) -> bool {
-        let rect = Rect::from_min_size(pos, Vec2::new(width, SECTION_HEADER_H));
-        paint_panel_title(ui.painter(), rect, title, &self.theme);
-        let plus_rect = Rect::from_center_size(Pos2::new(rect.max.x - 12.0, rect.center().y), Vec2::splat(20.0));
-        icon_button(ui, ui.painter(), plus_rect, "section-plus", &self.theme, paint_plus).on_hover_text(plus_hint).clicked()
-    }
-
     /// Right-click menu of a tab.
     pub(super) fn tab_menu(&self, ui: &mut Ui, i: usize, action: &mut Option<TabAction>) {
         let t = self.t();
@@ -1310,9 +1297,6 @@ impl App {
             ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!maximized));
         }
 
-        if !ui.input(|i| i.pointer.any_down()) {
-            self.tab_grab = None;
-        }
         let mut action: Option<TabAction> = None;
         let left = bar.min.x + SIDEBAR_PAD;
         let row_w = bar.width() - 2.0 * SIDEBAR_PAD;
@@ -1362,7 +1346,7 @@ impl App {
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).
-        let wide = category == Category::Files || (category == Category::Local && self.config.settings.vscode_layout);
+        let wide = category == Category::Local;
         if wide && ui.clip_rect().max.x >= whole.max.x - 0.5 {
             self.resize_handle(&ui.ctx().clone(), whole.max.x - 1.0, whole.y_range());
         }
@@ -1402,194 +1386,31 @@ impl App {
         scroll.show(&mut scroll_ui, |ui| {
             let origin = ui.max_rect().min;
             let mut y = origin.y;
-            let tab_rects = self.panel_content(ui, category, left, row_w, &mut y, &mut action);
+            self.panel_content(ui, category, left, row_w, &mut y, &mut action);
             // Content height, so the scroll area knows how far it can go.
             ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
-            self.apply_tab_action(ui, action, &tab_rects);
+            self.apply_tab_action(ui, action);
         });
     }
 
     /// What the sidebar's panel lists for `category`, from `y` down (also in the folded sidebar's
-    /// flyout). The slots of the local tabs, for a tab dragged over them.
-    pub(super) fn panel_content(&mut self, ui: &mut Ui, category: Category, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) -> Vec<(usize, Rect)> {
-        let t = self.t();
-        let base_painter = ui.painter().clone();
-        // The dragged tab is painted above its neighbours.
-        let drag_painter = base_painter.clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, ui.id().with("tab-drag")));
-
-        // Local terminals: open tabs that are neither a profile nor an SSH host, then local profiles.
-        let local = category == Category::Local;
-        // The VS Code layout: the profiles are in a bar on top, the panel shows the files of the one shown.
-        if local && self.config.settings.vscode_layout {
-            self.ws_panel(ui, left, row_w, y);
-            return Vec::new();
-        }
-        if local {
-            let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
-            if self.section_header(ui, t.cat_local, Pos2::new(left, *y), row_w, &new_hint) {
-                *action = Some(TabAction::New);
-            }
-            *y += SECTION_HEADER_H;
-        }
-
-        let is_plain = |tab: &Tab| tab.ssh.is_none() && tab.profile.is_none() && tab.db.is_none() && local;
-        let first_y = *y;
-        let local_count = self.tabs.iter().filter(|t| is_plain(t)).count();
-        let mut tab_rects: Vec<(usize, Rect)> = Vec::with_capacity(local_count);
-        for i in 0..self.tabs.len() {
-            if !is_plain(&self.tabs[i]) {
-                continue;
-            }
-            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
-            tab_rects.push((i, slot));
-            *y += ROW_H + ROW_GAP;
-
-            let id = ui.id().with(("tab", i));
-            let resp = ui.interact(slot, id, Sense::click_and_drag());
-            let pointer_y = ui.input(|inp| inp.pointer.interact_pos()).map(|p| p.y);
-            // Only on the first frame: a drag moved to a new slot after a swap may report started again.
-            if resp.drag_started() && self.tab_grab.is_none() {
-                self.tab_grab = pointer_y.map(|py| py - slot.min.y);
-            }
-            let dragging = resp.dragged() && self.tab_grab.is_some();
-            let (rect, painter) = match (dragging, self.tab_grab, pointer_y) {
-                (true, Some(grab), Some(py)) => {
-                    let max_y = first_y + (ROW_H + ROW_GAP) * (local_count as f32 - 1.0);
-                    let top = (py - grab).clamp(first_y, max_y.max(first_y));
-                    (slot.translate(Vec2::new(0.0, top - slot.min.y)), drag_painter.clone())
-                }
-                _ => (slot, base_painter.clone()),
-            };
-            let active = Some(i) == self.shown_tab();
-            let tab = &self.tabs[i];
-            // Not `hovered()`: that turns false when the pointer is over the ✕ (another widget), which
-            // would hide the ✕ as soon as the pointer reaches it.
-            let row_hovered = resp.contains_pointer();
-
-            paint_row_bg(&painter, rect, active || dragging, row_hovered, &self.theme);
-            let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
-            paint_badge(&painter, dot, tab.title(), tab.color, false, true, active, &self.theme);
-            let live = self.live.get(i).cloned().flatten();
-            if live.is_some() {
-                paint_live(ui, &painter, dot, false, &self.theme);
-            }
-
-            let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
-            let show_close = active || row_hovered;
-            let text_left = rect.min.x + 36.0;
-            // A long command ended in this tab while it wasn't shown: ✓ or ✗ where the ✕ goes.
-            let done = tab.done.as_ref().filter(|_| !show_close);
-            if let Some(done) = done {
-                paint_done(&painter, close_rect.center(), done.ok, &self.theme);
-            }
-
-            let renaming = self.rename.as_ref().is_some_and(|r| r.tab == i);
-            if renaming {
-                let r = self.rename.as_mut().unwrap();
-                let edit_rect = Rect::from_min_max(Pos2::new(text_left, rect.min.y + 5.0), Pos2::new(rect.max.x - 8.0, rect.max.y - 5.0));
-                let edit = ui.put(
-                    edit_rect,
-                    egui::TextEdit::singleline(&mut r.text)
-                        .font(FontId::proportional(13.0))
-                        .frame(Frame::NONE)
-                        .text_color(if r.error.is_some() { self.theme.ansi[1] } else { self.theme.text }),
-                );
-                if edit.changed() {
-                    r.error = None;
-                }
-                if let Some(err) = r.error {
-                    // Keep editing until the name is changed or the rename cancelled.
-                    edit.request_focus();
-                    painter.rect_stroke(rect, 6.0, Stroke::new(1.0, self.theme.ansi[1]), egui::StrokeKind::Inside);
-                    egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), edit.id.with("err"), egui::PopupAnchor::Position(rect.left_bottom() + Vec2::new(0.0, 4.0)))
-                        .show(|ui| ui.label(egui::RichText::new(err).color(self.theme.ansi[1])));
-                }
-                if r.select_all > 0 {
-                    edit.request_focus();
-                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
-                        let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(r.text.chars().count()));
-                        state.cursor.set_char_range(Some(all));
-                        state.store(ui.ctx(), edit.id);
-                    }
-                    if !ui.input(|inp| inp.pointer.any_down()) {
-                        r.select_all -= 1;
-                    }
-                    ui.ctx().request_repaint();
-                }
-                let enter = ui.input(|inp| inp.key_pressed(Key::Enter));
-                let escape = ui.input(|inp| inp.key_pressed(Key::Escape));
-                if escape {
-                    self.rename = None;
-                    self.focus_terminal = true;
-                } else if enter {
-                    *action = Some(TabAction::Rename(i, true));
-                } else if edit.lost_focus() {
-                    *action = Some(TabAction::Rename(i, false));
-                }
-            } else {
-                let text_color = if active { self.theme.text } else { self.theme.text_muted };
-                let text_right = if show_close || done.is_some() { close_rect.min.x - 4.0 } else { rect.max.x - 10.0 };
-                let text_rect = Rect::from_min_max(Pos2::new(text_left, rect.min.y), Pos2::new(text_right, rect.max.y));
-                let mut job = egui::text::LayoutJob::simple_singleline(tab.title().to_owned(), FontId::proportional(13.0), text_color);
-                job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
-                let galley = painter.layout_job(job);
-                let pos = Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0);
-                painter.with_clip_rect(text_rect).galley(pos, galley, text_color);
-            }
-
-            if show_close && !renaming {
-                let close = ui.interact(close_rect, id.with("close"), Sense::click());
-                if close.hovered() {
-                    painter.rect_filled(close_rect, 4.0, self.theme.tab_hover.gamma_multiply(1.8));
-                }
-                let c = close_rect.center();
-                let d = 3.5;
-                let stroke = Stroke::new(1.4, if close.hovered() { self.theme.text } else { self.theme.text_muted });
-                painter.line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], stroke);
-                painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], stroke);
-                if close.clicked() {
-                    *action = Some(TabAction::Close(i));
-                }
-            }
-
-            if resp.clicked() {
-                action.get_or_insert(TabAction::Select(i));
-            }
-            if resp.double_clicked() {
-                *action = Some(TabAction::StartRename(i));
-            }
-            if resp.middle_clicked() {
-                *action = Some(TabAction::Close(i));
-            }
-            if dragging {
-                *action = Some(TabAction::DragOver(i, rect.center().y));
-            }
-            if resp.drag_stopped() {
-                self.tab_grab = None;
-            }
-            let hint = [live.map(|program| format!("▶ {program}")), self.tabs[i].done.as_ref().map(|d| d.summary.clone())];
-            let hint: Vec<String> = hint.into_iter().flatten().collect();
-            let resp = if hint.is_empty() { resp } else { resp.on_hover_text(hint.join("\n")) };
-            resp.context_menu(|ui| self.tab_menu(ui, i, action));
-        }
-
-        // Local profiles sit with the terminals, in their own groups.
+    /// flyout).
+    pub(super) fn panel_content(&mut self, ui: &mut Ui, category: Category, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) {
         match category {
-            Category::Local => self.profiles_section(ui, left, row_w, y, action, true),
+            // The local profiles are in a bar on top: the panel shows the files (or git) of the one shown.
+            Category::Local => self.ws_panel(ui, left, row_w, y),
             Category::Ssh => self.profiles_section(ui, left, row_w, y, action, false),
             Category::Db => self.db_section(ui, left, row_w, y, action),
             Category::Music => self.music_section(ui, left, row_w, y),
             Category::Notes => self.notes_section(ui, left, row_w, y, action),
-            Category::Files => self.files_section(ui, left, row_w, y),
+            // Retired: the file tree is in the terminals' panel.
+            Category::Files => {}
             Category::Games => self.games_section(ui, left, row_w, y),
         }
-
-        tab_rects
     }
 
-    /// Carries out what was clicked in the sidebar (folded or not). `tab_rects`: the slots of the
-    /// local tabs, for a tab dragged over them.
-    pub(super) fn apply_tab_action(&mut self, ui: &Ui, action: Option<TabAction>, tab_rects: &[(usize, Rect)]) {
+    /// Carries out what was clicked in the sidebar (folded or not), or in the profiles' bar.
+    pub(super) fn apply_tab_action(&mut self, ui: &Ui, action: Option<TabAction>) {
         let t = self.t();
         match action {
             Some(TabAction::Notes(super::notes::Action::Close)) => self.close_notes(),
@@ -1758,26 +1579,6 @@ impl App {
                     }
                 }
                 self.focus_terminal = true;
-            }
-            Some(TabAction::DragOver(i, py)) => {
-                // Swap with the neighbour as soon as the dragged tab's middle enters its slot.
-                let target = tab_rects.iter().find(|(_, r)| py >= r.min.y && py <= r.max.y + ROW_GAP).map(|(t, _)| *t);
-                if let Some(t) = target {
-                    if t != i {
-                        let tab = self.tabs.remove(i);
-                        self.tabs.insert(t, tab);
-                        if self.active == i {
-                            self.active = t;
-                        } else if i < self.active && self.active <= t {
-                            self.active -= 1;
-                        } else if t <= self.active && self.active < i {
-                            self.active += 1;
-                        }
-                        self.rename = None;
-                        // Keep the drag going on the tab's new slot.
-                        ui.ctx().set_dragged_id(ui.id().with(("tab", t)));
-                    }
-                }
             }
             None => {}
         }

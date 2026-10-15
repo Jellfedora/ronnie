@@ -610,10 +610,6 @@ pub struct Settings {
     /// Hidden files (".git"...) shown in the file tree.
     #[serde(default)]
     pub files_hidden: bool,
-    /// The terminals laid out as in VS Code: the profiles in a bar on top, the sidebar showing the files
-    /// (or git) of the one shown, the files opened in tabs beside its terminals.
-    #[serde(default)]
-    pub vscode_layout: bool,
     /// What was played in the half-day of work under way (see `crate::playtime`).
     #[serde(default)]
     pub game_usage: GameUsage,
@@ -640,7 +636,7 @@ pub struct GameUsage {
 pub enum Category {
     #[default]
     Local,
-    /// This computer's folders as a tree.
+    /// Retired (the file tree shows in the terminals' panel): still read from older configs, never shown.
     Files,
     Ssh,
     Db,
@@ -650,14 +646,14 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 7] = [Category::Local, Category::Files, Category::Ssh, Category::Db, Category::Music, Category::Notes, Category::Games];
+    pub const ALL: [Category; 6] = [Category::Local, Category::Ssh, Category::Db, Category::Music, Category::Notes, Category::Games];
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
     /// their usual place.
     pub fn ordered(order: &[Category]) -> Vec<Category> {
         let mut all: Vec<Category> = Vec::with_capacity(Self::ALL.len());
         for c in order.iter().chain(Self::ALL.iter()) {
-            if !all.contains(c) {
+            if !all.contains(c) && *c != Category::Files {
                 all.push(*c);
             }
         }
@@ -1050,7 +1046,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, vscode_layout: false, game_usage: GameUsage::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, game_usage: GameUsage::default() }
     }
 }
 

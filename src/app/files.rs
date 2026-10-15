@@ -593,13 +593,6 @@ impl FileManager {
         self.error.take()
     }
 
-    /// Opens a file of this computer in the editor, its folder in the local panel.
-    pub(super) fn edit_local(&mut self, path: &std::path::Path, t: &Strings) {
-        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
-        self.open_dir(Side::Local, dir.display().to_string());
-        self.edit(Side::Local, &name.to_string_lossy(), t);
-    }
-
     /// Opens `name` of `side` in the editor.
     fn edit(&mut self, side: Side, name: &str, t: &Strings) {
         let path = self.path_of(side, name);

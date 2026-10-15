@@ -1,4 +1,4 @@
-//! The VS Code layout of the terminals (Settings > General > Sidebar): the local profiles in a bar on
+//! The terminals laid out as in VS Code: the local profiles in a bar on
 //! top; in the sidebar, the files of the tab shown from its folder (the tree of the "Files" category) or
 //! its git changes; on the right its terminals, a file opened from the tree, or what is picked in git,
 //! each behind a tab of a strip.
@@ -35,15 +35,12 @@ enum DocAction {
 impl App {
     /// The local tab shown, in the VS Code layout.
     pub(super) fn ws_tab(&self) -> Option<usize> {
-        if !self.config.settings.vscode_layout {
-            return None;
-        }
         self.shown_tab().filter(|&i| self.tabs[i].ssh.is_none() && self.tabs[i].db.is_none())
     }
 
     /// The profiles' bar shows: the VS Code layout, on a local tab or the home page (not in a game).
     pub(super) fn ws_bar_shown(&self) -> bool {
-        self.config.settings.vscode_layout && !self.notes_page && !self.music_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || self.shown_tab().is_none())
+        !self.notes_page && !self.music_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || self.shown_tab().is_none())
     }
 
     /// The folder tab `i`'s tree starts from: the one picked, else its first pane's.
@@ -279,7 +276,7 @@ impl App {
         if icon_button(ui, &painter, plus_rect, "ws-new-tab", &theme, paint_plus).on_hover_text(new_hint).clicked() {
             action = Some(TabAction::New);
         }
-        self.apply_tab_action(ui, action, &[]);
+        self.apply_tab_action(ui, action);
     }
 
     /// The name of a chip being typed (a tab or a profile renamed): true when it is.

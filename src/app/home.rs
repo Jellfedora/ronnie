@@ -108,7 +108,7 @@ impl App {
             });
         });
         if action.is_some() {
-            self.apply_tab_action(ui, action, &[]);
+            self.apply_tab_action(ui, action);
         }
     }
 }

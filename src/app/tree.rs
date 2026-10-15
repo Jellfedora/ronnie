@@ -911,8 +911,8 @@ impl App {
         self.tree.selected = None;
     }
 
-    /// Opens a text file of this computer in the editor: in the local tab shown (its file manager), or
-    /// in a new one.
+    /// Opens a text file of this computer in the editor, beside the terminals: of the local tab shown, or
+    /// of a new one.
     pub(super) fn edit_local_file(&mut self, path: &Path) {
         let shown = self.shown_tab().filter(|&i| self.tabs[i].ssh.is_none() && self.tabs[i].db.is_none());
         let index = match shown {
@@ -926,19 +926,6 @@ impl App {
                 self.active
             }
         };
-        // The VS Code layout: in a tab of its own, beside the terminals.
-        if self.config.settings.vscode_layout {
-            return self.ws_open(index, path);
-        }
-        let t = self.t();
-        self.toggle_files(index, true);
-        if let Some(fm) = self.tabs[index].files.as_deref_mut() {
-            if fm.editor.as_ref().is_some_and(|e| e.is_dirty()) {
-                // Unsaved changes there: the file waits for them to be dealt with.
-                self.tree.error = Some(t.tree_unsaved.to_owned());
-                return;
-            }
-            fm.edit_local(path, t);
-        }
+        self.ws_open(index, path);
     }
 }
