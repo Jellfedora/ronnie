@@ -268,7 +268,7 @@ impl App {
             Chip::Tab(i) => (self.tabs[i].title().to_owned(), self.rename.as_ref().is_some_and(|r| r.tab == i)),
             Chip::Profile(id) => (self.item(id).map(|i| i.name).unwrap_or_default(), self.item_rename.as_ref().is_some_and(|r| r.id == id)),
         };
-        let text_w = if renaming { CHIP_TEXT_W } else { painter.layout_no_wrap(name, FontId::proportional(13.0), Color32::WHITE).size().x.min(CHIP_TEXT_W) };
+        let text_w = if renaming { CHIP_TEXT_W } else { (painter.layout_no_wrap(name, FontId::proportional(13.0), Color32::WHITE).size().x.ceil() + 1.0).min(CHIP_TEXT_W) };
         let open = self.chip_tab(chip).is_some();
         8.0 + 20.0 + 8.0 + text_w + if open { 26.0 } else { 12.0 }
     }
@@ -349,7 +349,8 @@ impl App {
         paint_chevron(painter, Pos2::new(rect.min.x + 11.0, rect.center().y), !collapsed, color);
         // A click: all its profiles (folded, the bar shows only the open ones).
         let items: Vec<Uuid> = self.config.groups[gi].items.iter().copied().filter(|id| self.config.profiles.iter().any(|p| p.id == *id)).collect();
-        egui::Popup::menu(&resp).width(220.0).show(|ui| {
+        // Its own id: the right click's menu has the default one, and would open with it.
+        egui::Popup::menu(&resp).id(resp.id.with("projects")).width(220.0).show(|ui| {
             for id in items {
                 let Some(item) = self.item(id) else { continue };
                 let label = if item.open.is_some() { format!("●  {}", item.name) } else { format!("    {}", item.name) };
@@ -493,7 +494,7 @@ impl App {
             return;
         }
         let text_color = if active { theme.text } else if open { theme.fg } else if hovered { theme.text } else { theme.text_muted };
-        let text_rect = Rect::from_min_max(Pos2::new(r.min.x + 36.0, r.min.y), Pos2::new(r.max.x - if open { 28.0 } else { 10.0 }, r.max.y));
+        let text_rect = Rect::from_min_max(Pos2::new(r.min.x + 36.0, r.min.y), Pos2::new(r.max.x - if open { 26.0 } else { 12.0 }, r.max.y));
         let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), FontId::proportional(13.0), text_color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
         let galley = painter.layout_job(job);
