@@ -466,15 +466,10 @@ impl App {
         if let Some(payload) = egui::DragAndDrop::payload::<TreeDrag>(ui.ctx()) {
             let window = ui.ctx().content_rect();
             let outside = ui.input(|i| i.pointer.latest_pos()).is_none_or(|p| !window.shrink(2.0).contains(p));
-            if outside {
-                let down = crate::dragout::button_down();
-                crate::log::info(&format!("tree: dragged out of the window ({} items), button down: {down}", payload.0.len()));
-                if down {
-                    egui::DragAndDrop::clear_payload(ui.ctx());
-                    ui.ctx().stop_dragging();
-                    let started = crate::dragout::start_files(&payload.0);
-                    crate::log::info(&format!("tree: system drag started: {started}"));
-                }
+            if outside && crate::dragout::button_down() {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                ui.ctx().stop_dragging();
+                crate::dragout::start_files(&payload.0);
             }
         }
         if let Some(action) = action {
