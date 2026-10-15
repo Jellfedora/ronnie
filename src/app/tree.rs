@@ -56,6 +56,8 @@ pub(super) struct FileTree {
     scope: Option<PathBuf>,
     /// The search field takes the keyboard on the next frame.
     focus_search: bool,
+    /// The root last shown: another one (another tab, in the VS Code layout) starts a new search.
+    root_seen: Option<PathBuf>,
 }
 
 /// A search through the folders under the root, on its own thread.
@@ -249,6 +251,10 @@ fn paint_dots(painter: &egui::Painter, c: Pos2, color: Color32) {
 impl App {
     /// The folder the tree starts from.
     fn tree_root(&self) -> PathBuf {
+        // The VS Code layout: the folder of the tab shown.
+        if let Some(root) = self.ws_tab().and_then(|i| self.ws_root(i)) {
+            return root;
+        }
         self.config.settings.files_root.as_ref().map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(home_dir)
     }
 
@@ -264,6 +270,12 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let root = self.tree_root();
+        if self.tree.root_seen.as_ref() != Some(&root) {
+            self.tree.root_seen = Some(root.clone());
+            self.tree.query.clear();
+            self.tree.search = None;
+            self.tree.scope = None;
+        }
         let hidden = self.config.settings.files_hidden;
         let painter = ui.painter().clone();
         let mut action = None;
@@ -300,6 +312,17 @@ impl App {
             action = Some(TreeAction::Refresh);
         }
         let plus = icon_button(ui, &painter, button(3.0), "tree-plus", &theme, paint_plus);
+        // The VS Code layout: the folder of the tab, on the left.
+        if self.ws_tab().is_some() {
+            let name = root.file_name().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_else(|| root.display().to_string());
+            let room = Rect::from_min_max(header.min, Pos2::new(button(3.0).min.x - 4.0, header.max.y));
+            let mut job = egui::text::LayoutJob::default();
+            job.append(&name, 0.0, egui::TextFormat { font_id: FontId::proportional(11.0), color: theme.text, extra_letter_spacing: 1.0, ..Default::default() });
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room.width() - 12.0);
+            let galley = painter.layout_job(job);
+            painter.galley(Pos2::new(room.min.x + 6.0, room.center().y - galley.size().y / 2.0), galley, theme.text);
+            ui.interact(room, ui.id().with("tree-root-name"), Sense::hover()).on_hover_text(t.ws_root.replace("{path}", &root.display().to_string()));
+        }
         // In the folder selected (or the one of the file selected), else the root.
         let target = match &self.tree.selected {
             Some(p) if p.is_dir() => p.clone(),
@@ -873,6 +896,13 @@ impl App {
     }
 
     fn set_tree_root(&mut self, dir: Option<PathBuf>) {
+        // The VS Code layout: the tab's folder (saved with its profile).
+        if let Some(i) = self.ws_tab() {
+            self.tabs[i].root = Some(dir.unwrap_or_else(home_dir));
+            self.tree.search = None;
+            self.tree.selected = None;
+            return;
+        }
         self.config.settings.files_root = dir.filter(|d| *d != home_dir()).map(|d| d.display().to_string());
         self.tree.scope = None;
         self.tree.expanded.clear();
@@ -896,6 +926,10 @@ impl App {
                 self.active
             }
         };
+        // The VS Code layout: in a tab of its own, beside the terminals.
+        if self.config.settings.vscode_layout {
+            return self.ws_open(index, path);
+        }
         let t = self.t();
         self.toggle_files(index, true);
         if let Some(fm) = self.tabs[index].files.as_deref_mut() {

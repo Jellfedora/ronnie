@@ -50,6 +50,7 @@ mod scorecard;
 mod sidebar;
 mod tour;
 mod tree;
+mod workspace;
 
 /// The strip of category icons, on the left of the sidebar.
 const STRIP_W: f32 = 52.0;
@@ -121,6 +122,14 @@ pub struct Tab {
     show_db: bool,
     /// A long command ended here while the tab wasn't shown: a ✓ or ✗ on the tab until it is.
     done: Option<Done>,
+    /// VS Code layout: the folder its file tree starts from (fixed once shown, changed from the tree's
+    /// menu), the files opened beside its terminals and the one shown (None: the terminals), its
+    /// repository in the sidebar, and what is picked there shown instead of the terminals.
+    root: Option<PathBuf>,
+    docs: Vec<Box<editor::Editor>>,
+    doc: Option<usize>,
+    git_side: Option<Box<git::GitView>>,
+    show_diff: bool,
 }
 
 /// The end of a long command, marked on its tab.
@@ -133,7 +142,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, git: HashMap::new(), done: None, db: None, db_view: None, show_db: false }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, git: HashMap::new(), done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -144,7 +153,13 @@ impl Tab {
             }
         }
         let focused = self.layout.leaves().iter().position(|id| *id == self.focused).unwrap_or(0);
-        TabState { name: self.name.clone(), color: self.color, layout: self.layout_of(&self.layout), focused }
+        TabState { name: self.name.clone(), color: self.color, layout: self.layout_of(&self.layout), focused, root: self.root.clone() }
+    }
+
+    /// Something shows in place of its terminals: the file manager, a file of the VS Code layout, or
+    /// what is picked in its git panel.
+    fn covered(&self) -> bool {
+        self.show_files || self.doc.is_some() || self.show_diff
     }
 
     fn layout_of(&self, node: &Node) -> Layout {
@@ -391,6 +406,8 @@ pub struct App {
     notes: notes::Notes,
     /// The sidebar's file tree.
     tree: tree::FileTree,
+    /// The VS Code layout: the sidebar shows git rather than the files.
+    ws_git: bool,
     /// The folded sidebar's category shown beside it.
     rail_flyout: Option<sidebar::Flyout>,
     media_keys: crate::media_keys::MediaKeys,
@@ -1107,6 +1124,7 @@ impl App {
             notes: notes::Notes::load(),
             tree: tree::FileTree::default(),
             rail_flyout: None,
+            ws_git: false,
             library: library::Library::default(),
             media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {
                 use raw_window_handle::HasWindowHandle;
@@ -1323,6 +1341,7 @@ impl App {
         }
         tab.name = state.name.clone();
         tab.color = state.color;
+        tab.root = state.root.clone();
         tab.profile = profile.filter(|id| self.config.profiles.iter().any(|p| p.id == *id));
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
@@ -1875,7 +1894,7 @@ impl App {
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         let mut notified = false;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            let shown = i == self.active && self.home.is_none() && !self.notes_page && !tab.show_files;
+            let shown = i == self.active && self.home.is_none() && !self.notes_page && !tab.covered();
             // Taken even when disabled, not to report old commands once enabled.
             let mut finished: Vec<Finished> = Vec::new();
             for term in tab.panes.values_mut() {
@@ -1927,7 +1946,7 @@ impl App {
         if notified {
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
-        if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.show_files) {
+        if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.covered()) {
             tab.done = None;
         }
     }
@@ -1997,7 +2016,7 @@ impl App {
             let tab = &mut self.tabs[i];
             let Some((&pane, _)) = tab.panes.iter().find(|(_, p)| p.token() == Some(event.pane.as_str())) else { continue };
             // In front of the user: nothing to tell.
-            let on_screen = shown && !tab.show_files && !tab.show_db && !tab.git.contains_key(&pane);
+            let on_screen = shown && !tab.covered() && !tab.show_db && !tab.git.contains_key(&pane);
             if on_screen && focused {
                 continue;
             }
@@ -2472,7 +2491,7 @@ impl App {
         }
         let focused = self.tabs.get(self.active).map(|t| t.focused);
         // The file manager hides the terminals: their actions would act on panes the user can't see.
-        let files_shown = self.tabs.get(self.active).is_some_and(|t| t.show_files || (t.db.is_some() && t.show_db));
+        let files_shown = self.tabs.get(self.active).is_some_and(|t| t.covered() || (t.db.is_some() && t.show_db));
         let pane_action = |a: ShortcutAction| matches!(a, ShortcutAction::ClosePane | ShortcutAction::SplitRight | ShortcutAction::SplitDown | ShortcutAction::FindText | ShortcutAction::FindCommands | ShortcutAction::ClearPane | ShortcutAction::Dictate);
         // A file open in the file manager's editor: ⌘ F searches it, ⌘ W closes it.
         // The home page: the tab behind it isn't shown, nothing may act on it.
@@ -2531,6 +2550,24 @@ impl App {
                 _ => true,
             });
         }
+        // A file open beside the terminals (VS Code layout), likewise.
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page).and_then(|t| t.docs.get_mut(t.doc?)) {
+            fired.retain(|a| match a {
+                ShortcutAction::FindText => {
+                    if ui.input(|i| i.modifiers.alt) {
+                        editor.open_replace(ui.ctx());
+                    } else {
+                        editor.open_find(ui.ctx());
+                    }
+                    false
+                }
+                ShortcutAction::ClosePane => {
+                    editor.request_close();
+                    false
+                }
+                _ => true,
+            });
+        }
         fired.retain(|a| !(files_shown && pane_action(*a)));
         for action in fired {
             match action {
@@ -2568,6 +2605,7 @@ impl App {
                     self.dictate_shortcut(ui.ctx());
                     eat_spaces(ui);
                 }
+                ShortcutAction::ToggleFiles if self.ws_tab().is_some_and(|i| self.ws_toggle(i)) => {}
                 ShortcutAction::ToggleFiles => {
                     // A database tab has no terminal to switch to.
                     if let Some(show) = self.tabs.get(self.active).filter(|t| t.db.is_none()).map(|t| !t.show_files) {
@@ -3907,11 +3945,12 @@ impl App {
         let dialogs_here = self.dialog_viewport == self.viewport;
         // Background tabs must keep answering their programs (cursor position reports, etc).
         for (i, tab) in self.tabs.iter_mut().enumerate() {
+            let covered = tab.covered();
             for term in tab.panes.values_mut() {
                 term.set_allow_clipboard(self.config.settings.clipboard_from_programs);
                 term.process_events(ui.ctx(), &self.theme);
                 // Panes behind the file manager aren't on screen either.
-                term.set_visible(i == self.active && self.home.is_none() && !self.notes_page && !tab.show_files);
+                term.set_visible(i == self.active && self.home.is_none() && !self.notes_page && !covered);
             }
         }
 
@@ -4006,7 +4045,13 @@ impl App {
                         ui.ctx().request_repaint_after(Duration::from_secs_f64((ERROR_SHOWN_SECS - (now - since)).max(0.5)));
                     }
                 }
-                let rect = ui.available_rect_before_wrap();
+                let mut rect = ui.available_rect_before_wrap();
+                // The VS Code layout: the profiles in a bar on top.
+                if self.ws_bar_shown() {
+                    let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), workspace::BAR_H));
+                    self.profiles_bar(ui, bar);
+                    rect.min.y = bar.max.y;
+                }
                 if self.notes_page {
                     self.game.leave();
                     self.fold_for_game(false);
@@ -4030,6 +4075,17 @@ impl App {
                 // Away from the home page: its game stops, music included, and the sidebar comes back.
                 self.game.leave();
                 self.fold_for_game(false);
+                // The VS Code layout: the tab's files opened beside its terminals, in a strip of tabs.
+                if let Some(i) = self.ws_tab() {
+                    if self.docs_shown(i) {
+                        let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), workspace::DOCS_H));
+                        self.docs_strip(ui, strip, i);
+                        rect.min.y = strip.max.y;
+                    }
+                    if self.ws_content(ui, rect, i) {
+                        return;
+                    }
+                }
                 // An SSH tab showing its file manager.
                 if self.tabs.get(self.active).is_some_and(|t| t.show_files) {
                     self.files_view(ui, rect);

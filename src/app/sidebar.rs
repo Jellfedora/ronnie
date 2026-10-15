@@ -727,6 +727,7 @@ impl App {
     pub(super) fn panel_width(&self, category: Category) -> f32 {
         match category {
             Category::Files => self.config.settings.files_width.clamp(PANEL_W, 900.0),
+            Category::Local if self.config.settings.vscode_layout => self.config.settings.files_width.clamp(PANEL_W, 900.0),
             _ => PANEL_W,
         }
     }
@@ -1361,7 +1362,8 @@ impl App {
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).
-        if category == Category::Files && ui.clip_rect().max.x >= whole.max.x - 0.5 {
+        let wide = category == Category::Files || (category == Category::Local && self.config.settings.vscode_layout);
+        if wide && ui.clip_rect().max.x >= whole.max.x - 0.5 {
             self.resize_handle(&ui.ctx().clone(), whole.max.x - 1.0, whole.y_range());
         }
 
@@ -1417,6 +1419,11 @@ impl App {
 
         // Local terminals: open tabs that are neither a profile nor an SSH host, then local profiles.
         let local = category == Category::Local;
+        // The VS Code layout: the profiles are in a bar on top, the panel shows the files of the one shown.
+        if local && self.config.settings.vscode_layout {
+            self.ws_panel(ui, left, row_w, y);
+            return Vec::new();
+        }
         if local {
             let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
             if self.section_header(ui, t.cat_local, Pos2::new(left, *y), row_w, &new_hint) {

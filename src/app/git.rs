@@ -713,6 +713,8 @@ pub(super) struct GitView {
     folded: std::collections::HashSet<PathBuf>,
     /// One of those repositories: its bar goes back to the list.
     nested: bool,
+    /// In a sidebar: its "back to the list" was clicked.
+    back: bool,
 }
 
 impl GitView {
@@ -757,6 +759,7 @@ impl GitView {
             picked_repo: None,
             folded: Default::default(),
             nested: false,
+            back: false,
         }
     }
 
@@ -961,11 +964,7 @@ impl GitView {
             return self.repos_ui(ui, rect, theme, t, window);
         }
         let ctx = ui.ctx().clone();
-        self.poll(&ctx, t);
-        if self.last_status.is_none_or(|at| at.elapsed() >= REFRESH) {
-            self.refresh(&ctx);
-        }
-        ctx.request_repaint_after(REFRESH);
+        self.tick(&ctx, t);
         ui.painter().rect_filled(rect, 0.0, theme.bg);
         let mut exit = None;
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -1115,44 +1114,83 @@ impl GitView {
         ui.painter().vline(list.max.x, list.y_range(), Stroke::new(1.0, theme.tab_hover));
         let tabs = Rect::from_min_size(list.min + Vec2::new(8.0, 8.0), Vec2::new(list.width() - 16.0, 26.0));
         if let Some(mode) = mode_tabs(ui, tabs, self.mode, &self.root, theme, t) {
-            if mode != self.mode {
-                self.mode = mode;
-                self.reset_diff();
-                if mode == Mode::History && !self.log_loaded {
-                    self.load_log(&ctx);
-                }
-                // What was shown in this mode, shown again.
-                match (mode, self.current_key()) {
-                    (Mode::Changes, Some((_, path))) => {
-                        if let Some(change) = self.files.iter().find(|f| f.path == path).cloned() {
-                            self.load_diff(&ctx, change, None);
-                        }
-                    }
-                    (Mode::History, Some((_, path))) => self.pick_commit_file(&ctx, path),
-                    _ => {}
-                }
-            }
+            self.switch_mode(&ctx, mode);
         }
         let content = Rect::from_min_max(Pos2::new(list.min.x, tabs.max.y + 6.0), list.max);
-        match self.mode {
-            Mode::Changes => self.changes_ui(ui, content, view, theme, t),
-            Mode::History => self.history_ui(ui, content, view, theme, t),
-            Mode::Issues => {
-                let root = self.root.clone();
-                self.issues.get_or_insert_with(|| Box::new(super::issues::Issues::new(root))).ui(ui, content, view, theme, t);
-            }
-        }
+        self.list_ui(ui, content, theme, t);
+        self.view_ui(ui, view, theme, t);
         if let Some(dx) = splitter(ui, egui::Id::new(("git-list-split", &self.root)), list.max.x, list.y_range(), theme) {
             self.list_w = Some(list_w + dx);
         }
         exit
     }
 
-    /// A folder of repositories: each one's branch and changes, one under the other (folded on a click);
-    /// a file picked, compared on the right. A repository opened shows on its own, as usual.
-    fn repos_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings, window: bool) -> Option<Exit> {
-        let ctx = ui.ctx().clone();
-        // Repositories cloned or removed meanwhile.
+    /// The mode picked from its tabs: what was shown in it, shown again.
+    fn switch_mode(&mut self, ctx: &egui::Context, mode: Mode) {
+        if mode == self.mode {
+            return;
+        }
+        self.mode = mode;
+        self.reset_diff();
+        if mode == Mode::History && !self.log_loaded {
+            self.load_log(ctx);
+        }
+        match (mode, self.current_key()) {
+            (Mode::Changes, Some((_, path))) => {
+                if let Some(change) = self.files.iter().find(|f| f.path == path).cloned() {
+                    self.load_diff(ctx, change, None);
+                }
+            }
+            (Mode::History, Some((_, path))) => self.pick_commit_file(ctx, path),
+            _ => {}
+        }
+    }
+
+    /// The list of the mode shown (changes, history, issues), in `content`.
+    fn list_ui(&mut self, ui: &mut Ui, content: Rect, theme: &Theme, t: &'static Strings) {
+        match self.mode {
+            Mode::Changes => self.changes_list(ui, content, theme, t),
+            Mode::History if self.commit.is_some() => self.commit_list(ui, content, theme, t),
+            Mode::History => self.history_list(ui, content, theme, t),
+            Mode::Issues => {
+                let root = self.root.clone();
+                self.issues.get_or_insert_with(|| Box::new(super::issues::Issues::new(root))).side(ui, content, theme, t);
+            }
+        }
+    }
+
+    /// What was picked in the list, in `view`.
+    fn view_ui(&mut self, ui: &mut Ui, view: Rect, theme: &Theme, t: &'static Strings) {
+        match self.mode {
+            Mode::Changes => self.changes_view(ui, view, theme, t),
+            Mode::History if self.commit.is_some() => self.commit_view(ui, view, theme, t),
+            Mode::History => centered_text(ui, view, t.git_pick_commit, theme),
+            Mode::Issues => {
+                if let Some(issues) = &mut self.issues {
+                    issues.main(ui, view, theme, t);
+                }
+            }
+        }
+    }
+
+    /// Reads what changed, now and then.
+    fn tick(&mut self, ctx: &egui::Context, t: &Strings) {
+        if !self.repos.is_empty() {
+            self.sync_repos();
+            for repo in &mut self.repos {
+                repo.tick(ctx, t);
+            }
+            return;
+        }
+        self.poll(ctx, t);
+        if self.last_status.is_none_or(|at| at.elapsed() >= REFRESH) {
+            self.refresh(ctx);
+        }
+        ctx.request_repaint_after(REFRESH);
+    }
+
+    /// The repositories of the folder, as they are on disk (cloned or removed meanwhile).
+    fn sync_repos(&mut self) {
         let found = child_repos(&self.root);
         if !found.is_empty() && found.iter().ne(self.repos.iter().map(|r| &r.root)) {
             let picked = self.picked_repo.and_then(|i| self.repos.get(i)).map(|r| r.root.clone());
@@ -1170,13 +1208,201 @@ impl GitView {
             self.picked_repo = picked.and_then(|p| self.repos.iter().position(|r| r.root == p));
             self.open_repo = None;
         }
-        for repo in &mut self.repos {
-            repo.poll(&ctx, t);
-            if repo.last_status.is_none_or(|at| at.elapsed() >= REFRESH) {
-                repo.refresh(&ctx);
+    }
+
+    /// What the right side shows, to name it: the file compared, the commit or the issue open (None:
+    /// nothing picked).
+    pub fn picked(&self) -> Option<String> {
+        if !self.repos.is_empty() {
+            let repo = self.open_repo.or(self.picked_repo).and_then(|i| self.repos.get(i))?;
+            return repo.picked();
+        }
+        let name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_owned();
+        match self.mode {
+            Mode::Changes => self.selected.as_deref().map(name),
+            Mode::History => self.commit.as_ref().map(|c| c.file.as_deref().map(name).unwrap_or_else(|| c.commit.short.clone())),
+            Mode::Issues => self.issues.as_ref().and_then(|i| i.picked()),
+        }
+    }
+
+    /// Nothing picked any more: the right side goes back to the terminals.
+    pub fn unpick(&mut self) {
+        if !self.repos.is_empty() {
+            if let Some(repo) = self.open_repo.or(self.picked_repo).and_then(|i| self.repos.get_mut(i)) {
+                repo.unpick();
+            }
+            self.picked_repo = None;
+            return;
+        }
+        self.selected = None;
+        self.commit = None;
+        if let Some(issues) = &mut self.issues {
+            issues.unpick();
+        }
+        self.reset_diff();
+    }
+
+    /// In a sidebar (VS Code style): the repository and its branch on top, then the list of the mode
+    /// picked; what is picked shows elsewhere, through `main_ui`.
+    pub fn side_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings) {
+        let ctx = ui.ctx().clone();
+        self.tick(&ctx, t);
+        if !self.repos.is_empty() {
+            return self.repos_side(ui, rect, theme, t);
+        }
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+        let ui = &mut ui;
+        // First line: the repository (back to the folder's list when one of them), refresh and fetch.
+        let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 26.0));
+        let mut x = line.min.x + 4.0;
+        if self.nested {
+            let at = Rect::from_min_size(Pos2::new(x, line.min.y + 2.0), Vec2::new(22.0, 22.0));
+            if ui.put(at, egui::Button::new(egui::RichText::new("‹").size(15.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(t.git_all_repos).clicked() {
+                self.back = true;
+            }
+            x = at.max.x + 4.0;
+        } else {
+            paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(x + 8.0, line.center().y), Vec2::splat(15.0)), theme.accent);
+            x += 22.0;
+        }
+        let button = |ui: &mut Ui, right: f32, text: &str, tip: &str| {
+            let at = Rect::from_min_size(Pos2::new(right - 24.0, line.min.y + 1.0), Vec2::new(24.0, 24.0));
+            let resp = ui.put(at, egui::Button::new(egui::RichText::new(text).size(14.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
+            (resp.clicked(), at)
+        };
+        let right = line.max.x - 2.0;
+        if button(ui, right, "↻", t.git_refresh).0 {
+            self.last_status = None;
+        }
+        let (fetch, at) = button(ui, right - 26.0, "", t.git_fetch);
+        paint_fetch_icon(ui.painter(), at.center(), if self.op_running { theme.text_muted } else { theme.fg });
+        if fetch {
+            self.start(&ctx, Op::Fetch);
+        }
+        if (self.status_running && !self.loaded) || self.op_running {
+            ui.put(Rect::from_center_size(Pos2::new(at.min.x - 12.0, line.center().y), Vec2::splat(12.0)), egui::Spinner::new().size(12.0));
+        }
+        let repo = self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut job = egui::text::LayoutJob::simple_singleline(repo, FontId::proportional(13.0), theme.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((at.min.x - 24.0 - x).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(Pos2::new(x, line.center().y - galley.size().y / 2.0), galley, theme.text);
+        let mut top = line.max.y + 2.0;
+        // Second line: the branch (a menu to switch), how far from the server, how many files changed.
+        if self.loaded && self.error.is_none() {
+            let row = Rect::from_min_size(Pos2::new(rect.min.x, top), Vec2::new(rect.width(), 26.0));
+            let mut x = self.branch_button(ui, Pos2::new(row.min.x + 6.0, row.center().y), theme, t) + 8.0;
+            let mut job = egui::text::LayoutJob::default();
+            if self.head.ahead > 0 {
+                job.append(&format!("↑{} ", self.head.ahead), 0.0, egui::TextFormat::simple(FontId::monospace(12.0), theme.ansi[2]));
+            }
+            if self.head.behind > 0 {
+                job.append(&format!("↓{} ", self.head.behind), 0.0, egui::TextFormat::simple(FontId::monospace(12.0), theme.ansi[3]));
+            }
+            if !job.is_empty() {
+                let galley = ui.painter().layout_job(job);
+                ui.painter().galley(Pos2::new(x, row.center().y - galley.size().y / 2.0), galley.clone(), theme.text);
+                x += galley.size().x + 4.0;
+            }
+            if !self.files.is_empty() {
+                let n = ui.painter().layout_no_wrap(self.files.len().to_string(), FontId::proportional(11.0), theme.bg);
+                let badge = Rect::from_min_size(Pos2::new(x, row.center().y - 8.5), Vec2::new((n.size().x + 10.0).max(18.0), 17.0));
+                if badge.max.x < row.max.x {
+                    ui.painter().rect_filled(badge, 8.5, theme.accent);
+                    ui.painter().galley(badge.center() - n.size() / 2.0, n, theme.bg);
+                    ui.interact(badge, egui::Id::new(("git-side-count", &self.root)), Sense::hover()).on_hover_text(t.git_changes.replace("{n}", &self.files.len().to_string()));
+                }
+            }
+            top = row.max.y + 2.0;
+        }
+        // What the last switch or fetch gave.
+        if self.notice.as_ref().is_some_and(|(_, failed, at)| !failed && at.elapsed() > Duration::from_secs(5)) {
+            self.notice = None;
+        }
+        if let Some((text, failed, _)) = self.notice.clone() {
+            let color = if failed { theme.ansi[1] } else { theme.ansi[2] };
+            let galley = ui.painter().layout(text, FontId::proportional(12.0), color, rect.width() - 34.0);
+            let strip = Rect::from_min_size(Pos2::new(rect.min.x, top), Vec2::new(rect.width(), galley.size().y + 10.0));
+            ui.painter().rect_filled(strip, 5.0, color.gamma_multiply(0.12));
+            ui.painter().galley(Pos2::new(strip.min.x + 6.0, strip.min.y + 5.0), galley, color);
+            let close = Rect::from_min_size(Pos2::new(strip.max.x - 24.0, strip.min.y + 2.0), Vec2::new(22.0, 20.0));
+            if ui.put(close, egui::Button::new("×").frame_when_inactive(false)).clicked() {
+                self.notice = None;
+            }
+            if !failed {
+                ctx.request_repaint_after(Duration::from_secs(1));
+            }
+            top = strip.max.y + 4.0;
+        }
+        let body = Rect::from_min_max(Pos2::new(rect.min.x, top), rect.max);
+        if let Some(e) = &self.error {
+            let text = if e.contains("No such file") || e.contains("not found") || e.contains("introuvable") { t.git_missing.to_owned() } else { e.clone() };
+            ui.put(body.shrink(6.0), egui::Label::new(egui::RichText::new(text).size(12.5).color(theme.ansi[1])).wrap());
+            return;
+        }
+        if !self.loaded {
+            super::loading::inline(&mut ui.new_child(egui::UiBuilder::new().max_rect(body.shrink(6.0))), theme, t.git_loading);
+            return;
+        }
+        let tabs = Rect::from_min_size(body.min + Vec2::new(2.0, 4.0), Vec2::new(body.width() - 4.0, 26.0));
+        if let Some(mode) = mode_tabs(ui, tabs, self.mode, &self.root, theme, t) {
+            self.switch_mode(&ctx, mode);
+        }
+        let content = Rect::from_min_max(Pos2::new(body.min.x - 4.0, tabs.max.y + 6.0), Pos2::new(body.max.x + 4.0, body.max.y));
+        self.list_ui(ui, content, theme, t);
+    }
+
+    /// What was picked in `side_ui`, filling `rect`.
+    pub fn main_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings) {
+        let ctx = ui.ctx().clone();
+        self.tick(&ctx, t);
+        ui.painter().rect_filled(rect, 0.0, theme.bg);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+        if !self.repos.is_empty() {
+            return self.repos_view(&mut ui, rect, theme, t);
+        }
+        self.view_ui(&mut ui, rect, theme, t);
+    }
+
+    /// A folder of repositories, in a sidebar: one opened shows on its own, else each one with its files.
+    fn repos_side(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings) {
+        if let Some(i) = self.open_repo {
+            if let Some(repo) = self.repos.get_mut(i) {
+                repo.side_ui(ui, rect, theme, t);
+                if std::mem::take(&mut repo.back) {
+                    self.open_repo = None;
+                }
+                return;
+            }
+            self.open_repo = None;
+        }
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+        let ui = &mut ui;
+        let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 26.0));
+        paint_branch_icon(ui.painter(), Rect::from_center_size(Pos2::new(line.min.x + 12.0, line.center().y), Vec2::splat(15.0)), theme.accent);
+        let at = Rect::from_min_size(Pos2::new(line.max.x - 26.0, line.min.y + 1.0), Vec2::new(24.0, 24.0));
+        if ui.put(at, egui::Button::new(egui::RichText::new("↻").size(14.0)).frame_when_inactive(false).corner_radius(5.0)).on_hover_text(t.git_refresh).clicked() {
+            for repo in &mut self.repos {
+                repo.last_status = None;
             }
         }
-        ctx.request_repaint_after(REFRESH);
+        let count = t.git_repos.replace("{n}", &self.repos.len().to_string());
+        let mut job = egui::text::LayoutJob::simple_singleline(count, FontId::proportional(12.5), theme.text_muted);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((at.min.x - line.min.x - 30.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(Pos2::new(line.min.x + 26.0, line.center().y - galley.size().y / 2.0), galley, theme.text);
+        let list = Rect::from_min_max(Pos2::new(rect.min.x - 4.0, line.max.y + 4.0), Pos2::new(rect.max.x + 4.0, rect.max.y));
+        self.repos_list(ui, list, theme, t);
+    }
+
+    /// A folder of repositories: each one's branch and changes, one under the other (folded on a click);
+    /// a file picked, compared on the right. A repository opened shows on its own, as usual.
+    fn repos_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings, window: bool) -> Option<Exit> {
+        let ctx = ui.ctx().clone();
+        self.tick(&ctx, t);
         if let Some(i) = self.open_repo {
             if let Some(repo) = self.repos.get_mut(i) {
                 if let Some(Exit::Back) = repo.ui(ui, rect, theme, t, window) {
@@ -1247,6 +1473,18 @@ impl GitView {
         ui.painter().rect_filled(list, 0.0, theme.chrome_bg);
         ui.painter().vline(list.max.x, list.y_range(), Stroke::new(1.0, theme.tab_hover));
 
+        self.repos_list(ui, list, theme, t);
+        if let Some(dx) = splitter(ui, egui::Id::new(("git-repos-split", &self.root)), list.max.x, list.y_range(), theme) {
+            self.list_w = Some(list_w + dx);
+        }
+
+        self.repos_view(ui, view, theme, t);
+        exit
+    }
+
+    /// Each repository of the folder, with its files changed (folded on a click), in `list`.
+    fn repos_list(&mut self, ui: &mut Ui, list: Rect, theme: &Theme, t: &Strings) {
+        let ctx = ui.ctx().clone();
         // Each repository: a header (fold, name, branch, how far from the server, changes, open), then
         // its files.
         let (mut fold, mut open, mut picked) = (None, None, None);
@@ -1338,10 +1576,11 @@ impl GitView {
                 repo.load_diff(&ctx, change, None);
             }
         }
-        if let Some(dx) = splitter(ui, egui::Id::new(("git-repos-split", &self.root)), list.max.x, list.y_range(), theme) {
-            self.list_w = Some(list_w + dx);
-        }
+    }
 
+    /// The file picked in one of the repositories, in `view`.
+    fn repos_view(&mut self, ui: &mut Ui, view: Rect, theme: &Theme, t: &Strings) {
+        let changed: usize = self.repos.iter().map(|r| r.files.len()).sum();
         // Right: the file picked, in its repository.
         let shown = self.picked_repo.and_then(|i| self.repos.get_mut(i)).and_then(|repo| {
             let path = repo.selected.clone().filter(|_| repo.mode == Mode::Changes)?;
@@ -1353,7 +1592,6 @@ impl GitView {
             None if changed == 0 => centered_text(ui, view, t.git_all_committed, theme),
             None => centered_text(ui, view, t.git_pick, theme),
         }
-        exit
     }
 
     /// The branch checked out, as a button opening the branch menu; where it ends.
@@ -1480,7 +1718,7 @@ impl GitView {
     }
 
     /// The files changed now; the one picked, compared with the last commit.
-    fn changes_ui(&mut self, ui: &mut Ui, content: Rect, view: Rect, theme: &Theme, t: &Strings) {
+    fn changes_list(&mut self, ui: &mut Ui, content: Rect, theme: &Theme, t: &Strings) {
         let mut picked = None;
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(content.shrink2(Vec2::new(4.0, 0.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         if self.files.is_empty() {
@@ -1501,6 +1739,10 @@ impl GitView {
                 self.load_diff(ui.ctx(), change, None);
             }
         }
+    }
+
+    /// The file picked among the changes, compared.
+    fn changes_view(&mut self, ui: &mut Ui, view: Rect, theme: &Theme, t: &Strings) {
         if self.files.is_empty() {
             return centered_text(ui, view, t.git_all_committed, theme);
         }
@@ -1513,10 +1755,7 @@ impl GitView {
 
     /// The commits of the branch, searchable; one picked: its message and files, and the file picked
     /// compared with the commit before.
-    fn history_ui(&mut self, ui: &mut Ui, content: Rect, view: Rect, theme: &Theme, t: &Strings) {
-        if self.commit.is_some() {
-            return self.commit_ui(ui, content, view, theme, t);
-        }
+    fn history_list(&mut self, ui: &mut Ui, content: Rect, theme: &Theme, t: &Strings) {
         let mut panel = ui.new_child(egui::UiBuilder::new().max_rect(content.shrink2(Vec2::new(6.0, 0.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         panel.add(egui::TextEdit::singleline(&mut self.search).hint_text(t.git_search_commits).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 4.0)));
         panel.add_space(4.0);
@@ -1561,11 +1800,10 @@ impl GitView {
                 self.open_commit(ui.ctx(), commit);
             }
         }
-        centered_text(ui, view, t.git_pick_commit, theme);
     }
 
     /// The commit open: back to the history, its message, author and files.
-    fn commit_ui(&mut self, ui: &mut Ui, content: Rect, view: Rect, theme: &Theme, t: &Strings) {
+    fn commit_list(&mut self, ui: &mut Ui, content: Rect, theme: &Theme, t: &Strings) {
         let mut panel = ui.new_child(egui::UiBuilder::new().max_rect(content.shrink2(Vec2::new(6.0, 0.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let Some(open) = &self.commit else { return };
         let c = &open.commit;
@@ -1624,6 +1862,10 @@ impl GitView {
                 self.pick_commit_file(ui.ctx(), path);
             }
         }
+    }
+
+    /// The file picked in the commit open, compared with the commit before.
+    fn commit_view(&mut self, ui: &mut Ui, view: Rect, theme: &Theme, t: &Strings) {
         let Some(open) = &self.commit else { return };
         let Some(path) = open.file.clone() else {
             return match &open.detail {

@@ -776,16 +776,7 @@ impl FileManager {
                     editor.save_failed(t.editor_disconnected.to_owned());
                 }
             }
-            EditorAction::Save { data, mtime, force } => {
-                let path = std::path::Path::new(&editor.path);
-                let (result, conflict) = if !force && local_mtime(path) != mtime {
-                    (Err(String::new()), true)
-                } else {
-                    // Written in place: the file keeps its permissions.
-                    (std::fs::write(path, &data).map(|_| local_mtime(path)).map_err(|e| format!("{} : {e}", path.display())), false)
-                };
-                editor.saved(result, conflict, t);
-            }
+            EditorAction::Save { data, mtime, force } => save_local(editor, &data, mtime, force, t),
         }
     }
 
@@ -3266,7 +3257,20 @@ fn macos_cursor() -> Option<(f64, f64)> {
 }
 
 /// A local file for the editor, with its modification time.
-fn read_local_file(path: &str, t: &Strings) -> Result<(Vec<u8>, Option<i64>), String> {
+/// Writes what `editor` saves of a file of this computer: refused, unless `force`d, when the file changed
+/// since it was read (`mtime`).
+pub(super) fn save_local(editor: &mut Editor, data: &[u8], mtime: Option<i64>, force: bool, t: &Strings) {
+    let path = std::path::Path::new(&editor.path);
+    let (result, conflict) = if !force && local_mtime(path) != mtime {
+        (Err(String::new()), true)
+    } else {
+        // Written in place: the file keeps its permissions.
+        (std::fs::write(path, data).map(|_| local_mtime(path)).map_err(|e| format!("{} : {e}", path.display())), false)
+    };
+    editor.saved(result, conflict, t);
+}
+
+pub(super) fn read_local_file(path: &str, t: &Strings) -> Result<(Vec<u8>, Option<i64>), String> {
     let p = std::path::Path::new(path);
     let meta = std::fs::metadata(p).map_err(|e| format!("{path} : {e}"))?;
     if meta.len() > sftp::MAX_EDIT {

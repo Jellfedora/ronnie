@@ -310,8 +310,8 @@ impl Issues {
         }
     }
 
-    /// The list in `list` (left), the issue picked or the new one in `view` (right).
-    pub fn ui(&mut self, ui: &mut Ui, list: Rect, view: Rect, theme: &Theme, t: &'static Strings) {
+    /// Only the list, in `list` (the issue picked shows elsewhere, through `main`).
+    pub fn side(&mut self, ui: &mut Ui, list: Rect, theme: &Theme, t: &'static Strings) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx, t);
         if self.loaded_at.is_none_or(|at| at.elapsed() >= REFRESH) {
@@ -319,7 +319,22 @@ impl Issues {
         }
         ctx.request_repaint_after(REFRESH);
         self.list_ui(ui, list, theme, t);
+    }
+
+    /// Only the issue picked or the new one, in `view`.
+    pub fn main(&mut self, ui: &mut Ui, view: Rect, theme: &Theme, t: &'static Strings) {
+        self.poll(&ui.ctx().clone(), t);
         self.view_ui(ui, view, theme, t);
+    }
+
+    /// The issue shown ("#12"), or "+" for a new one being written.
+    pub fn picked(&self) -> Option<String> {
+        self.selected.map(|n| format!("#{n}")).or_else(|| self.draft.is_some().then(|| "+".to_owned()))
+    }
+
+    pub fn unpick(&mut self) {
+        self.selected = None;
+        self.draft = None;
     }
 
     fn list_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings) {

@@ -430,6 +430,11 @@ impl App {
         if whole_tab && tab.files.as_ref().and_then(|f| f.editor.as_ref()).is_some_and(|e| e.is_dirty()) {
             busy.push(format!("{}  ·  {}", tab.title(), self.t().editor_open_tab));
         }
+        if whole_tab {
+            for doc in tab.docs.iter().filter(|d| d.is_dirty()) {
+                busy.push(format!("{}  ·  {} ({})", tab.title(), doc.name, self.t().ws_unsaved));
+            }
+        }
         for (id, term) in &tab.panes {
             if panes.is_some_and(|p| !p.contains(id)) || tab.dead.contains(id) || term.has_exited() {
                 continue;
