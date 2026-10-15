@@ -2,6 +2,30 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.28.0] - 2026-10-15
+
+### Nouveautés
+
+- **Les terminaux façon VS Code** :
+  - **Les profils dans une barre en haut**, rangés par groupe dans des capsules. Chaque profil a la teinte de sa couleur : plein quand il est ouvert, souligné quand il est affiché. Au survol, son dossier et ses panneaux.
+  - **On les réordonne par glisser-déposer**, on les fait passer d'un groupe à l'autre, et on déplace les groupes par leur nom. Un clic sur un groupe liste tous ses projets, avec l'interrupteur « Tout afficher » ; un clic droit le renomme ou le supprime.
+  - **La barre défile** à la molette, au trackpad ou avec des flèches sur ses bords (qu'on peut masquer dans les réglages).
+  - **À gauche, les fichiers du profil affiché**, depuis son dossier, avec la recherche et tout le menu du clic droit. Le dossier se change depuis le menu « … ».
+  - **Ou son git** : la branche, les modifications, l'historique et les issues. Le fichier ou le commit choisi s'affiche à droite.
+  - **Les fichiers s'ouvrent dans des onglets** à côté des terminaux, avec un point quand ils ne sont pas enregistrés. ⌘ E passe des terminaux au dernier fichier, et inversement.
+- **Le glisser-déposer dans les fichiers** montre où l'élément va atterrir : le dossier visé s'éclaire, avec « fichier → dossier » à côté du pointeur. Un dossier fermé s'ouvre si on reste une seconde dessus, la liste défile près de ses bords, et lâcher dans le vide dépose à la racine.
+- **Un thème Jurassic Park**, à débloquer en faisant 5000 points dans une partie de Ronnie.io (même avec un record déjà au-dessus) : bandes de sécurité jaunes et noires, logo du parc avec son T-rex, fougères, alarme rouge, et un clin d'œil à Nedry.
+- **Un clic sur l'usage de Claude** ouvre claude.ai.
+
+### Changements
+
+- La catégorie « Fichiers » disparaît de la barre latérale : ses fichiers sont maintenant dans celle des terminaux.
+- Le bouton git de la barre des panneaux disparaît : git est dans la barre latérale.
+
+### Corrections
+
+- L'usage de Claude affiché ne saute plus quand plusieurs sessions de Claude Code sont ouvertes : une session au repos n'écrase plus les chiffres d'une session active.
+
 ## [0.27.1] - 2026-10-12
 
 ### Nouveautés
