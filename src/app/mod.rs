@@ -41,6 +41,7 @@ mod notes;
 mod perms;
 mod sql;
 mod upload;
+mod dev;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
@@ -107,6 +108,8 @@ pub struct Tab {
     /// for their shell's prompt to get them (since when).
     startup: HashMap<PaneId, String>,
     startup_due: HashMap<PaneId, Instant>,
+    /// The Node.js version picked for panes (see `crate::node`); the others use the system's.
+    nodes: HashMap<PaneId, String>,
     /// SSH panes whose connection ended: kept on screen with their last output until reconnected or closed.
     dead: std::collections::HashSet<PaneId>,
     /// Panes whose shell starts the first time the tab is shown: restoring many tabs at once
@@ -142,7 +145,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), nodes: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -169,6 +172,7 @@ impl Tab {
                 history: self.histories.get(id).copied(),
                 name: self.names.get(id).cloned(),
                 startup: self.startup.get(id).cloned(),
+                node: self.nodes.get(id).cloned(),
             },
             Node::Split { axis, ratio, a, b } => Layout::Split {
                 axis: *axis,
@@ -182,6 +186,12 @@ impl Tab {
     /// History file of pane `id`, given an id on first use.
     fn history_path(&mut self, id: PaneId) -> Option<PathBuf> {
         crate::shell::history_path(*self.histories.entry(id).or_insert_with(Uuid::new_v4))
+    }
+
+    /// Before pane `id`'s shell starts: tells it the Node.js version picked for it (see `crate::node`).
+    fn prepare_node(&mut self, id: PaneId) {
+        let history = *self.histories.entry(id).or_insert_with(Uuid::new_v4);
+        crate::node::set_pane(history, self.nodes.get(&id).map(String::as_str));
     }
 
     /// Pane `id` as saved, when worth reopening once closed: named or with startup commands, in a
@@ -385,6 +395,8 @@ pub struct App {
     /// The radio, and its volume changed since the config was last saved.
     music: music::Music,
     music_volume_changed: bool,
+    /// The sidebar's Dev category: the Node.js versions.
+    dev: dev::Dev,
     /// The music page: shown instead of the tabs (in this window), and what it holds (for all).
     music_page: bool,
     library: library::Library,
@@ -1110,6 +1122,7 @@ impl App {
             subsonic_form: None,
             music: music::Music::default(),
             music_volume_changed: false,
+            dev: dev::Dev::new(),
             music_page: false,
             notes_page: false,
             sidebar_seen: (None, false, false, false),
@@ -1321,14 +1334,15 @@ impl App {
     /// Shells start lazily: see `Tab::pending`.
     fn open_tab(&mut self, state: &TabState, profile: Option<Uuid>) {
         let (mut cwds, mut histories) = (HashMap::new(), HashMap::new());
-        let (mut names, mut startup) = (HashMap::new(), HashMap::new());
-        let layout = self.build(&state.layout, &mut cwds, &mut histories, &mut names, &mut startup);
+        let (mut names, mut startup, mut nodes) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let layout = self.build(&state.layout, &mut cwds, &mut histories, &mut names, &mut startup, &mut nodes);
         let mut tab = Tab::new(layout, HashMap::new());
         tab.pending = tab.layout.leaves();
         tab.cwds = cwds;
         tab.histories = histories;
         tab.names = names;
         tab.startup = startup;
+        tab.nodes = nodes;
         if let Some(id) = tab.layout.leaves().get(state.focused) {
             tab.focused = *id;
         }
@@ -1344,9 +1358,10 @@ impl App {
     }
 
     /// Turns a saved layout into a tree with fresh pane ids, collecting each pane's directory.
-    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>, names: &mut HashMap<PaneId, String>, startup: &mut HashMap<PaneId, String>) -> Node {
+    #[allow(clippy::too_many_arguments)]
+    fn build(&mut self, layout: &Layout, cwds: &mut HashMap<PaneId, PathBuf>, histories: &mut HashMap<PaneId, Uuid>, names: &mut HashMap<PaneId, String>, startup: &mut HashMap<PaneId, String>, nodes: &mut HashMap<PaneId, String>) -> Node {
         match layout {
-            Layout::Pane { cwd, history, name, startup: commands } => {
+            Layout::Pane { cwd, history, name, startup: commands, node } => {
                 let id = self.next_pane;
                 self.next_pane += 1;
                 if let Some(cwd) = cwd {
@@ -1361,13 +1376,16 @@ impl App {
                 if let Some(commands) = commands {
                     startup.insert(id, commands.clone());
                 }
+                if let Some(node) = node {
+                    nodes.insert(id, node.clone());
+                }
                 Node::Leaf(id)
             }
             Layout::Split { axis, ratio, a, b } => Node::Split {
                 axis: *axis,
                 ratio: ratio.clamp(0.1, 0.9),
-                a: Box::new(self.build(a, cwds, histories, names, startup)),
-                b: Box::new(self.build(b, cwds, histories, names, startup)),
+                a: Box::new(self.build(a, cwds, histories, names, startup, nodes)),
+                b: Box::new(self.build(b, cwds, histories, names, startup, nodes)),
             },
         }
     }
@@ -1402,6 +1420,9 @@ impl App {
         let restored = self.t().scrollback_restored;
         let Some(tab) = self.tabs.get_mut(index) else { return };
         for id in std::mem::take(&mut tab.pending) {
+            if launch.is_none() {
+                tab.prepare_node(id);
+            }
             let history = tab.history_path(id);
             // What the pane showed last time, then a line saying so.
             let restore = restore.then(|| tab.histories.get(&id).and_then(|h| crate::shell::scrollback_path(*h)).and_then(|p| std::fs::read(p).ok())).flatten().filter(|b| crate::terminal::has_text(b)).map(|mut bytes| {
@@ -1460,6 +1481,9 @@ impl App {
         let launch = self.launch_for(index);
         let Some(tab) = self.tabs.get_mut(index) else { return };
         let cwd = tab.panes.get(&id).and_then(Terminal::cwd).or_else(|| tab.cwds.get(&id).cloned());
+        if launch.is_none() {
+            tab.prepare_node(id);
+        }
         let history = tab.history_path(id);
         match Terminal::local(ctx, cwd.as_deref(), launch.as_ref(), history.as_deref(), None) {
             Ok(term) => {
@@ -2163,9 +2187,15 @@ impl App {
     /// A new local tab, its terminal in `cwd`.
     fn new_tab_in(&mut self, ctx: &egui::Context, cwd: Option<&Path>) {
         let history = Uuid::new_v4();
+        // The Node.js version of new terminals, if one is picked (and still installed).
+        let node = self.config.settings.node_default.clone().filter(|v| crate::node::is_installed(v));
+        crate::node::set_pane(history, node.as_deref());
         if let Some((id, term)) = self.spawn(ctx, cwd, None, history) {
             let mut tab = Tab::new(Node::Leaf(id), HashMap::from([(id, term)]));
             tab.histories.insert(id, history);
+            if let Some(node) = node {
+                tab.nodes.insert(id, node);
+            }
             self.tabs.push(tab);
             self.active = self.tabs.len() - 1;
             self.home = None;
@@ -2188,11 +2218,17 @@ impl App {
             _ => self.launch_for(index),
         };
         let history = Uuid::new_v4();
+        // A local pane: the same Node.js version as the one split.
+        let node = if launch.is_none() { tab.nodes.get(&tab.focused).cloned() } else { None };
+        crate::node::set_pane(history, node.as_deref());
         if let Some((id, term)) = self.spawn(ctx, cwd.as_deref(), launch.as_ref(), history) {
             let tab = &mut self.tabs[index];
             tab.layout.split(tab.focused, id, side);
             tab.panes.insert(id, term);
             tab.histories.insert(id, history);
+            if let Some(node) = node {
+                tab.nodes.insert(id, node);
+            }
             tab.focused = id;
             self.focus_terminal = true;
             self.allow_ssh_panes(index);
@@ -2235,14 +2271,15 @@ impl App {
             return;
         }
         let state = self.closed_panes.remove(k);
-        let (mut cwds, mut histories, mut names, mut startup) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
-        let Node::Leaf(id) = self.build(&state, &mut cwds, &mut histories, &mut names, &mut startup) else { return };
+        let (mut cwds, mut histories, mut names, mut startup, mut nodes) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+        let Node::Leaf(id) = self.build(&state, &mut cwds, &mut histories, &mut names, &mut startup, &mut nodes) else { return };
         let tab = &mut self.tabs[index];
         tab.layout.split(at, id, Direction::Right);
         tab.cwds.extend(cwds);
         tab.histories.extend(histories);
         tab.names.extend(names);
         tab.startup.extend(startup);
+        tab.nodes.extend(nodes);
         tab.pending.push(id);
         tab.focused = id;
         self.start_pending(ctx, index);
@@ -3121,6 +3158,8 @@ struct HeaderClicks {
     mic: bool,
     /// The ⚙ button: the pane's menu (the right-click one) opens under it.
     gear: Option<egui::Response>,
+    /// The Node.js version's badge: its menu opens under it.
+    node: Option<egui::Response>,
     /// The strip itself: focus the pane.
     focus: bool,
     reconnect: bool,
@@ -3297,8 +3336,8 @@ fn health_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, s: &crate::heal
 /// What the strip above a pane shows.
 enum Header<'a> {
     /// A local pane: its working directory (when known and shown), the local servers announced by its
-    /// program, and where its git repository is hosted.
-    Local(Option<&'a Path>, &'a [LocalUrl], Option<&'a git::Forge>),
+    /// program, where its git repository is hosted, and the Node.js version picked for it.
+    Local(Option<&'a Path>, &'a [LocalUrl], Option<&'a git::Forge>, Option<&'a str>),
     /// An SSH pane: the host, with a reconnect button, and the server's health with how old it is.
     Ssh(&'a str, Option<&'a (crate::health::Stats, Duration)>),
 }
@@ -3381,7 +3420,7 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         max_w -= 30.0;
     }
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
-    if let Header::Local(_, urls, forge) = header {
+    if let Header::Local(_, urls, forge, node) = header {
         clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label())).clicked();
         right -= 30.0;
         clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
@@ -3420,6 +3459,18 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             max_w -= 30.0;
         }
         right -= 4.0;
+        // The Node.js version picked: clicked, the menu to change it.
+        if let Some(version) = node {
+            let text = egui::RichText::new(format!("⬢ {}", version.trim_start_matches('v'))).size(11.5).monospace().color(dev::NODE_GREEN);
+            let w = 18.0 + 7.0 * (2 + version.len()) as f32;
+            if right - w > rect.min.x + rect.width() / 3.0 {
+                let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
+                let button = egui::Button::new(text).fill(dev::NODE_GREEN.gamma_multiply(0.14)).stroke(Stroke::new(1.0, dev::NODE_GREEN.gamma_multiply(0.45))).corner_radius(4.0);
+                clicks.node = Some(ui.put(at, button).on_hover_text(t.node_header_tip.replace("{v}", version)).on_hover_cursor(egui::CursorIcon::PointingHand));
+                right -= w + 6.0;
+                max_w = right - rect.min.x - 16.0;
+            }
+        }
         for url in urls.iter().rev() {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
             let button = egui::Button::new(text).fill(theme.ansi[2]).corner_radius(4.0);
@@ -3468,12 +3519,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     let ssh = matches!(header, Header::Ssh(..));
     let (text, tooltip) = match header {
         Header::Ssh(host, _) => (host.to_owned(), None),
-        Header::Local(None, _, _) if name.is_none() => {
+        Header::Local(None, _, _, _) if name.is_none() => {
             clicks.focus = resp.clicked();
             return clicks;
         }
-        Header::Local(None, _, _) => (String::new(), None),
-        Header::Local(Some(cwd), _, _) => {
+        Header::Local(None, _, _, _) => (String::new(), None),
+        Header::Local(Some(cwd), _, _, _) => {
             let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
             let (prefix, rest) = match home.as_deref().and_then(|h| cwd.strip_prefix(h).ok()) {
                 Some(rest) => ("~", rest),
@@ -3691,6 +3742,10 @@ enum PaneAction {
     Restart(PaneId),
     /// Open closed pane k (see `App::closed_panes`) next to this one.
     Reopen(PaneId, usize),
+    /// Use this Node.js version (None: the system's) in the pane.
+    Node(PaneId, Option<String>),
+    /// Show the Node.js versions (the sidebar's Dev category).
+    NodeManage,
 }
 
 /// The pane's folder, from the root. On a server (`ssh`), "~" is its home: known once the file
@@ -3708,7 +3763,8 @@ fn pane_path(term: &Terminal, local: bool, ssh: Option<&SshHost>, files: Option<
 
 /// Right-click menu of a terminal pane.
 #[allow(clippy::too_many_arguments)]
-fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[(Option<String>, String)], action: &mut Option<PaneAction>) {
+/// `node`: for a local pane, the Node.js versions installed and the one it uses.
+fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[(Option<String>, String)], node: Option<(&[String], Option<&str>)>, action: &mut Option<PaneAction>) {
     ui.set_min_width(180.0);
     let shortcut = |mac: &str, other: &str| if cfg!(target_os = "macos") { mac.to_owned() } else { other.to_owned() };
     let mut item = |ui: &mut Ui, enabled: bool, label: &str, hint: String, a: PaneAction| {
@@ -3763,6 +3819,10 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
             ui.close();
         }
     });
+    let (mut node_picked, mut node_manage) = (None, false);
+    if let Some((installed, current)) = node {
+        ui.menu_button("Node.js", |ui| dev::node_menu(ui, t, installed, current, &mut node_picked, &mut node_manage));
+    }
     item(ui, true, t.startup_menu, String::new(), PaneAction::Startup(id));
     if startup {
         item(ui, true, t.startup_relaunch, String::new(), PaneAction::Relaunch(id));
@@ -3785,6 +3845,11 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     item(ui, true, t.close_pane, shortcuts.close_pane.label(), PaneAction::Close(id));
     if picked.is_some() || reopen.is_some() {
         *action = picked.or(reopen);
+    }
+    if let Some(version) = node_picked {
+        *action = Some(PaneAction::Node(id, version));
+    } else if node_manage {
+        *action = Some(PaneAction::NodeManage);
     }
 }
 
@@ -4087,6 +4152,7 @@ impl App {
                 } else {
                     Vec::new()
                 };
+                let node_versions = self.dev.installed.clone();
                 let Some(tab) = self.tabs.get_mut(self.active) else {
                     self.home_page(ui, rect);
                     return;
@@ -4286,12 +4352,13 @@ impl App {
                     }
                     let mic = (claude_running && crate::voice::supported()).then(|| self.dictation.as_ref().filter(|(p, _)| *p == id).map(|(_, d)| (d.level(), d.text())));
                     // Split: always a strip, to drag the pane by.
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || claude.is_some() || mic.is_some() {
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || claude.is_some() || mic.is_some() || tab.nodes.contains_key(&id) {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
-                        let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
+                        let node = tab.nodes.get(&id).cloned();
+                        let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref(), node.as_deref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
                         let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
@@ -4307,7 +4374,17 @@ impl App {
                         }
                         if let Some(gear) = &clicks.gear {
                             let (can_copy, startup) = (term.has_selection(), tab.startup.contains_key(&id));
-                            egui::Popup::menu(gear).show(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, &mut pane_action));
+                            let node = local.then(|| (node_versions.as_slice(), tab.nodes.get(&id).map(String::as_str)));
+                            egui::Popup::menu(gear).show(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &mut pane_action));
+                        }
+                        if let Some(badge) = &clicks.node {
+                            let (mut picked, mut manage) = (None, false);
+                            egui::Popup::menu(badge).show(|ui| dev::node_menu(ui, strings, &node_versions, tab.nodes.get(&id).map(String::as_str), &mut picked, &mut manage));
+                            if let Some(version) = picked {
+                                pane_action = Some(PaneAction::Node(id, version));
+                            } else if manage {
+                                pane_action = Some(PaneAction::NodeManage);
+                            }
                         }
                         // Renaming: the name is typed in the strip itself.
                         if let Some((_, text, fresh)) = self.pane_rename.as_mut().filter(|(p, _, _)| *p == id) {
@@ -4448,7 +4525,8 @@ impl App {
                         }
                         let can_copy = term.has_selection();
                         let startup = tab.startup.contains_key(&id);
-                        resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, &mut pane_action));
+                        let node = local.then(|| (node_versions.as_slice(), tab.nodes.get(&id).map(String::as_str)));
+                        resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &mut pane_action));
                     }
                     if let Some((_, since)) = self.ronnie_show.filter(|(p, _)| *p == id) {
                         let hand = self.metal_hand.get_or_insert_with(|| load_png(ui.ctx(), "metal-hand", include_bytes!("../../assets/icon/metal-hand.png"))).clone();
@@ -4656,6 +4734,15 @@ impl App {
                     Some(PaneAction::Relaunch(id)) => relaunch = Some((id, true)),
                     Some(PaneAction::Restart(id)) => relaunch = Some((id, false)),
                     Some(PaneAction::Reopen(id, k)) => reopen = Some((id, k)),
+                    Some(PaneAction::Node(id, version)) => {
+                        self.set_pane_node(self.active, id, version);
+                        self.focus_terminal = true;
+                    }
+                    Some(PaneAction::NodeManage) => {
+                        self.config.settings.sidebar_category = Category::Dev;
+                        self.config.settings.sidebar_folded = false;
+                        self.dev.show_installed();
+                    }
                     Some(PaneAction::CopyPath(id)) => {
                         let path = tab.panes.get(&id).and_then(|term| pane_path(term, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|s| s.id == h)), tab.files.as_deref()));
                         if let Some(path) = path {
@@ -4843,6 +4930,7 @@ impl eframe::App for App {
     // Claude done are worth telling.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finished_commands(ctx);
+        self.dev_poll();
         self.watch_servers(ctx);
     }
 

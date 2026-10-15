@@ -33,6 +33,10 @@ pub enum Layout {
         /// Commands typed in the pane when it starts (one a line), and again when relaunched.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         startup: Option<String>,
+        /// The Node.js version its shell uses ("v22.11.0", installed by Ronnie: see `crate::node`);
+        /// none: the system's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
     },
     Split {
         axis: Axis,
@@ -92,7 +96,7 @@ impl Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout::Pane { cwd: None, history: None, name: None, startup: None }
+        Layout::Pane { cwd: None, history: None, name: None, startup: None, node: None }
     }
 }
 
@@ -620,6 +624,9 @@ pub struct Settings {
     /// What was played in the half-day of work under way (see `crate::playtime`).
     #[serde(default)]
     pub game_usage: GameUsage,
+    /// The Node.js version new terminals use (see `crate::node`); none: the system's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_default: Option<String>,
 }
 
 /// The games played in a half-day of work.
@@ -650,10 +657,12 @@ pub enum Category {
     Music,
     Notes,
     Games,
+    /// Development tools: the Node.js versions.
+    Dev,
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [Category::Local, Category::Ssh, Category::Db, Category::Music, Category::Notes, Category::Games];
+    pub const ALL: [Category; 7] = [Category::Local, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Games];
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
     /// their usual place.
@@ -1053,7 +1062,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, bar_arrows: true, game_usage: GameUsage::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, typing_scores: Vec::new(), blob_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, bar_arrows: true, game_usage: GameUsage::default(), node_default: None }
     }
 }
 
@@ -1082,7 +1091,7 @@ pub fn config_dir() -> Option<PathBuf> {
     .clone()
 }
 
-/// Empties Ronnie's config directory (the instance lock excepted). Nothing is deleted: the files move
+/// Empties Ronnie's config directory (the instance lock and the Node.js versions excepted). Nothing is deleted: the files move
 /// to a sibling "<dir>-backup-<time>" directory, returned, in case the reset was a mistake.
 pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     let Some(dir) = config_dir() else { return Ok(None) };
@@ -1091,7 +1100,8 @@ pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     let backup = dir.with_file_name(name);
     create_private_dir(&backup)?;
     for entry in fs::read_dir(&dir)?.flatten() {
-        if entry.file_name() == "instance.lock" {
+        // The Node.js versions installed are tools, not configuration: they stay.
+        if entry.file_name() == "instance.lock" || entry.file_name() == "node" {
             continue;
         }
         fs::rename(entry.path(), backup.join(entry.file_name()))?;
@@ -1099,12 +1109,13 @@ pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
-/// Copies `from` into `to` (files and subdirectories), skipping the instance lock.
+/// Copies `from` into `to` (files and subdirectories), skipping the instance lock and the Node.js
+/// versions (hundreds of MB each, with symbolic links a copy would break).
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)?.flatten() {
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        if entry.file_name() == "instance.lock" {
+        if entry.file_name() == "instance.lock" || entry.file_name() == "node" {
             continue;
         }
         if src.is_dir() {
@@ -1349,8 +1360,8 @@ mod tests {
                 layout: Layout::Split {
                     axis: Axis::Horizontal,
                     ratio: 0.3,
-                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()), name: Some("api".into()), startup: Some("cd /tmp\nnpm run dev".into()) }),
-                    b: Box::new(Layout::Pane { cwd: None, history: None, name: None, startup: None }),
+                    a: Box::new(Layout::Pane { cwd: Some("/tmp".into()), history: Some(Uuid::new_v4()), name: Some("api".into()), startup: Some("cd /tmp\nnpm run dev".into()), node: Some("v22.11.0".into()) }),
+                    b: Box::new(Layout::Pane { cwd: None, history: None, name: None, startup: None, node: None }),
                 },
                 focused: 1,
                 root: Some("/tmp/projet".into()),

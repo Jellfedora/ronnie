@@ -35,12 +35,29 @@ function global:RonnieUrl([string]$text) {
     ($text.Substring(0, [Math]::Min($text.Length, 200)) -split '/' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'
 }
 
+# The Node.js version picked in Ronnie for this terminal: its folder first in the PATH, followed at
+# each prompt and once a command line is typed (a version changed in Ronnie applies to the next command).
+$global:RonnieNodeBin = ''
+function global:RonnieNode {
+    if (-not $env:RONNIE_NODE_FILE) { return }
+    $bin = ''
+    try { if (Test-Path -LiteralPath $env:RONNIE_NODE_FILE) { $bin = ([IO.File]::ReadAllText($env:RONNIE_NODE_FILE)).Trim() } } catch {}
+    $parts = @($env:PATH -split ';' | Where-Object { $_ })
+    if ($bin -eq $global:RonnieNodeBin -and (-not $bin -or $parts[0] -eq $bin)) { return }
+    $parts = @($parts | Where-Object { $_ -ne $global:RonnieNodeBin -and $_ -ne $bin })
+    if ($bin) { $parts = @($bin) + $parts }
+    $env:PATH = $parts -join ';'
+    $global:RonnieNodeBin = $bin
+}
+RonnieNode
+
 # Command marks: the command line once Enter is pressed...
 $global:RonnieRunning = $false
 if (Test-Path Function:\PSConsoleHostReadLine) {
     $global:RonnieReadLine = $function:PSConsoleHostReadLine
     function global:PSConsoleHostReadLine {
         $line = & $global:RonnieReadLine
+        RonnieNode
         if ($line -and $line.Trim()) {
             $global:RonnieRunning = $true
             [Console]::Write("$([char]27)]133;C;cmdline_url=$(RonnieUrl $line)$([char]7)")
@@ -54,6 +71,7 @@ $global:RonniePrompt = $function:prompt
 function global:prompt {
     $ok = $global:?
     $code = if ($ok) { 0 } elseif ($global:LASTEXITCODE) { $global:LASTEXITCODE } else { 1 }
+    RonnieNode
     $e = [char]27
     $bel = [char]7
     $marks = ''

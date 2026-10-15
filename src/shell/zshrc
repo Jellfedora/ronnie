@@ -46,6 +46,24 @@ _ronnie_precmd() {
 preexec_functions=(_ronnie_preexec $preexec_functions)
 precmd_functions=(_ronnie_precmd $precmd_functions)
 
+# The Node.js version picked in Ronnie for this terminal: its folder first in the PATH, followed at
+# each prompt and before each command (a version changed in Ronnie applies to the next command).
+if [[ -n $RONNIE_NODE_FILE ]]; then
+  typeset -g _ronnie_node_bin=
+  _ronnie_node() {
+    local bin=
+    [[ -r $RONNIE_NODE_FILE ]] && bin=$(<$RONNIE_NODE_FILE)
+    [[ $bin == "$_ronnie_node_bin" && ( -z $bin || $path[1] == "$bin" ) ]] && return 0
+    [[ -n $_ronnie_node_bin ]] && path=(${path:#${(b)_ronnie_node_bin}})
+    [[ -n $bin ]] && path=($bin ${path:#${(b)bin}})
+    typeset -g _ronnie_node_bin=$bin
+    rehash
+  }
+  _ronnie_node
+  preexec_functions+=(_ronnie_node)
+  precmd_functions=(_ronnie_precmd _ronnie_node ${precmd_functions:#_ronnie_precmd})
+fi
+
 # The line being typed, left of the cursor (OSC 1337;RonnieInput), for Ronnie's path suggestions: sent
 # when it changes, before each redraw of the line.
 _ronnie_input() {

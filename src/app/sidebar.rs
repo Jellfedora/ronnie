@@ -1412,6 +1412,7 @@ impl App {
             // Retired: the file tree is in the terminals' panel.
             Category::Files => {}
             Category::Games => self.games_section(ui, left, row_w, y),
+            Category::Dev => self.dev_section(ui, left, row_w, y),
         }
     }
 
@@ -1663,6 +1664,7 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
         Category::Music => t.music_nav,
         Category::Notes => t.notes,
         Category::Games => t.cat_games,
+        Category::Dev => t.cat_dev,
     }
 }
 
@@ -1676,6 +1678,7 @@ pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Ca
         Category::Music => super::music::paint_note(painter, c, color),
         Category::Notes => super::notes::paint_notes_icon(painter, c, color),
         Category::Games => paint_gamepad_icon(painter, c, color),
+        Category::Dev => super::dev::paint_dev_icon(painter, c, color),
     }
 }
 

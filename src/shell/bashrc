@@ -80,3 +80,33 @@ else
 fi
 # PS0 (bash 4.4+) is shown once a command line is read, before it runs.
 PS0='$(_ronnie_started)'"$PS0"
+
+# The Node.js version picked in Ronnie for this terminal: its folder first in the PATH, followed at
+# each prompt and, when no other DEBUG trap is set, before the command line (a version changed in
+# Ronnie then applies to the next command).
+if [[ -n $RONNIE_NODE_FILE ]]; then
+  _ronnie_node_bin=
+  _ronnie_node() {
+    local bin= p
+    [[ -r $RONNIE_NODE_FILE ]] && IFS= read -r bin < "$RONNIE_NODE_FILE"
+    [[ $bin == "$_ronnie_node_bin" && ( -z $bin || $PATH == "$bin" || $PATH == "$bin":* ) ]] && return 0
+    p=":$PATH:"
+    [[ -n $_ronnie_node_bin ]] && p=${p//":$_ronnie_node_bin:"/:}
+    [[ -n $bin ]] && p=":$bin${p//":$bin:"/:}"
+    p=${p#:}
+    PATH=${p%:}
+    _ronnie_node_bin=$bin
+    hash -r
+  }
+  _ronnie_node
+  # Armed last thing before the prompt: the trap's next run is for the command line typed.
+  _ronnie_node_arm() { _ronnie_node; _ronnie_node_armed=1; }
+  if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+    PROMPT_COMMAND+=(_ronnie_node_arm)
+  else
+    PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_ronnie_node_arm"
+  fi
+  if [[ -z $(trap -p DEBUG) ]]; then
+    trap '[[ -n $_ronnie_node_armed ]] && { _ronnie_node_armed=; _ronnie_node; }' DEBUG
+  fi
+fi

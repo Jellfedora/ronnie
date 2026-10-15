@@ -15,6 +15,7 @@ mod i18n;
 mod live;
 mod log;
 mod media_keys;
+mod node;
 mod notify;
 mod openwith;
 #[cfg(target_os = "macos")]

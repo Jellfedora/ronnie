@@ -120,9 +120,27 @@ fn powershell_command(history: Option<&Path>) -> CommandBuilder {
 /// and bash, and its own history in `history`.
 pub fn local_command(history: Option<&Path>) -> CommandBuilder {
     #[cfg(windows)]
-    return powershell_command(history);
+    let mut cmd = powershell_command(history);
     #[cfg(not(windows))]
-    local_unix_command(history)
+    let mut cmd = local_unix_command(history);
+    use_node(&mut cmd, history);
+    cmd
+}
+
+/// The Node.js version picked for the pane (see `node`): its file, named as the pane's history, for
+/// the integration to follow it, and its folder first in the PATH (for shells without integration).
+fn use_node(cmd: &mut CommandBuilder, history: Option<&Path>) {
+    let Some(id) = history.and_then(Path::file_name).and_then(|n| n.to_str()).and_then(|n| Uuid::parse_str(n).ok()) else { return };
+    if let Some(file) = crate::node::pane_file(id) {
+        cmd.env("RONNIE_NODE_FILE", file);
+    }
+    if let Some(bin) = crate::node::pane_bin(id) {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let paths = std::iter::once(PathBuf::from(bin)).chain(std::env::split_paths(&path));
+        if let Ok(joined) = std::env::join_paths(paths) {
+            cmd.env("PATH", joined);
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -200,8 +218,10 @@ pub fn read_history(path: &Path) -> Vec<String> {
     entries.into_iter().rev().filter(|e| seen.insert(e.clone())).collect()
 }
 
-/// Deletes the history and saved content of terminals that no longer exist (not in `keep`).
+/// Deletes the history, saved content and Node.js choice of terminals that no longer exist (not in
+/// `keep`).
 pub fn forget_others(keep: &HashSet<Uuid>) {
+    crate::node::forget_others(keep);
     let scrollback = crate::config::config_dir().map(|d| d.join("scrollback"));
     let dirs = [history_dir(), scrollback].into_iter().flatten().filter_map(|d| std::fs::read_dir(d).ok());
     for entry in dirs.flatten().flatten() {
