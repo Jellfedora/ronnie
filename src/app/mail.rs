@@ -525,7 +525,9 @@ impl App {
                 ui.painter().rect_filled(rect, 8.0, fill);
                 let mut check = picked;
                 let check_rect = Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.min.y + 19.0), Vec2::splat(18.0));
-                if ui.put(check_rect, egui::Checkbox::without_text(&mut check)).changed() {
+                // In a child of its own: `put` would move the list's cursor up to under the box.
+                let mut boxed = ui.new_child(egui::UiBuilder::new().max_rect(check_rect).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
+                if boxed.add(egui::Checkbox::without_text(&mut check)).changed() {
                     if check {
                         self.mail.selected.insert(mail.id.clone());
                     } else {
