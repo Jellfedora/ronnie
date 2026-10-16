@@ -42,6 +42,7 @@ mod perms;
 mod sql;
 mod upload;
 mod dev;
+mod arcade;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
@@ -302,6 +303,7 @@ struct WindowSlot {
     toast_rects: Vec<Rect>,
     home: Option<String>,
     home_game: bool,
+    games_hub: bool,
     /// Which game: Speed Metal or Puissance 4.
     home_which: four::HomeGame,
     game: game::Game,
@@ -521,6 +523,8 @@ pub struct App {
     home: Option<String>,
     /// The home page shows the typing game (three clicks on the logo).
     home_game: bool,
+    /// With `home_game`: the games' page, each game on it, rather than one of them.
+    games_hub: bool,
     /// Which game: Speed Metal or Puissance 4.
     home_which: four::HomeGame,
     game: game::Game,
@@ -1170,6 +1174,7 @@ impl App {
             startup_edit: None,
             home: None,
             home_game: false,
+            games_hub: false,
             home_which: four::HomeGame::SpeedMetal,
             game: game::Game::default(),
             ronnie_show: None,
@@ -1626,7 +1631,7 @@ impl App {
 
     /// `game` shown in another window (a game shows in one window at a time): brings that window to the front.
     fn show_game_elsewhere(&mut self, game: four::HomeGame) -> bool {
-        let Some(w) = self.others.iter().chain(&self.new_windows).find(|w| w.home.is_some() && w.home_game && w.home_which == game) else { return false };
+        let Some(w) = self.others.iter().chain(&self.new_windows).find(|w| w.home.is_some() && w.home_game && !w.games_hub && w.home_which == game) else { return false };
         self.ctx.send_viewport_cmd_to(w.viewport, ViewportCommand::Focus);
         true
     }
@@ -1634,10 +1639,10 @@ impl App {
     /// Opens `game` in a new window, taken from the window that showed it (which goes back to its home page,
     /// or closes when it has nothing else).
     fn game_to_new_window(&mut self, game: four::HomeGame) {
-        if self.home_game && self.home_which == game {
+        if self.home_game && !self.games_hub && self.home_which == game {
             self.home_game = false;
         }
-        for w in self.others.iter_mut().filter(|w| w.home_game && w.home_which == game) {
+        for w in self.others.iter_mut().filter(|w| w.home_game && !w.games_hub && w.home_which == game) {
             w.home_game = false;
         }
         self.new_window(|app| app.open_home_game(game));
@@ -1814,6 +1819,7 @@ impl App {
         swap(&mut self.toast_rects, &mut slot.toast_rects);
         swap(&mut self.home, &mut slot.home);
         swap(&mut self.home_game, &mut slot.home_game);
+        swap(&mut self.games_hub, &mut slot.games_hub);
         swap(&mut self.home_which, &mut slot.home_which);
         swap(&mut self.game, &mut slot.game);
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);

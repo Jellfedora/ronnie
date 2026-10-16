@@ -7,6 +7,14 @@ impl App {
     /// The home page: what just closed, the typing game, tips scrolling below (the sidebar leads back
     /// to the tabs).
     pub(super) fn home_page(&mut self, ui: &mut Ui, rect: Rect) {
+        // The games' page: each game, to pick one.
+        if self.home_game && self.games_hub {
+            self.game.leave();
+            self.blob_leave();
+            self.fold_for_game(false);
+            self.arcade_page(ui, rect);
+            return;
+        }
         if !self.home_game || self.home_which != super::four::HomeGame::SpeedMetal {
             self.game.leave();
             if self.home_game && self.home_which == super::four::HomeGame::Blob {
@@ -125,6 +133,7 @@ impl App {
             self.go_home(None);
         }
         self.home_game = true;
+        self.games_hub = false;
         self.home_which = super::four::HomeGame::SpeedMetal;
         self.music_page = false;
         self.notes_page = false;
@@ -188,7 +197,7 @@ impl App {
             },
             Category::Notes => self.open_notes(),
             Category::Music => self.open_music_page(None),
-            Category::Games => self.open_home_game(self.home_which),
+            Category::Games => self.open_arcade(),
             Category::Dev | Category::Files => {}
         }
     }
@@ -310,7 +319,9 @@ impl App {
             if resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 // What is shown follows: the category's own screen, never one of another's left
                 // behind (on the one already shown, the click folds the sidebar).
-                let elsewhere = self.shows_other_category(category);
+                // In a game, the Games icon leads back to the games' page.
+                let in_game = category == Category::Games && self.home.is_some() && self.home_game && !self.games_hub;
+                let elsewhere = in_game || self.shows_other_category(category);
                 if active && !elsewhere {
                     self.config.settings.sidebar_folded = true;
                 } else {
@@ -347,23 +358,12 @@ impl App {
         let painter = ui.painter().clone();
         paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &theme);
         *y += SECTION_HEADER_H;
-        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
-        let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
-        let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
         let (mut open, mut new_window) = (None, None);
-        let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
-        // Played enough this half-day of work: when it's back, in place of the note.
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)];
-        for (game, _, note) in &mut games {
-            if let Some(p) = self.game_locked(*game) {
-                *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
-            }
-        }
-        for (game, name, note) in games {
+        for (game, name, note) in self.games_list() {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
             *y += slot.height() + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("game", game as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let active = self.home.is_some() && self.home_game && self.home_which == game;
+            let active = self.home.is_some() && self.home_game && !self.games_hub && self.home_which == game;
             paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
             let icon = Pos2::new(slot.min.x + 17.0, slot.center().y);
             match game {
@@ -385,6 +385,30 @@ impl App {
         } else if let Some(game) = open.filter(|&g| !self.show_game_elsewhere(g)) {
             self.open_home_game(game);
         }
+    }
+
+    /// The games, with their name and a note: the best score of Speed Metal and Ronnie.io, the
+    /// players online at Puissance 4; when played enough this half-day of work, when it's back.
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 3] {
+        use super::four::HomeGame;
+        let t = self.t();
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
+        let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
+        let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
+        let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)];
+        for (game, _, note) in &mut games {
+            if let Some(p) = self.game_locked(*game) {
+                *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
+            }
+        }
+        games
+    }
+
+    /// The games' page, on this window's home page.
+    pub(super) fn open_arcade(&mut self) {
+        self.open_game();
+        self.games_hub = true;
     }
 
     /// Opens `game` on this window's home page.
