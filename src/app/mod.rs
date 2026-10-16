@@ -2129,7 +2129,7 @@ impl App {
             let accent = self.theme.accent;
             let mark = if toast.ok { accent } else { self.theme.ansi[1] };
             let hovered = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.toast_rects.get(k).is_some_and(|r| r.contains(p)));
-            let area = egui::Area::new(egui::Id::new(("toast", k))).order(egui::Order::Foreground).pivot(align).fixed_pos(Pos2::new(x, edge)).show(ctx, |ui| {
+            let area = egui::Area::new(egui::Id::new(("toast", k))).sense(Sense::click()).order(egui::Order::Foreground).pivot(align).fixed_pos(Pos2::new(x, edge)).show(ctx, |ui| {
                 ui.set_opacity(alpha);
                 let frame = Frame::popup(ui.style()).fill(self.theme.chrome_bg).stroke(Stroke::new(1.0, accent.gamma_multiply(if hovered { 0.9 } else { 0.45 }))).corner_radius(12.0).inner_margin(egui::Margin { left: 18, right: 14, top: 12, bottom: 14 });
                 let shown = frame.show(ui, |ui| {
@@ -2157,7 +2157,8 @@ impl App {
                 ui.painter().rect_filled(bar, 1.0, accent.gamma_multiply(0.6));
             });
             rects[k] = area.response.rect;
-            let resp = area.response.interact(Sense::click());
+            // Clicked through the area's own sense: interacting again with its id is a double use.
+            let resp = area.response.clone();
             hovered_any |= resp.hovered();
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 go = Some((k, toast.tab, toast.mail.clone()));
