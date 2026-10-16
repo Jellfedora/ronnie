@@ -1434,6 +1434,11 @@ impl App {
         if icon_button(ui, ui.painter(), fold_rect, "fold-sidebar", &self.theme, paint_fold).on_hover_text(format!("{}  ({})", t.fold_sidebar, self.config.settings.shortcuts.toggle_sidebar.label())).clicked() {
             self.config.settings.sidebar_folded = true;
         }
+        // Jurassic Park: ferns at the foot of the panel, drawn first: the update and music cards and
+        // the list go over them.
+        if self.theme.jurassic {
+            super::jurassic::ferns(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 110.0), Pos2::new(bar.max.x - 1.0, footer_top)), &self.theme);
+        }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let card_top = self.music_card(ui, left, row_w, card_top);
         let card_top = if self.category() == Category::Games { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
@@ -1450,8 +1455,7 @@ impl App {
         let settings = ui.interact(button, ui.id().with("settings-btn"), Sense::click());
         let hot = settings.hovered() || self.settings_dialog;
         if self.theme.jurassic {
-            // Jurassic Park: ferns at the foot of the panel, safety stripes above the settings.
-            super::jurassic::ferns(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 110.0), Pos2::new(bar.max.x - 1.0, footer_top)), &self.theme);
+            // Jurassic Park: safety stripes above the settings (the ferns are under the cards).
             super::jurassic::hazard(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
         } else {
             ui.painter().hline(bar.min.x + 12.0..=bar.max.x - 12.0, footer_top, Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.8)));
