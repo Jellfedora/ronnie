@@ -34,6 +34,8 @@ mod guard;
 mod issues;
 mod jurassic;
 mod library;
+mod mail;
+mod mailhtml;
 mod loading;
 mod motion;
 mod music;
@@ -400,6 +402,7 @@ pub struct App {
     music_volume_changed: bool,
     /// The sidebar's Dev category: the Node.js versions.
     dev: dev::Dev,
+    mail: mail::MailCatcher,
     /// The music page: shown instead of the tabs (in this window), and what it holds (for all).
     music_page: bool,
     /// The Dev page (the Node.js versions and those of the terminals): shown instead of the tabs.
@@ -1130,6 +1133,7 @@ impl App {
             music: music::Music::default(),
             music_volume_changed: false,
             dev: dev::Dev::new(),
+            mail: mail::MailCatcher::default(),
             music_page: false,
             dev_page: false,
             notes_page: false,
@@ -1304,7 +1308,7 @@ impl App {
         if cfg!(debug_assertions) {
             if std::env::var_os("RONNIE_DEMO_TOAST").is_some() {
                 app.splash = None;
-                app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now() });
+                app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now(), mail: None });
             }
             // Puissance 4: "lobby", or the columns played against the computer ("3342"...).
             if let Ok(four) = std::env::var("RONNIE_OPEN_FOUR") {
@@ -1952,7 +1956,7 @@ impl App {
             // system's, or both, as chosen.
             let body = format!("{command}\n{}  ·  {duration}", tab.title());
             if focused && !shown && settings.notify_style.in_app() {
-                self.toasts.push(Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now() });
+                self.toasts.push(Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None });
             }
             if focused && !shown && settings.notify_style.system() {
                 crate::notify::send(&title, &body);
@@ -2008,7 +2012,7 @@ impl App {
             let body = t.health_disk_full_body.replace("{host}", &name).replace("{m}", &mount).replace("{p}", &format!("{percent:.0}"));
             let tab = self.tabs.iter().position(|t| t.ssh == Some(id));
             if let Some(tab) = tab.filter(|_| focused && style.in_app()) {
-                self.toasts.push(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now() });
+                self.toasts.push(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now(), mail: None });
             }
             if !focused || style.system() || tab.is_none() {
                 crate::notify::send(t.health_disk_full, &body);
@@ -2058,7 +2062,7 @@ impl App {
             };
             let style = self.config.settings.notify_style;
             if focused && style.in_app() {
-                self.toasts.push(Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now() });
+                self.toasts.push(Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None });
             }
             if !focused || style.system() {
                 crate::notify::send(title, &body);
@@ -2074,7 +2078,7 @@ impl App {
         let body = format!("{}\n{}  ·  12 s", t.notify_test_command, self.tabs.get(self.active).map_or("Ronnie", |t| t.title()));
         let style = self.config.settings.notify_style;
         if style.in_app() {
-            self.toasts.push(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now() });
+            self.toasts.push(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now(), mail: None });
         }
         if style.system() {
             crate::notify::send(t.command_done, &body);
@@ -2101,6 +2105,7 @@ impl App {
         let mut go = None;
         let mut hovered_any = false;
         let t_go_to_tab = self.t().go_to_tab;
+        let t_see_mail = self.t().mail_see;
         let mut rects = vec![Rect::NOTHING; self.toasts.len()];
         for (k, toast) in self.toasts.iter().enumerate().rev() {
             let width = 320.0;
@@ -2141,7 +2146,7 @@ impl App {
                     ui.add(egui::Label::new(egui::RichText::new(&toast.body).size(12.5).color(self.theme.text_muted)).wrap());
                     if hovered {
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new(format!("{}  →", t_go_to_tab)).size(11.5).color(accent));
+                        ui.label(egui::RichText::new(format!("{}  →", if toast.mail.is_some() { t_see_mail } else { t_go_to_tab })).size(11.5).color(accent));
                     }
                 });
                 // A strip of the accent on the left, and the time left at the bottom.
@@ -2155,7 +2160,7 @@ impl App {
             let resp = area.response.interact(Sense::click());
             hovered_any |= resp.hovered();
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                go = Some((k, toast.tab));
+                go = Some((k, toast.tab, toast.mail.clone()));
             }
             // The next one stacks away from the edge.
             let step = area.response.rect.height() + 10.0;
@@ -2168,9 +2173,12 @@ impl App {
             }
         }
         self.toast_rects = rects;
-        if let Some((k, tab)) = go {
+        if let Some((k, tab, mail)) = go {
             self.toasts.remove(k);
-            self.select(tab);
+            match mail {
+                Some(id) => self.open_mail(&id),
+                None => self.select(tab),
+            }
         }
         ctx.request_repaint_after(Duration::from_millis(50));
     }
@@ -2867,6 +2875,8 @@ struct Toast {
     /// The tab it leads to.
     tab: usize,
     at: std::time::Instant,
+    /// A mail caught: leads to it instead (empty: to the mails).
+    mail: Option<String>,
 }
 
 /// "45 s", "2 min 14 s", "1 h 03 min".
@@ -4954,6 +4964,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finished_commands(ctx);
         self.dev_poll();
+        self.mail_poll(ctx);
         self.watch_servers(ctx);
     }
 
@@ -5030,6 +5041,7 @@ impl eframe::App for App {
         self.save_scrollbacks(None, false);
         self.sync();
         crate::askpass::cleanup();
+        self.mail_stop();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

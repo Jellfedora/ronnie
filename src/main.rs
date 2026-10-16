@@ -14,6 +14,7 @@ mod health;
 mod i18n;
 mod live;
 mod log;
+mod mailbox;
 mod media_keys;
 mod node;
 mod notify;

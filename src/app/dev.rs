@@ -13,15 +13,17 @@ const LIST_MAX: usize = 80;
 /// The published versions, once fetched (or why they couldn't be).
 type Fetched = Result<Vec<Release>, String>;
 
-/// A tool of the Dev category, with a page of its own (PHP, a mail catcher… to come).
+/// A tool of the Dev category, with a page of its own (PHP… to come).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(super) enum DevTool {
     #[default]
     Node,
+    /// The mail catcher (`super::mail`).
+    Mail,
 }
 
 impl DevTool {
-    pub const ALL: [DevTool; 1] = [DevTool::Node];
+    pub const ALL: [DevTool; 2] = [DevTool::Node, DevTool::Mail];
 }
 
 /// What the Dev panel knows and does.
@@ -144,7 +146,7 @@ impl App {
         self.dev.installed = node::installed();
     }
 
-    /// The "Dev" category: its tools, one a row (Node.js for now); a click shows the tool's page.
+    /// The "Dev" category: its tools, one a row; a click shows the tool's page.
     pub(super) fn dev_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
         let t = self.t();
         let theme = self.theme.clone();
@@ -163,12 +165,22 @@ impl App {
                 DevTool::Node => {
                     paint_node_icon(&painter, icon, NODE_GREEN);
                     let n = self.dev.installed.len();
-                    ("Node.js", (n > 0).then(|| if n == 1 { t.node_version_one.to_owned() } else { t.node_versions.replace("{n}", &n.to_string()) }))
+                    ("Node.js", (n > 0).then(|| (if n == 1 { t.node_version_one.to_owned() } else { t.node_versions.replace("{n}", &n.to_string()) }, theme.text_muted.gamma_multiply(0.85))))
+                }
+                // Running: its unread mails (or its port); stopped: nothing.
+                DevTool::Mail => {
+                    super::mail::paint_mail_icon(&painter, icon, super::mail::MAIL_BLUE);
+                    let unread = self.mail.unread();
+                    let note = self.mail.running().map(|port| match unread {
+                        0 => (t.mail_port_note.replace("{p}", &port.to_string()), theme.text_muted.gamma_multiply(0.85)),
+                        n => (t.mail_unread.replace("{n}", &n.to_string()), theme.accent),
+                    });
+                    (t.mail_tool, note)
                 }
             };
             painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
-            if let Some(note) = note {
-                painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85));
+            if let Some((note, color)) = note {
+                painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), color);
             }
             if resp.clicked() {
                 open = Some(tool);
@@ -190,15 +202,15 @@ impl App {
         self.notes_page = false;
         self.home_game = false;
         self.dev.show_installed();
-        if self.dev.releases.as_ref().is_none_or(Result::is_err) && self.dev.fetching.is_none() {
+        if self.dev.tool == DevTool::Node && self.dev.releases.as_ref().is_none_or(Result::is_err) && self.dev.fetching.is_none() {
             let ctx = self.ctx.clone();
             self.dev.fetch(&ctx);
         }
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
 
-    /// The Dev page: Node.js, the versions installed and those to install side by side, and where a
-    /// terminal's version is picked.
+    /// The Dev page: the tool picked in the sidebar (Node.js: the versions installed and those to
+    /// install side by side, and where a terminal's version is picked; the mail catcher).
     pub(super) fn dev_page_ui(&mut self, ui: &mut Ui, rect: Rect) {
         let t = self.t();
         let theme = self.theme.clone();
@@ -216,6 +228,10 @@ impl App {
         let (title, _) = ui.allocate_exact_size(Vec2::new(width, 56.0), Sense::hover());
         paint_metal(ui.painter(), Pos2::new(title.min.x, title.center().y), Align2::LEFT_CENTER, t.cat_dev, 44.0, theme.accent, 1.0);
         ui.label(egui::RichText::new(t.dev_subtitle).size(13.5).color(theme.text_muted));
+        if self.dev.tool == DevTool::Mail {
+            ui.add_space(18.0);
+            return self.mail_page_ui(ui, t, theme);
+        }
         // Where a terminal's version is picked.
         ui.label(egui::RichText::new(t.node_where).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));
         ui.add_space(18.0);
