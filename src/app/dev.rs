@@ -215,25 +215,21 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         ui.painter().rect_filled(rect, 0.0, theme.bg);
-        // The whole page, margins aside: the card fills what the title leaves, its lists scroll.
+        // The whole page, margins aside: the card fills it, its lists scroll.
         let margin = if rect.width() > 700.0 { 40.0 } else { 16.0 };
         let area = Rect::from_min_max(rect.min + Vec2::new(margin, 24.0), rect.max - Vec2::new(margin, 24.0));
         let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(area));
-        let width = area.width();
-        self.dev_page_content(&mut inner, width, t, &theme);
+        self.dev_page_content(&mut inner, t, &theme);
     }
 
-    fn dev_page_content(&mut self, ui: &mut Ui, width: f32, t: &'static Strings, theme: &Theme) {
-        // The title, in the logo's font.
-        let (title, _) = ui.allocate_exact_size(Vec2::new(width, 56.0), Sense::hover());
-        paint_metal(ui.painter(), Pos2::new(title.min.x, title.center().y), Align2::LEFT_CENTER, t.cat_dev, 44.0, theme.accent, 1.0);
+    /// No title: the tool's card takes the whole height.
+    fn dev_page_content(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
         if self.dev.tool == DevTool::Mail {
-            ui.add_space(18.0);
             return self.mail_page_ui(ui, t, theme);
         }
         // Where a terminal's version is picked.
         ui.label(egui::RichText::new(t.node_where).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));
-        ui.add_space(18.0);
+        ui.add_space(12.0);
 
         let card = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
             let height = ui.available_height() - 40.0;
