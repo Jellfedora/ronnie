@@ -146,6 +146,17 @@ impl App {
         if shown.contains(&picked) { picked } else { shown[0] }
     }
 
+    /// The tab of `category` to show again: the active one if it is of it, else the last one of it.
+    fn last_tab_of(&self, category: Category) -> Option<usize> {
+        if !matches!(category, Category::Local | Category::Ssh | Category::Db) {
+            return None;
+        }
+        if self.active < self.tabs.len() && self.tab_category(self.active) == category {
+            return Some(self.active);
+        }
+        (0..self.tabs.len()).rev().find(|&i| self.tab_category(i) == category)
+    }
+
     /// The category of a tab.
     fn tab_category(&self, i: usize) -> Category {
         match self.tabs.get(i) {
@@ -250,7 +261,14 @@ impl App {
             }
             let hint = if active { format!("{}  ·  {}", category_name(t, category), t.fold_sidebar) } else { category_name(t, category).to_owned() };
             if resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                if active {
+                // A page over the tabs (home, a game, the notes, the music): the terminals, the SSH or
+                // the databases show their tab again rather than only their list.
+                let page = self.home.is_some() || self.notes_page || self.music_page;
+                let tab = if page { self.last_tab_of(category) } else { None };
+                if let Some(index) = tab {
+                    self.select(index);
+                    self.config.settings.sidebar_category = category;
+                } else if active {
                     self.config.settings.sidebar_folded = true;
                 } else {
                     self.config.settings.sidebar_category = category;
