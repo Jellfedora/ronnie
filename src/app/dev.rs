@@ -333,7 +333,7 @@ impl App {
                     painter.text(right, Align2::RIGHT_CENTER, "✓", FontId::proportional(12.0), NODE_GREEN);
                 }
                 None => {
-                    let text = if resp.hovered() { format!("⬇  {}", t.node_do_install) } else { release.date.clone() };
+                    let text = if resp.hovered() { format!("↓  {}", t.node_do_install) } else { release.date.clone() };
                     painter.text(right, Align2::RIGHT_CENTER, text, FontId::proportional(11.0), if resp.hovered() { theme.accent } else { theme.text_muted.gamma_multiply(0.7) });
                 }
             }
@@ -454,10 +454,10 @@ impl App {
                         if ui.add(button).clicked() {
                             if confirming { delete = Some(version.clone()) } else { self.dev.confirm_delete = Some(version.clone()) }
                         }
-                        if ui.add(egui::Button::new(egui::RichText::new("📂").size(12.0)).frame_when_inactive(false)).on_hover_text(t.open_location).clicked() {
+                        if ui.add(egui::Button::new(egui::RichText::new("📁").size(12.0)).frame_when_inactive(false)).on_hover_text(t.open_location).clicked() {
                             open = Some(version.clone());
                         }
-                        let star = egui::RichText::new(if default { format!("★ {}", t.node_default_short) } else { format!("☆ {}", t.node_default_short) }).size(12.0).color(if default { theme.accent } else { theme.text_muted });
+                        let star = egui::RichText::new(format!("★ {}", t.node_default_short)).size(12.0).color(if default { theme.accent } else { theme.text_muted.gamma_multiply(0.7) });
                         if ui.add(egui::Button::new(star).frame_when_inactive(default).corner_radius(5.0)).on_hover_text(if default { t.node_unset_default } else { t.node_set_default }).clicked() {
                             set_default = Some((!default).then(|| version.clone()));
                         }
@@ -540,7 +540,7 @@ impl App {
                                 ui.label(egui::RichText::new(format!("✓ {}", t.node_installed_badge)).size(11.5).color(NODE_GREEN));
                             }
                             None => {
-                                if ui.add(egui::Button::new(egui::RichText::new(format!("⬇  {}", t.node_do_install)).size(12.0)).corner_radius(5.0)).clicked() {
+                                if ui.add(egui::Button::new(egui::RichText::new(format!("↓  {}", t.node_do_install)).size(12.0)).corner_radius(5.0)).clicked() {
                                     install = Some(release.version.clone());
                                 }
                             }
@@ -622,7 +622,12 @@ pub(super) const NODE_GREEN: Color32 = Color32::from_rgb(0x5f, 0xa0, 0x4e);
 
 /// A hexagon, standing on a point: Node.js.
 pub(super) fn paint_node_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    let points: Vec<Pos2> = (0..6).map(|k| c + Vec2::angled(std::f32::consts::FRAC_PI_6 * (2 * k + 1) as f32) * 6.5).collect();
+    paint_node_icon_sized(painter, c, color, 6.5);
+}
+
+/// The hexagon, of `radius`.
+pub(super) fn paint_node_icon_sized(painter: &egui::Painter, c: Pos2, color: Color32, radius: f32) {
+    let points: Vec<Pos2> = (0..6).map(|k| c + Vec2::angled(std::f32::consts::FRAC_PI_6 * (2 * k + 1) as f32) * radius).collect();
     painter.add(egui::Shape::closed_line(points, Stroke::new(1.4, color)));
 }
 
