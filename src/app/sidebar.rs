@@ -150,7 +150,7 @@ impl App {
     }
 
     /// The category the panel lists: the one picked, or the first shown when it is hidden.
-    fn category(&self) -> Category {
+    pub(super) fn category(&self) -> Category {
         let shown = self.categories();
         let picked = self.config.settings.sidebar_category;
         if shown.contains(&picked) { picked } else { shown[0] }

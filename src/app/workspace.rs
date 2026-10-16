@@ -23,9 +23,11 @@ impl App {
         self.shown_tab().filter(|&i| self.tabs[i].ssh.is_none() && self.tabs[i].db.is_none())
     }
 
-    /// The profiles' bar shows: the VS Code layout, on a local tab or the home page (not in a game).
+    /// The profiles' bar shows: the VS Code layout, on a local tab, or on the home page while the
+    /// sidebar shows the terminals (not the SSH, the databases… nor in a game).
     pub(super) fn ws_bar_shown(&self) -> bool {
-        !self.notes_page && !self.music_page && !self.dev_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || self.shown_tab().is_none())
+        let home = self.shown_tab().is_none() && self.category() == Category::Local;
+        !self.notes_page && !self.music_page && !self.dev_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || home)
     }
 
     /// The folder tab `i`'s tree starts from: the one picked, else its first pane's.
