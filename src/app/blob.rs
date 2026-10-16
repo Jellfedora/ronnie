@@ -77,6 +77,9 @@ const GOLDEN: Color32 = Color32::from_rgb(255, 200, 40);
 const BOSS: Color32 = Color32::from_rgb(150, 20, 30);
 const HOLE: Color32 = Color32::from_rgb(150, 90, 230);
 const METEOR: Color32 = Color32::from_rgb(255, 110, 40);
+/// The acid's green; how long the shelters show before it flows (floor's ACID_WARN).
+const ACID: Color32 = Color32::from_rgb(150, 235, 50);
+const ACID_WARN: f32 = 18.0;
 /// A portal's radius (floor's PORTAL_R), how far a cell must jump to be seen as gone through one, how
 /// long the ring lasts.
 const PORTAL_R: f32 = 70.0;
@@ -146,6 +149,7 @@ fn event_look(kind: &str, t: &Strings, theme: &Theme) -> Option<(&'static str, C
         "viruses" => (t.blob_viruses, theme.ansi[2]),
         "portals" => (t.blob_portals, portal_color(0, theme)),
         "upside" => (t.blob_upside, UPSIDE),
+        "acid" => (t.blob_acid, ACID),
         _ => return None,
     })
 }
@@ -161,9 +165,13 @@ fn bonus_kind(kind: &str) -> u8 {
     }
 }
 
-/// Who ate: a player's name, or the black hole.
+/// Who ate: a player's name, the black hole or the acid.
 fn eater<'a>(t: &Strings, by: &'a str) -> &'a str {
-    if by == "hole" { t.blob_hole_name } else { by }
+    match by {
+        "hole" => t.blob_hole_name,
+        "acid" => t.blob_acid_name,
+        _ => by,
+    }
 }
 
 /// The game's little sounds, made on the spot: a gulp (the player ate someone), a rising chime (a bonus),
@@ -628,6 +636,24 @@ impl App {
             }
         }
 
+        // The acid's shelters: a green circle on the ground, its edge turning faster as the acid comes.
+        if let Some(acid) = &frame.acid {
+            let soon = 1.0 - (acid.left / ACID_WARN).clamp(0.0, 1.0);
+            for &(x, y) in &acid.shelters {
+                let at = to_screen(Pos2::new(x, y));
+                let r = acid.radius * scale;
+                if !rect.expand(r).contains(at) {
+                    continue;
+                }
+                painter.circle_filled(at, r, ACID.gamma_multiply(0.07 + 0.05 * soon));
+                let turn = (now * f64::from(0.4 + 2.0 * soon)) as f32;
+                for k in 0..24 {
+                    let a = turn + k as f32 / 24.0 * std::f32::consts::TAU;
+                    painter.line_segment([at + Vec2::angled(a) * r, at + Vec2::angled(a + 0.13) * r], Stroke::new(3.0, ACID.gamma_multiply(0.8)));
+                }
+            }
+        }
+
         // The cells, the smaller first; their skins and effects, their names on them, the masses of the
         // player's.
         let mut cells: Vec<_> = frame.cells.iter().filter_map(|c| blob.shown.get(&c.id).map(|s| (c, *s))).collect();
@@ -722,6 +748,52 @@ impl App {
             painter.circle_stroke(at, r + width / 2.0, Stroke::new(width, theme.ansi[1].gamma_multiply(0.16)));
             let pulse = 0.6 + 0.4 * ((now * 4.0).sin() as f32);
             painter.circle_stroke(at, r, Stroke::new(3.0, theme.ansi[1].gamma_multiply(0.8 * pulse)));
+        }
+
+        // The acid: everything but the shelters tinted green as it comes, then covered, bubbling. Squares
+        // faded near the shelters' edges; an arrow to the nearest shelter off screen, the last seconds in
+        // the middle.
+        if let Some(acid) = &frame.acid {
+            let flowing = acid.left <= 0.0;
+            let shelters: Vec<(Pos2, f32)> = acid.shelters.iter().map(|&(x, y)| (to_screen(Pos2::new(x, y)), acid.radius * scale)).collect();
+            let cover = if flowing { 0.45 } else { 0.04 + 0.1 * (1.0 - acid.left / ACID_WARN).clamp(0.0, 1.0) };
+            let area = rect.intersect(world);
+            let tile = 16.0;
+            let mut mesh = egui::Mesh::default();
+            let mut y = area.min.y;
+            while y < area.max.y {
+                let mut x = area.min.x;
+                while x < area.max.x {
+                    let square = Rect::from_min_max(Pos2::new(x, y), Pos2::new((x + tile).min(area.max.x), (y + tile).min(area.max.y)));
+                    let edge = shelters.iter().map(|&(at, r)| ((square.center() - at).length() - r) / tile).fold(f32::INFINITY, f32::min);
+                    if edge > -0.5 {
+                        let bubble = if flowing { 0.85 + 0.15 * (now as f32 * 3.0 + x * 0.05 + y * 0.07).sin() } else { 1.0 };
+                        mesh.add_colored_rect(square, ACID.gamma_multiply(cover * (edge + 0.5).min(1.0) * bubble));
+                    }
+                    x += tile;
+                }
+                y += tile;
+            }
+            painter.add(egui::Shape::mesh(mesh));
+            let center = rect.center();
+            let inside = shelters.iter().any(|&(at, r)| (center - at).length() < r);
+            if total > 0.0 && !flowing && !inside {
+                let nearest = shelters.iter().map(|&(at, _)| at).min_by(|a, b| (*a - center).length().total_cmp(&(*b - center).length()));
+                let inner = rect.shrink(40.0);
+                if let Some(at) = nearest.filter(|at| !inner.contains(*at)) {
+                    let dir = (at - center).normalized();
+                    let k = ((inner.width() / 2.0) / dir.x.abs().max(1e-3)).min((inner.height() / 2.0) / dir.y.abs().max(1e-3));
+                    let tip = center + dir * k;
+                    let side = Vec2::new(-dir.y, dir.x);
+                    let pulse = 0.7 + 0.3 * ((now * 5.0).sin() as f32);
+                    painter.add(egui::Shape::convex_polygon(vec![tip, tip - dir * 22.0 + side * 12.0, tip - dir * 22.0 - side * 12.0], ACID.gamma_multiply(pulse), Stroke::new(1.5, theme.bg)));
+                }
+            }
+            if !flowing && acid.left <= 5.0 && total > 0.0 {
+                let tick = acid.left.fract();
+                let pop = out_back(((1.0 - tick) / 0.3).min(1.0));
+                paint_metal(&painter, center - Vec2::new(0.0, rect.height() * 0.12), Align2::CENTER_CENTER, &format!("{}", acid.left.ceil()), 40.0 + 24.0 * pop, ACID, 0.9);
+            }
         }
 
         // The Upside Down: reddened, spores floating up; the lights flickering as the Demogorgon comes near.
@@ -878,6 +950,7 @@ impl App {
                 Some("boss") => Some(theme.ansi[1]),
                 Some("bounty") => Some(GOLDEN),
                 Some("hole") => Some(HOLE),
+                Some("acid") => Some(ACID),
                 _ => None,
             };
             let name_color = |id: u32| if Some(id) == me { theme.accent } else { theme.text };
@@ -888,7 +961,11 @@ impl App {
             let mut job = egui::text::LayoutJob::default();
             let muted = egui::TextFormat { font_id: font.clone(), color: theme.text_muted.gamma_multiply(alpha), ..Default::default() };
             job.append(before, 0.0, muted.clone());
-            let by_color = if kill.by.0 == "hole" { HOLE } else { name_color(kill.by.1) };
+            let by_color = match kill.by.0.as_str() {
+                "hole" => HOLE,
+                "acid" => ACID,
+                _ => name_color(kill.by.1),
+            };
             job.append(eater(t, &kill.by.0), 0.0, egui::TextFormat { font_id: font.clone(), color: by_color.gamma_multiply(alpha), ..Default::default() });
             job.append(middle, 0.0, muted.clone());
             job.append(&kill.victim.0, 0.0, egui::TextFormat { font_id: font.clone(), color: special.unwrap_or_else(|| name_color(kill.victim.1)).gamma_multiply(alpha), ..Default::default() });
@@ -942,7 +1019,13 @@ impl App {
         let mut at = at;
         for (kind, left) in &frame.events {
             let Some((text, color)) = event_look(kind, t, theme) else { continue };
-            banner(&painter, at, &format!("{text}  {left} s"), color, theme);
+            // The acid: the seconds before it flows, then it flowing.
+            let text = match (kind.as_str(), &frame.acid) {
+                ("acid", Some(acid)) if acid.left <= 0.0 => t.blob_acid_flowing.to_owned(),
+                ("acid", Some(acid)) => format!("{text}  {} s", acid.left.ceil()),
+                _ => format!("{text}  {left} s"),
+            };
+            banner(&painter, at, &text, color, theme);
             at.y += 34.0;
         }
     }
@@ -999,6 +1082,14 @@ impl App {
         }
         for (k, &(x, y)) in frame.portals.iter().enumerate() {
             painter.circle_filled(map.min + Vec2::new(x, y) / size * map.width(), 3.0, portal_color(k / 2, theme));
+        }
+        if let Some(acid) = &frame.acid {
+            for &(x, y) in &acid.shelters {
+                let at = map.min + Vec2::new(x, y) / size * map.width();
+                let r = (acid.radius / size * map.width()).max(4.0);
+                painter.circle_filled(at, r, ACID.gamma_multiply(0.3));
+                painter.circle_stroke(at, r, Stroke::new(1.5, ACID));
+            }
         }
         // The night: the map goes out.
         let night = frame.events.iter().any(|(kind, _)| kind == "night");

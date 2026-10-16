@@ -66,7 +66,8 @@ pub struct Frame {
     pub fx: Option<[f32; 4]>,
     /// The mines the player carries.
     pub carried: u32,
-    /// The events going on ("rain", "boss", "zone", "hole", "rush", "night", "meteors", "hill", "feast"),
+    /// The events going on ("rain", "boss", "zone", "hole", "rush", "night", "meteors", "hill", "feast",
+    /// "acid"…),
     /// two at most, the oldest first, and their seconds left.
     pub events: Vec<(String, u32)>,
     /// Who the camera follows while watching (none: the whole map).
@@ -81,8 +82,20 @@ pub struct Frame {
     pub hill: Option<(f32, f32, f32)>,
     /// The portals, two by two (each leads to its twin).
     pub portals: Vec<(f32, f32)>,
+    /// The acid and its shelters.
+    pub acid: Option<Acid>,
     /// When it came.
     pub at: Instant,
+}
+
+/// The acid: shelters, then everything else covered for a few seconds, what isn't sheltered dissolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Acid {
+    /// Seconds before it flows (negative: flowing).
+    pub left: f32,
+    /// The shelters' radius (a cell is sheltered when its center is in one), and their centers.
+    pub radius: f32,
+    pub shelters: Vec<(f32, f32)>,
 }
 
 /// The leaderboard: name, mass, the player's line, a bot.
@@ -130,7 +143,7 @@ pub struct Death {
 pub struct Kill {
     pub by: (String, u32),
     pub victim: (String, u32),
-    /// "boss", "ronnie", "bounty" (a head with a bounty) or "hole" (by the black hole).
+    /// "boss", "ronnie", "bounty" (a head with a bounty), "hole" (by the black hole) or "acid".
     pub special: Option<String>,
     pub at: Instant,
 }
@@ -230,6 +243,8 @@ enum Wire {
         hl: Option<(f32, f32, f32)>,
         #[serde(default)]
         pt: Option<Vec<f32>>,
+        #[serde(default)]
+        ac: Option<Vec<f32>>,
     },
     #[serde(rename = "board")]
     Board {
@@ -544,7 +559,7 @@ impl Online {
                 self.joining = false;
                 self.death = None;
             }
-            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, es, fo, z, bh, mt, hl, pt } => {
+            Wire::Frame { me, x, y, h, c, g, gx, e, v, b, m, n, fx, fy, ev, es, fo, z, bh, mt, hl, pt, ac } => {
                 for (id, named) in n {
                     if let Ok(id) = id.parse() {
                         self.names.insert(id, named);
@@ -565,6 +580,7 @@ impl Online {
                 let carried = fy.map_or(0, |(_, n)| n);
                 let portals = groups(&pt.unwrap_or_default(), 2).map(|k| (k[0], k[1])).collect();
                 let meteors = groups(&mt.unwrap_or_default(), 4).map(|k| (k[0], k[1], k[2], k[3] / 10.0)).collect();
+                let acid = ac.filter(|a| a.len() >= 2).map(|a| Acid { left: a[0] / 10.0, radius: a[1], shelters: groups(&a[2..], 2).map(|k| (k[0], k[1])).collect() });
                 // Moved to the next one: following them now (again after a reconnection).
                 let before = self.frame.as_ref().and_then(|f| f.followed);
                 if let (Watch::Next(_), Some(id)) = (self.watching, fo)
@@ -574,7 +590,7 @@ impl Online {
                 }
                 // All the events from a newer floor, the first one only from an older one.
                 let events = es.unwrap_or_else(|| ev.into_iter().collect());
-                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, events, followed: fo, zone: z, hole: bh, meteors, hill: hl, portals, at });
+                self.frame = Some(Frame { me, x, y, height: h, cells, ejected, viruses, bonuses, mines, fx, carried, events, followed: fo, zone: z, hole: bh, meteors, hill: hl, portals, acid, at });
             }
             Wire::Board { l, ids, me, online } => self.board = Some(Board { leaders: l, ids, me, online }),
             Wire::Records { l, me, skins } => {
@@ -734,6 +750,11 @@ mod tests {
         let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"es":[["portals",40]],"ev":["portals",40],"pt":[100,200,1500,1600,3000,300,600,3500]}"#;
         o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
         assert_eq!(o.frame.clone().unwrap().portals, vec![(100.0, 200.0), (1500.0, 1600.0), (3000.0, 300.0), (600.0, 3500.0)]);
+        assert_eq!(o.frame.clone().unwrap().acid, None);
+        // The acid: tenths of seconds before it flows, the shelters' radius, their centers.
+        let text = r#"{"t":"s","me":3,"x":100,"y":200,"h":1000,"c":[],"g":[],"gx":[],"e":[],"v":[],"b":[],"n":{},"fx":null,"es":[["acid",20]],"ev":["acid",20],"ac":[125,280,1000,1100,3000,900]}"#;
+        o.take(serde_json::from_str(text).unwrap(), at, &mut news, &mut closed);
+        assert_eq!(o.frame.clone().unwrap().acid, Some(Acid { left: 12.5, radius: 280.0, shelters: vec![(1000.0, 1100.0), (3000.0, 900.0)] }));
         o.take(serde_json::from_str(r#"{"t":"event","kind":"bounty","on":true,"name":"Dio"}"#).unwrap(), at, &mut news, &mut closed);
         assert_eq!((o.notices[0].name.as_str(), o.notices[0].held), ("Dio", false));
         o.take(serde_json::from_str(r#"{"t":"chat","from":"Dio","text":"salut"}"#).unwrap(), at, &mut news, &mut closed);
