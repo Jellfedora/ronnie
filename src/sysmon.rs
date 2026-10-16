@@ -83,7 +83,7 @@ fn run(shared: &Mutex<Snapshot>, stop: &AtomicBool, ctx: &egui::Context) {
         let mut list: Vec<DiskInfo> = disks
             .list()
             .iter()
-            .filter(|d| d.total_space() > 0)
+            .filter(|d| d.total_space() > 0 && real_disk(d))
             .map(|d| {
                 let usage = d.usage();
                 DiskInfo {
@@ -108,6 +108,19 @@ fn run(shared: &Mutex<Snapshot>, stop: &AtomicBool, ctx: &egui::Context) {
         }
         ctx.request_repaint();
     }
+}
+
+/// A disk of the machine, not a volume of a program: the system's root always; neither a read-only
+/// volume (a mounted disk image, such as an installer's .dmg, an ISO, a snap: always full), nor a
+/// file system in memory, nor macOS's system volumes (/System/Volumes/Data is the space of "/").
+fn real_disk(disk: &sysinfo::Disk) -> bool {
+    let mount = disk.mount_point();
+    if mount == std::path::Path::new("/") {
+        return true;
+    }
+    let fs = disk.file_system().to_string_lossy().to_ascii_lowercase();
+    let virtual_fs = ["squashfs", "iso9660", "udf", "cd9660", "tmpfs", "devtmpfs", "ramfs", "overlay"].contains(&fs.as_str());
+    !disk.is_read_only() && !virtual_fs && !(cfg!(target_os = "macos") && mount.starts_with("/System/Volumes"))
 }
 
 fn push(history: &mut VecDeque<f32>, value: f32) {
@@ -235,3 +248,4 @@ mod gpu {
         }
     }
 }
+
