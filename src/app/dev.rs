@@ -227,7 +227,6 @@ impl App {
         // The title, in the logo's font.
         let (title, _) = ui.allocate_exact_size(Vec2::new(width, 56.0), Sense::hover());
         paint_metal(ui.painter(), Pos2::new(title.min.x, title.center().y), Align2::LEFT_CENTER, t.cat_dev, 44.0, theme.accent, 1.0);
-        ui.label(egui::RichText::new(t.dev_subtitle).size(13.5).color(theme.text_muted));
         if self.dev.tool == DevTool::Mail {
             ui.add_space(18.0);
             return self.mail_page_ui(ui, t, theme);
