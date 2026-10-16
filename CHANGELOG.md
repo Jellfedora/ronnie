@@ -2,6 +2,25 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.29.0] - 2026-10-16
+
+### Nouveautés
+
+- **Une catégorie Dev** dans la colonne de gauche, avec ses outils :
+  - **Node.js façon nvm** : les versions s'installent dans le dossier de Ronnie (rien sur le système), choisies dans la liste de nodejs.org (LTS ou toutes, avec un filtre) et vérifiées par leur SHA-256. Chaque terminal local choisit sa version (menu « Gérer les versions… », badge vert dans sa barre), gardée dans sa disposition et ses profils, reprise par ses divisions ; une version par défaut pour les nouveaux terminaux. Le shell (zsh, bash, PowerShell) la met en tête du PATH et suit un changement dès la commande suivante.
+  - **Mails Catcher** : un serveur SMTP sur 127.0.0.1 (port 1025, modifiable) qui garde tous les mails qu'on lui envoie sans en délivrer aucun. Une notification pour chaque mail reçu (celle de la fenêtre et/ou celle du système), qui mène à lui. Recherche, sélection de plusieurs mails à supprimer ou marquer lus / non lus, et des mails affichés comme dans une messagerie (HTML, liens, images), avec les onglets texte, HTML, en-têtes et source, les pièces jointes à enregistrer et l'ouverture dans le navigateur.
+- **Une page des jeux** : l'icône Jeux de la colonne de gauche montre chaque jeu dans une carte (ce qu'il est, son record ou les joueurs en ligne, quand il revient pendant les heures de travail). Un clic l'ouvre, un clic droit dans une nouvelle fenêtre.
+
+### Changements
+
+- Un clic sur l'icône d'une catégorie affiche aussi son écran (son dernier onglet, les notes, la musique, le dernier jeu…), jamais celui d'une autre resté derrière.
+- La barre des profils ne s'affiche plus sur l'accueil qu'avec les terminaux, plus avec SSH, les bases de données…
+- Les ressources de la machine ne montrent plus que ses vrais disques : plus de .dmg monté, d'ISO ni de volumes système, toujours affichés pleins en rouge.
+
+### Corrections
+
+- Thème Jurassic Park : les fougères passent sous les cartes de la musique et de la mise à jour.
+
 ## [0.28.0] - 2026-10-15
 
 ### Nouveautés
