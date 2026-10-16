@@ -203,20 +203,12 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         ui.painter().rect_filled(rect, 0.0, theme.bg);
-        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-        egui::ScrollArea::vertical().id_salt("dev-page").auto_shrink(false).show(&mut inner, |ui| {
-            let width = (rect.width() - 64.0).clamp(320.0, 1000.0);
-            let side = ((rect.width() - width) / 2.0).max(16.0);
-            ui.add_space(28.0);
-            ui.horizontal(|ui| {
-                ui.add_space(side);
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    self.dev_page_content(ui, width, t, &theme);
-                });
-            });
-            ui.add_space(40.0);
-        });
+        // The whole page, margins aside: the card fills what the title leaves, its lists scroll.
+        let margin = if rect.width() > 700.0 { 40.0 } else { 16.0 };
+        let area = Rect::from_min_max(rect.min + Vec2::new(margin, 24.0), rect.max - Vec2::new(margin, 24.0));
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(area));
+        let width = area.width();
+        self.dev_page_content(&mut inner, width, t, &theme);
     }
 
     fn dev_page_content(&mut self, ui: &mut Ui, width: f32, t: &'static Strings, theme: &Theme) {
@@ -224,11 +216,15 @@ impl App {
         let (title, _) = ui.allocate_exact_size(Vec2::new(width, 56.0), Sense::hover());
         paint_metal(ui.painter(), Pos2::new(title.min.x, title.center().y), Align2::LEFT_CENTER, t.cat_dev, 44.0, theme.accent, 1.0);
         ui.label(egui::RichText::new(t.dev_subtitle).size(13.5).color(theme.text_muted));
-        ui.add_space(22.0);
+        // Where a terminal's version is picked.
+        ui.label(egui::RichText::new(t.node_where).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));
+        ui.add_space(18.0);
 
         let card = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+            let height = ui.available_height() - 40.0;
             Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(14.0).inner_margin(20.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                ui.set_height(height.max(200.0));
                 add(ui);
             });
         };
@@ -242,18 +238,18 @@ impl App {
             let wide = ui.available_width() > 640.0;
             if wide {
                 ui.columns(2, |cols| {
-                    self.dev_installed_list(&mut cols[0], t, theme);
+                    let height = cols[0].available_height();
+                    egui::ScrollArea::vertical().id_salt("dev-installed").max_height(height).auto_shrink([false, true]).show(&mut cols[0], |ui| self.dev_installed_list(ui, t, theme));
                     self.dev_releases_list(&mut cols[1], t, theme);
                 });
             } else {
-                self.dev_installed_list(ui, t, theme);
+                // One under the other: the installed ones take what they need, up to a third.
+                let third = ui.available_height() / 3.0;
+                egui::ScrollArea::vertical().id_salt("dev-installed-narrow").max_height(third).auto_shrink([false, true]).show(ui, |ui| self.dev_installed_list(ui, t, theme));
                 ui.add_space(16.0);
                 self.dev_releases_list(ui, t, theme);
             }
         });
-        ui.add_space(12.0);
-        // Where a terminal's version is picked.
-        ui.label(egui::RichText::new(t.node_where).size(12.5).color(theme.text_muted));
     }
 
     /// The versions installed: default star, terminals using it, delete (a second click confirms).
@@ -288,7 +284,10 @@ impl App {
                         if ui.add(button).clicked() {
                             if confirming { delete = Some(version.clone()) } else { self.dev.confirm_delete = Some(version.clone()) }
                         }
-                        if ui.add(egui::Button::new(egui::RichText::new("📁").size(12.0)).frame_when_inactive(false)).on_hover_text(t.open_location).clicked() {
+                        // The folder icon drawn (the emoji renders badly).
+                        let folder = ui.add(egui::Button::new("    ").frame_when_inactive(false)).on_hover_text(t.open_location);
+                        super::notes::paint_folder_icon(ui.painter(), folder.rect.center(), if folder.hovered() { theme.text } else { theme.text_muted });
+                        if folder.clicked() {
                             open = Some(version.clone());
                         }
                         let star = egui::RichText::new(format!("★ {}", t.node_default_short)).size(12.0).color(if default { theme.accent } else { theme.text_muted.gamma_multiply(0.7) });
@@ -348,7 +347,7 @@ impl App {
             return;
         }
         let mut install = None;
-        egui::ScrollArea::vertical().id_salt("dev-releases").max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("dev-releases").max_height(ui.available_height()).auto_shrink([false, true]).show(ui, |ui| {
             for release in shown {
                 let installed = self.dev.installed.contains(&release.version);
                 let progress = self.dev.installing(&release.version);
