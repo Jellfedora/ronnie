@@ -2167,8 +2167,10 @@ impl App {
             let step = area.response.rect.height() + 10.0;
             edge += if place.top() { step } else { -step };
         }
-        // Kept while the pointer is over one.
-        if hovered_any {
+        // Kept while the pointer is over one, and while Ronnie isn't in front (a mail caught meanwhile
+        // is still there when it's back).
+        let away = !ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if hovered_any || away {
             for t in &mut self.toasts {
                 t.at = t.at.max(std::time::Instant::now() - std::time::Duration::from_secs_f32(1.0));
             }

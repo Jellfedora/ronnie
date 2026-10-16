@@ -271,8 +271,9 @@ impl App {
             }
             many => (t.mail_new_many.replace("{n}", &many.len().to_string()), many.iter().take(3).map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"), None),
         };
+        // The window's notice too while Ronnie is away: it waits there until it's back in front.
         let system = !focused || style.system();
-        crate::log::info(&format!("Mail caught ({}): told {}", arrived.len(), match (system, focused && style.in_app()) {
+        crate::log::info(&format!("Mail caught ({}): told {}", arrived.len(), match (system, style.in_app()) {
             (true, true) => "by the system and in the window",
             (true, false) => "by the system",
             (false, _) => "in the window",
@@ -280,7 +281,7 @@ impl App {
         if system {
             crate::notify::send(&title, &body);
         }
-        if focused && style.in_app() {
+        if style.in_app() {
             self.toasts.push(Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: Some(id.unwrap_or_default()) });
         }
     }
