@@ -262,7 +262,6 @@ impl App {
         }
         let t = self.t();
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        let looking = focused && self.dev_page && self.dev.tool == dev::DevTool::Mail;
         let style = self.config.settings.notify_style;
         // A burst (a test suite sending many) is told of once.
         let (title, body, id) = match arrived.as_slice() {
@@ -272,9 +271,6 @@ impl App {
             }
             many => (t.mail_new_many.replace("{n}", &many.len().to_string()), many.iter().take(3).map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"), None),
         };
-        if looking {
-            return;
-        }
         if !focused || style.system() {
             crate::notify::send(&title, &body);
         }
