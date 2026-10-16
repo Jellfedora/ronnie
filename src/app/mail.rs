@@ -271,7 +271,13 @@ impl App {
             }
             many => (t.mail_new_many.replace("{n}", &many.len().to_string()), many.iter().take(3).map(|m| m.subject.as_str()).collect::<Vec<_>>().join("\n"), None),
         };
-        if !focused || style.system() {
+        let system = !focused || style.system();
+        crate::log::info(&format!("Mail caught ({}): told {}", arrived.len(), match (system, focused && style.in_app()) {
+            (true, true) => "by the system and in the window",
+            (true, false) => "by the system",
+            (false, _) => "in the window",
+        }));
+        if system {
             crate::notify::send(&title, &body);
         }
         if focused && style.in_app() {
