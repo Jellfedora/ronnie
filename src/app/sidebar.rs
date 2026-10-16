@@ -134,6 +134,7 @@ impl App {
         }
         self.home_game = true;
         self.games_hub = false;
+        self.dev_page = false;
         self.home_which = super::four::HomeGame::SpeedMetal;
         self.music_page = false;
         self.notes_page = false;
@@ -156,16 +157,17 @@ impl App {
     }
 
     /// What is shown belongs to another category than `category`: a tab of another kind, the notes,
-    /// the music, a game (the home page without its game belongs to none; Dev goes with the
-    /// terminals).
+    /// the music, the Dev page, a game (the home page without its game belongs to none).
     fn shows_other_category(&self, category: Category) -> bool {
         let shown = if self.notes_page {
             Category::Notes
         } else if self.music_page {
             Category::Music
+        } else if self.dev_page {
+            Category::Dev
         } else if self.home.is_some() {
             if !self.home_game {
-                return !matches!(category, Category::Dev) && self.category_screen(category);
+                return self.category_screen(category);
             }
             Category::Games
         } else if let Some(i) = self.shown_tab() {
@@ -173,7 +175,6 @@ impl App {
         } else {
             return false;
         };
-        let category = if category == Category::Dev { Category::Local } else { category };
         shown != category
     }
 
@@ -181,15 +182,14 @@ impl App {
     fn category_screen(&self, category: Category) -> bool {
         match category {
             Category::Local | Category::Ssh | Category::Db => self.last_tab_of(category).is_some(),
-            Category::Notes | Category::Music | Category::Games => true,
-            Category::Dev | Category::Files => false,
+            Category::Notes | Category::Music | Category::Games | Category::Dev => true,
+            Category::Files => false,
         }
     }
 
     /// Shows `category`'s screen: its last tab (the home page when it has none open), the notes, the
-    /// music, the last game picked.
+    /// music, the games' page, the Dev page.
     fn show_category(&mut self, category: Category) {
-        let category = if category == Category::Dev { Category::Local } else { category };
         match category {
             Category::Local | Category::Ssh | Category::Db => match self.last_tab_of(category) {
                 Some(index) => self.select(index),
@@ -198,7 +198,8 @@ impl App {
             Category::Notes => self.open_notes(),
             Category::Music => self.open_music_page(None),
             Category::Games => self.open_arcade(),
-            Category::Dev | Category::Files => {}
+            Category::Dev => self.open_dev_page(),
+            Category::Files => {}
         }
     }
 
@@ -226,7 +227,7 @@ impl App {
     /// category; the home page leaves it as it is.
     fn follow_shown(&mut self) {
         let game = self.home.is_some() && self.home_game;
-        let seen = (self.shown_tab(), self.notes_page, self.music_page, game);
+        let seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page);
         if seen == self.sidebar_seen {
             return;
         }
@@ -235,6 +236,8 @@ impl App {
             Category::Notes
         } else if self.music_page {
             Category::Music
+        } else if self.dev_page {
+            Category::Dev
         } else if game {
             Category::Games
         } else if let Some(i) = seen.0 {
@@ -328,9 +331,9 @@ impl App {
                     self.config.settings.sidebar_category = category;
                     if elsewhere {
                         self.show_category(category);
-                        // Seen: the sidebar stays on the category clicked (Dev shows the terminals).
+                        // Seen: the sidebar stays on the category clicked (the home page belongs to none).
                         let game = self.home.is_some() && self.home_game;
-                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game);
+                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page);
                     }
                 }
             }

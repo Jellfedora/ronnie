@@ -27,6 +27,8 @@ pub(super) struct Dev {
     filter: String,
     /// Every version, not only the long-term support ones.
     all: bool,
+    /// The version whose delete button was clicked once, on the page: a second click deletes it.
+    confirm_delete: Option<String>,
 }
 
 struct Install {
@@ -341,6 +343,276 @@ impl App {
         }
         if let Some(version) = install {
             self.dev.install(ui.ctx(), version);
+        }
+    }
+}
+
+impl App {
+    /// The Dev page, in this window: shown instead of the tabs. The list of versions is fetched if it
+    /// isn't yet.
+    pub(super) fn open_dev_page(&mut self) {
+        self.dev_page = true;
+        self.music_page = false;
+        self.notes_page = false;
+        self.home_game = false;
+        self.dev.show_installed();
+        if self.dev.releases.as_ref().is_none_or(Result::is_err) && self.dev.fetching.is_none() {
+            let ctx = self.ctx.clone();
+            self.dev.fetch(&ctx);
+        }
+        self.ctx.memory_mut(|m| m.stop_text_input());
+    }
+
+    /// The Dev page: Node.js, the versions installed and those to install side by side, then the
+    /// version of each terminal open (and of new ones), to change there.
+    pub(super) fn dev_page_ui(&mut self, ui: &mut Ui, rect: Rect) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        ui.painter().rect_filled(rect, 0.0, theme.bg);
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        egui::ScrollArea::vertical().id_salt("dev-page").auto_shrink(false).show(&mut inner, |ui| {
+            let width = (rect.width() - 64.0).clamp(320.0, 1000.0);
+            let side = ((rect.width() - width) / 2.0).max(16.0);
+            ui.add_space(28.0);
+            ui.horizontal(|ui| {
+                ui.add_space(side);
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    self.dev_page_content(ui, width, t, &theme);
+                });
+            });
+            ui.add_space(40.0);
+        });
+    }
+
+    fn dev_page_content(&mut self, ui: &mut Ui, width: f32, t: &'static Strings, theme: &Theme) {
+        // The title, in the logo's font.
+        let (title, _) = ui.allocate_exact_size(Vec2::new(width, 56.0), Sense::hover());
+        paint_metal(ui.painter(), Pos2::new(title.min.x, title.center().y), Align2::LEFT_CENTER, t.cat_dev, 44.0, theme.accent, 1.0);
+        ui.label(egui::RichText::new(t.dev_subtitle).size(13.5).color(theme.text_muted));
+        ui.add_space(22.0);
+
+        let card = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+            Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(14.0).inner_margin(20.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                add(ui);
+            });
+        };
+
+        // Node.js: installed | to install.
+        card(ui, &mut |ui| {
+            let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+            paint_node_icon(ui.painter(), Pos2::new(head.min.x + 9.0, head.center().y), NODE_GREEN);
+            ui.painter().text(Pos2::new(head.min.x + 26.0, head.center().y), Align2::LEFT_CENTER, "Node.js", FontId::proportional(19.0), theme.text);
+            ui.add_space(10.0);
+            let wide = ui.available_width() > 640.0;
+            if wide {
+                ui.columns(2, |cols| {
+                    self.dev_installed_list(&mut cols[0], t, theme);
+                    self.dev_releases_list(&mut cols[1], t, theme);
+                });
+            } else {
+                self.dev_installed_list(ui, t, theme);
+                ui.add_space(16.0);
+                self.dev_releases_list(ui, t, theme);
+            }
+        });
+        ui.add_space(18.0);
+        // The terminals open, each with its version.
+        card(ui, &mut |ui| self.dev_terminals(ui, t, theme));
+    }
+
+    /// The versions installed: default star, terminals using it, delete (a second click confirms).
+    fn dev_installed_list(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
+        ui.label(egui::RichText::new(t.node_installed_title.to_uppercase()).size(11.0).color(theme.text_muted).extra_letter_spacing(1.2));
+        ui.add_space(6.0);
+        if self.dev.installed.is_empty() {
+            ui.label(egui::RichText::new(t.node_none_installed).size(12.5).color(theme.text_muted));
+            return;
+        }
+        let lts_of = |v: &str| self.dev.releases.as_ref().and_then(|r| r.as_ref().ok()).and_then(|r| r.iter().find(|x| x.version == v)).and_then(|x| x.lts.clone());
+        let (mut set_default, mut delete, mut open) = (None, None, None);
+        for version in self.dev.installed.clone() {
+            let default = self.config.settings.node_default.as_deref() == Some(version.as_str());
+            let panes = self.tabs.iter().flat_map(|t| t.nodes.values()).filter(|v| **v == version).count();
+            Frame::NONE.fill(theme.bg.gamma_multiply(0.6)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&version).monospace().size(13.5).color(theme.text));
+                    if let Some(lts) = lts_of(&version) {
+                        ui.label(egui::RichText::new(format!("LTS {lts}")).size(11.0).color(NODE_GREEN));
+                    }
+                    if panes > 0 {
+                        let text = if panes == 1 { t.node_pane_one.to_owned() } else { t.node_panes.replace("{n}", &panes.to_string()) };
+                        ui.label(egui::RichText::new(text).size(11.0).color(theme.text_muted));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let confirming = self.dev.confirm_delete.as_deref() == Some(version.as_str());
+                        let label = if confirming { egui::RichText::new(t.node_confirm_delete).color(theme.bg) } else { egui::RichText::new(t.delete).color(theme.ansi[1]) };
+                        let button = egui::Button::new(label.size(12.0)).corner_radius(5.0);
+                        let button = if confirming { button.fill(theme.ansi[1]) } else { button.frame_when_inactive(false) };
+                        if ui.add(button).clicked() {
+                            if confirming { delete = Some(version.clone()) } else { self.dev.confirm_delete = Some(version.clone()) }
+                        }
+                        if ui.add(egui::Button::new(egui::RichText::new("📂").size(12.0)).frame_when_inactive(false)).on_hover_text(t.open_location).clicked() {
+                            open = Some(version.clone());
+                        }
+                        let star = egui::RichText::new(if default { format!("★ {}", t.node_default_short) } else { format!("☆ {}", t.node_default_short) }).size(12.0).color(if default { theme.accent } else { theme.text_muted });
+                        if ui.add(egui::Button::new(star).frame_when_inactive(default).corner_radius(5.0)).on_hover_text(if default { t.node_unset_default } else { t.node_set_default }).clicked() {
+                            set_default = Some((!default).then(|| version.clone()));
+                        }
+                    });
+                });
+            });
+            ui.add_space(4.0);
+        }
+        if let Some(default) = set_default {
+            self.config.settings.node_default = default;
+        }
+        if let Some(version) = open.and_then(|v| node::bin_dir(&v)) {
+            config::open_folder(if cfg!(windows) { &version } else { version.parent().unwrap_or(&version) });
+        }
+        if let Some(version) = delete {
+            self.dev.confirm_delete = None;
+            self.uninstall_node(&version);
+        }
+    }
+
+    /// The versions on nodejs.org: filter, LTS only, the newest LTS recommended, install buttons.
+    fn dev_releases_list(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
+        ui.label(egui::RichText::new(t.node_available_title.to_uppercase()).size(11.0).color(theme.text_muted).extra_letter_spacing(1.2));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.dev.filter).hint_text(t.node_filter_hint).desired_width(150.0));
+            let mut lts = !self.dev.all;
+            ui.checkbox(&mut lts, t.node_lts_only);
+            self.dev.all = !lts;
+        });
+        ui.add_space(6.0);
+        let releases = match &self.dev.releases {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.node_loading).color(theme.text_muted));
+                });
+                return;
+            }
+            Some(Err(e)) => {
+                ui.label(egui::RichText::new(e).color(theme.ansi[1]));
+                if ui.button(t.node_retry).clicked() {
+                    self.dev.fetch(ui.ctx());
+                }
+                return;
+            }
+            Some(Ok(r)) => r.clone(),
+        };
+        let newest_lts = releases.iter().find(|r| r.lts.is_some()).map(|r| r.version.clone());
+        let filter = self.dev.filter.trim().trim_start_matches('v').to_owned();
+        let shown: Vec<&Release> = releases.iter().filter(|r| (self.dev.all || r.lts.is_some()) && (filter.is_empty() || r.version[1..].starts_with(&filter))).take(LIST_MAX).collect();
+        if shown.is_empty() {
+            ui.label(egui::RichText::new(t.node_no_match).color(theme.text_muted));
+            return;
+        }
+        let mut install = None;
+        egui::ScrollArea::vertical().id_salt("dev-releases").max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+            for release in shown {
+                let installed = self.dev.installed.contains(&release.version);
+                let progress = self.dev.installing(&release.version);
+                ui.horizontal(|ui| {
+                    ui.set_min_height(26.0);
+                    ui.label(egui::RichText::new(&release.version).monospace().size(13.0).color(if installed { theme.text_muted } else { theme.text }));
+                    if let Some(lts) = &release.lts {
+                        ui.label(egui::RichText::new(lts).size(11.0).color(NODE_GREEN));
+                    }
+                    if newest_lts.as_deref() == Some(release.version.as_str()) {
+                        ui.label(egui::RichText::new(t.node_recommended).size(10.5).color(theme.bg).background_color(NODE_GREEN));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        match progress {
+                            Some(p) if p.unpacking => {
+                                ui.label(egui::RichText::new(t.node_unpacking).size(11.5).color(theme.text_muted));
+                            }
+                            Some(p) => {
+                                let fraction = if p.total > 0 { p.received as f32 / p.total as f32 } else { 0.0 };
+                                ui.add(egui::ProgressBar::new(fraction).desired_width(110.0).fill(NODE_GREEN).show_percentage());
+                            }
+                            None if installed => {
+                                ui.label(egui::RichText::new(format!("✓ {}", t.node_installed_badge)).size(11.5).color(NODE_GREEN));
+                            }
+                            None => {
+                                if ui.add(egui::Button::new(egui::RichText::new(format!("⬇  {}", t.node_do_install)).size(12.0)).corner_radius(5.0)).clicked() {
+                                    install = Some(release.version.clone());
+                                }
+                            }
+                        }
+                        ui.label(egui::RichText::new(&release.date).size(11.0).color(theme.text_muted.gamma_multiply(0.8)));
+                    });
+                });
+            }
+        });
+        if let Some(version) = install {
+            self.dev.install(ui.ctx(), version);
+        }
+    }
+
+    /// Each local terminal of this window with its Node.js version, and the one of new terminals.
+    fn dev_terminals(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
+        ui.label(egui::RichText::new(t.node_terminals_title).size(17.0).color(theme.text));
+        ui.label(egui::RichText::new(t.node_terminals_desc).size(12.5).color(theme.text_muted));
+        ui.add_space(10.0);
+        let installed = self.dev.installed.clone();
+        let label = |v: Option<&str>| v.map_or_else(|| t.node_system.to_owned(), str::to_owned);
+        let picker = |ui: &mut Ui, id: egui::Id, current: Option<&str>| -> Option<Option<String>> {
+            let mut picked = None;
+            egui::ComboBox::from_id_salt(id).selected_text(egui::RichText::new(label(current)).monospace()).width(150.0).show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_none(), t.node_system).clicked() {
+                    picked = Some(None);
+                }
+                for v in &installed {
+                    if ui.selectable_label(current == Some(v.as_str()), egui::RichText::new(v).monospace()).clicked() {
+                        picked = Some(Some(v.clone()));
+                    }
+                }
+            });
+            picked
+        };
+        // New terminals first.
+        let mut new_default = None;
+        egui::Grid::new("dev-terminals").num_columns(2).spacing([24.0, 8.0]).min_col_width(200.0).show(ui, |ui| {
+            ui.label(egui::RichText::new(t.node_new_terminals).strong().color(theme.text));
+            if let Some(v) = picker(ui, egui::Id::new("dev-default"), self.config.settings.node_default.as_deref()) {
+                new_default = Some(v);
+            }
+            ui.end_row();
+            let mut picked = None;
+            let mut any = false;
+            for (i, tab) in self.tabs.iter().enumerate().filter(|(_, t)| t.ssh.is_none() && t.db.is_none()) {
+                let leaves = tab.layout.leaves();
+                for (k, pane) in leaves.iter().enumerate() {
+                    any = true;
+                    let pane_name = tab.names.get(pane).cloned().or_else(|| tab.cwds.get(pane).and_then(|c| c.file_name()).map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| t.node_pane_n.replace("{n}", &(k + 1).to_string()));
+                    let text = if leaves.len() > 1 { format!("{}  ›  {pane_name}", tab.title()) } else { tab.title().to_owned() };
+                    let color = tab.color.unwrap_or(theme.text);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("●").color(color));
+                        ui.label(egui::RichText::new(text).color(theme.text));
+                    });
+                    if let Some(v) = picker(ui, egui::Id::new(("dev-pane", i, *pane)), tab.nodes.get(pane).map(String::as_str)) {
+                        picked = Some((i, *pane, v));
+                    }
+                    ui.end_row();
+                }
+            }
+            if !any {
+                ui.label(egui::RichText::new(t.node_no_terminals).color(theme.text_muted));
+                ui.end_row();
+            }
+            if let Some((i, pane, v)) = picked {
+                self.set_pane_node(i, pane, v);
+            }
+        });
+        if let Some(v) = new_default {
+            self.config.settings.node_default = v;
         }
     }
 }

@@ -25,7 +25,7 @@ impl App {
 
     /// The profiles' bar shows: the VS Code layout, on a local tab or the home page (not in a game).
     pub(super) fn ws_bar_shown(&self) -> bool {
-        !self.notes_page && !self.music_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || self.shown_tab().is_none())
+        !self.notes_page && !self.music_page && !self.dev_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || self.shown_tab().is_none())
     }
 
     /// The folder tab `i`'s tree starts from: the one picked, else its first pane's.
