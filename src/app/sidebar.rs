@@ -314,6 +314,12 @@ impl App {
                 ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
                 ui.painter().circle_filled(dot, 3.0, self.theme.accent);
             }
+            // A module has an update waiting.
+            if category == Category::Modules && self.modules.any_update() {
+                let dot = slot.right_top() + Vec2::new(-8.0, 8.0);
+                ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
+                ui.painter().circle_filled(dot, 3.0, self.theme.accent);
+            }
             if rail {
                 // The flyout shows its name.
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

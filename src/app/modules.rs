@@ -9,7 +9,8 @@ use super::sidebar::{paint_panel_title, paint_row_bg};
 use super::*;
 use crate::modules::{self, Latest, Module};
 
-/// The catalog looked at again when the page opens, at most this often.
+/// The catalog looked at again (when the page opens, and in the background while a module is
+/// installed, for its updates) at most this often.
 const REFRESH_SECS: f64 = 3600.0;
 
 /// What a look at floor and GitHub found: the catalog, the newest release of each module (by id),
@@ -104,6 +105,11 @@ impl Modules {
         self.latest.get(id).and_then(|r| r.as_ref().ok()).and_then(Option::as_ref)
     }
 
+    /// An installed module has a newer version published.
+    pub(super) fn any_update(&self) -> bool {
+        self.installed.keys().any(|id| self.has_update(id))
+    }
+
     /// A newer version of installed module `id` is published.
     fn has_update(&self, id: &str) -> bool {
         match (self.installed.get(id), self.latest_of(id)) {
@@ -141,10 +147,15 @@ impl App {
         if !m.started {
             m.started = true;
             m.read_installed();
-            if !m.installed.is_empty() {
-                let ctx = self.ctx.clone();
-                m.fetch(&ctx);
-            }
+        }
+        // With a module installed: its updates looked for at startup, then every hour.
+        let now = self.ctx.input(|i| i.time);
+        if !m.installed.is_empty() && m.fetched_at.is_none_or(|at| now - at > REFRESH_SECS) {
+            let ctx = self.ctx.clone();
+            m.fetch(&ctx);
+        }
+        if !m.installed.is_empty() {
+            self.ctx.request_repaint_after(std::time::Duration::from_secs(REFRESH_SECS as u64));
         }
         if let Some(fetched) = m.fetching.as_ref().and_then(|f| f.lock().unwrap().take()) {
             m.fetching = None;
