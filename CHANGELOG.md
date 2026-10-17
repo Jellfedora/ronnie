@@ -2,6 +2,14 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.30.0] - 2026-10-17
+
+### Nouveautés
+
+- **Une catégorie Téléchargements** dans la colonne de gauche : des modules facultatifs, des applis à part qu'on installe à la demande et qui s'ouvrent dans leur propre fenêtre. Une carte par module pour le télécharger, l'ouvrir, le mettre à jour, voir ses nouveautés ou le désinstaller. Les modules s'installent dans le dossier de Ronnie (rien ailleurs sur le système) et sont vérifiés par leur SHA-256, comme les mises à jour de Ronnie. Leurs nouvelles versions sont cherchées toutes les heures ; une pastille sur l'icône signale une mise à jour qui attend.
+  - Premier module : **Serj**, un lecteur de BD en PDF qui lit **case par case** : chaque case remplit l'écran et la caméra glisse jusqu'à la suivante, avec une bibliothèque des albums et leurs couvertures.
+- **Ronnie.io : la pluie acide**. Des abris apparaissent en vert sur le sol et sur la carte, l'acide teinte puis recouvre tout le reste ; une flèche montre l'abri le plus proche, et les 5 dernières secondes s'affichent au milieu de l'écran.
+
 ## [0.29.0] - 2026-10-16
 
 ### Nouveautés
