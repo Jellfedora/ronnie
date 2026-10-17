@@ -16,6 +16,7 @@ mod live;
 mod log;
 mod mailbox;
 mod media_keys;
+mod modules;
 mod node;
 mod notify;
 mod openwith;

@@ -16,8 +16,8 @@ pub const REPO: &str = "Jellfedora/ronnie";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Target in the release archive names. macOS: Apple Silicon since 0.9.1 (up to 0.9.0, a universal
 /// app, whose archive name the releases still carry for those versions).
-const TARGET: &str = if cfg!(target_os = "macos") { "aarch64-apple-darwin" } else { env!("TARGET") };
-const ARCHIVE_EXT: &str = if cfg!(windows) { "zip" } else { "tar.gz" };
+pub(crate) const TARGET: &str = if cfg!(target_os = "macos") { "aarch64-apple-darwin" } else { env!("TARGET") };
+pub(crate) const ARCHIVE_EXT: &str = if cfg!(windows) { "zip" } else { "tar.gz" };
 /// Refuse absurd downloads (the archive is a few tens of MB).
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
 
@@ -29,8 +29,8 @@ struct Release {
 }
 
 #[derive(Clone, Deserialize)]
-struct Asset {
-    name: String,
+pub(crate) struct Asset {
+    pub name: String,
     browser_download_url: String,
     /// "sha256:<hex>", computed by GitHub on upload.
     #[serde(default)]
@@ -244,7 +244,7 @@ fn start_after_exit(program: &Path, args: &[&std::ffi::OsStr]) -> Result<()> {
 
 /// The latest release, if it is newer than this build and has an archive for this platform.
 /// An HTTP client that gives up on a stalled connection instead of waiting forever.
-fn agent(total: Duration) -> ureq::Agent {
+pub(crate) fn agent(total: Duration) -> ureq::Agent {
     ureq::config::Config::builder().timeout_connect(Some(Duration::from_secs(15))).timeout_global(Some(total)).build().new_agent()
 }
 
@@ -278,7 +278,7 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64, bool)> {
     Some((parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?, pre))
 }
 
-fn is_newer(candidate: &str, current: &str) -> bool {
+pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
     match (parse_version(candidate), parse_version(current)) {
         // Same numbers: the final release is newer than its pre-releases.
         (Some((a, b, c, pa)), Some((x, y, z, px))) => (a, b, c) > (x, y, z) || ((a, b, c) == (x, y, z) && px && !pa),
@@ -287,12 +287,12 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 /// Where a download says how far it went (and wakes the window up to show it).
-struct Progress {
-    shared: Arc<Mutex<(u64, u64)>>,
-    ctx: egui::Context,
+pub(crate) struct Progress {
+    pub shared: Arc<Mutex<(u64, u64)>>,
+    pub ctx: egui::Context,
 }
 
-fn download(asset: &Asset, progress: &Progress) -> Result<Vec<u8>> {
+pub(crate) fn download(asset: &Asset, progress: &Progress) -> Result<Vec<u8>> {
     use std::io::Read as _;
     // Without GitHub's digest the archive can't be checked: don't install it.
     let expected = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).context("the release publishes no SHA-256 digest for its archive")?;
@@ -375,7 +375,7 @@ fn tempdir(near: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn extract(archive: &[u8], into: &Path) -> Result<()> {
+pub(crate) fn extract(archive: &[u8], into: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         zip::ZipArchive::new(std::io::Cursor::new(archive))?.extract(into)?;
@@ -388,7 +388,7 @@ fn extract(archive: &[u8], into: &Path) -> Result<()> {
 }
 
 /// First file or directory called `name` under `dir`.
-fn find(dir: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn find(dir: &Path, name: &str) -> Option<PathBuf> {
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
         if entry.file_name() == name {

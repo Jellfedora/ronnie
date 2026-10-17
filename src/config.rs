@@ -669,10 +669,12 @@ pub enum Category {
     Games,
     /// Development tools: the Node.js versions.
     Dev,
+    /// The modules to download (Serj…): apps of their own, see `crate::modules`.
+    Modules,
 }
 
 impl Category {
-    pub const ALL: [Category; 7] = [Category::Local, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Games];
+    pub const ALL: [Category; 8] = [Category::Local, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Games, Category::Modules];
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
     /// their usual place.
@@ -1101,7 +1103,7 @@ pub fn config_dir() -> Option<PathBuf> {
     .clone()
 }
 
-/// Empties Ronnie's config directory (the instance lock and the Node.js versions excepted). Nothing is deleted: the files move
+/// Empties Ronnie's config directory (the instance lock, the Node.js versions and the modules excepted). Nothing is deleted: the files move
 /// to a sibling "<dir>-backup-<time>" directory, returned, in case the reset was a mistake.
 pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     let Some(dir) = config_dir() else { return Ok(None) };
@@ -1110,8 +1112,8 @@ pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     let backup = dir.with_file_name(name);
     create_private_dir(&backup)?;
     for entry in fs::read_dir(&dir)?.flatten() {
-        // The Node.js versions installed are tools, not configuration: they stay.
-        if entry.file_name() == "instance.lock" || entry.file_name() == "node" {
+        // The Node.js versions and the modules installed are tools, not configuration: they stay.
+        if entry.file_name() == "instance.lock" || entry.file_name() == "node" || entry.file_name() == "modules" {
             continue;
         }
         fs::rename(entry.path(), backup.join(entry.file_name()))?;
@@ -1119,13 +1121,13 @@ pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
-/// Copies `from` into `to` (files and subdirectories), skipping the instance lock and the Node.js
-/// versions (hundreds of MB each, with symbolic links a copy would break).
+/// Copies `from` into `to` (files and subdirectories), skipping the instance lock, the Node.js
+/// versions (hundreds of MB each, with symbolic links a copy would break) and the modules.
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)?.flatten() {
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        if entry.file_name() == "instance.lock" || entry.file_name() == "node" {
+        if entry.file_name() == "instance.lock" || entry.file_name() == "node" || entry.file_name() == "modules" {
             continue;
         }
         if src.is_dir() {

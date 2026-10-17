@@ -820,6 +820,7 @@ impl App {
         self.library.open(configured_server(&self.config.settings), view);
         self.music_page = true;
         self.dev_page = false;
+        self.modules_page = false;
         self.notes_page = false;
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
