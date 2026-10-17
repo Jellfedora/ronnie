@@ -252,6 +252,34 @@ mod tests {
         assert!(valid_name("Serj.app"));
     }
 
+    /// The whole way, on the network: floor's catalog, the GitHub release, the download checked,
+    /// installed in a temporary config folder. `cargo test -- --ignored installs_serj`.
+    #[test]
+    #[ignore]
+    fn installs_serj() {
+        let dir = std::env::temp_dir().join(format!("ronnie-modules-{}", std::process::id()));
+        // SAFETY: set before any thread reads it, in a test run on its own.
+        unsafe {
+            std::env::set_var("RONNIE_CONFIG_DIR", &dir);
+            std::env::set_var("RONNIE_FLOOR_URL", "https://fedoheim.hopto.org/floor");
+        }
+        let serj = catalog().unwrap().into_iter().find(|m| m.id == "serj").expect("serj in the catalog");
+        let latest = latest(&serj).unwrap().expect("a release with this system's archive");
+        let progress = Arc::new(Mutex::new((0, 0)));
+        install(&serj, &latest, progress.clone(), &egui::Context::default()).unwrap();
+        assert_eq!(installed_version("serj").as_deref(), Some(latest.version.as_str()));
+        assert_eq!(installed().len(), 1);
+        let wanted = if cfg!(target_os = "macos") { serj.app.clone() } else { exe_name(&serj) };
+        let found = update::find(&dir.join("modules/serj/app"), &wanted).expect("installed app");
+        let exe = if cfg!(target_os = "macos") { found.join("Contents/MacOS").join(&serj.exe) } else { found };
+        let out = Command::new(exe).arg("--version").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("serj {}", latest.version));
+        assert!(icon(&serj).is_some_and(|b| b.starts_with(b"\x89PNG")));
+        uninstall("serj").unwrap();
+        assert!(installed_version("serj").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reads_the_catalog() {
         let json = r#"{"modules":[{"id":"serj","name":"Serj","description":"BD","repo":"Jellfedora/serj","icon":"https://x/icon.png","app":"Serj.app","exe":"serj"}]}"#;
