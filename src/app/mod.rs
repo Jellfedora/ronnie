@@ -1305,8 +1305,9 @@ impl App {
                 crate::log::error(&format!("claude: {e}"));
             }
         }
-        if config::OFFICIAL && app.config.settings.claude_notify && !app.read_only {
-            if let Err(e) = crate::claude::ensure_hooks() {
+        let (notify, context) = (app.config.settings.claude_notify, app.config.settings.claude_context);
+        if config::OFFICIAL && (notify || context) && !app.read_only {
+            if let Err(e) = crate::claude::ensure_hooks(notify, context) {
                 crate::log::error(&format!("claude: {e}"));
             }
         }

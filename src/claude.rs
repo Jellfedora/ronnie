@@ -6,7 +6,8 @@
 //!
 //! Claude Code's hooks tell when Claude is done or waits for the user: `ronnie claude-hook` leaves an
 //! event for the Ronnie whose pane it runs in (RONNIE_PANE, RONNIE_CLAUDE_EVENTS), which tells the user
-//! when that pane isn't on screen.
+//! when that pane isn't on screen. And as a session starts in a Ronnie pane, it tells Claude what Ronnie
+//! offers (its Node.js versions, its mail catcher, its SSH servers…), for Claude to suggest them.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -232,8 +233,20 @@ pub fn run_statusline() {
     println!("{}", status_text(&status));
 }
 
-/// The hooks Ronnie sets: Claude is done, or asks the user (a permission, a question).
-const HOOKS: [(&str, Option<&str>); 2] = [("Stop", None), ("Notification", Some("permission_prompt|elicitation_dialog"))];
+/// The hooks Ronnie sets to tell when Claude is done, or asks the user (a permission, a question).
+const NOTIFY_HOOKS: [(&str, Option<&str>); 2] = [("Stop", None), ("Notification", Some("permission_prompt|elicitation_dialog"))];
+/// The hook telling Claude what Ronnie offers, as its session starts (again after a /clear or a compaction).
+const CONTEXT_HOOK: (&str, Option<&str>) = ("SessionStart", None);
+
+/// The hooks wanted: those telling when Claude is done (`notify`), the one telling Claude about Ronnie
+/// (`context`).
+fn wanted_hooks(notify: bool, context: bool) -> Vec<(&'static str, Option<&'static str>)> {
+    let mut hooks = if notify { NOTIFY_HOOKS.to_vec() } else { Vec::new() };
+    if context {
+        hooks.push(CONTEXT_HOOK);
+    }
+    hooks
+}
 
 fn is_our_hook(hook: &Value) -> bool {
     hook.get("command").and_then(Value::as_str).is_some_and(|c| c.trim_end().ends_with(" claude-hook"))
@@ -263,48 +276,42 @@ fn strip_hooks(settings: &mut serde_json::Map<String, Value>) {
     }
 }
 
-/// At launch (official builds, unless the user turned it off): Ronnie's hooks set, or their path
+/// At launch (official builds, unless the user turned them off): Ronnie's hooks set, or their path
 /// updated if the app moved. Nothing when Claude Code isn't installed.
-pub fn ensure_hooks() -> Result<(), String> {
+pub fn ensure_hooks(notify: bool, context: bool) -> Result<(), String> {
     if !settings_path().and_then(|p| p.parent().map(std::path::Path::exists)).unwrap_or(false) {
         return Ok(());
     }
     let settings = read_settings()?;
     let command = ronnie_command("claude-hook");
     let set = |event: &str| hook_commands(&settings, event).any(|h| h.get("command").and_then(Value::as_str) == Some(command.as_str()));
-    if HOOKS.iter().all(|(event, _)| set(event)) {
+    if wanted_hooks(notify, context).iter().all(|(event, _)| set(event)) {
         return Ok(());
     }
-    connect_hooks()
+    set_hooks(notify, context)
 }
 
-/// Sets Ronnie's hooks (next to the user's own).
-pub fn connect_hooks() -> Result<(), String> {
+/// Sets the hooks wanted (next to the user's own), and only those of Ronnie's.
+pub fn set_hooks(notify: bool, context: bool) -> Result<(), String> {
     let mut settings = read_settings()?;
     strip_hooks(&mut settings);
-    let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
-    let Value::Object(hooks) = hooks else { return Err("~/.claude/settings.json : \"hooks\" n'est pas un objet".into()) };
-    for (event, matcher) in HOOKS {
-        let mut group = json!({ "hooks": [{ "type": "command", "command": ronnie_command("claude-hook"), "timeout": 10 }] });
-        if let Some(m) = matcher {
-            group["matcher"] = json!(m);
-        }
-        match hooks.entry(event).or_insert_with(|| json!([])) {
-            Value::Array(groups) => groups.push(group),
-            other => *other = json!([group]),
+    let wanted = wanted_hooks(notify, context);
+    if !wanted.is_empty() {
+        let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
+        let Value::Object(hooks) = hooks else { return Err("~/.claude/settings.json : \"hooks\" n'est pas un objet".into()) };
+        for (event, matcher) in wanted {
+            let mut group = json!({ "hooks": [{ "type": "command", "command": ronnie_command("claude-hook"), "timeout": 10 }] });
+            if let Some(m) = matcher {
+                group["matcher"] = json!(m);
+            }
+            match hooks.entry(event).or_insert_with(|| json!([])) {
+                Value::Array(groups) => groups.push(group),
+                other => *other = json!([group]),
+            }
         }
     }
     write_settings(settings)?;
-    crate::log::info("claude: hooks set");
-    Ok(())
-}
-
-/// Takes Ronnie's hooks out.
-pub fn disconnect_hooks() -> Result<(), String> {
-    let mut settings = read_settings()?;
-    strip_hooks(&mut settings);
-    write_settings(settings)?;
-    crate::log::info("claude: hooks removed");
+    crate::log::info(&format!("claude: hooks set (notify {notify}, context {context})"));
     Ok(())
 }
 
@@ -358,15 +365,89 @@ fn events_dir() -> Option<PathBuf> {
 /// `ronnie claude-hook`: run by Claude Code with the hook's input on stdin. Outside a Ronnie pane,
 /// nothing.
 pub fn run_hook() {
-    let (Some(dir), Some(pane)) = (std::env::var_os("RONNIE_CLAUDE_EVENTS"), std::env::var("RONNIE_PANE").ok()) else { return };
+    let Ok(pane) = std::env::var("RONNIE_PANE") else { return };
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let input: Value = serde_json::from_slice(&input).unwrap_or(Value::Null);
+    if input.get("hook_event_name").and_then(Value::as_str) == Some("SessionStart") {
+        let node = std::env::var_os("RONNIE_NODE_FILE").and_then(|f| std::fs::read_to_string(f).ok());
+        let installed: Vec<(String, PathBuf)> = crate::node::installed().into_iter().filter_map(|v| Some((v.clone(), crate::node::bin_dir(&v)?))).collect();
+        let text = context(crate::config::load_config().ok().as_ref(), node.as_deref().map(str::trim).filter(|b| !b.is_empty()), &installed);
+        println!("{}", json!({ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": text } }));
+        return;
+    }
+    let Some(dir) = std::env::var_os("RONNIE_CLAUDE_EVENTS") else { return };
     let Some(event) = Event::from_hook(&input, &pane) else { return };
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     if let Ok(text) = serde_json::to_string(&event) {
         let _ = write_atomic(&PathBuf::from(dir).join(format!("{nanos}-{}.json", std::process::id())), &text);
     }
+}
+
+/// What Claude is told about Ronnie as its session starts in a pane: what Ronnie offers, and where it is
+/// in Ronnie (in the user's language), then what this pane and this Ronnie have (the pane's Node.js
+/// version, `node_bin`, the versions installed, the mail catcher, the servers saved: their names only).
+fn context(config: Option<&crate::config::Config>, node_bin: Option<&str>, installed: &[(String, PathBuf)]) -> String {
+    let t = config.map_or_else(crate::i18n::Lang::default, |c| c.settings.language).strings();
+    let port = config.map_or(crate::mailbox::DEFAULT_PORT, |c| c.settings.mail_port);
+    let mut text = format!(
+        "This Claude Code session runs in a terminal pane of Ronnie, a terminal app with development tools of its own. \
+When one of them fits what the user is doing, suggest it (saying where it is in Ronnie) rather than an outside tool; \
+don't list them unasked. Ronnie's labels below are in the user's language.
+
+- Node.js versions, nvm-style, installed in Ronnie's own folder (nothing on the system): each local pane uses one, first in \
+its PATH. The user picks it from the pane's bar (green Node badge, \"{node_manage}\") or in the \"{dev}\" category of \
+the left column, which installs any nodejs.org version. When a project needs another version, ask the user to pick it in \
+Ronnie rather than installing nvm, fnm, Volta or a system Node; for one command, an installed version's folder can be put \
+first in PATH (`PATH=\"<bin folder>:$PATH\" npm test`).
+- A mail catcher (\"{dev}\" > \"{mail}\"): an SMTP server on 127.0.0.1:{port} (no TLS, any login accepted) that keeps \
+every mail sent to it, delivering none, and shows them in Ronnie (HTML, text, headers, source, attachments). To test the \
+mails of a project, point its SMTP settings at it instead of suggesting Mailpit or MailHog; the user starts it in Ronnie.
+- SSH servers (\"{hosts}\"): saved with their login (key, password, jump host), imported from ~/.ssh/config; each opens \
+a terminal and a file browser (upload, download, edit, permissions) with the server's health. Commands Claude runs here \
+are local: for a server, the user opens its terminal in Ronnie.
+- Databases (\"{dbs}\"): MariaDB / MySQL and SQL Server, directly or through an SSH server; tables to browse and edit, \
+an SQL editor with completion.
+- Terminals (\"{local}\"): tabs, splits and profiles (a project's tab saved with its folder and panes); beside them the \
+profile's files, its git (changes, history, issues) and an editor. Ronnie tells the user when you are done or wait for \
+them while this pane isn't on screen.",
+        node_manage = t.node_manage,
+        dev = t.cat_dev,
+        mail = t.mail_title,
+        hosts = t.home_hosts,
+        dbs = t.home_databases,
+        local = t.cat_local,
+    );
+    text.push_str("\n\nThis pane and this Ronnie now:");
+    // The version is its folder's name: <versions>/v22.11.0/bin (on Windows, the version's folder itself).
+    let pane_version = node_bin.map(|bin| {
+        let path = std::path::Path::new(bin);
+        let dir = if path.file_name().is_some_and(|n| n == "bin") { path.parent().unwrap_or(path) } else { path };
+        dir.file_name().map_or_else(|| bin.to_owned(), |n| n.to_string_lossy().into_owned())
+    });
+    text.push_str(&match pane_version {
+        Some(v) => format!("\n- This pane's Node.js: {v} (Ronnie's)."),
+        None => "\n- This pane uses no Node.js version of Ronnie's (the system's, if any).".to_owned(),
+    });
+    if installed.is_empty() {
+        text.push_str("\n- No Node.js version installed in Ronnie yet.");
+    } else {
+        let list: Vec<String> = installed.iter().map(|(v, bin)| format!("{v} ({})", bin.display())).collect();
+        text.push_str(&format!("\n- Node.js versions installed in Ronnie, with their bin folder: {}.", list.join(", ")));
+    }
+    let running = config.is_some_and(|c| c.settings.mail_running);
+    text.push_str(&format!("\n- The mail catcher is {} (port {port}).", if running { "running" } else { "stopped" }));
+    if let Some(config) = config {
+        if !config.ssh.is_empty() {
+            let names: Vec<&str> = config.ssh.iter().map(|h| h.name.as_str()).collect();
+            text.push_str(&format!("\n- SSH servers saved in Ronnie: {}.", names.join(", ")));
+        }
+        if !config.databases.is_empty() {
+            let names: Vec<String> = config.databases.iter().map(|d| format!("{} ({})", d.name, d.engine.label())).collect();
+            text.push_str(&format!("\n- Databases saved in Ronnie: {}.", names.join(", ")));
+        }
+    }
+    text
 }
 
 /// Watches this Ronnie's events folder (twice a second): what comes goes to `queue`, and the window
@@ -495,5 +576,19 @@ mod tests {
         let Value::Object(map) = &mut settings else { unreachable!() };
         strip_hooks(map);
         assert_eq!(settings, json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }] }, "model": "opus" }));
+        assert_eq!(wanted_hooks(false, true), vec![("SessionStart", None)]);
+        assert_eq!(wanted_hooks(true, false).len(), 2);
+    }
+
+    #[test]
+    fn tells_claude_about_ronnie() {
+        let installed = [("v22.11.0".to_owned(), PathBuf::from("/r/node/versions/v22.11.0/bin")), ("v18.20.4".to_owned(), PathBuf::from("/r/node/versions/v18.20.4/bin"))];
+        let text = context(None, Some("/r/node/versions/v22.11.0/bin"), &installed);
+        assert!(text.contains("127.0.0.1:1025"));
+        assert!(text.contains("This pane's Node.js: v22.11.0 (Ronnie's)."));
+        assert!(text.contains("v18.20.4 (/r/node/versions/v18.20.4/bin)"));
+        assert!(text.contains("mail catcher is stopped"));
+        let text = context(None, None, &[]);
+        assert!(text.contains("no Node.js version of Ronnie's") && text.contains("No Node.js version installed"));
     }
 }

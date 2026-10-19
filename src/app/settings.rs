@@ -1359,9 +1359,21 @@ impl App {
                 let was = picked.claude_notify;
                 toggle(ui, theme, &mut picked.claude_notify);
                 if picked.claude_notify != was {
-                    let done = if picked.claude_notify { crate::claude::connect_hooks() } else { crate::claude::disconnect_hooks() };
+                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context);
                     if done.is_err() {
                         picked.claude_notify = was;
+                    }
+                    self.claude_error = done.err();
+                }
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.claude_context_row, Some(t.claude_context_desc), |ui| {
+                let was = picked.claude_context;
+                toggle(ui, theme, &mut picked.claude_context);
+                if picked.claude_context != was {
+                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context);
+                    if done.is_err() {
+                        picked.claude_context = was;
                     }
                     self.claude_error = done.err();
                 }
