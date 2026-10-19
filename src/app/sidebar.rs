@@ -136,6 +136,7 @@ impl App {
         self.games_hub = false;
         self.dev_page = false;
         self.modules_page = false;
+        self.procs_page = false;
         self.home_which = super::four::HomeGame::SpeedMetal;
         self.music_page = false;
         self.notes_page = false;

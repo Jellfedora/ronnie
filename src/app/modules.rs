@@ -184,6 +184,7 @@ impl App {
     /// when it is old (or failed).
     pub(super) fn open_modules_page(&mut self) {
         self.modules_page = true;
+        self.procs_page = false;
         self.dev_page = false;
         self.music_page = false;
         self.notes_page = false;

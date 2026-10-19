@@ -27,7 +27,7 @@ impl App {
     /// sidebar shows the terminals (not the SSH, the databases… nor in a game).
     pub(super) fn ws_bar_shown(&self) -> bool {
         let home = self.shown_tab().is_none() && self.category() == Category::Local;
-        !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || home)
+        !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !(self.home.is_some() && self.home_game) && (self.ws_tab().is_some() || home)
     }
 
     /// The folder tab `i`'s tree starts from: the one picked, else its first pane's.

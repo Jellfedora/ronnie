@@ -821,6 +821,7 @@ impl App {
         self.music_page = true;
         self.dev_page = false;
         self.modules_page = false;
+        self.procs_page = false;
         self.notes_page = false;
         self.ctx.memory_mut(|m| m.stop_text_input());
     }

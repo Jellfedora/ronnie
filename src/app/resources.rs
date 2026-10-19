@@ -72,12 +72,18 @@ impl App {
             y += GAUGE_GAP;
         }
 
-        // Under the pointer: the details, beside.
+        // Under the pointer: the details, beside, and the way to the processes (a click on the gauges
+        // goes there too). The details stay while the pointer goes to them.
         let area = Rect::from_x_y_ranges(x.min - 4.0..=x.max + 4.0, top - 6.0..=bottom + 4.0);
-        if !ui.rect_contains_pointer(area) {
+        let id = egui::Id::new("resources-details");
+        let shown: Option<Rect> = ui.ctx().data(|d| d.get_temp(id));
+        let over_details = shown.zip(ui.ctx().pointer_hover_pos()).is_some_and(|(r, p)| r.union(area).contains(p));
+        if !ui.rect_contains_pointer(area) && !over_details {
+            ui.ctx().data_mut(|d| d.remove::<Rect>(id));
             return;
         }
-        egui::Area::new(egui::Id::new("resources-details")).order(egui::Order::Tooltip).pivot(Align2::LEFT_BOTTOM).fixed_pos(Pos2::new(area.max.x + 10.0, bottom + 6.0)).interactable(false).show(ui.ctx(), |ui| {
+        let mut open = ui.interact(area, id.with("gauges"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        let details = egui::Area::new(id).order(egui::Order::Foreground).pivot(Align2::LEFT_BOTTOM).fixed_pos(Pos2::new(area.max.x + 10.0, bottom + 6.0)).show(ui.ctx(), |ui| {
             Frame::NONE
                 .fill(theme.chrome_bg)
                 .stroke(Stroke::new(1.0, theme.tab_hover))
@@ -87,8 +93,18 @@ impl App {
                 .show(ui, |ui| {
                     ui.set_width(DETAILS_W - 2.0 * PAD);
                     sections(ui, t, &theme, &s);
+                    ui.add_space(4.0);
+                    let label = egui::RichText::new(format!("{}  ›", t.resources_procs)).size(12.5).color(theme.text);
+                    if ui.add(egui::Button::new(label).corner_radius(6.0).min_size(Vec2::new(ui.available_width(), 28.0))).clicked() {
+                        open = true;
+                    }
                 });
         });
+        ui.ctx().data_mut(|d| d.insert_temp(id, details.response.rect));
+        if open {
+            ui.ctx().data_mut(|d| d.remove::<Rect>(id));
+            self.open_procs_page();
+        }
     }
 }
 

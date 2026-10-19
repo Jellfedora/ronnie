@@ -35,6 +35,7 @@ mod issues;
 mod jurassic;
 mod library;
 mod mail;
+mod procs;
 mod mailhtml;
 mod loading;
 mod motion;
@@ -315,6 +316,7 @@ struct WindowSlot {
     music_page: bool,
     dev_page: bool,
     modules_page: bool,
+    procs_page: bool,
     notes_page: bool,
 }
 
@@ -405,12 +407,15 @@ pub struct App {
     /// The sidebar's Dev category: the Node.js versions.
     dev: dev::Dev,
     mail: mail::MailCatcher,
+    procs: procs::ProcsPage,
     /// The music page: shown instead of the tabs (in this window), and what it holds (for all).
     music_page: bool,
     /// The Dev page (the Node.js versions and those of the terminals): shown instead of the tabs.
     dev_page: bool,
     /// The Downloads page (the modules: Serj…): shown instead of the tabs.
     modules_page: bool,
+    /// The machine's processes (opened from the resources' gauges): shown instead of the tabs.
+    procs_page: bool,
     modules: modules::Modules,
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
@@ -1139,9 +1144,11 @@ impl App {
             music_volume_changed: false,
             dev: dev::Dev::new(),
             mail: mail::MailCatcher::default(),
+            procs: procs::ProcsPage::default(),
             music_page: false,
             dev_page: false,
             modules_page: false,
+            procs_page: false,
             modules: modules::Modules::default(),
             notes_page: false,
             sidebar_seen: (None, false, false, false, false, false),
@@ -1843,6 +1850,7 @@ impl App {
         swap(&mut self.music_page, &mut slot.music_page);
         swap(&mut self.dev_page, &mut slot.dev_page);
         swap(&mut self.modules_page, &mut slot.modules_page);
+        swap(&mut self.procs_page, &mut slot.procs_page);
         swap(&mut self.notes_page, &mut slot.notes_page);
     }
 
@@ -2048,7 +2056,7 @@ impl App {
         }
         let t = self.t();
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page;
+        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page;
         let mut notified = false;
         for (event, i) in mine {
             let shown = tab_shown(self, i);
@@ -2399,6 +2407,7 @@ impl App {
             self.music_page = false;
             self.dev_page = false;
             self.modules_page = false;
+            self.procs_page = false;
             self.notes_page = false;
             self.focus_terminal = true;
         }
@@ -2421,6 +2430,7 @@ impl App {
         self.music_page = false;
         self.dev_page = false;
         self.modules_page = false;
+        self.procs_page = false;
         self.notes_page = false;
         // The keys go to the game, not to a terminal no longer shown.
         self.ctx.memory_mut(|m| m.stop_text_input());
@@ -2472,6 +2482,7 @@ impl App {
         self.music_page = false;
         self.dev_page = false;
         self.modules_page = false;
+        self.procs_page = false;
         self.home_game = false;
     }
 
@@ -2565,8 +2576,8 @@ impl App {
         if self.home.is_some() {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
-        // The Dev and Downloads pages, likewise.
-        if self.dev_page || self.modules_page {
+        // The Dev, Downloads and processes pages, likewise.
+        if self.dev_page || self.modules_page || self.procs_page {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The music page, likewise; its search takes ⌘ F.
@@ -2622,7 +2633,7 @@ impl App {
             });
         }
         // A file open beside the terminals (VS Code layout), likewise.
-        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page).and_then(|t| t.docs.get_mut(t.doc?)) {
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page).and_then(|t| t.docs.get_mut(t.doc?)) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
                     if ui.input(|i| i.modifiers.alt) {
@@ -3999,7 +4010,7 @@ impl App {
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
             // Its last tab closed, out of a game, the notes and the music: the window goes too.
-            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page;
+            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page;
             let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {
                 while !self.tabs.is_empty() {
@@ -4166,6 +4177,12 @@ impl App {
                     self.game.leave();
                     self.fold_for_game(false);
                     self.modules_page_ui(ui, rect);
+                    return;
+                }
+                if self.procs_page {
+                    self.game.leave();
+                    self.fold_for_game(false);
+                    self.procs_page_ui(ui, rect);
                     return;
                 }
                 if self.shown_tab().is_none() {
@@ -4985,6 +5002,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finished_commands(ctx);
         self.dev_poll();
+        self.procs.poll();
         self.modules_poll();
         self.mail_poll(ctx);
         self.watch_servers(ctx);
