@@ -7,7 +7,8 @@
 //! Claude Code's hooks tell when Claude is done or waits for the user: `ronnie claude-hook` leaves an
 //! event for the Ronnie whose pane it runs in (RONNIE_PANE, RONNIE_CLAUDE_EVENTS), which tells the user
 //! when that pane isn't on screen. And as a session starts in a Ronnie pane, it tells Claude what Ronnie
-//! offers (its Node.js versions, its mail catcher, its SSH servers…), for Claude to suggest them.
+//! offers (its Node.js versions, its mail catcher, its SSH servers…), for Claude to suggest them, and
+//! the user's other projects lately (see `crate::worklog`, fed by the requests made in the panes).
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -91,7 +92,7 @@ pub fn read_usage() -> Option<Usage> {
 }
 
 /// Replaces `path` with `text` all at once (a reader never sees half a file).
-fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+pub fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -158,7 +159,7 @@ pub fn connected() -> bool {
 /// At launch (official builds, unless the user removed it): Ronnie set as Claude Code's status line
 /// command, or its path updated if the app moved. Nothing when Claude Code isn't installed.
 pub fn ensure_connected() -> Result<(), String> {
-    if !settings_path().and_then(|p| p.parent().map(std::path::Path::exists)).unwrap_or(false) {
+    if !installed() {
         return Ok(());
     }
     let settings = read_settings()?;
@@ -235,15 +236,21 @@ pub fn run_statusline() {
 
 /// The hooks Ronnie sets to tell when Claude is done, or asks the user (a permission, a question).
 const NOTIFY_HOOKS: [(&str, Option<&str>); 2] = [("Stop", None), ("Notification", Some("permission_prompt|elicitation_dialog"))];
-/// The hook telling Claude what Ronnie offers, as its session starts (again after a /clear or a compaction).
+/// The hook telling Claude what Ronnie offers and the other projects, as its session starts (again
+/// after a /clear or a compaction).
 const CONTEXT_HOOK: (&str, Option<&str>) = ("SessionStart", None);
+/// The hook noting what the user asks, for the other sessions (see `crate::worklog`).
+const PROMPT_HOOK: (&str, Option<&str>) = ("UserPromptSubmit", None);
 
 /// The hooks wanted: those telling when Claude is done (`notify`), the one telling Claude about Ronnie
-/// (`context`).
-fn wanted_hooks(notify: bool, context: bool) -> Vec<(&'static str, Option<&'static str>)> {
+/// (`context`), those sharing what the user works on between the sessions (`worklog`).
+fn wanted_hooks(notify: bool, context: bool, worklog: bool) -> Vec<(&'static str, Option<&'static str>)> {
     let mut hooks = if notify { NOTIFY_HOOKS.to_vec() } else { Vec::new() };
-    if context {
+    if context || worklog {
         hooks.push(CONTEXT_HOOK);
+    }
+    if worklog {
+        hooks.push(PROMPT_HOOK);
     }
     hooks
 }
@@ -276,26 +283,31 @@ fn strip_hooks(settings: &mut serde_json::Map<String, Value>) {
     }
 }
 
+/// Claude Code is installed (its settings folder is there).
+pub fn installed() -> bool {
+    settings_path().and_then(|p| p.parent().map(std::path::Path::exists)).unwrap_or(false)
+}
+
 /// At launch (official builds, unless the user turned them off): Ronnie's hooks set, or their path
 /// updated if the app moved. Nothing when Claude Code isn't installed.
-pub fn ensure_hooks(notify: bool, context: bool) -> Result<(), String> {
-    if !settings_path().and_then(|p| p.parent().map(std::path::Path::exists)).unwrap_or(false) {
+pub fn ensure_hooks(notify: bool, context: bool, worklog: bool) -> Result<(), String> {
+    if !installed() {
         return Ok(());
     }
     let settings = read_settings()?;
     let command = ronnie_command("claude-hook");
     let set = |event: &str| hook_commands(&settings, event).any(|h| h.get("command").and_then(Value::as_str) == Some(command.as_str()));
-    if wanted_hooks(notify, context).iter().all(|(event, _)| set(event)) {
+    if wanted_hooks(notify, context, worklog).iter().all(|(event, _)| set(event)) {
         return Ok(());
     }
-    set_hooks(notify, context)
+    set_hooks(notify, context, worklog)
 }
 
 /// Sets the hooks wanted (next to the user's own), and only those of Ronnie's.
-pub fn set_hooks(notify: bool, context: bool) -> Result<(), String> {
+pub fn set_hooks(notify: bool, context: bool, worklog: bool) -> Result<(), String> {
     let mut settings = read_settings()?;
     strip_hooks(&mut settings);
-    let wanted = wanted_hooks(notify, context);
+    let wanted = wanted_hooks(notify, context, worklog);
     if !wanted.is_empty() {
         let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
         let Value::Object(hooks) = hooks else { return Err("~/.claude/settings.json : \"hooks\" n'est pas un objet".into()) };
@@ -311,7 +323,7 @@ pub fn set_hooks(notify: bool, context: bool) -> Result<(), String> {
         }
     }
     write_settings(settings)?;
-    crate::log::info(&format!("claude: hooks set (notify {notify}, context {context})"));
+    crate::log::info(&format!("claude: hooks set (notify {notify}, context {context}, worklog {worklog})"));
     Ok(())
 }
 
@@ -369,12 +381,39 @@ pub fn run_hook() {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let input: Value = serde_json::from_slice(&input).unwrap_or(Value::Null);
-    if input.get("hook_event_name").and_then(Value::as_str) == Some("SessionStart") {
-        let node = std::env::var_os("RONNIE_NODE_FILE").and_then(|f| std::fs::read_to_string(f).ok());
-        let installed: Vec<(String, PathBuf)> = crate::node::installed().into_iter().filter_map(|v| Some((v.clone(), crate::node::bin_dir(&v)?))).collect();
-        let text = context(crate::config::load_config().ok().as_ref(), node.as_deref().map(str::trim).filter(|b| !b.is_empty()), &installed);
-        println!("{}", json!({ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": text } }));
-        return;
+    let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default();
+    let cwd = Some(PathBuf::from(text("cwd"))).filter(|c| c.is_absolute()).or_else(|| std::env::current_dir().ok());
+    match text("hook_event_name") {
+        "SessionStart" => {
+            let config = crate::config::load_config().ok();
+            // Each part as set (a hook left by an older setting tells nothing more).
+            let settings = config.as_ref().map(|c| &c.settings);
+            let mut parts = Vec::new();
+            if settings.is_none_or(|s| s.claude_context) {
+                let node = std::env::var_os("RONNIE_NODE_FILE").and_then(|f| std::fs::read_to_string(f).ok());
+                let installed: Vec<(String, PathBuf)> = crate::node::installed().into_iter().filter_map(|v| Some((v.clone(), crate::node::bin_dir(&v)?))).collect();
+                parts.push(context(config.as_ref(), node.as_deref().map(str::trim).filter(|b| !b.is_empty()), &installed));
+            }
+            if settings.is_none_or(|s| s.claude_worklog)
+                && let Some(others) = cwd.as_deref().and_then(crate::worklog::session_started)
+            {
+                parts.push(others);
+            }
+            if !parts.is_empty() {
+                println!("{}", json!({ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": parts.join("\n\n") } }));
+            }
+            return;
+        }
+        // Noted only: nothing printed (it would be added to the request).
+        "UserPromptSubmit" => {
+            if let Some(cwd) = cwd
+                && crate::config::load_config().is_ok_and(|c| c.settings.claude_worklog)
+            {
+                crate::worklog::prompted(&cwd, text("session_id"), text("prompt"));
+            }
+            return;
+        }
+        _ => {}
     }
     let Some(dir) = std::env::var_os("RONNIE_CLAUDE_EVENTS") else { return };
     let Some(event) = Event::from_hook(&input, &pane) else { return };
@@ -576,8 +615,9 @@ mod tests {
         let Value::Object(map) = &mut settings else { unreachable!() };
         strip_hooks(map);
         assert_eq!(settings, json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }] }, "model": "opus" }));
-        assert_eq!(wanted_hooks(false, true), vec![("SessionStart", None)]);
-        assert_eq!(wanted_hooks(true, false).len(), 2);
+        assert_eq!(wanted_hooks(false, true, false), vec![("SessionStart", None)]);
+        assert_eq!(wanted_hooks(true, false, false).len(), 2);
+        assert_eq!(wanted_hooks(false, false, true), vec![("SessionStart", None), ("UserPromptSubmit", None)]);
     }
 
     #[test]

@@ -36,6 +36,7 @@ mod terminal;
 mod theme;
 mod update;
 mod voice;
+mod worklog;
 #[cfg(windows)]
 mod winproc;
 

@@ -511,6 +511,8 @@ pub struct App {
     splash: Option<f64>,
     /// The tour of the features: at the first launch, or asked again from the settings.
     tour: Option<tour::Tour>,
+    /// Whether to turn on the shared memory of projects (see `crate::worklog`): asked once, after the tour.
+    worklog_ask: bool,
     ctx: egui::Context,
     /// The window being drawn (the main one is ROOT), and the other windows (see `WindowSlot`).
     viewport: egui::ViewportId,
@@ -1224,6 +1226,7 @@ impl App {
             close_confirmed: false,
             splash: Some(f64::NAN),
             tour: None,
+            worklog_ask: false,
             ctx: cc.egui_ctx.clone(),
         };
 
@@ -1306,15 +1309,16 @@ impl App {
         if app.config.settings.tour_version < tour::VERSION {
             app.tour = Some(tour::Tour::new());
         }
+        app.worklog_ask = !app.config.settings.claude_worklog_asked && !app.read_only && crate::claude::installed();
         // Claude's usage on by default (an installed Ronnie: a dev build's path mustn't stay there).
         if config::OFFICIAL && app.config.settings.claude_statusline && !app.read_only {
             if let Err(e) = crate::claude::ensure_connected() {
                 crate::log::error(&format!("claude: {e}"));
             }
         }
-        let (notify, context) = (app.config.settings.claude_notify, app.config.settings.claude_context);
-        if config::OFFICIAL && (notify || context) && !app.read_only {
-            if let Err(e) = crate::claude::ensure_hooks(notify, context) {
+        let (notify, context, worklog) = (app.config.settings.claude_notify, app.config.settings.claude_context, app.config.settings.claude_worklog);
+        if config::OFFICIAL && (notify || context || worklog) && !app.read_only {
+            if let Err(e) = crate::claude::ensure_hooks(notify, context, worklog) {
                 crate::log::error(&format!("claude: {e}"));
             }
         }
@@ -4931,6 +4935,9 @@ impl App {
         // The tour, once the splash is over.
         if main_window && self.splash.is_none() {
             self.tour_window(ui.ctx());
+            if self.tour.is_none() {
+                self.worklog_ask_window(ui.ctx());
+            }
         }
         self.toasts_ui(ui.ctx());
 

@@ -1359,7 +1359,7 @@ impl App {
                 let was = picked.claude_notify;
                 toggle(ui, theme, &mut picked.claude_notify);
                 if picked.claude_notify != was {
-                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context);
+                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context, picked.claude_worklog);
                     if done.is_err() {
                         picked.claude_notify = was;
                     }
@@ -1371,9 +1371,22 @@ impl App {
                 let was = picked.claude_context;
                 toggle(ui, theme, &mut picked.claude_context);
                 if picked.claude_context != was {
-                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context);
+                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context, picked.claude_worklog);
                     if done.is_err() {
                         picked.claude_context = was;
+                    }
+                    self.claude_error = done.err();
+                }
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.claude_worklog_row, Some(t.claude_worklog_desc), |ui| {
+                let was = picked.claude_worklog;
+                toggle(ui, theme, &mut picked.claude_worklog);
+                if picked.claude_worklog != was {
+                    picked.claude_worklog_asked = true;
+                    let done = crate::claude::set_hooks(picked.claude_notify, picked.claude_context, picked.claude_worklog);
+                    if done.is_err() {
+                        picked.claude_worklog = was;
                     }
                     self.claude_error = done.err();
                 }

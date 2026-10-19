@@ -119,6 +119,53 @@ impl App {
     }
 }
 
+impl App {
+    /// Whether to turn on the shared memory of projects, asked once: yes or no answers it for good;
+    /// closed, it is asked again at the next launch.
+    pub(super) fn worklog_ask_window(&mut self, ctx: &egui::Context) {
+        if !self.worklog_ask {
+            return;
+        }
+        let t = self.config.settings.language.strings();
+        let theme = self.theme.clone();
+        let (mut yes, mut no) = (false, false);
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
+        let modal = egui::Modal::new(egui::Id::new("worklog-ask")).frame(frame).backdrop_color(Color32::from_black_alpha(170)).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(egui::RichText::new(t.worklog_ask_title).size(19.0).strong().color(theme.text));
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(egui::RichText::new(t.worklog_ask_body).size(13.5).color(theme.text_muted)).wrap());
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(egui::RichText::new(t.worklog_ask_private).size(12.5).color(theme.text_muted.gamma_multiply(0.85))).wrap());
+            ui.add_space(18.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let primary = egui::Button::new(egui::RichText::new(t.worklog_ask_yes).size(13.5).color(Color32::WHITE)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0));
+                if ui.add(primary).clicked() {
+                    yes = true;
+                }
+                if ui.add(egui::Button::new(egui::RichText::new(t.worklog_ask_no).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                    no = true;
+                }
+            });
+        });
+        if yes || no {
+            let s = &mut self.config.settings;
+            if yes {
+                match crate::claude::set_hooks(s.claude_notify, s.claude_context, true) {
+                    Ok(()) => s.claude_worklog = true,
+                    Err(e) => self.error = Some(e),
+                }
+            }
+            self.config.settings.claude_worklog_asked = true;
+            self.save_config();
+        }
+        if yes || no || modal.should_close() {
+            self.worklog_ask = false;
+            self.focus_terminal = true;
+        }
+    }
+}
+
 /// Where the parts of the drawing are.
 struct Scene {
     strip: Rect,
