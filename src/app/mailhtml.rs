@@ -885,9 +885,18 @@ fn text_runs(ui: &mut Ui, runs: &[Run], align: TextAlign) {
     if resp.clicked()
         && let Some(link) = resp.interact_pointer_pos().and_then(link_at)
     {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(link));
+        open_link(&link);
     }
     ui.painter().galley(origin, galley, INK);
+}
+
+/// A mail's link in the browser (egui's `open_url` does nothing here: eframe is built without it).
+/// Web and mail addresses only: a `file:` or an app's scheme in a mail is not followed.
+fn open_link(link: &str) {
+    let lower = link.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:") {
+        crate::terminal::open_url(link);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -934,7 +943,7 @@ fn image(ui: &mut Ui, src: &str, alt: &str, width: Option<f32>, height: Option<f
         if let Some(link) = link {
             let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(link);
             if resp.clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(link));
+                open_link(link);
             }
         }
     });
