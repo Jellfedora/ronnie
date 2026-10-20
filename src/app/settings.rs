@@ -240,9 +240,17 @@ impl App {
         Ok((total, new))
     }
 
-    /// Adds the hosts of ~/.ssh/config that Ronnie doesn't have yet (in their groups).
-    pub(super) fn import_ssh(&mut self) {
-        match self.new_ssh_config_hosts() {
+    /// PuTTY's SSH sessions that Ronnie doesn't have yet.
+    pub(super) fn new_putty_hosts(&self) -> std::io::Result<(usize, Vec<SshHost>)> {
+        let hosts = ssh::import_putty_sessions()?;
+        let total = hosts.len();
+        let new = hosts.into_iter().filter(|host| !self.config.ssh.iter().any(|h| h.name == host.name && h.host == host.host)).collect();
+        Ok((total, new))
+    }
+
+    /// Adds the hosts of ~/.ssh/config (or of PuTTY's sessions) that Ronnie doesn't have yet (in their groups).
+    pub(super) fn import_ssh(&mut self, putty: bool) {
+        match if putty { self.new_putty_hosts() } else { self.new_ssh_config_hosts() } {
             Ok((_, hosts)) => {
                 self.config.ssh.extend(hosts);
                 self.config.normalize();
@@ -257,6 +265,9 @@ impl App {
         let (mut edit, mut delete, mut new_host, mut import) = (None, None, false, false);
         let sections = self.grouped_ids(false);
         let found = self.new_ssh_config_hosts();
+        // Shown only when PuTTY has sessions.
+        let putty = self.new_putty_hosts().ok().filter(|(total, _)| *total > 0);
+        let mut import_putty = false;
         egui::ScrollArea::vertical().id_salt("settings-ssh").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
             ui.set_width(ui.available_width() - 12.0);
             // Import from ~/.ssh/config.
@@ -276,6 +287,19 @@ impl App {
                     }
                 }
             });
+            if let Some((total, new)) = &putty {
+                card(ui, &theme, Some(t.putty_import_title), |ui| {
+                    let summary = t.import_found.replace("{total}", &total.to_string()).replace("{new}", &new.len().to_string());
+                    setting_row(ui, &theme, &summary, Some(t.putty_import_explain), |ui| {
+                        let label = t.import_button.replace("{new}", &new.len().to_string());
+                        let (fill, color) = if new.is_empty() { (theme.tab_hover, theme.text_muted) } else { (theme.accent, theme.bg) };
+                        let button = egui::Button::new(egui::RichText::new(label).size(13.0).color(color)).fill(fill).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                        if ui.add_enabled(!new.is_empty(), button).clicked() {
+                            import_putty = true;
+                        }
+                    });
+                });
+            }
 
             // The hosts, by group, with "New host" by the heading.
             ui.horizontal(|ui| {
@@ -367,8 +391,8 @@ impl App {
                 });
             }
         });
-        if import {
-            self.import_ssh();
+        if import || import_putty {
+            self.import_ssh(import_putty);
         }
         if new_host {
             self.host_editor = Some(HostEditor::new(SshHost::new(), true, None));

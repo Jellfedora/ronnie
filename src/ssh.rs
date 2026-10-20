@@ -744,9 +744,159 @@ fn parse_ssh_config(text: &str) -> Vec<SshHost> {
     hosts
 }
 
+// PuTTY sessions import.
+
+/// The SSH sessions saved in PuTTY (Windows: in the registry; elsewhere: ~/.putty/sessions), as hosts in
+/// a "PuTTY" group. Its key files (.ppk) are used through their OpenSSH copy (see `putty_copy`).
+pub fn import_putty_sessions() -> std::io::Result<Vec<SshHost>> {
+    Ok(putty_sessions()?.iter().filter_map(|(name, values)| putty_session_host(name, values)).collect())
+}
+
+type PuttySession = (String, std::collections::HashMap<String, String>);
+
+#[cfg(not(windows))]
+fn putty_sessions() -> std::io::Result<Vec<PuttySession>> {
+    let home = directories::BaseDirs::new().ok_or(std::io::ErrorKind::NotFound)?;
+    // Newer PuTTYs use ~/.config/putty when it exists.
+    let dirs = [home.config_dir().join("putty/sessions"), home.home_dir().join(".putty/sessions")];
+    let dir = dirs.iter().find(|d| d.is_dir()).ok_or(std::io::ErrorKind::NotFound)?;
+    let mut sessions = Vec::new();
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let values = text.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
+        sessions.push((entry.file_name().to_string_lossy().into_owned(), values));
+    }
+    sessions.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(sessions)
+}
+
+#[cfg(windows)]
+fn putty_sessions() -> std::io::Result<Vec<PuttySession>> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, REG_VALUE_TYPE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let mut key: HKEY = std::ptr::null_mut();
+    // SAFETY: NUL-terminated path; `key` is valid for writing.
+    let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide(r"Software\SimonTatham\PuTTY\Sessions").as_ptr(), 0, KEY_READ, &mut key) };
+    if opened != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(opened as i32));
+    }
+    const FIELDS: [&str; 9] = ["HostName", "PortNumber", "UserName", "Protocol", "PublicKeyFile", "ProxyMethod", "ProxyHost", "ProxyPort", "ProxyUsername"];
+    let mut sessions = Vec::new();
+    for index in 0.. {
+        // Session names are at most 255 characters (and NUL-terminated here).
+        let mut name = [0u16; 256];
+        let mut len = name.len() as u32;
+        // SAFETY: `name` holds `len` characters; the other outputs aren't wanted.
+        let found = unsafe { RegEnumKeyExW(key, index, name.as_mut_ptr(), &mut len, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+        if found != ERROR_SUCCESS {
+            break;
+        }
+        let mut values = std::collections::HashMap::new();
+        for field in FIELDS {
+            let mut data = [0u16; 1024];
+            let mut size = std::mem::size_of_val(&data) as u32;
+            let mut kind: REG_VALUE_TYPE = 0;
+            // SAFETY: `name` is the NUL-terminated subkey; `data` holds `size` bytes.
+            let read = unsafe { RegGetValueW(key, name.as_ptr(), wide(field).as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_DWORD, &mut kind, data.as_mut_ptr().cast(), &mut size) };
+            if read != ERROR_SUCCESS {
+                continue;
+            }
+            let value = if kind == REG_DWORD {
+                (u32::from(data[0]) | (u32::from(data[1]) << 16)).to_string()
+            } else {
+                String::from_utf16_lossy(&data[..(size as usize / 2).min(data.len())]).trim_end_matches('\0').to_owned()
+            };
+            values.insert(field.to_owned(), value);
+        }
+        sessions.push((String::from_utf16_lossy(&name[..len as usize]), values));
+    }
+    // SAFETY: opened above.
+    unsafe { RegCloseKey(key) };
+    Ok(sessions)
+}
+
+/// The host of a PuTTY session (its name as PuTTY stores it, "%20" for a space...): SSH sessions with
+/// an address only, not PuTTY's "Default Settings".
+fn putty_session_host(name: &str, values: &std::collections::HashMap<String, String>) -> Option<SshHost> {
+    let value = |key: &str| values.get(key).map(|v| v.trim()).filter(|v| !v.is_empty());
+    let name = percent_decode(name);
+    if name == "Default Settings" || value("Protocol").is_some_and(|p| p != "ssh") {
+        return None;
+    }
+    let mut host = SshHost::new();
+    // "user@host" is allowed in the host name field.
+    let (user, address) = match value("HostName")?.rsplit_once('@') {
+        Some((user, address)) => (Some(user), address),
+        None => (value("UserName"), value("HostName")?),
+    };
+    host.name = name;
+    host.host = address.to_owned();
+    host.user = user.map(str::to_owned);
+    host.port = value("PortNumber").and_then(|p| p.parse().ok()).filter(|p| *p != 22);
+    if let Some(key) = value("PublicKeyFile") {
+        host.identity_file = Some(PathBuf::from(key));
+        host.auth = Some(SshAuth::Key);
+    }
+    // Through another SSH server (PuTTY's proxy type "SSH").
+    if value("ProxyMethod") == Some("6") {
+        if let Some(proxy) = value("ProxyHost") {
+            let mut jump = value("ProxyUsername").map(|u| format!("{u}@")).unwrap_or_default();
+            jump.push_str(proxy);
+            if let Some(port) = value("ProxyPort").filter(|p| *p != "22") {
+                jump.push_str(&format!(":{port}"));
+            }
+            host.jump = Some(jump);
+        }
+    }
+    host.group = Some("PuTTY".to_owned());
+    host.imported = true;
+    Some(host)
+}
+
+/// "%XX" sequences as their bytes (PuTTY's way of storing session names).
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%').then(|| text.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_putty_sessions() {
+        let session = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::HashMap<_, _>>();
+        let web = putty_session_host(
+            "Prod%20web",
+            &session(&[("HostName", "deploy@10.0.0.5"), ("PortNumber", "2222"), ("Protocol", "ssh"), ("PublicKeyFile", r"C:\keys\prod.ppk"), ("ProxyMethod", "6"), ("ProxyHost", "bastion"), ("ProxyUsername", "me"), ("ProxyPort", "22")]),
+        )
+        .unwrap();
+        assert_eq!((web.name.as_str(), web.host.as_str(), web.user.as_deref(), web.port), ("Prod web", "10.0.0.5", Some("deploy"), Some(2222)));
+        assert_eq!(web.auth_method(), SshAuth::Key);
+        assert_eq!(web.jump.as_deref(), Some("me@bastion"));
+        assert_eq!(web.group.as_deref(), Some("PuTTY"));
+        let plain = putty_session_host("box", &session(&[("HostName", "box.lan"), ("UserName", "root"), ("PortNumber", "22")])).unwrap();
+        assert_eq!((plain.user.as_deref(), plain.port, plain.auth_method()), (Some("root"), None, SshAuth::Auto));
+        assert!(putty_session_host("Default%20Settings", &session(&[("HostName", "x")])).is_none());
+        assert!(putty_session_host("serial", &session(&[("HostName", "COM1"), ("Protocol", "serial")])).is_none());
+        assert!(putty_session_host("empty", &session(&[("HostName", "")])).is_none());
+    }
 
     #[test]
     fn quotes_remote_paths() {
