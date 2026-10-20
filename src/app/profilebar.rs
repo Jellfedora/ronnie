@@ -69,7 +69,7 @@ impl App {
         bg.context_menu(|ui| {
             ui.set_min_width(170.0);
             menu_item(ui, t.new_tab, TabAction::New, &mut action);
-            menu_item(ui, t.new_group, TabAction::NewGroup(true), &mut action);
+            menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Profiles), &mut action);
         });
 
         let (pointer, pointer_down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
@@ -398,7 +398,7 @@ impl App {
                 *action = Some(TabAction::StartGroupRename(gid));
             }
             if menu_row(ui, &theme, t.new_group, false) {
-                *action = Some(TabAction::NewGroup(true));
+                *action = Some(TabAction::NewGroup(config::GroupKind::Profiles));
             }
             menu_line(ui, &theme);
             if menu_row(ui, &theme, t.delete_group, true) {

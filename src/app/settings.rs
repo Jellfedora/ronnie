@@ -93,7 +93,7 @@ impl App {
             .config
             .groups
             .iter()
-            .filter(|g| g.local == local)
+            .filter(|g| g.kind() == if local { config::GroupKind::Profiles } else { config::GroupKind::Ssh })
             .map(|g| (Some(g.name.clone()), g.items.iter().copied().filter(of_kind).collect::<Vec<_>>()))
             .filter(|(_, ids)| !ids.is_empty())
             .collect();
@@ -760,7 +760,7 @@ impl App {
         let Some(editor) = &mut self.host_editor else { return };
         let t = self.config.settings.language.strings();
         let theme = &self.theme;
-        let groups: Vec<(Uuid, String)> = self.config.groups.iter().map(|g| (g.id, g.name.clone())).collect();
+        let groups: Vec<(Uuid, String)> = self.config.groups.iter().filter(|g| g.kind() == config::GroupKind::Ssh).map(|g| (g.id, g.name.clone())).collect();
         let mut result: Option<bool> = None; // Some(true) = save, Some(false) = cancel
         let mut delete = false;
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);

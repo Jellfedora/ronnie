@@ -153,7 +153,8 @@ pub struct Config {
     /// SSH connections. Passwords are in passwords.json, encrypted (see `ssh`).
     #[serde(default)]
     pub ssh: Vec<crate::ssh::SshHost>,
-    /// Sidebar arrangement of profiles and SSH hosts: first those outside any group, then the groups.
+    /// Sidebar arrangement of profiles, SSH hosts and databases: first those outside any group, then the
+    /// groups.
     #[serde(default)]
     pub ungrouped: Vec<Uuid>,
     #[serde(default)]
@@ -249,19 +250,30 @@ impl DbConnection {
     }
 }
 
-/// A named, collapsible set of profiles and SSH hosts in the sidebar.
+/// What a sidebar group holds (each kind is listed in its own section).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GroupKind {
+    Profiles,
+    Ssh,
+    Databases,
+}
+
+/// A named, collapsible set of profiles, SSH hosts or databases in the sidebar.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Group {
     pub id: Uuid,
     pub name: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
-    /// Profile or SSH host ids, in display order.
+    /// Profile, SSH host or database ids, in display order.
     #[serde(default)]
     pub items: Vec<Uuid>,
     /// A group of local profiles (in the LOCAL section) rather than of SSH hosts.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local: bool,
+    /// A group of database connections (in the Databases section).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub db: bool,
     /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
     /// version never erases them.
     #[serde(flatten)]
@@ -269,16 +281,38 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn new(name: &str, local: bool) -> Self {
-        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local, extra: Default::default() }
+    pub fn new(name: &str, kind: GroupKind) -> Self {
+        let (local, db) = (kind == GroupKind::Profiles, kind == GroupKind::Databases);
+        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local, db, extra: Default::default() }
+    }
+
+    pub fn kind(&self) -> GroupKind {
+        match (self.db, self.local) {
+            (true, _) => GroupKind::Databases,
+            (false, true) => GroupKind::Profiles,
+            (false, false) => GroupKind::Ssh,
+        }
     }
 }
 
 impl Config {
-    /// Keeps the sidebar arrangement consistent with the existing profiles and hosts: unknown or
-    /// duplicate ids are dropped, new items are placed (in the group named by an imported host, if any).
+    /// What kind of sidebar item `id` is (None: none that exists).
+    pub fn item_kind(&self, id: Uuid) -> Option<GroupKind> {
+        if self.profiles.iter().any(|p| p.id == id) {
+            Some(GroupKind::Profiles)
+        } else if self.ssh.iter().any(|h| h.id == id) {
+            Some(GroupKind::Ssh)
+        } else if self.databases.iter().any(|c| c.id == id) {
+            Some(GroupKind::Databases)
+        } else {
+            None
+        }
+    }
+
+    /// Keeps the sidebar arrangement consistent with the existing profiles, hosts and databases: unknown
+    /// or duplicate ids are dropped, new items are placed (in the group named by an imported host, if any).
     pub fn normalize(&mut self) {
-        let known: Vec<Uuid> = self.profiles.iter().map(|p| p.id).chain(self.ssh.iter().map(|h| h.id)).collect();
+        let known: Vec<Uuid> = self.profiles.iter().map(|p| p.id).chain(self.ssh.iter().map(|h| h.id)).chain(self.databases.iter().map(|c| c.id)).collect();
         let mut seen = std::collections::HashSet::new();
         let mut keep = |id: &Uuid| known.contains(id) && seen.insert(*id);
         self.ungrouped.retain(&mut keep);
@@ -295,22 +329,24 @@ impl Config {
             let index = match self.groups.iter().position(|g| g.name == name) {
                 Some(i) => i,
                 None => {
-                    self.groups.push(Group::new(&name, false));
+                    self.groups.push(Group::new(&name, GroupKind::Ssh));
                     self.groups.len() - 1
                 }
             };
             self.groups[index].items.push(host.id);
             seen.insert(host.id);
         }
-        // Profiles live in local groups and hosts in SSH groups (groups made before the LOCAL / SSH split
-        // may mix them): a group of profiles only becomes local, misplaced items leave their group.
+        // Profiles live in local groups, hosts in SSH groups and databases in database groups (groups
+        // made before the LOCAL / SSH split may mix profiles and hosts): a group of profiles only becomes
+        // local, misplaced items leave their group.
         let is_profile = |id: &Uuid| self.profiles.iter().any(|p| p.id == *id);
+        let kinds: std::collections::HashMap<Uuid, GroupKind> = known.iter().filter_map(|id| Some((*id, self.item_kind(*id)?))).collect();
         for group in &mut self.groups {
-            if !group.local && !group.items.is_empty() && group.items.iter().all(is_profile) {
+            if group.kind() == GroupKind::Ssh && !group.items.is_empty() && group.items.iter().all(is_profile) {
                 group.local = true;
             }
-            let local = group.local;
-            let (keep, misplaced): (Vec<Uuid>, Vec<Uuid>) = group.items.iter().partition(|id| is_profile(id) == local);
+            let kind = group.kind();
+            let (keep, misplaced): (Vec<Uuid>, Vec<Uuid>) = group.items.iter().partition(|id| kinds.get(id) == Some(&kind));
             group.items = keep;
             self.ungrouped.extend(misplaced);
         }
@@ -1303,14 +1339,36 @@ mod tests {
         let mut host = crate::ssh::SshHost::new();
         host.id = h;
         config.ssh.push(host);
-        let mut only_profiles = Group::new("Caplaser", false);
+        let mut only_profiles = Group::new("Caplaser", GroupKind::Ssh);
         only_profiles.items.push(p);
-        let mut ssh_group = Group::new("Serveurs", false);
+        let mut ssh_group = Group::new("Serveurs", GroupKind::Ssh);
         ssh_group.items.push(h);
         config.groups = vec![only_profiles, ssh_group];
         config.normalize();
         assert!(config.groups[0].local && config.groups[0].items == [p]);
         assert!(!config.groups[1].local && config.groups[1].items == [h]);
+    }
+
+    #[test]
+    fn keeps_databases_in_their_groups() {
+        let (h, d) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut config = Config::default();
+        let mut host = crate::ssh::SshHost::new();
+        host.id = h;
+        config.ssh.push(host);
+        let mut db = DbConnection::new();
+        db.id = d;
+        config.databases.push(db);
+        let mut dbs = Group::new("Prod", GroupKind::Databases);
+        dbs.items = vec![d, h];
+        config.groups = vec![dbs];
+        config.normalize();
+        // The host doesn't belong there: it leaves the group.
+        assert_eq!(config.groups[0].kind(), GroupKind::Databases);
+        assert_eq!(config.groups[0].items, [d]);
+        assert_eq!(config.ungrouped, [h]);
+        let json = config.to_json();
+        assert_eq!(Config::from_json(&json).unwrap().groups[0].kind(), GroupKind::Databases);
     }
 
     #[test]

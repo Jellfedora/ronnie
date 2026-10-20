@@ -526,8 +526,7 @@ impl App {
     pub(super) fn profiles_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>, local: bool) {
         let t = self.t();
         let painter = ui.painter().clone();
-        // The dragged row is painted above the others.
-        let drag_painter = painter.clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, ui.id().with("item-drag")));
+        let kind = if local { config::GroupKind::Profiles } else { config::GroupKind::Ssh };
 
         // SSH header: title and a "+" menu.
         if !local {
@@ -537,22 +536,30 @@ impl App {
         let plus = icon_button(ui, &painter, plus_rect, "profiles-plus", &self.theme, paint_plus);
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
             menu_item(ui, t.new_host, TabAction::NewHost, action);
-            menu_item(ui, t.new_group, TabAction::NewGroup(false), action);
+            menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Ssh), action);
         });
         *y += SECTION_HEADER_H;
         }
 
-        if !local && self.config.ssh.is_empty() && !self.config.groups.iter().any(|g| !g.local) {
+        if !local && self.config.ssh.is_empty() && !self.config.groups.iter().any(|g| g.kind() == kind) {
             let hint = painter.layout(t.no_profiles.to_owned(), FontId::proportional(12.0), self.theme.text_muted.gamma_multiply(0.7), row_w - 12.0);
             let h = hint.size().y;
             painter.galley(Pos2::new(left + 6.0, *y + 4.0), hint, self.theme.text_muted);
             *y += h + 12.0;
             return;
         }
+        self.grouped_rows(ui, left, row_w, y, action, kind);
+    }
 
-        let of_kind = |id: &&Uuid| if local { self.config.profiles.iter().any(|p| p.id == **id) } else { self.config.ssh.iter().any(|h| h.id == **id) };
+    /// The items of one kind (profiles, SSH hosts or databases) and their groups: rows dragged to
+    /// reorder them or move them into a group.
+    fn grouped_rows(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>, kind: config::GroupKind) {
+        let painter = ui.painter().clone();
+        // The dragged row is painted above the others.
+        let drag_painter = painter.clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, ui.id().with("item-drag")));
+        let of_kind = |id: &&Uuid| self.config.item_kind(**id) == Some(kind);
         let mut rows: Vec<Row> = self.config.ungrouped.iter().filter(of_kind).map(|id| Row::Item(None, *id)).collect();
-        for (gi, g) in self.config.groups.iter().enumerate().filter(|(_, g)| g.local == local) {
+        for (gi, g) in self.config.groups.iter().enumerate().filter(|(_, g)| g.kind() == kind) {
             rows.push(Row::Group(gi));
             if !g.collapsed {
                 rows.extend(g.items.iter().filter(of_kind).map(|id| Row::Item(Some(gi), *id)));
@@ -574,6 +581,7 @@ impl App {
             };
             match row {
                 Row::Group(gi) => self.group_row(ui, painter, gi, slot, rect, dragged_here, action),
+                Row::Item(_, id) if kind == config::GroupKind::Databases => self.db_row(ui, painter, id, slot, rect, dragged_here, action),
                 Row::Item(_, id) => self.item_row(ui, painter, id, slot, rect, dragged_here, action),
             }
         }
@@ -601,7 +609,7 @@ impl App {
     pub(super) fn group_row(&mut self, ui: &mut Ui, painter: &egui::Painter, gi: usize, slot: Rect, rect: Rect, dragged: bool, action: &mut Option<TabAction>) {
         let t = self.t();
         let group = &self.config.groups[gi];
-        let (gid, collapsed, group_local) = (group.id, group.collapsed, group.local);
+        let (gid, collapsed, kind) = (group.id, group.collapsed, group.kind());
         let resp = ui.interact(slot, ui.id().with(("group", gid)), Sense::click_and_drag());
         if resp.drag_started() {
             if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
@@ -637,7 +645,7 @@ impl App {
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
         let galley = painter.layout_job(job);
         painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
-        let count = group.items.iter().filter(|id| if group_local { self.config.profiles.iter().any(|p| p.id == **id) } else { self.config.ssh.iter().any(|h| h.id == **id) }).count();
+        let count = group.items.iter().filter(|id| self.config.item_kind(**id) == Some(kind)).count();
         // How many items, in a small pill.
         {
             let galley = painter.layout_no_wrap(count.to_string(), FontId::proportional(10.5), self.theme.text_muted);
@@ -653,7 +661,7 @@ impl App {
         resp.context_menu(|ui| {
             ui.set_min_width(170.0);
             menu_item(ui, t.rename, TabAction::StartGroupRename(gid), action);
-            menu_item(ui, t.new_group, TabAction::NewGroup(group_local), action);
+            menu_item(ui, t.new_group, TabAction::NewGroup(kind), action);
             ui.separator();
             menu_item(ui, t.delete_group, TabAction::DeleteGroup(gid), action);
         });
@@ -929,11 +937,13 @@ impl App {
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
         paint_panel_title(&painter, header, t.db_section, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
-        if icon_button(ui, &painter, plus_rect, "db-plus", &self.theme, paint_plus).on_hover_text(t.db_new_connection).clicked() {
-            *action = Some(TabAction::NewDb);
-        }
+        let plus = icon_button(ui, &painter, plus_rect, "db-plus", &self.theme, paint_plus);
+        egui::Popup::menu(&plus).width(210.0).show(|ui| {
+            menu_item(ui, t.db_new_connection, TabAction::NewDb, action);
+            menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Databases), action);
+        });
         *y += SECTION_HEADER_H;
-        if self.config.databases.is_empty() {
+        if self.config.databases.is_empty() && !self.config.groups.iter().any(|g| g.kind() == config::GroupKind::Databases) {
             if self.local_db {
                 // The button fits its label; the text before it goes on two lines when the sidebar is
                 // narrow, the card growing with it.
@@ -962,51 +972,60 @@ impl App {
             }
             return;
         }
-        for c in self.config.databases.clone() {
-            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
-            *y += ROW_H + ROW_GAP;
-            let resp = ui.interact(slot, ui.id().with(("db-item", c.id)), Sense::click());
-            let open = self.tabs.iter().position(|tab| tab.db == Some(c.id));
-            let active = open.is_some() && open == self.shown_tab();
-            let hovered = resp.contains_pointer();
-            paint_row_bg(&painter, slot, active, hovered, &self.theme);
-            let dot = Pos2::new(slot.min.x + 17.0, slot.center().y);
-            paint_badge(&painter, dot, &c.name, c.color, false, open.is_some(), active, &self.theme);
-            let close_rect = Rect::from_center_size(Pos2::new(slot.max.x - 14.0, slot.center().y), Vec2::splat(18.0));
-            let show_close = open.is_some() && (active || hovered);
-            let color = if active { self.theme.text } else if open.is_some() || hovered { self.theme.text_muted } else { self.theme.text_muted.gamma_multiply(0.75) };
-            let text_rect = Rect::from_min_max(Pos2::new(slot.min.x + 36.0, slot.min.y), Pos2::new(if show_close { close_rect.min.x - 4.0 } else { slot.max.x - 10.0 }, slot.max.y));
-            let mut job = egui::text::LayoutJob::simple_singleline(c.name.clone(), FontId::proportional(13.0), color);
-            job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
-            let galley = painter.layout_job(job);
-            painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
-            if show_close {
-                let close = ui.interact(close_rect, ui.id().with(("db-close", c.id)), Sense::click());
-                if close.hovered() {
-                    painter.rect_filled(close_rect, 4.0, self.theme.tab_hover.gamma_multiply(1.8));
-                }
-                paint_cross(&painter, close_rect.center(), if close.hovered() { self.theme.text } else { self.theme.text_muted });
-                if close.clicked() {
-                    *action = open.map(TabAction::Close);
-                }
+        self.grouped_rows(ui, left, row_w, y, action, config::GroupKind::Databases);
+    }
+
+    /// A database connection in the sidebar.
+    fn db_row(&mut self, ui: &mut Ui, painter: &egui::Painter, id: Uuid, slot: Rect, rect: Rect, dragged: bool, action: &mut Option<TabAction>) {
+        let t = self.t();
+        let Some(c) = self.config.databases.iter().find(|c| c.id == id).cloned() else { return };
+        let resp = ui.interact(slot, ui.id().with(("db-item", c.id)), Sense::click_and_drag());
+        if resp.drag_started() {
+            if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                self.item_drag = Some(ItemDrag { what: Dragged::Item(id), grab: p.y - slot.min.y });
             }
-            let resp = resp.on_hover_text(c.address());
-            if resp.double_clicked() {
-                *action = Some(TabAction::EditDb(c.id));
-            } else if resp.clicked() {
-                action.get_or_insert(TabAction::OpenDb(c.id));
-            }
-            resp.context_menu(|ui| {
-                ui.set_min_width(170.0);
-                menu_item(ui, t.connect, TabAction::OpenDb(c.id), action);
-                menu_item(ui, t.edit, TabAction::EditDb(c.id), action);
-                ui.separator();
-                if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
-                    *action = Some(TabAction::DeleteDb(c.id));
-                    ui.close();
-                }
-            });
         }
+        let open = self.tabs.iter().position(|tab| tab.db == Some(c.id));
+        let active = open.is_some() && open == self.shown_tab();
+        let hovered = resp.contains_pointer() && self.item_drag.is_none();
+        paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
+        let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
+        paint_badge(painter, dot, &c.name, c.color, false, open.is_some(), active, &self.theme);
+        let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
+        let show_close = open.is_some() && (active || hovered);
+        let color = if active { self.theme.text } else if open.is_some() || hovered { self.theme.text_muted } else { self.theme.text_muted.gamma_multiply(0.75) };
+        let text_rect = Rect::from_min_max(Pos2::new(rect.min.x + 36.0, rect.min.y), Pos2::new(if show_close { close_rect.min.x - 4.0 } else { rect.max.x - 10.0 }, rect.max.y));
+        let mut job = egui::text::LayoutJob::simple_singleline(c.name.clone(), FontId::proportional(13.0), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
+        let galley = painter.layout_job(job);
+        painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
+        if show_close {
+            let close = ui.interact(close_rect, ui.id().with(("db-close", c.id)), Sense::click());
+            if close.hovered() {
+                painter.rect_filled(close_rect, 4.0, self.theme.tab_hover.gamma_multiply(1.8));
+            }
+            paint_cross(painter, close_rect.center(), if close.hovered() { self.theme.text } else { self.theme.text_muted });
+            if close.clicked() {
+                *action = open.map(TabAction::Close);
+            }
+        }
+        let resp = resp.on_hover_text(c.address());
+        if resp.double_clicked() {
+            *action = Some(TabAction::EditDb(c.id));
+        } else if resp.clicked() {
+            action.get_or_insert(TabAction::OpenDb(c.id));
+        }
+        resp.context_menu(|ui| {
+            ui.set_min_width(170.0);
+            menu_item(ui, t.connect, TabAction::OpenDb(c.id), action);
+            menu_item(ui, t.edit, TabAction::EditDb(c.id), action);
+            self.move_to_menu(ui, c.id, config::GroupKind::Databases, action);
+            ui.separator();
+            if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
+                *action = Some(TabAction::DeleteDb(c.id));
+                ui.close();
+            }
+        });
     }
 
     /// The "Notes" section: the folders of notes, and their bin when it holds something. A click
@@ -1184,27 +1203,7 @@ impl App {
         if let (Some(i), true) = (item.open, item.ssh) {
             menu_item(ui, t.reconnect, TabAction::Reconnect(i), action);
         }
-        {
-            ui.menu_button(t.move_to, |ui| {
-                let current = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
-                if ui.add_enabled(current.is_some(), egui::Button::new(t.no_group)).clicked() {
-                    *action = Some(TabAction::DropItem(id, None, None));
-                    ui.close();
-                }
-                // Profiles go into local groups, hosts into SSH groups.
-                for g in self.config.groups.iter().filter(|g| g.local != item.ssh) {
-                    if ui.add_enabled(current != Some(g.id), egui::Button::new(&g.name)).clicked() {
-                        *action = Some(TabAction::DropItem(id, Some(g.id), None));
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button(t.new_group).clicked() {
-                    *action = Some(TabAction::NewGroupWith(id));
-                    ui.close();
-                }
-            });
-        }
+        self.move_to_menu(ui, id, if item.ssh { config::GroupKind::Ssh } else { config::GroupKind::Profiles }, action);
         ui.separator();
         ui.label(egui::RichText::new(t.color).size(12.0).strong().color(self.theme.text_muted));
         ui.horizontal(|ui| {
@@ -1230,6 +1229,29 @@ impl App {
             menu_item(ui, t.close, TabAction::Close(i), action);
         }
         menu_item(ui, t.delete, if item.ssh { TabAction::DeleteHost(id) } else { TabAction::DeleteProfile(id) }, action);
+    }
+
+    /// "Move to" submenu of an item: out of groups, into another group of its kind, or a new one.
+    fn move_to_menu(&self, ui: &mut Ui, id: Uuid, kind: config::GroupKind, action: &mut Option<TabAction>) {
+        let t = self.t();
+        ui.menu_button(t.move_to, |ui| {
+            let current = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
+            if ui.add_enabled(current.is_some(), egui::Button::new(t.no_group)).clicked() {
+                *action = Some(TabAction::DropItem(id, None, None));
+                ui.close();
+            }
+            for g in self.config.groups.iter().filter(|g| g.kind() == kind) {
+                if ui.add_enabled(current != Some(g.id), egui::Button::new(&g.name)).clicked() {
+                    *action = Some(TabAction::DropItem(id, Some(g.id), None));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button(t.new_group).clicked() {
+                *action = Some(TabAction::NewGroupWith(id));
+                ui.close();
+            }
+        });
     }
 
     /// Right-click menu of a tab.
@@ -1602,15 +1624,15 @@ impl App {
                 }
                 self.group_rename = None;
             }
-            Some(TabAction::NewGroup(local)) => {
-                let group = config::Group::new(t.new_group_name, local);
+            Some(TabAction::NewGroup(kind)) => {
+                let group = config::Group::new(t.new_group_name, kind);
                 self.group_rename = Some((group.id, group.name.clone(), true));
                 self.config.groups.push(group);
             }
             Some(TabAction::EditProfile(id)) => self.open_profile_editor(id),
             Some(TabAction::NewGroupWith(item)) => {
-                let local = self.config.profiles.iter().any(|p| p.id == item);
-                let mut group = config::Group::new(t.new_group_name, local);
+                let kind = self.config.item_kind(item).unwrap_or(config::GroupKind::Ssh);
+                let mut group = config::Group::new(t.new_group_name, kind);
                 self.config.unplace(item);
                 group.items.push(item);
                 self.group_rename = Some((group.id, group.name.clone(), true));

@@ -3788,8 +3788,8 @@ enum TabAction {
     ToggleGroup(Uuid),
     StartGroupRename(Uuid),
     RenameGroup(Uuid, String),
-    /// New group of local profiles (true) or of SSH hosts.
-    NewGroup(bool),
+    /// New group of local profiles, SSH hosts or databases.
+    NewGroup(config::GroupKind),
     /// New group holding this item.
     NewGroupWith(Uuid),
     /// Opens the profile editor.
