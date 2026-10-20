@@ -438,7 +438,7 @@ don't list them unasked. Ronnie's labels below are in the user's language.
 its PATH. The user picks it from the pane's bar (green Node badge, \"{node_manage}\") or in the \"{dev}\" category of \
 the left column, which installs any nodejs.org version. When a project needs another version, ask the user to pick it in \
 Ronnie rather than installing nvm, fnm, Volta or a system Node; for one command, an installed version's folder can be put \
-first in PATH (`PATH=\"<bin folder>:$PATH\" npm test`).
+first in PATH (`PATH=\"<bin folder>:$PATH\" npm test`{path_note}).
 - A mail catcher (\"{dev}\" > \"{mail}\"): an SMTP server on 127.0.0.1:{port} (no TLS, any login accepted) that keeps \
 every mail sent to it, delivering none, and shows them in Ronnie (HTML, text, headers, source, attachments). To test the \
 mails of a project, point its SMTP settings at it instead of suggesting Mailpit or MailHog; the user starts it in Ronnie.
@@ -450,6 +450,8 @@ an SQL editor with completion.
 - Terminals (\"{local}\"): tabs, splits and profiles (a project's tab saved with its folder and panes); beside them the \
 profile's files, its git (changes, history, issues) and an editor. Ronnie tells the user when you are done or wait for \
 them while this pane isn't on screen.",
+        // Claude Code runs its commands in Git Bash there: C:\Users\… is written /c/Users/….
+        path_note = if cfg!(windows) { "; in Git Bash, the folder written /c/Users/…" } else { "" },
         node_manage = t.node_manage,
         dev = t.cat_dev,
         mail = t.mail_title,
