@@ -187,6 +187,8 @@ pub struct Terminal {
     local_shell: bool,
     /// Its RONNIE_PANE: Claude Code's hooks name the pane with it (see `claude::Event`).
     token: Option<String>,
+    /// When the program was started.
+    started: Instant,
 }
 
 impl Terminal {
@@ -294,6 +296,7 @@ impl Terminal {
             flash: None,
             local_shell: false,
             token: None,
+            started: Instant::now(),
         }
     }
 
@@ -443,6 +446,26 @@ impl Terminal {
 
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::Relaxed)
+    }
+
+    /// Windows: a local shell still silent after `after`, its pseudo console having sent only escape
+    /// sequences. PowerShell sometimes hangs like that when a restored tab starts (keys then do
+    /// nothing), while a new one in its place starts fine. With what came out, for the log.
+    /// Silent but not for that long yet: looked at again then.
+    pub fn stalled(&self, ctx: &egui::Context, after: Duration) -> Option<String> {
+        if !cfg!(windows) || !self.local_shell || self.has_exited() {
+            return None;
+        }
+        let shell = self.shell.lock().ok()?;
+        if shell.printed || shell.integrated {
+            return None;
+        }
+        let waited = self.started.elapsed();
+        if waited < after {
+            ctx.request_repaint_after(after - waited);
+            return None;
+        }
+        Some(shell.head.escape_ascii().to_string())
     }
 
     /// Ready for commands typed for the user: the shell shows its prompt (marked by Ronnie's zsh and

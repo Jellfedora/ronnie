@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 const MAX_LEN: usize = 4096;
 /// Longest command line kept for a notification.
 const MAX_COMMAND: usize = 200;
+/// First bytes of output kept (see `Shell::head`).
+const HEAD_LEN: usize = 300;
 
 /// What the shell reported so far.
 #[derive(Default)]
@@ -28,6 +30,10 @@ pub struct Shell {
     pub reports_input: bool,
     /// Waiting at its prompt (marked), no command running.
     pub at_prompt: bool,
+    /// Text came out, not only escape sequences (a pseudo console starting sends some by itself).
+    pub printed: bool,
+    /// The first bytes received, for the log when the shell never shows up.
+    pub head: Vec<u8>,
 }
 
 /// A command that ran to its end.
@@ -46,6 +52,8 @@ enum State {
     Ground,
     Esc,
     Osc,
+    /// A control sequence (ESC [), up to its final byte.
+    Csi,
     /// ESC inside an OSC: "\" ends it, anything else starts another escape sequence.
     OscEsc,
 }
@@ -61,17 +69,25 @@ pub struct Scanner {
 impl Scanner {
     /// Scans a chunk of output, updating `shell` with the sequences found.
     pub fn scan(&mut self, bytes: &[u8], shell: &mut Shell) {
+        if shell.head.len() < HEAD_LEN {
+            shell.head.extend_from_slice(&bytes[..bytes.len().min(HEAD_LEN - shell.head.len())]);
+        }
         let mut i = 0;
         while i < bytes.len() {
             let b = bytes[i];
             match self.state {
-                State::Ground => match memchr(0x1b, &bytes[i..]) {
-                    Some(at) => {
-                        i += at;
-                        self.state = State::Esc;
+                State::Ground => {
+                    let at = memchr(0x1b, &bytes[i..]);
+                    let text = &bytes[i..i + at.unwrap_or(bytes.len() - i)];
+                    shell.printed |= text.iter().any(|&c| c > b' ' && c != 0x7f);
+                    match at {
+                        Some(at) => {
+                            i += at;
+                            self.state = State::Esc;
+                        }
+                        None => return,
                     }
-                    None => return,
-                },
+                }
                 State::Esc => {
                     self.state = match b {
                         b']' => {
@@ -79,8 +95,17 @@ impl Scanner {
                             self.overflow = false;
                             State::Osc
                         }
-                        0x1b => State::Esc,
+                        b'[' => State::Csi,
+                        // ESC, or an intermediate byte (ESC ( B...): the sequence goes on.
+                        0x1b | 0x20..=0x2f => State::Esc,
                         _ => State::Ground,
+                    }
+                }
+                State::Csi => {
+                    self.state = match b {
+                        0x40..=0x7e => State::Ground,
+                        0x1b => State::Esc,
+                        _ => State::Csi,
                     }
                 }
                 State::Osc => match b {
@@ -263,6 +288,15 @@ mod tests {
     fn ignores_end_without_start() {
         let shell = scan(&[b"\x1b]133;D;0\x07\x1b]133;D\x07"]);
         assert!(shell.finished.is_empty());
+    }
+
+    #[test]
+    fn tells_text_from_escapes() {
+        // What ConPTY sends before the shell writes anything.
+        let quiet = scan(&[b"\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H\x1b]0;C:\\pwsh.exe\x07\x1b(B\x1b[?25h", b"\r\n  \x1b[", b"1;1H"]);
+        assert!(!quiet.printed);
+        assert!(scan(&[b"\x1b[32m", b"PS C:\\> "]).printed);
+        assert!(scan(&["\x1b[mé".as_bytes()]).printed);
     }
 
     #[test]

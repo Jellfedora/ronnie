@@ -62,6 +62,8 @@ mod workspace;
 
 /// The strip of category icons, on the left of the sidebar.
 const STRIP_W: f32 = 52.0;
+/// A local shell (Windows) that has written nothing for this long after starting is started again.
+const SHELL_STALL: Duration = Duration::from_secs(10);
 /// The sidebar unfolded: the strip, and the panel listing the category picked.
 /// The sidebar's panel (beside its strip), but the file tree's, as wide as dragged.
 const PANEL_W: f32 = 216.0;
@@ -120,6 +122,9 @@ pub struct Tab {
     /// Panes whose shell starts the first time the tab is shown: restoring many tabs at once
     /// would otherwise start all their shells together and saturate the CPU.
     pending: Vec<PaneId>,
+    /// Panes started again on their own, their shell having never shown up (see `Terminal::stalled`):
+    /// once only.
+    restarted: std::collections::HashSet<PaneId>,
     /// SSH tabs: the file manager (created when first shown), and whether it is shown instead of the
     /// terminals.
     files: Option<Box<files::FileManager>>,
@@ -150,7 +155,7 @@ pub struct Done {
 impl Tab {
     fn new(layout: Node, panes: HashMap<PaneId, Terminal>) -> Self {
         let focused = layout.first_leaf();
-        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), nodes: HashMap::new(), dead: Default::default(), pending: Vec::new(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
+        Self { name: None, color: None, panes, layout, focused, rects: Vec::new(), profile: None, ssh: None, cwds: HashMap::new(), histories: HashMap::new(), names: HashMap::new(), startup: HashMap::new(), startup_due: HashMap::new(), nodes: HashMap::new(), dead: Default::default(), pending: Vec::new(), restarted: Default::default(), files: None, show_files: false, done: None, db: None, db_view: None, show_db: false, root: None, docs: Vec::new(), doc: None, git_side: None, show_diff: false }
     }
 
     /// Snapshot of what should be saved for this tab.
@@ -4410,6 +4415,14 @@ impl App {
                             tab.startup_due.remove(&id);
                         } else {
                             ui.ctx().request_repaint_after(Duration::from_millis(100));
+                        }
+                    }
+                    // A shell that never showed up (Windows): started again, as "Relaunch the shell" would.
+                    if local && relaunch.is_none() && !tab.restarted.contains(&id) {
+                        if let Some(head) = term.stalled(ui.ctx(), SHELL_STALL) {
+                            crate::log::info(&format!("shell silent after {}s, started again; it sent: {head}", SHELL_STALL.as_secs()));
+                            tab.restarted.insert(id);
+                            relaunch = Some((id, tab.startup_due.contains_key(&id)));
                         }
                     }
                     // Local panes show their directory (optional); SSH panes their host and a reconnect button.
