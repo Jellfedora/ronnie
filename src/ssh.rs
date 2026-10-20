@@ -167,7 +167,12 @@ impl SshHost {
             args.extend(["-l".to_owned(), user.clone()]);
         }
         if let Some(key) = self.key() {
-            args.extend(["-i".to_owned(), expand_home(key).display().to_string()]);
+            let mut key = expand_home(key);
+            // A PuTTY key: its OpenSSH copy (a protected one made with the saved passphrase, if any).
+            if is_putty_key(&key) {
+                key = putty_copy(&key, || self.uses_saved_password().then(|| load_password(self.id)).flatten()).unwrap_or(key);
+            }
+            args.extend(["-i".to_owned(), key.display().to_string()]);
             args.extend(["-o".to_owned(), "IdentitiesOnly=yes".to_owned()]);
         }
         // Straight to the chosen method: agent keys tried first could use up the server's attempts.
@@ -404,6 +409,41 @@ pub fn is_putty_key(path: &Path) -> bool {
     let mut head = [0u8; 20];
     let n = std::fs::File::open(expand_home(path)).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
     head[..n].starts_with(b"PuTTY-User-Key-File")
+}
+
+/// Why a PuTTY key has no OpenSSH copy.
+#[derive(Debug)]
+pub enum PuttyCopyError {
+    Key(crate::putty::Error),
+    Write(std::io::Error),
+}
+
+/// The OpenSSH copy of a PuTTY key (ssh can't read .ppk files), made now if needed: a protected key is
+/// unlocked with `passphrase` (asked only then) and its copy stays protected by it. The copies are kept
+/// next to secret.key (not in a synced config folder), named after the key's content: a changed key
+/// gets a new one.
+pub fn putty_copy(key: &Path, passphrase: impl FnOnce() -> Option<String>) -> Result<PathBuf, PuttyCopyError> {
+    use sha2::Digest;
+    let text = std::fs::read_to_string(expand_home(key)).map_err(PuttyCopyError::Write)?;
+    let dir = secret_key_path().and_then(|p| p.parent().map(|d| d.join("openssh-keys"))).ok_or_else(|| PuttyCopyError::Write(std::io::ErrorKind::NotFound.into()))?;
+    let path = dir.join(to_hex(&sha2::Sha256::digest(text.as_bytes())[..16]));
+    if path.is_file() {
+        return Ok(path);
+    }
+    let passphrase = if crate::putty::is_encrypted(&text) == Some(true) { passphrase() } else { None };
+    let openssh = crate::putty::to_openssh(&text, passphrase.as_deref()).map_err(PuttyCopyError::Key)?;
+    crate::config::create_private_dir(&dir).map_err(PuttyCopyError::Write)?;
+    // Readable by the user only (ssh refuses keys others can read), and never seen half written.
+    let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let written = options.open(&tmp).and_then(|mut file| file.write_all(openssh.as_bytes())).and_then(|()| std::fs::rename(&tmp, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.map(|()| path).map_err(PuttyCopyError::Write)
 }
 
 /// Example key path for the host editor's hint, written the way the platform does.

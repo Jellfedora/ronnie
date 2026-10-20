@@ -26,6 +26,7 @@ mod mssql;
 mod subsonic;
 mod sysmon;
 mod pane;
+mod putty;
 mod procs;
 mod playtime;
 mod screens;

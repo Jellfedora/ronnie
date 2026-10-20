@@ -900,8 +900,11 @@ struct HostEditor {
     /// Typed path when the key is not one of those found in ~/.ssh.
     custom_key: String,
     keys: Vec<PathBuf>,
-    /// The chosen key file, and whether it is a PuTTY key (checked when the choice changes).
-    putty_check: Option<(PathBuf, bool)>,
+    /// The chosen key file, and where its OpenSSH copy stands if it is a PuTTY key (checked when the
+    /// choice changes).
+    putty: Option<(PathBuf, PuttyKey)>,
+    /// Passphrase typed to convert a protected PuTTY key (not saved).
+    putty_pass: String,
     password: String,
     /// The password field was edited: save (or forget, if emptied) it on save.
     password_changed: bool,
@@ -928,13 +931,43 @@ impl HostEditor {
             draft,
             custom_key,
             keys,
-            putty_check: None,
+            putty: None,
+            putty_pass: String::new(),
             password: String::new(),
             password_changed: false,
             reveal: false,
             group,
             is_new,
             error: None,
+        }
+    }
+}
+
+/// A key file in the host editor: a PuTTY one (ssh can't read it) has an OpenSSH copy made by Ronnie.
+enum PuttyKey {
+    NotPutty,
+    Ready { protected: bool },
+    /// Protected by a passphrase not given yet (or `wrong`).
+    Locked { wrong: bool },
+    /// Can't be converted: the message, with {unsupported}, {damaged} or {write} for the texts.
+    Failed(String),
+}
+
+impl PuttyKey {
+    /// Makes the OpenSSH copy if needed (a protected key with `passphrase`).
+    fn check(path: &Path, passphrase: Option<String>) -> Self {
+        use crate::putty::Error;
+        if !ssh::is_putty_key(path) {
+            return Self::NotPutty;
+        }
+        let protected = std::fs::read_to_string(ssh::expand_home(path)).ok().and_then(|text| crate::putty::is_encrypted(&text)) == Some(true);
+        match ssh::putty_copy(path, || passphrase) {
+            Ok(_) => Self::Ready { protected },
+            Err(ssh::PuttyCopyError::Key(Error::NeedsPassphrase)) => Self::Locked { wrong: false },
+            Err(ssh::PuttyCopyError::Key(Error::WrongPassphrase)) => Self::Locked { wrong: true },
+            Err(ssh::PuttyCopyError::Key(Error::Unsupported(kind))) => Self::Failed(format!("{{unsupported}} ({kind})")),
+            Err(ssh::PuttyCopyError::Key(Error::Format)) => Self::Failed("{damaged}".to_owned()),
+            Err(ssh::PuttyCopyError::Write(e)) => Self::Failed(format!("{{write}} : {e}")),
         }
     }
 }

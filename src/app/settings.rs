@@ -864,14 +864,38 @@ impl App {
                             }
                         }
                         // Read once per chosen file, not at every frame.
-                        if editor.putty_check.as_ref().map(|(path, _)| path) != d.identity_file.as_ref() {
-                            editor.putty_check = d.identity_file.clone().map(|path| {
-                                let putty = ssh::is_putty_key(&path);
-                                (path, putty)
+                        if editor.putty.as_ref().map(|(path, _)| path) != d.identity_file.as_ref() {
+                            editor.putty = d.identity_file.clone().map(|path| {
+                                let state = PuttyKey::check(&path, None);
+                                (path, state)
                             });
+                            editor.putty_pass.clear();
                         }
-                        if editor.putty_check.as_ref().is_some_and(|(_, putty)| *putty) {
-                            ui.add_sized([field_w, 0.0], egui::Label::new(egui::RichText::new(t.putty_key).size(12.0).color(theme.ansi[3])).wrap());
+                        let note = |ui: &mut Ui, text: &str, color| ui.add_sized([field_w, 0.0], egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).wrap());
+                        match &editor.putty {
+                            Some((_, PuttyKey::Ready { protected })) => {
+                                note(ui, if *protected { t.putty_key_protected } else { t.putty_key }, theme.text_muted);
+                            }
+                            Some((path, PuttyKey::Locked { wrong })) => {
+                                note(ui, t.putty_key_locked, theme.ansi[3]);
+                                let mut convert = false;
+                                ui.horizontal(|ui| {
+                                    let field = egui::TextEdit::singleline(&mut editor.putty_pass).password(true).hint_text(t.key_password).desired_width(field_w - 104.0).margin(Vec2::new(6.0, 5.0));
+                                    convert = ui.add(field).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    convert |= ui.add_enabled(!editor.putty_pass.is_empty(), egui::Button::new(t.putty_convert).min_size(Vec2::new(96.0, 24.0))).clicked();
+                                });
+                                if *wrong {
+                                    note(ui, t.putty_wrong_passphrase, theme.ansi[1]);
+                                }
+                                if convert && !editor.putty_pass.is_empty() {
+                                    let state = PuttyKey::check(path, Some(std::mem::take(&mut editor.putty_pass)));
+                                    editor.putty = Some((path.clone(), state));
+                                }
+                            }
+                            Some((_, PuttyKey::Failed(e))) => {
+                                note(ui, &e.replace("{unsupported}", t.putty_unsupported).replace("{damaged}", t.putty_damaged).replace("{write}", t.putty_write_failed), theme.ansi[1]);
+                            }
+                            _ => {}
                         }
                     });
                     ui.end_row();
@@ -1047,6 +1071,18 @@ impl App {
         if !matches!(auth, SshAuth::Password | SshAuth::Key) && host.password_saved {
             editor.password.clear();
             editor.password_changed = true;
+        }
+        // A protected PuTTY key not converted yet: with the passphrase typed above, checked now.
+        if let (SshAuth::Key, Some((path, PuttyKey::Locked { .. }))) = (auth, &editor.putty) {
+            if editor.password_changed && !editor.password.is_empty() {
+                let state = PuttyKey::check(path, Some(editor.password.clone()));
+                let wrong = matches!(state, PuttyKey::Locked { wrong: true });
+                editor.putty = Some((path.clone(), state));
+                if wrong {
+                    editor.error = Some(t.putty_wrong_passphrase.to_owned());
+                    return;
+                }
+            }
         }
         if editor.password_changed {
             if editor.password.is_empty() {
