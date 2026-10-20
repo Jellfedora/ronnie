@@ -2,6 +2,14 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.32.0] - 2026-10-20
+
+### Nouveautés
+
+- **Les clés PuTTY (.ppk) marchent pour les serveurs SSH** : choisies comme fichier de clé, Ronnie en fait une copie au format OpenSSH, celui que ssh sait lire, sans passer par PuTTYgen. Formats PuTTY 2 et 3, clés RSA, ECDSA et Ed25519. Une clé protégée garde sa passphrase : elle sert une fois à la convertir (enregistrée ou tapée dans l'éditeur du serveur), et ssh la demande ensuite comme d'habitude.
+- **Importer les sessions PuTTY** : dans les réglages SSH, les sessions enregistrées dans PuTTY sont ajoutées d'un clic, avec leur adresse, utilisateur, port, clé et rebond par un serveur SSH, rangées dans un groupe « PuTTY ».
+- **Des groupes pour les bases de données**, comme pour les serveurs SSH : un nouveau groupe depuis le « + » de la section ou « Déplacer vers » sur une connexion, et les connexions comme les groupes se réordonnent en les faisant glisser.
+
 ## [0.31.0] - 2026-10-20
 
 ### Nouveautés
