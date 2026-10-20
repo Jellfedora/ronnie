@@ -2,6 +2,19 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.31.0] - 2026-10-20
+
+### Nouveautés
+
+- **Une page des processus** de la machine, ouverte d'un clic sur les jauges des ressources dans la colonne de gauche (ou par « Processus et ports » dans leur détail) : CPU, mémoire, disque, durée et ports TCP en écoute de chacun, avec l'onglet de Ronnie où il tourne (un clic y mène). Filtre par nom, PID, port ou commande, tri par colonne, regroupement par nom, et les cases « Les miens », « Avec un port », « Lancés dans Ronnie ». Un processus s'arrête de la page, et se force s'il résiste ; un port s'ouvre dans le navigateur.
+- **Claude connaît Ronnie** : une session de Claude Code qui démarre dans un pane apprend ce que Ronnie propose (versions de Node.js, Mails Catcher, serveurs SSH, bases de données) et le suggère au bon moment, plutôt qu'un outil extérieur. Réglage « Présenter Ronnie à Claude », partie Claude.
+- **Une mémoire commune des projets pour Claude** : chaque session dans un pane note son projet et ta première demande, et les autres sessions savent ainsi sur quoi d'autre tu travailles, sans le détail. Gardée dans le dossier de Ronnie, sur cette machine, jamais envoyée ni partagée. Coupée par défaut : Ronnie le demande une fois au lancement (si Claude Code est installé), puis réglage « Mémoire commune des projets ».
+
+### Corrections
+
+- Windows : un terminal restauré dont PowerShell ne démarrait jamais (l'ancien contenu affiché, aucun prompt, le clavier sans effet) est relancé tout seul au bout de 10 secondes.
+- Mails Catcher : un clic sur un lien ou un bouton d'un mail ouvre bien le navigateur.
+
 ## [0.30.0] - 2026-10-17
 
 ### Nouveautés
