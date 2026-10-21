@@ -96,6 +96,8 @@ pub(super) enum Action {
     Place(Place),
     Pin(Uuid, bool),
     Move(Uuid, Option<Uuid>),
+    /// A copy of the note, next to it, its title marked as a copy.
+    Duplicate(Uuid),
     Trash(Uuid),
     Restore(Uuid),
     Purge(Uuid),
@@ -117,7 +119,7 @@ pub(super) enum Action {
 impl Action {
     /// Whether the page opens for it (to show what it did).
     pub(super) fn shows(&self) -> bool {
-        matches!(self, Action::Select(_) | Action::Place(_) | Action::NewFolder | Action::NewSubfolder(_) | Action::NewNote | Action::NewNoteIn(_) | Action::Open(_))
+        matches!(self, Action::Select(_) | Action::Place(_) | Action::NewFolder | Action::NewSubfolder(_) | Action::NewNote | Action::NewNoteIn(_) | Action::Open(_) | Action::Duplicate(_))
     }
 }
 
@@ -477,6 +479,21 @@ impl Notes {
                 self.search.clear();
                 self.select(Some(id));
                 return;
+            }
+            Action::Duplicate(id) => {
+                let Some(note) = self.note(id) else { return };
+                let mut text = note.text.clone();
+                let title_end = text.find('\n').unwrap_or(text.len());
+                if !text[..title_end].trim().is_empty() {
+                    let end = text[..title_end].trim_end().len();
+                    text.insert_str(end, &format!(" ({})", t.copy_suffix));
+                }
+                let copy = Note { id: Uuid::new_v4(), text, created: now, updated: now, pinned: false, trashed: None, ..note.clone() };
+                let copy_id = copy.id;
+                self.place = Place::Folder(copy.folder);
+                self.search.clear();
+                self.store.notes.push(copy);
+                self.select(Some(copy_id));
             }
             Action::Pin(id, on) => {
                 if let Some(n) = self.note_mut(id) {
@@ -881,6 +898,9 @@ impl Notes {
                     }
                     if ui.button(if note.pinned { t.notes_unpin } else { t.notes_pin }).clicked() {
                         *action = Some(Action::Pin(id, !note.pinned));
+                    }
+                    if ui.button(t.duplicate).clicked() {
+                        *action = Some(Action::Duplicate(id));
                     }
                     ui.menu_button(t.notes_move_to, |ui| {
                         for (folder, name) in std::iter::once((None, t.notes_default.to_owned())).chain(folders.iter().map(|(f, n)| (Some(*f), n.clone()))) {

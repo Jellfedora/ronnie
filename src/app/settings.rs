@@ -38,9 +38,24 @@ impl App {
             .expect("some name is free")
     }
 
-    /// A profile is copied right after itself; a host opens in the editor as a new host (with the same
-    /// saved password), to change its address or user before saving.
+    /// A profile is copied right after itself; a host or a database connection opens in the editor as a
+    /// new one (with the same saved password), to change its address or user before saving.
     pub(super) fn duplicate_item(&mut self, id: Uuid) {
+        if let Some(c) = self.config.databases.iter().find(|c| c.id == id) {
+            let mut copy = c.clone();
+            copy.id = Uuid::new_v4();
+            copy.name = self.copy_name(&c.name, |n| self.config.databases.iter().any(|c| c.name == n));
+            let password = c.password_saved.then(|| ssh::load_password(id)).flatten();
+            copy.password_saved = false;
+            let mut editor = DbEditor::new(copy, true);
+            editor.copy_of = Some(id);
+            if let Some(password) = password {
+                editor.password = password;
+                editor.password_changed = true;
+            }
+            self.db_editor = Some(editor);
+            return;
+        }
         let group = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
         if let Some(host) = self.config.ssh.iter().find(|h| h.id == id) {
             let mut copy = host.clone();
@@ -648,6 +663,16 @@ impl App {
         match self.config.databases.iter_mut().find(|x| x.id == c.id) {
             Some(existing) => *existing = c.clone(),
             None => self.config.databases.push(c.clone()),
+        }
+        // A copy goes right after its original, in its group.
+        if let Some(original) = editor.copy_of {
+            let list = match self.config.groups.iter_mut().find(|g| g.items.contains(&original)) {
+                Some(g) => &mut g.items,
+                None => &mut self.config.ungrouped,
+            };
+            if let Some(at) = list.iter().position(|i| *i == original) {
+                list.insert(at + 1, c.id);
+            }
         }
         // An open view reconnects with the new settings.
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.db == Some(c.id)) {

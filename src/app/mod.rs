@@ -619,11 +619,13 @@ struct DbEditor {
     tested: Option<Result<String, String>>,
     /// The test's SSH forward, kept until the test ends.
     test_pid: Option<u32>,
+    /// A copy of this connection: saved right after it in the sidebar.
+    copy_of: Option<Uuid>,
 }
 
 impl DbEditor {
     fn new(draft: config::DbConnection, is_new: bool) -> Self {
-        Self { port: draft.port.to_string(), draft, password: String::new(), password_changed: false, reveal: false, is_new, error: None, testing: None, tested: None, test_pid: None }
+        Self { port: draft.port.to_string(), draft, password: String::new(), password_changed: false, reveal: false, is_new, error: None, testing: None, tested: None, test_pid: None, copy_of: None }
     }
 }
 
@@ -3803,7 +3805,7 @@ enum TabAction {
     DropGroup(Uuid, Option<Uuid>),
     /// Restart every session of an SSH tab.
     Reconnect(usize),
-    /// Copy a profile (right after it), or open the host editor on a copy of a host.
+    /// Copy a profile (right after it), or open the host or database editor on a copy of a host or a database.
     Duplicate(Uuid),
     /// Open a profile or an SSH host in a new window (moving its tab there if it is open here).
     ItemNewWindow(Uuid),

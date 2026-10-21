@@ -1019,6 +1019,7 @@ impl App {
             ui.set_min_width(170.0);
             menu_item(ui, t.connect, TabAction::OpenDb(c.id), action);
             menu_item(ui, t.edit, TabAction::EditDb(c.id), action);
+            menu_item(ui, t.duplicate, TabAction::Duplicate(c.id), action);
             self.move_to_menu(ui, c.id, config::GroupKind::Databases, action);
             ui.separator();
             if ui.button(egui::RichText::new(t.delete).color(self.theme.ansi[1])).clicked() {
@@ -1123,6 +1124,7 @@ impl App {
         let t = self.t();
         ui.set_min_width(170.0);
         menu_item(ui, t.notes_open, TabAction::Notes(Action::Open(id)), action);
+        menu_item(ui, t.duplicate, TabAction::Notes(Action::Duplicate(id)), action);
         ui.separator();
         if ui.button(egui::RichText::new(t.notes_delete).color(self.theme.ansi[1])).clicked() {
             *action = Some(TabAction::Notes(Action::Trash(id)));
