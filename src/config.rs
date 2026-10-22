@@ -746,16 +746,41 @@ impl Category {
 pub struct AutoBackup {
     /// None: off.
     pub folder: Option<PathBuf>,
-    /// How many are kept (one a day): past that, the oldest are deleted.
+    /// How often one is written.
+    pub every: BackupEvery,
+    /// One also written when Ronnie closes.
+    pub on_close: bool,
+    /// How many are kept (one a day at most): past that, the oldest are deleted.
     pub keep: u32,
     /// The backup password is saved (apart, as the other passwords): the passwords and SSH keys go in,
     /// sealed with it.
     pub password_saved: bool,
+    /// The user answered whether to turn it on, asked once at launch (or set it in the settings).
+    pub asked: bool,
 }
 
 impl Default for AutoBackup {
     fn default() -> Self {
-        Self { folder: None, keep: 7, password_saved: false }
+        Self { folder: None, every: BackupEvery::Day, on_close: true, keep: 7, password_saved: false, asked: false }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupEvery {
+    #[default]
+    Day,
+    Week,
+}
+
+impl BackupEvery {
+    pub const ALL: [BackupEvery; 2] = [BackupEvery::Day, BackupEvery::Week];
+
+    pub fn days(self) -> i64 {
+        match self {
+            BackupEvery::Day => 1,
+            BackupEvery::Week => 7,
+        }
     }
 }
 

@@ -1699,6 +1699,7 @@ impl App {
                     && let Some(folder) = pick(None)
                 {
                     auto.folder = Some(folder);
+                    auto.asked = true;
                     self.auto_backup.check_now();
                 }
             });
@@ -1715,6 +1716,20 @@ impl App {
                 auto.folder = Some(folder);
                 self.auto_backup.check_now();
             }
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.backup_ask_every, None, |ui| {
+            for every in config::BackupEvery::ALL.iter().rev() {
+                let label = egui::RichText::new(super::backup::every_label(t, *every)).size(13.5);
+                if ui.add(egui::Button::selectable(auto.every == *every, label).min_size(Vec2::new(0.0, 30.0)).corner_radius(6.0)).clicked() {
+                    auto.every = *every;
+                    self.auto_backup.check_now();
+                }
+            }
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.auto_backup_on_close, None, |ui| {
+            toggle(ui, theme, &mut auto.on_close);
         });
         divider(ui, theme);
         setting_row(ui, theme, t.auto_backup_keep, Some(t.auto_backup_keep_desc), |ui| {

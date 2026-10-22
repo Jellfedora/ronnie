@@ -376,6 +376,8 @@ pub struct App {
     backup: Option<backup::BackupDialog>,
     /// The automatic backup of the configuration.
     auto_backup: backup::AutoBackupState,
+    /// Asking whether to turn the automatic backup on.
+    backup_ask: Option<backup::BackupAsk>,
     /// Listening to the user, for Claude Code in that pane.
     dictation: Option<(PaneId, crate::voice::Dictation)>,
     /// Reads the machine's resources while their panel shows.
@@ -1174,6 +1176,7 @@ impl App {
             games_seen: false,
             backup: None,
             auto_backup: backup::AutoBackupState::default(),
+            backup_ask: None,
             dictation: None,
             sysmon: None,
             blob_played: 0.0,
@@ -1358,6 +1361,10 @@ impl App {
             app.tour = Some(tour::Tour::new());
         }
         app.worklog_ask = !app.config.settings.claude_worklog_asked && !app.read_only && crate::claude::installed();
+        let auto = &app.config.settings.auto_backup;
+        if !auto.asked && auto.folder.is_none() && !app.read_only {
+            app.backup_ask = Some(backup::BackupAsk::default());
+        }
         // Claude's usage on by default (an installed Ronnie: a dev build's path mustn't stay there).
         if config::OFFICIAL && app.config.settings.claude_statusline && !app.read_only {
             if let Err(e) = crate::claude::ensure_connected() {
@@ -4993,6 +5000,9 @@ impl App {
             self.tour_window(ui.ctx());
             if self.tour.is_none() {
                 self.worklog_ask_window(ui.ctx());
+                if !self.worklog_ask {
+                    self.backup_ask_window(ui.ctx());
+                }
             }
         }
         self.toasts_ui(ui.ctx());

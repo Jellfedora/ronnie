@@ -3,8 +3,8 @@
 //! histories, terminal contents. Passwords and SSH key files go in too if asked, sealed with a password
 //! chosen for the export.
 //!
-//! The automatic backup writes the same export, once a day and when Ronnie closes, in a folder of the
-//! user's choosing (a synced one: Nextcloud, Dropbox...), keeping the last few; its secrets are sealed
+//! The automatic backup writes the same export, every day or week and when Ronnie closes, in a folder
+//! of the user's choosing (a synced one: Nextcloud, Dropbox...), keeping the last few; its secrets are sealed
 //! with a backup password saved apart, as the other passwords.
 //!
 //! An import replaces everything: the current configuration is moved aside (as by a reset), the zip's
@@ -31,7 +31,7 @@ pub(super) const MIN_PASSWORD: usize = 8;
 const AUTO_PREFIX: &str = if config::OFFICIAL { "ronnie-backup-" } else { "ronnie-dev-backup-" };
 /// The backup password's id among the saved passwords.
 pub(super) const AUTO_PASSWORD_ID: Uuid = Uuid::from_u128(0x7261_6e64_6f6d_2d62_6163_6b75_7000_0001);
-/// How often Ronnie checks that today's backup is written.
+/// How often Ronnie checks whether a backup is due.
 const AUTO_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// What an export holds, read before importing it.
@@ -74,6 +74,47 @@ pub(super) enum BackupDialog {
     AutoPassword { password: String, again: String, error: Option<String> },
 }
 
+fn password_field(ui: &mut Ui, text: &mut String, hint: &str) -> egui::Response {
+    ui.add(egui::TextEdit::singleline(text).password(true).hint_text(hint).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)))
+}
+
+/// A password to choose, typed twice: whether it will do, and whether Enter confirmed it.
+pub(super) fn new_password(ui: &mut Ui, theme: &crate::theme::Theme, t: &Strings, password: &mut String, again: &mut String) -> (bool, bool) {
+    password_field(ui, password, t.backup_password);
+    let last = password_field(ui, again, t.backup_password_again);
+    let problem = if password.chars().count() < MIN_PASSWORD {
+        Some(t.backup_password_short.replace("{n}", &MIN_PASSWORD.to_string()))
+    } else if password != again {
+        (!again.is_empty()).then(|| t.backup_password_mismatch.to_owned()).or(Some(String::new()))
+    } else {
+        None
+    };
+    if let Some(p) = problem.as_ref().filter(|p| !p.is_empty() && (!password.is_empty())) {
+        ui.label(egui::RichText::new(p).size(12.0).color(theme.ansi[3]));
+    }
+    let entered = problem.is_none() && last.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    (problem.is_none(), entered)
+}
+
+/// The question asked once at launch: whether to turn the automatic backup on, and how.
+pub(super) struct BackupAsk {
+    folder: Option<PathBuf>,
+    every: config::BackupEvery,
+    on_close: bool,
+    keep: u32,
+    secrets: bool,
+    password: String,
+    again: String,
+    error: Option<String>,
+}
+
+impl Default for BackupAsk {
+    fn default() -> Self {
+        let d = config::AutoBackup::default();
+        Self { folder: None, every: d.every, on_close: d.on_close, keep: d.keep, secrets: false, password: String::new(), again: String::new(), error: None }
+    }
+}
+
 /// The automatic backup at work.
 #[derive(Default)]
 pub(super) struct AutoBackupState {
@@ -100,6 +141,13 @@ impl AutoBackupState {
     }
 }
 
+pub(super) fn every_label(t: &Strings, every: config::BackupEvery) -> &'static str {
+    match every {
+        config::BackupEvery::Day => t.auto_backup_daily,
+        config::BackupEvery::Week => t.auto_backup_weekly,
+    }
+}
+
 fn auto_name(day: chrono::NaiveDate) -> String {
     format!("{AUTO_PREFIX}{}.zip", day.format("%Y-%m-%d"))
 }
@@ -117,6 +165,12 @@ fn auto_backups(folder: &Path) -> Vec<(chrono::NaiveDate, PathBuf)> {
         .collect();
     found.sort_by_key(|f| std::cmp::Reverse(f.0));
     found
+}
+
+/// Whether a backup is due in `folder`: none written in the last `every` days.
+fn auto_due(folder: &Path, every: config::BackupEvery) -> bool {
+    let today = chrono::Local::now().date_naive();
+    auto_backups(folder).first().is_none_or(|(day, _)| (today - *day).num_days() >= every.days())
 }
 
 /// Writes today's backup of config folder `dir` into `folder` (replacing the one written earlier
@@ -447,7 +501,7 @@ impl App {
         self.auto_backup.job = Some(std::thread::spawn(move || write_auto(&dir, &folder, &manifest, secrets.as_ref().zip(password.as_deref()), settings.keep)));
     }
 
-    /// Takes in a backup written, and starts today's if not written yet (looked for every few minutes).
+    /// Takes in a backup written, and starts one when due (looked at every few minutes).
     pub(super) fn auto_backup_poll(&mut self, ctx: &egui::Context) {
         if self.auto_backup.job.as_ref().is_some_and(|j| j.is_finished()) {
             let done = self.auto_backup.job.take().map(|j| j.join().unwrap_or_else(|_| Err("panic".to_owned())));
@@ -470,7 +524,7 @@ impl App {
             });
             self.auto_backup.seen = Some(folder.clone());
         }
-        if !folder.join(auto_name(chrono::Local::now().date_naive())).exists() {
+        if auto_due(&folder, self.config.settings.auto_backup.every) {
             self.auto_backup();
         }
     }
@@ -494,10 +548,13 @@ impl App {
         }
     }
 
-    /// Ronnie closes: the backup of the configuration as it is left, waited for.
+    /// Ronnie closes: the backup of the configuration as it is left, waited for (if asked).
     pub(super) fn auto_backup_on_exit(&mut self) {
         if let Some(job) = self.auto_backup.job.take() {
             let _ = job.join();
+        }
+        if !self.config.settings.auto_backup.on_close {
+            return;
         }
         self.auto_backup();
         if let Some(Ok(Err(e))) = self.auto_backup.job.take().map(|j| j.join()) {
@@ -531,6 +588,103 @@ impl App {
         Ok(())
     }
 
+    /// Whether to back the configuration up automatically, asked once (after the tour and the question
+    /// about Claude's memory): turned on or "not now" answers it for good; closed, it is asked again at
+    /// the next launch.
+    pub(super) fn backup_ask_window(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let Some(ask) = &mut self.backup_ask else { return };
+        let (mut yes, mut no) = (false, false);
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
+        let modal = egui::Modal::new(egui::Id::new("backup-ask")).frame(frame).backdrop_color(Color32::from_black_alpha(170)).show(ctx, |ui| {
+            ui.set_width(460.0);
+            let muted = |text: &str, size: f32| egui::Label::new(egui::RichText::new(text).size(size).color(theme.text_muted)).wrap();
+            let heading = |ui: &mut Ui, text: &str| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(text).size(13.5).strong().color(theme.text));
+                ui.add_space(4.0);
+            };
+            let button = |text: &str| egui::Button::new(egui::RichText::new(text).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0));
+            ui.label(egui::RichText::new(t.backup_ask_title).size(19.0).strong().color(theme.text));
+            ui.add_space(8.0);
+            ui.add(muted(t.backup_ask_body, 13.5));
+
+            heading(ui, t.backup_ask_folder);
+            ui.horizontal(|ui| {
+                if ui.add(button(if ask.folder.is_some() { t.auto_backup_change } else { t.auto_backup_choose })).clicked()
+                    && let Some(folder) = rfd::FileDialog::new().pick_folder()
+                {
+                    ask.folder = Some(folder);
+                }
+                if let Some(folder) = &ask.folder {
+                    ui.add(egui::Label::new(egui::RichText::new(crate::ssh::display_path(folder)).monospace().size(12.0)).truncate());
+                }
+            });
+
+            heading(ui, t.backup_ask_every);
+            ui.horizontal(|ui| {
+                for every in config::BackupEvery::ALL {
+                    let label = egui::RichText::new(every_label(t, every)).size(13.0);
+                    if ui.add(egui::Button::selectable(ask.every == every, label).min_size(Vec2::new(0.0, 28.0)).corner_radius(6.0)).clicked() {
+                        ask.every = every;
+                    }
+                }
+            });
+            ui.checkbox(&mut ask.on_close, t.auto_backup_on_close);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.auto_backup_keep).size(13.0));
+                ui.add(egui::DragValue::new(&mut ask.keep).range(1..=30));
+            });
+
+            heading(ui, t.backup_secrets);
+            ui.checkbox(&mut ask.secrets, t.backup_ask_secrets);
+            let password_ok = if ask.secrets {
+                ui.add(muted(t.auto_backup_password_desc, 12.0));
+                ui.add_space(4.0);
+                new_password(ui, &theme, t, &mut ask.password, &mut ask.again).0
+            } else {
+                true
+            };
+            if let Some(e) = &ask.error {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(format!("⚠  {e}")).size(12.5).color(theme.ansi[1]));
+            }
+            ui.add_space(12.0);
+            ui.add(muted(t.backup_ask_later, 12.0));
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ready = ask.folder.is_some() && password_ok;
+                let primary = egui::Button::new(egui::RichText::new(t.backup_ask_yes).size(13.5).color(Color32::WHITE)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0));
+                if ui.add_enabled(ready, primary).clicked() {
+                    yes = true;
+                }
+                if ui.add(egui::Button::new(egui::RichText::new(t.backup_ask_no).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                    no = true;
+                }
+            });
+        });
+        if yes {
+            let saved = if ask.secrets { ssh::save_password(AUTO_PASSWORD_ID, &ask.password).map_err(|e| format!("{} : {e}", t.keychain_failed)) } else { Ok(()) };
+            if let Err(e) = saved {
+                ask.error = Some(e);
+                return;
+            }
+            self.config.settings.auto_backup = config::AutoBackup { folder: ask.folder.clone(), every: ask.every, on_close: ask.on_close, keep: ask.keep, password_saved: ask.secrets, asked: true };
+            self.auto_backup.check_now();
+        }
+        if no {
+            self.config.settings.auto_backup.asked = true;
+        }
+        if yes || no {
+            self.save_config();
+        }
+        if yes || no || modal.should_close() {
+            self.backup_ask = None;
+            self.focus_terminal = true;
+        }
+    }
+
     /// The export or import window.
     pub(super) fn backup_window(&mut self, ctx: &egui::Context) {
         let t = self.t();
@@ -543,26 +697,7 @@ impl App {
             let b = egui::Button::new(if fill.is_some() { label.color(theme.bg) } else { label }).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0));
             if let Some(fill) = fill { b.fill(fill) } else { b }
         };
-        let password_field = |ui: &mut Ui, text: &mut String, hint: &str| {
-            ui.add(egui::TextEdit::singleline(text).password(true).hint_text(hint).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)))
-        };
-        // A password to choose, typed twice: whether it will do, and whether Enter confirmed it.
-        let new_password = |ui: &mut Ui, password: &mut String, again: &mut String| {
-            password_field(ui, password, t.backup_password);
-            let last = password_field(ui, again, t.backup_password_again);
-            let problem = if password.chars().count() < MIN_PASSWORD {
-                Some(t.backup_password_short.replace("{n}", &MIN_PASSWORD.to_string()))
-            } else if password != again {
-                (!again.is_empty()).then(|| t.backup_password_mismatch.to_owned()).or(Some(String::new()))
-            } else {
-                None
-            };
-            if let Some(p) = problem.as_ref().filter(|p| !p.is_empty() && (!password.is_empty())) {
-                ui.label(egui::RichText::new(p).size(12.0).color(theme.ansi[3]));
-            }
-            let entered = problem.is_none() && last.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            (problem.is_none(), entered)
-        };
+        let new_password = |ui: &mut Ui, password: &mut String, again: &mut String| new_password(ui, &theme, t, password, again);
         let modal = egui::Modal::new(egui::Id::new("backup")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
             match dialog {
@@ -818,5 +953,17 @@ mod tests {
         let prepared = prepare(&manual, &read_manifest(&manual, t).unwrap(), "longpassword", t).unwrap();
         assert!(!prepared.config.settings.auto_backup.password_saved);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_backup_is_due_once_the_period_is_over() {
+        let folder = std::env::temp_dir().join(format!("ronnie-auto-due-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(auto_due(&folder, config::BackupEvery::Week), "none yet");
+        let three_days_ago = chrono::Local::now().date_naive() - chrono::Days::new(3);
+        std::fs::write(folder.join(auto_name(three_days_ago)), "").unwrap();
+        assert!(auto_due(&folder, config::BackupEvery::Day));
+        assert!(!auto_due(&folder, config::BackupEvery::Week));
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }
