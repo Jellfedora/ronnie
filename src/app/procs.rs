@@ -75,13 +75,18 @@ pub(super) struct ProcsPage {
     stopping: HashMap<u32, Instant>,
     rows: Vec<Row>,
     key: Option<Key>,
+    /// The pointer is on the list (or a stop is being confirmed): the rows keep their places, only
+    /// their figures change, so that the one aimed at doesn't move away.
+    hold: bool,
+    /// The row clicked: highlighted, its stop button shown.
+    selected: Option<(String, u32)>,
     /// When the page was last drawn.
     drawn: Option<Instant>,
 }
 
 impl Default for ProcsPage {
     fn default() -> Self {
-        Self { monitor: None, filter: String::new(), mine: true, ports_only: false, ronnie_only: false, grouped: false, sort: Column::Cpu, desc: true, confirm: None, stopping: HashMap::new(), rows: Vec::new(), key: None, drawn: None }
+        Self { monitor: None, filter: String::new(), mine: true, ports_only: false, ronnie_only: false, grouped: false, sort: Column::Cpu, desc: true, confirm: None, stopping: HashMap::new(), rows: Vec::new(), key: None, hold: false, selected: None, drawn: None }
     }
 }
 
@@ -163,6 +168,10 @@ impl App {
         } else {
             kept.collect()
         };
+        // Only new figures while the list is held: the rows already there stay where they are, new ones
+        // come after them.
+        let held = p.hold && p.key.as_ref().is_some_and(|k| Key { generation: key.generation, ..k.clone() } == key);
+        let place: HashMap<(String, u32), usize> = if held { p.rows.iter().enumerate().map(|(i, r)| (row_id(r, key.grouped), i)).collect() } else { HashMap::new() };
         rows.sort_by(|a, b| {
             let order = match key.sort {
                 Column::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
@@ -182,6 +191,9 @@ impl App {
             let order = if key.desc { order.reverse() } else { order };
             order.then_with(|| a.pids[0].cmp(&b.pids[0]))
         });
+        if held {
+            rows.sort_by_key(|r| place.get(&row_id(r, key.grouped)).copied().unwrap_or(usize::MAX));
+        }
         self.procs.rows = rows;
         self.procs.key = Some(key);
     }
@@ -366,12 +378,22 @@ impl App {
         }
         let me = std::process::id();
         let rows = std::mem::take(&mut self.procs.rows);
-        let (mut stop, mut force, mut go_tab, mut confirm, mut group) = (None, None, None, None, None);
+        let (mut stop, mut force, mut go_tab, mut confirm, mut group, mut select) = (None, None, None, None, None, None);
         let tab_names: Vec<String> = self.tabs.iter().map(|t| t.title().to_owned()).collect();
-        egui::ScrollArea::vertical().id_salt("procs-list").auto_shrink([false, false]).show_rows(ui, ROW, rows.len(), |ui, range| {
+        let list = egui::ScrollArea::vertical().id_salt("procs-list").auto_shrink([false, false]).show_rows(ui, ROW, rows.len(), |ui, range| {
             for (k, row) in rows[range.clone()].iter().enumerate() {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, ROW), Sense::hover());
-                if resp.hovered() {
+                let (rect, row_resp) = ui.allocate_exact_size(Vec2::new(width, ROW), Sense::click());
+                let id = row_id(row, self.procs.grouped);
+                let selected = self.procs.selected.as_ref() == Some(&id);
+                if row_resp.clicked() {
+                    select = Some((!selected).then_some(id));
+                }
+                // The pointer over the row, whatever is on it: the stop button showing on hover takes the
+                // hover from the row, which would hide it again at the next frame.
+                let hovered = ui.rect_contains_pointer(rect);
+                if selected {
+                    ui.painter().rect(rect, 5.0, theme.accent.gamma_multiply(0.18), Stroke::new(1.0, theme.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+                } else if hovered {
                     ui.painter().rect_filled(rect, 5.0, theme.tab_hover.gamma_multiply(0.6));
                 } else if (range.start + k) % 2 == 1 {
                     ui.painter().rect_filled(rect, 5.0, theme.bg.gamma_multiply(0.35));
@@ -487,7 +509,7 @@ impl App {
                             force = Some(row.clone());
                         }
                     }
-                } else if resp.hovered() || self.procs.confirm.is_some_and(|(p, _)| p == row.pids[0]) {
+                } else if hovered || selected || self.procs.confirm.is_some_and(|(p, _)| p == row.pids[0]) {
                     let confirming = self.procs.confirm.is_some_and(|(p, _)| p == row.pids[0]);
                     let label = if confirming { egui::RichText::new(t.procs_confirm_stop).color(theme.bg) } else { egui::RichText::new(t.procs_stop).color(theme.ansi[1]) };
                     let button = egui::Button::new(label.size(12.0)).corner_radius(5.0);
@@ -499,6 +521,10 @@ impl App {
             }
         });
         self.procs.rows = rows;
+        if let Some(select) = select {
+            self.procs.selected = select;
+        }
+        self.procs.hold = ui.rect_contains_pointer(list.inner_rect) || self.procs.confirm.is_some();
         if let Some(pid) = confirm {
             self.procs.confirm = Some((pid, Instant::now()));
         }
@@ -516,6 +542,11 @@ impl App {
             self.select(tab);
         }
     }
+}
+
+/// What a row stays the same row by, from one reading to the next: its process, or its name when grouped.
+fn row_id(row: &Row, grouped: bool) -> (String, u32) {
+    if grouped { (row.name.clone(), 0) } else { (String::new(), row.pids[0]) }
 }
 
 fn numeric(column: Column) -> bool {
