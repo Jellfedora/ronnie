@@ -340,28 +340,54 @@ impl Issues {
     fn list_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &'static Strings) {
         let ctx = ui.ctx().clone();
         let mut panel = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(6.0, 0.0))).layout(egui::Layout::top_down(egui::Align::Min)));
-        // Open / closed / all, then refresh and new.
+        // Open / closed / all, then refresh and new: those go beside the search field when the column is
+        // too narrow for both.
+        let filters = [(Filter::Open, t.issues_open), (Filter::Closed, t.issues_closed), (Filter::All, t.issues_all)];
+        let spacing = panel.spacing().item_spacing.x;
+        let padding = panel.spacing().button_padding.x;
+        let font = egui::FontId::proportional(12.0);
+        let labels: f32 = filters.iter().map(|(_, label)| ctx.fonts_mut(|f| f.layout_no_wrap((*label).to_owned(), font.clone(), Color32::WHITE).size().x) + 2.0 * padding + spacing).sum();
+        let tools_w = 64.0 + if self.list_running { 18.0 } else { 0.0 };
+        let narrow = labels + tools_w > panel.available_width();
+        let mut new = false;
+        let mut refresh = false;
+        let running = self.list_running;
+        let tools = |ui: &mut Ui, new: &mut bool, refresh: &mut bool| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                *new |= ui.add(egui::Button::new(egui::RichText::new("+").size(15.0)).frame_when_inactive(false)).on_hover_text(t.issues_new).clicked();
+                *refresh |= ui.add(egui::Button::new(egui::RichText::new("↻").size(14.0)).frame_when_inactive(false)).on_hover_text(t.git_refresh).clicked();
+                if running {
+                    ui.add(egui::Spinner::new().size(12.0));
+                }
+            });
+        };
         panel.horizontal(|ui| {
-            for (filter, label) in [(Filter::Open, t.issues_open), (Filter::Closed, t.issues_closed), (Filter::All, t.issues_all)] {
+            for (filter, label) in filters {
                 if ui.selectable_label(self.filter == filter, egui::RichText::new(label).size(12.0)).clicked() {
                     self.filter = filter;
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(egui::RichText::new("+").size(15.0)).frame_when_inactive(false)).on_hover_text(t.issues_new).clicked() {
-                    self.selected = None;
-                    self.draft = Some(Draft { focus: true, ..Draft::default() });
-                }
-                if ui.add(egui::Button::new(egui::RichText::new("↻").size(14.0)).frame_when_inactive(false)).on_hover_text(t.git_refresh).clicked() {
-                    self.load_list(&ctx, t);
-                }
-                if self.list_running {
-                    ui.add(egui::Spinner::new().size(12.0));
-                }
-            });
+            if !narrow {
+                tools(ui, &mut new, &mut refresh);
+            }
         });
         panel.add_space(2.0);
-        panel.add(egui::TextEdit::singleline(&mut self.search).hint_text(t.issues_search).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 4.0)));
+        if narrow {
+            panel.horizontal(|ui| {
+                let search_w = (ui.available_width() - tools_w).max(60.0);
+                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(t.issues_search).desired_width(search_w).margin(Vec2::new(6.0, 4.0)));
+                tools(ui, &mut new, &mut refresh);
+            });
+        } else {
+            panel.add(egui::TextEdit::singleline(&mut self.search).hint_text(t.issues_search).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 4.0)));
+        }
+        if new {
+            self.selected = None;
+            self.draft = Some(Draft { focus: true, ..Draft::default() });
+        }
+        if refresh {
+            self.load_list(&ctx, t);
+        }
         panel.add_space(4.0);
         let issues = match &self.list {
             None => {
