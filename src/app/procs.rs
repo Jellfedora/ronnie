@@ -238,10 +238,13 @@ impl App {
             self.procs.confirm = None;
         }
         let height = ui.available_height() - 40.0;
+        let mut close = false;
         Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(14.0).inner_margin(20.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.set_height(height.max(300.0));
-            self.procs_header(ui, t, theme, &snapshot);
+            if self.procs_header(ui, t, theme, &snapshot) {
+                close = true;
+            }
             ui.add_space(12.0);
             self.procs_toolbar(ui, t);
             ui.add_space(8.0);
@@ -255,14 +258,25 @@ impl App {
             self.procs_rows(&snapshot);
             self.procs_table(ui, t, theme, &snapshot);
         });
+        // Back to the tab shown before, or home without tabs.
+        if close {
+            if self.tabs.is_empty() {
+                self.go_home(None);
+            } else {
+                self.select(self.active.min(self.tabs.len() - 1));
+            }
+            return;
+        }
         // A stop that may need forcing: its button shows when the time comes.
         if let Some(at) = self.procs.stopping.values().min() {
             ui.ctx().request_repaint_after(FORCE_AFTER.saturating_sub(at.elapsed()) + Duration::from_millis(50));
         }
     }
 
-    /// The title, how many processes and ports, the machine's CPU and memory.
-    fn procs_header(&self, ui: &mut Ui, t: &'static Strings, theme: &Theme, s: &Arc<Snapshot>) {
+    /// The title, how many processes and ports, the machine's CPU and memory, and the close button
+    /// (true: clicked).
+    fn procs_header(&self, ui: &mut Ui, t: &'static Strings, theme: &Theme, s: &Arc<Snapshot>) -> bool {
+        let mut close = false;
         ui.horizontal(|ui| {
             let (icon, _) = ui.allocate_exact_size(Vec2::new(22.0, 28.0), Sense::hover());
             paint_procs_icon(ui.painter(), icon.center(), PROCS_ORANGE);
@@ -274,6 +288,8 @@ impl App {
                 ui.label(egui::RichText::new(text).size(12.5).color(theme.text_muted));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = ui.add(egui::Button::new(egui::RichText::new("✕").size(15.0).color(theme.text_muted)).frame_when_inactive(false).min_size(Vec2::splat(28.0))).on_hover_text(t.close).clicked();
+                ui.add_space(10.0);
                 if s.generation == 0 {
                     return;
                 }
@@ -284,6 +300,7 @@ impl App {
                 meter(ui, "CPU", &format!("{:.0} %", s.cpu), s.cpu / 100.0, theme.accent, theme);
             });
         });
+        close
     }
 
     fn procs_toolbar(&mut self, ui: &mut Ui, t: &'static Strings) {
