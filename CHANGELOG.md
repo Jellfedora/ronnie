@@ -2,6 +2,21 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.33.0] - 2026-10-22
+
+### Nouveautés
+
+- **Sauvegarde automatique de la configuration** : dans le dossier de ton choix (Nextcloud, Dropbox, iCloud Drive, un disque…), chaque jour ou chaque semaine, et aussi à la fermeture de Ronnie si tu veux. Le nombre de sauvegardes gardées se règle (7 par défaut) : au-delà, les plus anciennes sont supprimées. Les mots de passe et les clés SSH peuvent y aller, chiffrés avec un mot de passe de sauvegarde gardé sur l'ordinateur comme les autres. Ronnie le propose une fois au lancement ; tout se règle ensuite dans Réglages > Général > Sauvegarde. Une sauvegarde s'importe comme un export.
+- **Les issues git sur GitLab aussi** : un dépôt dont le remote n'est pas sur GitHub lit, crée, commente, ferme et rouvre ses issues avec `glab`, y compris sur un serveur GitLab à soi, avec un message qui dit comment installer `glab` ou s'y connecter.
+- **Tester un serveur SSH avant de l'enregistrer** : « Tester la connexion » dans son éditeur se connecte avec ce qui est saisi (même un mot de passe pas encore enregistré, les questions du serveur posées dans la fenêtre) et affiche le système du serveur, ou l'erreur de ssh.
+- **Dupliquer une connexion de base de données ou une note** : la copie d'une connexion garde ses réglages et son mot de passe, et se range juste après l'originale ; la copie d'une note se fait dans le même dossier et s'ouvre.
+
+### Corrections
+
+- **Export de la configuration** : les notes qu'il contenait sont bien reprises à l'import, et la mémoire commune Claude en fait maintenant partie.
+- **Processus** : la page a un bouton pour la fermer ; les lignes ne bougent plus sous le pointeur (seuls leurs chiffres changent), le bouton d'arrêt ne clignote plus et ne décale plus les lignes, et une ligne cliquée reste sélectionnée.
+- **Issues git** : dans une colonne étroite, les boutons Actualiser et Nouvelle ne cachent plus les filtres Ouvertes / Fermées / Toutes.
+
 ## [0.32.0] - 2026-10-20
 
 ### Nouveautés
