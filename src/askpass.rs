@@ -42,6 +42,8 @@ struct State {
     unlocked: HashSet<u32>,
     /// Those whose question the user cancelled: not asked again (ssh retries a few times).
     refused: HashSet<u32>,
+    /// Passwords typed but not saved (a host being tested in its editor), given instead of the saved one.
+    typed: HashMap<u32, String>,
     /// Host names, to show which server asks.
     names: HashMap<Uuid, String>,
     /// Where those questions go (the window), and how to wake it up.
@@ -84,6 +86,14 @@ impl Server {
         state.interactive.insert(ssh_pid);
         state.refused.remove(&ssh_pid);
         state.names.insert(host.id, host.name.clone());
+    }
+
+    /// As `allow_interactive`, `ssh_pid` getting `password` (typed, not saved) instead of the saved one.
+    pub fn allow_typed(&self, ssh_pid: u32, host: &crate::ssh::SshHost, password: Option<String>) {
+        self.allow_interactive(ssh_pid, host);
+        if let Some(password) = password {
+            self.state.lock().unwrap().typed.insert(ssh_pid, password);
+        }
     }
 
     /// Starts listening in the background. Without a socket, helpers ask on the terminal.
@@ -180,6 +190,7 @@ impl Server {
             state.unlocked.remove(&ssh_pid);
             state.refused.remove(&ssh_pid);
         }
+        state.typed.remove(&ssh_pid);
         // Its saved password, if any, is typed for it; otherwise only its host key is asked in the window.
         if host.uses_saved_password() {
             state.unsaved.remove(&ssh_pid);
@@ -229,7 +240,7 @@ fn answer<S: Read + Write>(mut stream: S, helper: Option<u32>, state: &Mutex<Sta
     }
     let prompt = prompt.trim_end_matches(['\r', '\n']).to_owned();
     let ssh = helper.and_then(parent_pid);
-    let (host, interactive, prompter) = {
+    let (host, typed, interactive, prompter) = {
         let mut state = state.lock().unwrap();
         let Some(ssh) = ssh.filter(|ssh| state.allowed.contains_key(ssh)) else {
             drop(state);
@@ -245,9 +256,10 @@ fn answer<S: Read + Write>(mut stream: S, helper: Option<u32>, state: &Mutex<Sta
         let name = state.names.get(&id).cloned().unwrap_or_default();
         // A terminal's ssh asks there, except to trust a host's key: asked in the window.
         let interactive = (state.interactive.contains(&ssh) || is_host_key_prompt(&prompt)) && !state.refused.contains(&ssh);
-        (host, interactive, state.prompter.clone().map(|p| (p, name, ssh)))
+        let typed = host.and_then(|_| state.typed.get(&ssh).cloned());
+        (host, typed, interactive, state.prompter.clone().map(|p| (p, name, ssh)))
     };
-    let answer = host.and_then(crate::ssh::load_password).or_else(|| {
+    let answer = typed.or_else(|| host.and_then(crate::ssh::load_password)).or_else(|| {
         // No terminal to ask on: ask in the window, and wait for the user.
         let ((prompts, ctx), name, ssh) = prompter.filter(|_| interactive)?;
         let (reply, answer) = std::sync::mpsc::channel();

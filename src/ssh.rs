@@ -322,6 +322,82 @@ impl SshHost {
     }
 }
 
+/// A connection test from the host editor: ssh logs in and runs `uname -sr`, its prompts asked in the
+/// window. Dropping it stops ssh.
+pub struct Test {
+    pub result: std::sync::mpsc::Receiver<Result<String, String>>,
+    child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
+}
+
+impl Test {
+    /// Logs in to `host` with `password` (typed in the editor; none: the saved one, if the host uses it).
+    /// Ok: the server's system ("Linux 6.1.0"), empty if it couldn't tell; Err: ssh's error.
+    pub fn start(host: &SshHost, password: Option<String>, askpass: &crate::askpass::Server, ctx: &egui::Context) -> Self {
+        use std::io::Read;
+        let (tx, result) = std::sync::mpsc::channel();
+        let child = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let mut launch = host.exec_command("uname -sr");
+        // It ends with "-T", "--", host, the command: no banner or warnings mixed with the error.
+        let at = launch.args.len().saturating_sub(4);
+        launch.args.splice(at..at, ["-o".to_owned(), "LogLevel=ERROR".to_owned()]);
+        let mut cmd = std::process::Command::new(&launch.program);
+        cmd.args(&launch.args).envs(launch.env.iter().cloned()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        let mut process = match cmd.spawn() {
+            Ok(process) => process,
+            Err(e) => {
+                let _ = tx.send(Err(format!("ssh : {e}")));
+                return Self { result, child };
+            }
+        };
+        askpass.allow_typed(process.id(), host, password);
+        let (stdout, stderr) = (process.stdout.take(), process.stderr.take());
+        *child.lock().unwrap() = Some(process);
+        let (slot, ctx) = (child.clone(), ctx.clone());
+        let _ = std::thread::Builder::new().name("ssh-test".into()).spawn(move || {
+            let errors = std::thread::spawn(move || {
+                let mut text = String::new();
+                if let Some(stderr) = stderr {
+                    let _ = stderr.take(16 * 1024).read_to_string(&mut text);
+                }
+                text
+            });
+            let mut out = String::new();
+            if let Some(stdout) = stdout {
+                let _ = stdout.take(4096).read_to_string(&mut out);
+            }
+            let errors = errors.join().unwrap_or_default();
+            // Gone: the test was dropped (editor closed), nobody waits for the outcome.
+            let Some(mut process) = slot.lock().unwrap().take() else { return };
+            let status = process.wait();
+            // 255: ssh itself failed (unreachable, refused...); anything else is the command's, so logged in.
+            let outcome = match status.ok().and_then(|s| s.code()) {
+                Some(255) | None => {
+                    let line = errors.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("ssh").to_owned();
+                    Err(line)
+                }
+                Some(_) => Ok(out.lines().next().unwrap_or_default().trim().to_owned()),
+            };
+            let _ = tx.send(outcome);
+            ctx.request_repaint();
+        });
+        Self { result, child }
+    }
+}
+
+impl Drop for Test {
+    fn drop(&mut self) {
+        if let Some(mut process) = self.child.lock().unwrap().take() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+    }
+}
+
 /// Single quotes for sh (also read right by zsh, bash and fish).
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))

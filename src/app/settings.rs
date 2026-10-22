@@ -811,7 +811,11 @@ impl App {
         let theme = &self.theme;
         let groups: Vec<(Uuid, String)> = self.config.groups.iter().filter(|g| g.kind() == config::GroupKind::Ssh).map(|g| (g.id, g.name.clone())).collect();
         let mut result: Option<bool> = None; // Some(true) = save, Some(false) = cancel
-        let mut delete = false;
+        let (mut delete, mut test) = (false, false);
+        if let Some(outcome) = editor.testing.as_ref().and_then(|test| test.result.try_recv().ok()) {
+            editor.tested = Some(outcome);
+            editor.testing = None;
+        }
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
         let modal = egui::Modal::new(egui::Id::new("host-editor")).frame(frame).show(ctx, |ui| {
             ui.set_width(440.0);
@@ -1035,6 +1039,27 @@ impl App {
             });
 
             ui.add_space(16.0);
+            // Test the connection with what is typed.
+            ui.horizontal(|ui| {
+                if ui.add_enabled(editor.testing.is_none(), egui::Button::new(egui::RichText::new(format!("⚡  {}", t.db_test)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                    test = true;
+                }
+                match (&editor.testing, &editor.tested) {
+                    (Some(_), _) => {
+                        ui.spinner();
+                        ui.label(egui::RichText::new(t.db_testing).size(12.5).color(theme.text_muted));
+                    }
+                    (None, Some(Ok(system))) => {
+                        let text = if system.is_empty() { t.files_connected.to_owned() } else { t.db_test_ok.replace("{v}", system) };
+                        ui.label(egui::RichText::new(format!("✓  {text}")).size(12.5).color(theme.ansi[2]));
+                    }
+                    (None, Some(Err(e))) => {
+                        ui.add(egui::Label::new(egui::RichText::new(format!("✗  {e}")).size(12.5).color(theme.ansi[1])).wrap());
+                    }
+                    _ => {}
+                }
+            });
+            ui.add_space(12.0);
             if let Some(err) = &editor.error {
                 ui.label(egui::RichText::new(err).size(13.0).color(theme.ansi[1]));
                 ui.add_space(6.0);
@@ -1057,6 +1082,22 @@ impl App {
             result = Some(false);
         }
 
+        if test {
+            match checked_host(editor, t) {
+                Ok(mut host) => {
+                    editor.error = None;
+                    editor.tested = None;
+                    // The password typed in the editor, saved or not yet.
+                    let typed = editor.password_changed.then(|| editor.password.clone()).filter(|p| !p.is_empty());
+                    let typed = typed.filter(|_| matches!(host.auth_method(), SshAuth::Password | SshAuth::Key));
+                    if editor.password_changed {
+                        host.password_saved = typed.is_some();
+                    }
+                    editor.testing = Some(ssh::Test::start(&host, typed, &self.askpass, ctx));
+                }
+                Err(e) => editor.error = Some(e.to_owned()),
+            }
+        }
         if delete {
             let id = editor.draft.id;
             self.host_editor = None;
@@ -1074,48 +1115,14 @@ impl App {
     pub(super) fn save_host(&mut self) {
         let t = self.t();
         let Some(editor) = &mut self.host_editor else { return };
-        let mut host = editor.draft.clone();
-        host.host = host.host.trim().to_owned();
-        if host.host.is_empty() {
-            editor.error = Some(t.host_required.to_owned());
-            return;
-        }
-        // ssh would read a value starting with "-" as an option.
-        let dashed = |v: &Option<String>| v.as_deref().is_some_and(|v| v.trim_start().starts_with('-'));
-        if host.host.starts_with('-') || dashed(&host.user) || dashed(&host.jump) {
-            editor.error = Some(t.invalid_dash.to_owned());
-            return;
-        }
-        host.port = match editor.port.trim() {
-            "" => None,
-            p => match p.parse::<u16>() {
-                Ok(p) if p > 0 => Some(p),
-                _ => {
-                    editor.error = Some(t.invalid_port.to_owned());
-                    return;
-                }
-            },
+        let mut host = match checked_host(editor, t) {
+            Ok(host) => host,
+            Err(e) => {
+                editor.error = Some(e.to_owned());
+                return;
+            }
         };
-        host.start_dir = host.start_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(str::to_owned);
-        host.name = host.name.trim().to_owned();
-        if host.name.is_empty() {
-            host.name = host.host.clone();
-        }
-        if host.identity_file.as_ref().is_some_and(|k| k.as_os_str().is_empty()) {
-            host.identity_file = None;
-        }
         let auth = host.auth_method();
-        if auth == SshAuth::Key && host.identity_file.is_none() {
-            editor.error = Some(t.key_required.to_owned());
-            return;
-        }
-        if auth != SshAuth::Key {
-            host.identity_file = None;
-        }
-        if auth == SshAuth::Password && editor.password.is_empty() && (editor.password_changed || !host.password_saved) {
-            editor.error = Some(t.password_required.to_owned());
-            return;
-        }
         // Only the "saved password" and key methods keep one.
         if !matches!(auth, SshAuth::Password | SshAuth::Key) && host.password_saved {
             editor.password.clear();
@@ -2241,3 +2248,42 @@ fn ghost_button(text: &str, color: Color32) -> egui::Button<'_> {
     egui::Button::new(egui::RichText::new(text).size(13.0).color(color)).frame_when_inactive(false).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))
 }
 
+/// The host being edited, cleaned up, or what is missing or wrong in it.
+fn checked_host(editor: &HostEditor, t: &'static Strings) -> Result<SshHost, &'static str> {
+    let mut host = editor.draft.clone();
+    host.host = host.host.trim().to_owned();
+    if host.host.is_empty() {
+        return Err(t.host_required);
+    }
+    // ssh would read a value starting with "-" as an option.
+    let dashed = |v: &Option<String>| v.as_deref().is_some_and(|v| v.trim_start().starts_with('-'));
+    if host.host.starts_with('-') || dashed(&host.user) || dashed(&host.jump) {
+        return Err(t.invalid_dash);
+    }
+    host.port = match editor.port.trim() {
+        "" => None,
+        p => match p.parse::<u16>() {
+            Ok(p) if p > 0 => Some(p),
+            _ => return Err(t.invalid_port),
+        },
+    };
+    host.start_dir = host.start_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(str::to_owned);
+    host.name = host.name.trim().to_owned();
+    if host.name.is_empty() {
+        host.name = host.host.clone();
+    }
+    if host.identity_file.as_ref().is_some_and(|k| k.as_os_str().is_empty()) {
+        host.identity_file = None;
+    }
+    let auth = host.auth_method();
+    if auth == SshAuth::Key && host.identity_file.is_none() {
+        return Err(t.key_required);
+    }
+    if auth != SshAuth::Key {
+        host.identity_file = None;
+    }
+    if auth == SshAuth::Password && editor.password.is_empty() && (editor.password_changed || !host.password_saved) {
+        return Err(t.password_required);
+    }
+    Ok(host)
+}

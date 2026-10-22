@@ -916,6 +916,9 @@ struct HostEditor {
     group: Option<Uuid>,
     is_new: bool,
     error: Option<String>,
+    /// "Test the connection": waiting, then its outcome.
+    testing: Option<ssh::Test>,
+    tested: Option<Result<String, String>>,
 }
 
 impl HostEditor {
@@ -941,6 +944,8 @@ impl HostEditor {
             group,
             is_new,
             error: None,
+            testing: None,
+            tested: None,
         }
     }
 }
