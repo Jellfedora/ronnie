@@ -505,7 +505,7 @@ impl App {
                         painter.text(Pos2::new(action.max.x - 6.0, y), Align2::RIGHT_CENTER, t.procs_stopping, FontId::proportional(11.5), theme.text_muted);
                     } else {
                         let button = egui::Button::new(egui::RichText::new(t.procs_force).size(12.0).color(theme.bg)).fill(theme.ansi[1]).corner_radius(5.0);
-                        if ui.put(action, button).on_hover_text(t.procs_force_hint).clicked() {
+                        if ui.place(action, button).on_hover_text(t.procs_force_hint).clicked() {
                             force = Some(row.clone());
                         }
                     }
@@ -514,7 +514,7 @@ impl App {
                     let label = if confirming { egui::RichText::new(t.procs_confirm_stop).color(theme.bg) } else { egui::RichText::new(t.procs_stop).color(theme.ansi[1]) };
                     let button = egui::Button::new(label.size(12.0)).corner_radius(5.0);
                     let button = if confirming { button.fill(theme.ansi[1]) } else { button.frame_when_inactive(false) };
-                    if ui.put(action, button).clicked() {
+                    if ui.place(action, button).clicked() {
                         if confirming { stop = Some(row.clone()) } else { confirm = Some(row.pids[0]) }
                     }
                 }
