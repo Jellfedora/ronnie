@@ -1,6 +1,6 @@
-//! The GitHub issues of a repository, in its git view: the list (open, closed or all, searchable),
-//! one issue with its comments, and forms to create one, comment, close or reopen. It asks GitHub's
-//! `gh`, which knows the account and the repository from the folder.
+//! The GitHub or GitLab issues of a repository, in its git view: the list (open, closed or all,
+//! searchable), one issue with its comments, and forms to create one, comment, close or reopen. It asks
+//! GitHub's `gh` or GitLab's `glab`, which know the account and the repository from the folder.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -84,29 +84,63 @@ fn timestamp(date: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(date).map(|d| d.timestamp()).unwrap_or(0)
 }
 
-/// `gh`: in the PATH, or where installers put it (an app opened from the Finder doesn't get the
-/// shell's PATH).
-fn gh_path() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "gh.exe" } else { "gh" };
+/// Where the repository's issues are.
+#[derive(Clone, PartialEq, Debug)]
+enum Forge {
+    GitHub,
+    /// Its host ("gitlab.example.com").
+    GitLab(String),
+}
+
+/// GitHub when a remote is on github.com, otherwise GitLab, at the first remote's host.
+fn forge(root: &Path) -> Option<Forge> {
+    let mut cmd = super::git::git(root);
+    cmd.args(["remote", "-v"]);
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let urls: Vec<&str> = text.lines().filter_map(|l| l.split_whitespace().nth(1)).collect();
+    if urls.iter().any(|u| u.contains("github.com")) {
+        return Some(Forge::GitHub);
+    }
+    urls.first().and_then(|u| url_host(u)).map(Forge::GitLab)
+}
+
+/// The host of a remote: "https://host/a/b.git", "ssh://git@host:22/a/b", "git@host:a/b.git".
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let rest = rest.split_once('@').map_or(rest, |(_, rest)| rest);
+    let host = rest.split(['/', ':']).next()?.trim();
+    (!host.is_empty()).then(|| host.to_owned())
+}
+
+/// `gh` or `glab`: in the PATH, or where installers put it (an app opened from the Finder doesn't get
+/// the shell's PATH).
+fn cli_path(tool: &str) -> Option<PathBuf> {
+    let name = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin", "/snap/bin", "/usr/bin"].map(PathBuf::from));
     if let Some(home) = directories::BaseDirs::new() {
         dirs.push(home.home_dir().join(".local/bin"));
     }
     if let Some(programs) = std::env::var_os("ProgramFiles") {
-        dirs.push(PathBuf::from(programs).join("GitHub CLI"));
+        dirs.push(PathBuf::from(&programs).join("GitHub CLI"));
+        dirs.push(PathBuf::from(&programs).join("glab"));
     }
-    dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("Programs").join("glab"));
+    }
+    dirs.into_iter().map(|d| d.join(&name)).find(|p| p.is_file())
 }
 
-/// Runs `gh` in the repository with `args` (and `input` on its standard input): its output, or what
-/// it said on failure. None when `gh` isn't installed.
-fn gh(root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
-    let path = gh_path()?;
+/// Runs `tool` in the repository with `args` (and `input` on its standard input): its output, or what
+/// it said on failure. None when it isn't installed.
+fn cli(tool: &str, root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
+    let path = cli_path(tool)?;
     let mut cmd = Command::new(&path);
     cmd.current_dir(root).args(args);
     // Never a question nobody could answer; plain output.
     cmd.env("GH_PROMPT_DISABLED", "1").env("GH_NO_UPDATE_NOTIFIER", "1").env("NO_COLOR", "1").env("GH_SPINNER_DISABLED", "1");
+    cmd.env("NO_PROMPT", "true").env("GLAB_CHECK_UPDATE", "false").env("GLAB_SEND_TELEMETRY", "false");
     // It runs git too: found next to it (Homebrew) or in the usual places.
     let mut paths: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
     if let Some(dir) = path.parent() {
@@ -130,10 +164,16 @@ fn gh(root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>,
         if out.status.success() {
             Ok(out.stdout)
         } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+            // glab frames its errors in a box, wrapped: one line of words.
+            let text = String::from_utf8_lossy(&out.stderr);
+            Err(text.split_whitespace().filter(|w| *w != "ERROR").collect::<Vec<_>>().join(" "))
         }
     };
     Some(run())
+}
+
+fn gh(root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
+    cli("gh", root, args, input)
 }
 
 /// Why `gh` failed, as shown: not installed, not logged in, not on GitHub, or what it said.
@@ -146,18 +186,143 @@ fn explain(result: Option<Result<Vec<u8>, String>>, t: &Strings) -> Result<Vec<u
     }
 }
 
+/// `glab api` on the repository's project (`:id` in `endpoint`), with `fields` ("-f" name=value; a
+/// value "@-" reads `input`).
+fn glab(root: &Path, host: &str, method: &str, endpoint: &str, fields: &[(&str, &str)], input: Option<&str>, t: &Strings) -> Result<Vec<u8>, String> {
+    let mut args: Vec<String> = ["api", "--method", method, endpoint].map(str::to_owned).into();
+    for (name, value) in fields {
+        // "@-" only means the standard input with --field; anything else is sent as typed.
+        args.push(if *value == "@-" { "--field" } else { "--raw-field" }.to_owned());
+        args.push(format!("{name}={value}"));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match cli("glab", root, &args, input) {
+        None => Err(t.issues_no_glab.replace("{host}", host)),
+        Some(Err(e)) if e.contains("glab auth login") || e.contains("401") => Err(t.issues_no_glab_auth.replace("{host}", host)),
+        Some(other) => other,
+    }
+}
+
+#[derive(Deserialize)]
+struct GlUser {
+    username: String,
+}
+
+/// A label: its name only, or with its color ("#d73a4a") when asked for details.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GlLabel {
+    Name(String),
+    Full { name: String, #[serde(default)] color: String },
+}
+
+#[derive(Deserialize)]
+struct GlIssue {
+    iid: u64,
+    title: String,
+    /// "opened" or "closed".
+    state: String,
+    #[serde(default)]
+    author: Option<GlUser>,
+    #[serde(default)]
+    labels: Vec<GlLabel>,
+    created_at: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    web_url: String,
+}
+
+#[derive(Deserialize)]
+struct GlNote {
+    #[serde(default)]
+    author: Option<GlUser>,
+    body: String,
+    created_at: String,
+    /// Written by GitLab itself ("closed", "added label"...), not a comment.
+    #[serde(default)]
+    system: bool,
+}
+
+fn gl_author(user: Option<GlUser>) -> Option<Author> {
+    user.map(|u| Author { login: u.username })
+}
+
+fn gl_labels(labels: Vec<GlLabel>) -> Vec<Label> {
+    labels
+        .into_iter()
+        .map(|l| match l {
+            GlLabel::Name(name) => Label { name, color: String::new() },
+            GlLabel::Full { name, color } => Label { name, color: color.trim_start_matches('#').to_owned() },
+        })
+        .collect()
+}
+
+fn gl_state(state: &str) -> String {
+    if state == "opened" { "OPEN" } else { "CLOSED" }.to_owned()
+}
+
+impl From<GlIssue> for Issue {
+    fn from(i: GlIssue) -> Self {
+        Issue { number: i.iid, title: i.title, state: gl_state(&i.state), author: gl_author(i.author), labels: gl_labels(i.labels), created_at: i.created_at }
+    }
+}
+
 fn read_list(root: &Path, t: &Strings) -> Result<Vec<Issue>, String> {
-    let out = explain(gh(root, &["issue", "list", "--state", "all", "--limit", "300", "--json", "number,title,state,author,labels,createdAt"], None), t)?;
-    serde_json::from_slice(&out).map_err(|e| e.to_string())
+    match forge(root) {
+        None => Err(t.issues_not_github.to_owned()),
+        Some(Forge::GitHub) => {
+            let out = explain(gh(root, &["issue", "list", "--state", "all", "--limit", "300", "--json", "number,title,state,author,labels,createdAt"], None), t)?;
+            serde_json::from_slice(&out).map_err(|e| e.to_string())
+        }
+        Some(Forge::GitLab(host)) => {
+            // The newest 300, as with GitHub (a page holds 100 at most).
+            let mut issues = Vec::new();
+            for page in 1..=3 {
+                let endpoint = format!("projects/:id/issues?state=all&per_page=100&page={page}&with_labels_details=true");
+                let out = glab(root, &host, "GET", &endpoint, &[], None, t)?;
+                let batch: Vec<GlIssue> = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
+                let full = batch.len() == 100;
+                issues.extend(batch.into_iter().map(Issue::from));
+                if !full {
+                    break;
+                }
+            }
+            Ok(issues)
+        }
+    }
 }
 
 fn read_detail(root: &Path, number: u64, t: &Strings) -> Result<Detail, String> {
     let n = number.to_string();
-    let out = explain(gh(root, &["issue", "view", &n, "--json", "number,title,state,author,labels,createdAt,body,url,comments"], None), t)?;
-    serde_json::from_slice(&out).map_err(|e| e.to_string())
+    match forge(root) {
+        None => Err(t.issues_not_github.to_owned()),
+        Some(Forge::GitHub) => {
+            let out = explain(gh(root, &["issue", "view", &n, "--json", "number,title,state,author,labels,createdAt,body,url,comments"], None), t)?;
+            serde_json::from_slice(&out).map_err(|e| e.to_string())
+        }
+        Some(Forge::GitLab(host)) => {
+            let out = glab(root, &host, "GET", &format!("projects/:id/issues/{n}?with_labels_details=true"), &[], None, t)?;
+            let issue: GlIssue = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
+            let out = glab(root, &host, "GET", &format!("projects/:id/issues/{n}/notes?sort=asc&order_by=created_at&per_page=100"), &[], None, t)?;
+            let notes: Vec<GlNote> = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
+            let comments = notes.into_iter().filter(|n| !n.system).map(|n| Comment { author: gl_author(n.author), body: n.body, created_at: n.created_at }).collect();
+            Ok(Detail {
+                number: issue.iid,
+                title: issue.title,
+                state: gl_state(&issue.state),
+                author: gl_author(issue.author),
+                labels: gl_labels(issue.labels),
+                created_at: issue.created_at,
+                body: issue.description.unwrap_or_default(),
+                url: issue.web_url,
+                comments,
+            })
+        }
+    }
 }
 
-/// What changes an issue on GitHub.
+/// What changes an issue on GitHub or GitLab.
 #[derive(Clone, PartialEq, Debug)]
 enum Op {
     Create { title: String, body: String },
@@ -166,17 +331,30 @@ enum Op {
     Reopen(u64),
 }
 
-/// The issue concerned (the new one's number, read from the address `gh` prints).
+/// The issue concerned (the new one's number, read from the address `gh` prints, or GitLab's answer).
 fn run_op(root: &Path, op: &Op, t: &Strings) -> Result<u64, String> {
-    match op {
-        Op::Create { title, body } => {
-            let out = explain(gh(root, &["issue", "create", "--title", title, "--body-file", "-"], Some(body)), t)?;
-            let url = String::from_utf8_lossy(&out);
-            url.trim().rsplit('/').next().and_then(|n| n.parse().ok()).ok_or_else(|| url.trim().to_owned())
-        }
-        Op::Comment(n, body) => explain(gh(root, &["issue", "comment", &n.to_string(), "--body-file", "-"], Some(body)), t).map(|_| *n),
-        Op::Close(n) => explain(gh(root, &["issue", "close", &n.to_string()], None), t).map(|_| *n),
-        Op::Reopen(n) => explain(gh(root, &["issue", "reopen", &n.to_string()], None), t).map(|_| *n),
+    match forge(root) {
+        None => Err(t.issues_not_github.to_owned()),
+        Some(Forge::GitHub) => match op {
+            Op::Create { title, body } => {
+                let out = explain(gh(root, &["issue", "create", "--title", title, "--body-file", "-"], Some(body)), t)?;
+                let url = String::from_utf8_lossy(&out);
+                url.trim().rsplit('/').next().and_then(|n| n.parse().ok()).ok_or_else(|| url.trim().to_owned())
+            }
+            Op::Comment(n, body) => explain(gh(root, &["issue", "comment", &n.to_string(), "--body-file", "-"], Some(body)), t).map(|_| *n),
+            Op::Close(n) => explain(gh(root, &["issue", "close", &n.to_string()], None), t).map(|_| *n),
+            Op::Reopen(n) => explain(gh(root, &["issue", "reopen", &n.to_string()], None), t).map(|_| *n),
+        },
+        Some(Forge::GitLab(host)) => match op {
+            Op::Create { title, body } => {
+                let out = glab(root, &host, "POST", "projects/:id/issues", &[("title", title), ("description", "@-")], Some(body), t)?;
+                let issue: GlIssue = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
+                Ok(issue.iid)
+            }
+            Op::Comment(n, body) => glab(root, &host, "POST", &format!("projects/:id/issues/{n}/notes"), &[("body", "@-")], Some(body), t).map(|_| *n),
+            Op::Close(n) => glab(root, &host, "PUT", &format!("projects/:id/issues/{n}"), &[("state_event", "close")], None, t).map(|_| *n),
+            Op::Reopen(n) => glab(root, &host, "PUT", &format!("projects/:id/issues/{n}"), &[("state_event", "reopen")], None, t).map(|_| *n),
+        },
     }
 }
 
@@ -489,7 +667,8 @@ impl Issues {
         });
         page.add_space(8.0);
         page.horizontal(|ui| {
-            if ui.button(t.issues_open_web).clicked() && detail.url.starts_with("https://") {
+            let web = if detail.url.contains("github.com") { t.issues_open_web } else { t.issues_open_gitlab };
+            if ui.button(web).clicked() && detail.url.starts_with("https://") {
                 crate::terminal::open_url(&detail.url);
             }
             let (text, action) = if open { (t.issues_close, Op::Close(number)) } else { (t.issues_reopen, Op::Reopen(number)) };
@@ -679,5 +858,25 @@ mod tests {
             let detail = read_detail(&root, first.number, t).expect("gh issue view");
             assert_eq!(detail.title, first.title);
         }
+    }
+
+    #[test]
+    fn reads_remote_hosts() {
+        assert_eq!(url_host("https://gitlab-01.example.fr/team/api.git").as_deref(), Some("gitlab-01.example.fr"));
+        assert_eq!(url_host("git@gitlab.com:team/api.git").as_deref(), Some("gitlab.com"));
+        assert_eq!(url_host("ssh://git@gitlab.example.fr:2222/team/api").as_deref(), Some("gitlab.example.fr"));
+    }
+
+    #[test]
+    fn reads_gitlab_issues() {
+        let json = r##"[{"iid":7,"title":"Bug","state":"opened","author":{"username":"jl"},"labels":[{"name":"bug","color":"#d73a4a"}],"created_at":"2026-10-01T08:00:00.000Z","web_url":"https://gitlab.example.fr/a/b/-/issues/7"},
+            {"iid":6,"title":"Old","state":"closed","author":null,"labels":["doc"],"created_at":"2026-09-01T08:00:00Z"}]"##;
+        let issues: Vec<Issue> = serde_json::from_str::<Vec<GlIssue>>(json).unwrap().into_iter().map(Issue::from).collect();
+        assert_eq!(issues[0].number, 7);
+        assert!(is_open(&issues[0].state));
+        assert_eq!(issues[0].labels[0].color, "d73a4a");
+        assert!(!is_open(&issues[1].state));
+        assert_eq!(login(&issues[1].author), "ghost");
+        assert_eq!(issues[1].labels[0].name, "doc");
     }
 }

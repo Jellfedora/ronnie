@@ -412,7 +412,7 @@ fn parse_branches(out: &[u8]) -> Branches {
     branches
 }
 
-fn git(root: &Path) -> Command {
+pub(super) fn git(root: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(root).args(["-c", "log.showSignature=false"]);
     // Reads never take the index lock (a commit typed meanwhile in the terminal would fail); nothing
