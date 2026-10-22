@@ -374,6 +374,8 @@ pub struct App {
     games_seen: bool,
     /// Exporting or importing the configuration.
     backup: Option<backup::BackupDialog>,
+    /// The automatic backup of the configuration.
+    auto_backup: backup::AutoBackupState,
     /// Listening to the user, for Claude Code in that pane.
     dictation: Option<(PaneId, crate::voice::Dictation)>,
     /// Reads the machine's resources while their panel shows.
@@ -1171,6 +1173,7 @@ impl App {
             blob: blob::Blob::default(),
             games_seen: false,
             backup: None,
+            auto_backup: backup::AutoBackupState::default(),
             dictation: None,
             sysmon: None,
             blob_played: 0.0,
@@ -5066,6 +5069,7 @@ impl eframe::App for App {
         self.modules_poll();
         self.mail_poll(ctx);
         self.watch_servers(ctx);
+        self.auto_backup_poll(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -5140,6 +5144,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.save_scrollbacks(None, false);
         self.sync();
+        self.auto_backup_on_exit();
         crate::askpass::cleanup();
         self.mail_stop();
     }

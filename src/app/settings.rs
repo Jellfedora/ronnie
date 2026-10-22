@@ -1526,6 +1526,8 @@ impl App {
                     self.backup = Some(super::backup::BackupDialog::Export { secrets: true, password: String::new(), again: String::new(), error: None });
                 }
             });
+            divider(ui, theme);
+            self.auto_backup_rows(ui, t, theme, picked);
         });
         card(ui, theme, Some(t.reset_section), |ui| {
             setting_row(ui, theme, t.reset_row, Some(t.reset_desc), |ui| {
@@ -1676,6 +1678,93 @@ impl App {
             });
             form.tested = None;
             form.testing = Some(rx);
+        }
+    }
+
+    /// The automatic backup's settings: its folder, how many are kept, the passwords, the last one.
+    fn auto_backup_rows(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        let b = |text: &str| egui::Button::new(egui::RichText::new(text).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+        let pick = |current: Option<&std::path::Path>| {
+            let dialog = rfd::FileDialog::new();
+            match current {
+                Some(folder) => dialog.set_directory(folder),
+                None => dialog,
+            }
+            .pick_folder()
+        };
+        let auto = &mut picked.auto_backup;
+        let Some(folder) = auto.folder.clone() else {
+            setting_row(ui, theme, t.auto_backup_row, Some(t.auto_backup_desc), |ui| {
+                if ui.add(b(t.auto_backup_choose)).clicked()
+                    && let Some(folder) = pick(None)
+                {
+                    auto.folder = Some(folder);
+                    self.auto_backup.check_now();
+                }
+            });
+            return;
+        };
+        let desc = format!("{}\n{}", t.auto_backup_desc, crate::ssh::display_path(&folder));
+        setting_row(ui, theme, t.auto_backup_row, Some(&desc), |ui| {
+            if ui.add(ghost_button(t.auto_backup_off, theme.ansi[1])).clicked() {
+                auto.folder = None;
+            }
+            if ui.add(b(t.auto_backup_change)).clicked()
+                && let Some(folder) = pick(Some(&folder))
+            {
+                auto.folder = Some(folder);
+                self.auto_backup.check_now();
+            }
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.auto_backup_keep, Some(t.auto_backup_keep_desc), |ui| {
+            ui.add(egui::DragValue::new(&mut auto.keep).range(1..=30));
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.backup_secrets, Some(t.auto_backup_secrets_desc), |ui| {
+            let mut on = auto.password_saved;
+            if toggle(ui, theme, &mut on).changed() {
+                if on {
+                    self.backup = Some(super::backup::BackupDialog::AutoPassword { password: String::new(), again: String::new(), error: None });
+                } else {
+                    crate::ssh::delete_password(super::backup::AUTO_PASSWORD_ID);
+                    auto.password_saved = false;
+                }
+            }
+            if auto.password_saved && ui.add(ghost_button(t.auto_backup_password_change, theme.text_muted)).clicked() {
+                self.backup = Some(super::backup::BackupDialog::AutoPassword { password: String::new(), again: String::new(), error: None });
+            }
+        });
+        divider(ui, theme);
+        let state = &self.auto_backup;
+        let (status, failed) = match (&state.error, &state.last) {
+            (Some(e), _) => (format!("⚠  {e}"), true),
+            (None, Some((when, _))) => (t.auto_backup_last_at.replace("{date}", &when.format("%d/%m/%Y %H:%M").to_string()), false),
+            (None, None) => (t.auto_backup_none.to_owned(), false),
+        };
+        let last = state.last.as_ref().map(|(_, path)| path.clone());
+        let running = state.running();
+        let mut now = false;
+        setting_row(ui, theme, t.auto_backup_last, (!failed).then_some(status.as_str()), |ui| {
+            if running {
+                ui.spinner();
+            } else if ui.add(b(t.auto_backup_now)).clicked() {
+                now = true;
+            }
+            if let Some(path) = &last
+                && ui.add(ghost_button(t.open_location, theme.text_muted)).clicked()
+            {
+                config::reveal(path);
+            }
+        });
+        if failed {
+            ui.add(egui::Label::new(egui::RichText::new(status).size(12.0).color(theme.ansi[1])).wrap());
+            ui.add_space(10.0);
+        }
+        if now {
+            // With the folder as picked on this page (the settings are applied after it).
+            self.config.settings.auto_backup = picked.auto_backup.clone();
+            self.auto_backup();
         }
     }
 

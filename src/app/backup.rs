@@ -3,6 +3,10 @@
 //! histories, terminal contents. Passwords and SSH key files go in too if asked, sealed with a password
 //! chosen for the export.
 //!
+//! The automatic backup writes the same export, once a day and when Ronnie closes, in a folder of the
+//! user's choosing (a synced one: Nextcloud, Dropbox...), keeping the last few; its secrets are sealed
+//! with a backup password saved apart, as the other passwords.
+//!
 //! An import replaces everything: the current configuration is moved aside (as by a reset), the zip's
 //! is written, and Ronnie restarts. From another system, what only makes sense on the computer it came
 //! from is left out: the tabs' and profiles' folders, the file manager's local folder, the shortcuts.
@@ -17,11 +21,18 @@ const MANIFEST: &str = "manifest.json";
 const SECRETS: &str = "secrets.bin";
 const MAGIC: &[u8] = b"RONNIE-SECRETS-1";
 /// Files and folders of the config folder that travel (the rest belongs to this computer).
-const FILES: &[&str] = &["config.json", "session.json", "db-history.json", "notes.json"];
+const FILES: &[&str] = &["config.json", "session.json", "db-history.json", "notes.json", "claude-worklog.json"];
 const FOLDERS: &[&str] = &["history", "scrollback", "notes-files"];
 /// Where the SSH keys of an import go, in the config folder.
 const KEYS: &str = "keys";
 pub(super) const MIN_PASSWORD: usize = 8;
+/// The automatic backups' names: the prefix, then the day ("2026-10-22") and ".zip". A dev build's
+/// are apart, should it back up to the same folder.
+const AUTO_PREFIX: &str = if config::OFFICIAL { "ronnie-backup-" } else { "ronnie-dev-backup-" };
+/// The backup password's id among the saved passwords.
+pub(super) const AUTO_PASSWORD_ID: Uuid = Uuid::from_u128(0x7261_6e64_6f6d_2d62_6163_6b75_7000_0001);
+/// How often Ronnie checks that today's backup is written.
+const AUTO_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// What an export holds, read before importing it.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -36,6 +47,9 @@ pub(super) struct Manifest {
     pub databases: usize,
     pub profiles: usize,
     pub tabs: usize,
+    /// Written by the automatic backup.
+    #[serde(default)]
+    pub auto: bool,
 }
 
 impl Manifest {
@@ -56,6 +70,75 @@ pub(super) enum BackupDialog {
     Export { secrets: bool, password: String, again: String, error: Option<String> },
     Import { path: PathBuf, manifest: Manifest, password: String, error: Option<String> },
     Exported(PathBuf),
+    /// Choosing the automatic backup's password.
+    AutoPassword { password: String, again: String, error: Option<String> },
+}
+
+/// The automatic backup at work.
+#[derive(Default)]
+pub(super) struct AutoBackupState {
+    /// The last one written (or found in the folder): when, where.
+    pub last: Option<(chrono::DateTime<chrono::Local>, PathBuf)>,
+    /// Why the last one failed.
+    pub error: Option<String>,
+    /// One being written.
+    job: Option<std::thread::JoinHandle<Result<PathBuf, String>>>,
+    /// Last time today's was looked for (None: at the next frame).
+    checked: Option<std::time::Instant>,
+    /// The folder `last` was looked for in.
+    seen: Option<PathBuf>,
+}
+
+impl AutoBackupState {
+    pub fn running(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Looks for today's backup at the next frame (the folder changed).
+    pub fn check_now(&mut self) {
+        self.checked = None;
+    }
+}
+
+fn auto_name(day: chrono::NaiveDate) -> String {
+    format!("{AUTO_PREFIX}{}.zip", day.format("%Y-%m-%d"))
+}
+
+/// The automatic backups in `folder`, the newest first.
+fn auto_backups(folder: &Path) -> Vec<(chrono::NaiveDate, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+    let mut found: Vec<_> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let day = chrono::NaiveDate::parse_from_str(name.strip_prefix(AUTO_PREFIX)?.strip_suffix(".zip")?, "%Y-%m-%d").ok()?;
+            Some((day, e.path()))
+        })
+        .collect();
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
+    found
+}
+
+/// Writes today's backup of config folder `dir` into `folder` (replacing the one written earlier
+/// today), then deletes those past the `keep` newest.
+fn write_auto(dir: &Path, folder: &Path, manifest: &Manifest, secrets: Option<(&Secrets, &str)>, keep: u32) -> Result<PathBuf, String> {
+    // Not made when missing: a synced folder not there (a drive unplugged) is a problem to tell.
+    if !folder.is_dir() {
+        return Err(format!("{} : {}", folder.display(), std::io::Error::from(std::io::ErrorKind::NotFound)));
+    }
+    let name = auto_name(chrono::Local::now().date_naive());
+    let out = folder.join(&name);
+    // Written aside, then renamed: the sync never sends a half-written file.
+    let tmp = folder.join(format!(".{name}.tmp"));
+    write_export(dir, &tmp, manifest, secrets)?;
+    std::fs::rename(&tmp, &out).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{} : {e}", out.display())
+    })?;
+    for (_, old) in auto_backups(folder).into_iter().skip(keep.max(1) as usize) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(out)
 }
 
 pub(super) fn os_id() -> &'static str {
@@ -197,8 +280,10 @@ fn prepare(path: &Path, manifest: &Manifest, password: &str, t: &Strings) -> Res
         _ => None,
     };
     let mut files = Vec::new();
-    if let Some(bytes) = read("db-history.json") {
-        files.push(("db-history.json".to_owned(), bytes));
+    for name in FILES.iter().filter(|n| !["config.json", "session.json"].contains(n)) {
+        if let Some(bytes) = read(name) {
+            files.push((name.to_string(), bytes));
+        }
     }
     let names: Vec<String> = zip.file_names().map(str::to_owned).collect();
     for name in names {
@@ -219,6 +304,7 @@ fn prepare(path: &Path, manifest: &Manifest, password: &str, t: &Strings) -> Res
         for host in &mut config.ssh {
             host.sftp_local = None;
         }
+        config.settings.auto_backup.folder = None;
         if let Some(session) = &mut session {
             let windows = session.windows.iter_mut().flat_map(|w| w.tabs.iter_mut());
             for tab in session.tabs.iter_mut().chain(session.closed.iter_mut()).chain(windows) {
@@ -237,6 +323,14 @@ fn prepare(path: &Path, manifest: &Manifest, password: &str, t: &Strings) -> Res
         for db in &mut config.databases {
             db.password_saved = false;
         }
+        config.settings.subsonic.password_saved = false;
+    }
+    // The backup password isn't in the backup: it is the one just typed if this is an automatic backup
+    // (a manual export may have another one).
+    let mut secrets = secrets;
+    match &mut secrets {
+        Some(s) if manifest.auto && config.settings.auto_backup.password_saved => s.passwords.push((AUTO_PASSWORD_ID, password.to_owned())),
+        _ => config.settings.auto_backup.password_saved = false,
     }
     Ok(Prepared { config, session, files, secrets })
 }
@@ -295,12 +389,21 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 impl App {
     /// Asks where to write the export, and writes it (`password`: to seal the passwords and keys).
     pub(super) fn export_config(&mut self, password: Option<&str>) -> Result<Option<PathBuf>, String> {
-        // What is on disk is what goes: the session and the settings as they are now.
-        self.sync();
         let dir = config::config_dir().ok_or("no config folder")?;
         let default = format!("ronnie-config-{}.zip", chrono::Local::now().format("%Y%m%d"));
         let Some(out) = rfd::FileDialog::new().set_file_name(default).add_filter("zip", &["zip"]).save_file() else { return Ok(None) };
-        let secrets = password.map(|_| {
+        let (manifest, secrets) = self.snapshot(password.is_some());
+        write_export(&dir, &out, &manifest, secrets.as_ref().zip(password))?;
+        crate::log::info(&format!("configuration exported to {}", out.display()));
+        Ok(Some(out))
+    }
+
+    /// The configuration written to disk as it is now, and what an export of it holds: its manifest,
+    /// and the passwords and SSH keys if `secrets`.
+    fn snapshot(&mut self, secrets: bool) -> (Manifest, Option<Secrets>) {
+        // What is on disk is what goes: the session and the settings as they are now.
+        self.sync();
+        let secrets = secrets.then(|| {
             let ids = self.config.ssh.iter().filter(|h| h.password_saved).map(|h| h.id).chain(self.config.databases.iter().filter(|d| d.password_saved).map(|d| d.id)).chain(self.config.settings.subsonic.password_saved.then_some(crate::subsonic::PASSWORD_ID));
             let passwords = ids.filter_map(|id| Some((id, ssh::load_password(id)?))).collect();
             let keys = self
@@ -326,10 +429,80 @@ impl App {
             databases: self.config.databases.len(),
             profiles: self.config.profiles.len(),
             tabs,
+            auto: false,
         };
-        write_export(&dir, &out, &manifest, secrets.as_ref().zip(password))?;
-        crate::log::info(&format!("configuration exported to {}", out.display()));
-        Ok(Some(out))
+        (manifest, secrets)
+    }
+
+    /// Starts writing today's automatic backup, if it is on (and none is being written).
+    pub(super) fn auto_backup(&mut self) {
+        let settings = self.config.settings.auto_backup.clone();
+        let (Some(folder), Some(dir)) = (settings.folder, config::config_dir()) else { return };
+        if self.read_only || self.auto_backup.job.is_some() {
+            return;
+        }
+        let password = if settings.password_saved { ssh::load_password(AUTO_PASSWORD_ID) } else { None };
+        let (mut manifest, secrets) = self.snapshot(password.is_some());
+        manifest.auto = true;
+        self.auto_backup.job = Some(std::thread::spawn(move || write_auto(&dir, &folder, &manifest, secrets.as_ref().zip(password.as_deref()), settings.keep)));
+    }
+
+    /// Takes in a backup written, and starts today's if not written yet (looked for every few minutes).
+    pub(super) fn auto_backup_poll(&mut self, ctx: &egui::Context) {
+        if self.auto_backup.job.as_ref().is_some_and(|j| j.is_finished()) {
+            let done = self.auto_backup.job.take().map(|j| j.join().unwrap_or_else(|_| Err("panic".to_owned())));
+            self.auto_backup_done(done);
+        }
+        let Some(folder) = self.config.settings.auto_backup.folder.clone() else {
+            self.auto_backup.seen = None;
+            self.auto_backup.last = None;
+            return;
+        };
+        if self.auto_backup.checked.is_some_and(|c| c.elapsed() < AUTO_EVERY) {
+            return;
+        }
+        self.auto_backup.checked = Some(std::time::Instant::now());
+        ctx.request_repaint_after(AUTO_EVERY);
+        if self.auto_backup.seen.as_ref() != Some(&folder) {
+            self.auto_backup.last = auto_backups(&folder).into_iter().next().map(|(_, path)| {
+                let when = std::fs::metadata(&path).and_then(|m| m.modified()).map(chrono::DateTime::from).unwrap_or_else(|_| chrono::Local::now());
+                (when, path)
+            });
+            self.auto_backup.seen = Some(folder.clone());
+        }
+        if !folder.join(auto_name(chrono::Local::now().date_naive())).exists() {
+            self.auto_backup();
+        }
+    }
+
+    fn auto_backup_done(&mut self, done: Option<Result<PathBuf, String>>) {
+        match done {
+            Some(Ok(path)) => {
+                crate::log::info(&format!("automatic backup written to {}", path.display()));
+                self.auto_backup.last = Some((chrono::Local::now(), path));
+                self.auto_backup.error = None;
+            }
+            Some(Err(e)) => {
+                crate::log::error(&format!("automatic backup: {e}"));
+                // Told once, not at each try.
+                if self.auto_backup.error.is_none() {
+                    self.error = Some(format!("{} : {e}", self.t().auto_backup_failed));
+                }
+                self.auto_backup.error = Some(e);
+            }
+            None => {}
+        }
+    }
+
+    /// Ronnie closes: the backup of the configuration as it is left, waited for.
+    pub(super) fn auto_backup_on_exit(&mut self) {
+        if let Some(job) = self.auto_backup.job.take() {
+            let _ = job.join();
+        }
+        self.auto_backup();
+        if let Some(Ok(Err(e))) = self.auto_backup.job.take().map(|j| j.join()) {
+            crate::log::error(&format!("automatic backup: {e}"));
+        }
     }
 
     /// Replaces the whole configuration by the export at `path`, then restarts. An error (a wrong
@@ -363,7 +536,7 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let Some(dialog) = &mut self.backup else { return };
-        let (mut close, mut export, mut import) = (false, None, false);
+        let (mut close, mut export, mut import, mut auto_password) = (false, None, false, None);
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
         let button = |text: &str, fill: Option<Color32>| {
             let label = egui::RichText::new(text).size(13.5);
@@ -372,6 +545,23 @@ impl App {
         };
         let password_field = |ui: &mut Ui, text: &mut String, hint: &str| {
             ui.add(egui::TextEdit::singleline(text).password(true).hint_text(hint).desired_width(f32::INFINITY).margin(Vec2::new(6.0, 5.0)))
+        };
+        // A password to choose, typed twice: whether it will do, and whether Enter confirmed it.
+        let new_password = |ui: &mut Ui, password: &mut String, again: &mut String| {
+            password_field(ui, password, t.backup_password);
+            let last = password_field(ui, again, t.backup_password_again);
+            let problem = if password.chars().count() < MIN_PASSWORD {
+                Some(t.backup_password_short.replace("{n}", &MIN_PASSWORD.to_string()))
+            } else if password != again {
+                (!again.is_empty()).then(|| t.backup_password_mismatch.to_owned()).or(Some(String::new()))
+            } else {
+                None
+            };
+            if let Some(p) = problem.as_ref().filter(|p| !p.is_empty() && (!password.is_empty())) {
+                ui.label(egui::RichText::new(p).size(12.0).color(theme.ansi[3]));
+            }
+            let entered = problem.is_none() && last.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            (problem.is_none(), entered)
         };
         let modal = egui::Modal::new(egui::Id::new("backup")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
@@ -385,22 +575,11 @@ impl App {
                     let ok = if *secrets {
                         ui.label(egui::RichText::new(t.backup_secrets_hint).size(12.0).color(theme.text_muted));
                         ui.add_space(4.0);
-                        password_field(ui, password, t.backup_password);
-                        let last = password_field(ui, again, t.backup_password_again);
-                        let problem = if password.chars().count() < MIN_PASSWORD {
-                            Some(t.backup_password_short.replace("{n}", &MIN_PASSWORD.to_string()))
-                        } else if password != again {
-                            (!again.is_empty()).then(|| t.backup_password_mismatch.to_owned()).or(Some(String::new()))
-                        } else {
-                            None
-                        };
-                        if let Some(p) = problem.as_ref().filter(|p| !p.is_empty() && (!password.is_empty())) {
-                            ui.label(egui::RichText::new(p).size(12.0).color(theme.ansi[3]));
-                        }
-                        if problem.is_none() && last.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        let (ok, entered) = new_password(ui, password, again);
+                        if entered {
                             export = Some(Some(password.clone()));
                         }
-                        problem.is_none()
+                        ok
                     } else {
                         true
                     };
@@ -466,6 +645,29 @@ impl App {
                         }
                     });
                 }
+                BackupDialog::AutoPassword { password, again, error } => {
+                    ui.label(egui::RichText::new(t.auto_backup_password_title).size(17.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(t.auto_backup_password_desc).size(12.5).color(theme.text_muted));
+                    ui.add_space(12.0);
+                    let (ok, entered) = new_password(ui, password, again);
+                    if entered {
+                        auto_password = Some(password.clone());
+                    }
+                    if let Some(e) = error {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(format!("⚠  {e}")).size(12.5).color(theme.ansi[1]));
+                    }
+                    ui.add_space(14.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_enabled(ok, button(t.auto_backup_password_save, Some(theme.accent))).clicked() {
+                            auto_password = Some(password.clone());
+                        }
+                        if ui.add(button(t.cancel, None)).clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 BackupDialog::Exported(path) => {
                     ui.label(egui::RichText::new(format!("✔  {}", t.backup_exported)).size(17.0).strong());
                     ui.add_space(8.0);
@@ -485,6 +687,20 @@ impl App {
         if close || modal.should_close() {
             self.backup = None;
             return;
+        }
+        if let Some(password) = auto_password {
+            match ssh::save_password(AUTO_PASSWORD_ID, &password) {
+                Ok(()) => {
+                    self.config.settings.auto_backup.password_saved = true;
+                    self.save_config();
+                    self.backup = None;
+                }
+                Err(e) => {
+                    if let Some(BackupDialog::AutoPassword { error, .. }) = &mut self.backup {
+                        *error = Some(format!("{} : {e}", t.keychain_failed));
+                    }
+                }
+            }
         }
         if let Some(password) = export {
             match self.export_config(password.as_deref()) {
@@ -544,7 +760,7 @@ mod tests {
         std::fs::write(from.join("history/abc"), "ls\n").unwrap();
         std::fs::write(from.join("shell/zshrc"), "not exported").unwrap();
         let secrets = Secrets { passwords: vec![(host, "pw".into())], keys: vec![(host, "id_ed25519".into(), b"KEY".to_vec())] };
-        let manifest = Manifest { format: FORMAT, version: "0".into(), os: if os_id() == "windows" { "macos" } else { "windows" }.into(), created: 0, secrets: true, hosts: 1, databases: 0, profiles: 1, tabs: 0 };
+        let manifest = Manifest { format: FORMAT, version: "0".into(), os: if os_id() == "windows" { "macos" } else { "windows" }.into(), created: 0, secrets: true, hosts: 1, databases: 0, profiles: 1, tabs: 0, auto: false };
         let zip = base.join("export.zip");
         write_export(&from, &zip, &manifest, Some((&secrets, "longpassword"))).unwrap();
 
@@ -564,6 +780,43 @@ mod tests {
         let key = imported.ssh[0].identity_file.clone().unwrap();
         assert!(key.starts_with(to.join(KEYS)));
         assert_eq!(std::fs::read(key).unwrap(), b"KEY");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn automatic_backups_keep_the_newest_and_bring_back_their_password() {
+        let base = std::env::temp_dir().join(format!("ronnie-auto-backup-{}", std::process::id()));
+        let (dir, folder) = (base.join("config"), base.join("Nextcloud"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = |auto| Manifest { format: FORMAT, version: "0".into(), os: os_id().into(), created: 0, secrets: true, hosts: 0, databases: 0, profiles: 0, tabs: 0, auto };
+        std::fs::write(dir.join("config.json"), r#"{"auto_backup": {"folder": "/x", "keep": 2, "password_saved": true}}"#).unwrap();
+        std::fs::write(dir.join("claude-worklog.json"), "{}").unwrap();
+        let secrets = Secrets::default();
+        assert!(write_auto(&dir, &folder, &manifest(true), Some((&secrets, "longpassword")), 2).is_err(), "a missing folder isn't made");
+
+        std::fs::create_dir_all(&folder).unwrap();
+        for day in ["2026-01-01", "2026-01-02", "2026-01-03"] {
+            std::fs::write(folder.join(format!("{AUTO_PREFIX}{day}.zip")), "").unwrap();
+        }
+        std::fs::write(folder.join("other.zip"), "").unwrap();
+        let out = write_auto(&dir, &folder, &manifest(true), Some((&secrets, "longpassword")), 2).unwrap();
+        let mut left: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        let mut kept = vec![format!("{AUTO_PREFIX}2026-01-03.zip"), out.file_name().unwrap().to_string_lossy().into_owned(), "other.zip".to_owned()];
+        kept.sort();
+        assert_eq!(left, kept, "the two newest, the other files left alone, no temporary file");
+
+        let t = crate::i18n::Lang::En.strings();
+        let read = read_manifest(&out, t).unwrap();
+        let prepared = prepare(&out, &read, "longpassword", t).unwrap();
+        assert!(prepared.config.settings.auto_backup.password_saved);
+        assert_eq!(prepared.secrets.as_ref().unwrap().passwords, vec![(AUTO_PASSWORD_ID, "longpassword".to_owned())]);
+        assert!(prepared.files.iter().any(|(name, _)| name == "claude-worklog.json"));
+        // A manual export's password may not be the backup one.
+        let manual = base.join("manual.zip");
+        write_export(&dir, &manual, &manifest(false), Some((&secrets, "longpassword"))).unwrap();
+        let prepared = prepare(&manual, &read_manifest(&manual, t).unwrap(), "longpassword", t).unwrap();
+        assert!(!prepared.config.settings.auto_backup.password_saved);
         let _ = std::fs::remove_dir_all(&base);
     }
 }
