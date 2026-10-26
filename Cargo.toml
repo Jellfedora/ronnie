@@ -4,6 +4,7 @@ version = "0.33.0"
 edition = "2024"
 description = "Terminal Power Métal"
 repository = "https://github.com/Jellfedora/ronnie"
+license = "MIT"
 
 [dependencies]
 alacritty_terminal = "0.26"

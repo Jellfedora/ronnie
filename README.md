@@ -51,7 +51,15 @@ Le script met à jour la version dans `Cargo.toml`, commit, crée le tag `v0.2.0
 
 `scripts/package.sh` produit localement l'archive du système courant dans `dist/`.
 
+## Contribuer
+
+Les pull requests sont les bienvenues : voir [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Crédits
 
 - Musique du jeu Speed Metal : « Thrash Metal » par [Alex Morgan](https://pixabay.com/fr/users/alex-morgan-54692529/), sur Pixabay.
 - Polices : JetBrains Mono et Metal Mania (licence OFL, voir `assets/fonts/`).
+
+## Licence
+
+[MIT](LICENSE).
