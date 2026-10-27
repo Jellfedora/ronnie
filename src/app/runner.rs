@@ -22,13 +22,16 @@ pub(super) struct Runner {
     record: bool,
     /// Time not stepped yet.
     acc: f32,
+    /// The jump key went down, not stepped yet: kept for the next step (above 120 Hz, a frame can
+    /// have none).
+    jump_pending: bool,
     rng: u64,
     floor: crate::floor::GameFloor,
 }
 
 impl Default for Runner {
     fn default() -> Self {
-        Self { run: None, ended: None, record: false, acc: 0.0, rng: 0, floor: crate::floor::GameFloor::new("ronnie-run", false) }
+        Self { run: None, ended: None, record: false, acc: 0.0, jump_pending: false, rng: 0, floor: crate::floor::GameFloor::new("ronnie-run", false) }
     }
 }
 
@@ -47,6 +50,21 @@ impl Runner {
     /// A run is on.
     fn running(&self) -> bool {
         self.run.as_ref().is_some_and(|r| !r.over)
+    }
+
+    /// `dt` seconds more of the run under way, in steps of `STEP`. The jump key pressed counts once, at
+    /// the next step, even when this frame has none.
+    fn advance(&mut self, dt: f32, input: Input) {
+        let Some(run) = self.run.as_mut().filter(|r| !r.over) else { return };
+        self.acc += dt;
+        self.jump_pending |= input.jump;
+        while self.acc >= STEP {
+            self.acc -= STEP;
+            run.step(STEP, Input { jump: std::mem::take(&mut self.jump_pending), ..input });
+            if run.over {
+                break;
+            }
+        }
     }
 
     /// The home page is left: a run under way stops.
@@ -123,23 +141,14 @@ impl App {
             self.runner.ended = None;
             self.runner.record = false;
             self.runner.acc = 0.0;
+            self.runner.jump_pending = false;
             input.jump = false;
         }
 
-        if let Some(run) = self.runner.run.as_mut().filter(|r| !r.over) {
-            self.runner.acc += ui.input(|i| i.stable_dt).min(0.1);
-            let mut first = true;
-            while self.runner.acc >= STEP {
-                self.runner.acc -= STEP;
-                // The key pressed counts once.
-                run.step(STEP, Input { jump: input.jump && first, ..input });
-                first = false;
-                if run.over {
-                    break;
-                }
-            }
+        if self.runner.running() {
+            self.runner.advance(ui.input(|i| i.stable_dt).min(0.1), input);
             ui.ctx().request_repaint();
-            if run.over {
+            if !self.runner.running() {
                 self.runner_over(now);
             }
         }
@@ -150,7 +159,7 @@ impl App {
         // half-day of work: when the next one can be run, instead.
         let locked = (!running).then(|| self.game_locked(HomeGame::Runner)).flatten().map(|p| t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
         let (line, color) = match &self.runner.run {
-            Some(run) if run.over && self.runner.record => (format!("{}  {}", t.runner_over.replace("{m}", &run.meters().to_string()), t.mines_record), theme.accent),
+            Some(run) if run.over && self.runner.record => (format!("{}  {}", t.runner_over.replace("{m}", &run.meters().to_string()), t.game_new_best), theme.accent),
             Some(run) if run.over => (t.runner_over.replace("{m}", &run.meters().to_string()), theme.text),
             Some(_) => (String::new(), theme.text_muted),
             None => (t.runner_start.to_owned(), theme.text),
@@ -168,7 +177,7 @@ impl App {
         if !running && side.height() > 60.0 {
             let best = (self.config.settings.runner_best > 0).then(|| t.runner_best.replace("{m}", &self.config.settings.runner_best.to_string()));
             let board = self.runner.floor.board().map(<[_]>::to_vec);
-            self.game_board(ui, side, &theme, board, best, t.mines_need_pseudo, meters_text);
+            self.game_board(ui, side, &theme, board, best, t.game_need_pseudo, meters_text);
         }
     }
 
@@ -360,4 +369,28 @@ pub(super) fn paint_runner_icon(painter: &egui::Painter, c: Pos2, theme: &Theme,
     block(2.5, -9.0, 5.0, -1.0);
     block(-1.0, 1.5, 6.5, 3.5);
     painter.rect_filled(Rect::from_min_max(c + Vec2::new(-3.5 * s, 6.0 * s), c + Vec2::new(3.5 * s, 9.0 * s)), 1.0, theme.text_muted);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// At 144 Hz a frame has no step now and then: a jump pressed in one is kept for the next step.
+    #[test]
+    fn a_jump_pressed_between_two_steps_is_not_lost() {
+        let mut runner = Runner { run: Some(Run::new(7)), ..Runner::default() };
+        let press = Input { jump: true, jump_held: true, duck: false };
+        // The first frame at 144 Hz is shorter than a step.
+        runner.advance(1.0 / 144.0, press);
+        assert_eq!(runner.run.as_ref().unwrap().jumps, 0);
+        runner.advance(1.0 / 144.0, Input { jump: false, ..press });
+        let run = runner.run.as_ref().unwrap();
+        assert_eq!(run.jumps, 1);
+        assert!(run.y > 0.0);
+        // Counted once: the frames after don't jump again.
+        for _ in 0..200 {
+            runner.advance(1.0 / 144.0, Input::default());
+        }
+        assert_eq!(runner.run.as_ref().unwrap().jumps, 1);
+    }
 }

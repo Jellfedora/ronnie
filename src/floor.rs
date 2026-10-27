@@ -400,6 +400,8 @@ pub struct GameRound {
 /// A line of a game's board.
 #[derive(Clone, Debug)]
 pub struct GameEntry {
+    /// Its place on floor's board (floor decides the ties).
+    pub rank: u32,
     pub name: Option<String>,
     pub score: u32,
     pub me: bool,
@@ -480,6 +482,7 @@ impl GameFloor {
 fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Option<&GameRound>) -> Result<Vec<GameEntry>, ureq::Error> {
     #[derive(Deserialize)]
     struct Line {
+        rank: u32,
         name: Option<String>,
         score: u32,
         me: bool,
@@ -498,7 +501,7 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         request = request.header("Authorization", format!("Bearer {}", a.token));
     }
     let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| GameEntry { name: l.name, score: l.score, me: l.me }).collect())
+    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me }).collect())
 }
 
 #[cfg(test)]

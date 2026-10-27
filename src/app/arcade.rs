@@ -120,13 +120,13 @@ impl App {
             painter.galley(Pos2::new(area.min.x, y), galley, theme.text_muted);
             return;
         }
-        for (k, entry) in board.iter().enumerate() {
+        for entry in board {
             if y + 18.0 > area.max.y {
                 break;
             }
             let color = if entry.me { theme.accent } else { theme.text };
             let name = if entry.me { pseudo.as_deref() } else { entry.name.as_deref() }.unwrap_or(t.game_anonymous);
-            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, format!("{}.", k + 1), FontId::monospace(13.0), theme.text_muted);
+            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, format!("{}.", entry.rank), FontId::monospace(13.0), theme.text_muted);
             painter.text(Pos2::new(area.min.x + 30.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
             painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, score(entry.score), FontId::monospace(13.0), color);
             y += 22.0;

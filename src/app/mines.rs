@@ -128,7 +128,7 @@ impl App {
 
         // Below the grid: how to play, or how the game ended.
         let (line, color) = match self.mines.board.state {
-            State::Won if self.mines.record => (format!("{}  {}", t.mines_won.replace("{t}", &time_text(self.mines.millis())), t.mines_record), theme.accent),
+            State::Won if self.mines.record => (format!("{}  {}", t.mines_won.replace("{t}", &time_text(self.mines.millis())), t.game_new_best), theme.accent),
             State::Won => (t.mines_won.replace("{t}", &time_text(self.mines.millis())), theme.accent),
             State::Lost(..) => (t.mines_lost.to_owned(), theme.ansi[1]),
             _ => (t.mines_help.to_owned(), theme.text_muted),
@@ -138,7 +138,7 @@ impl App {
         let side = if wide { Rect::from_min_size(Pos2::new(grid.max.x + 32.0, grid.min.y), Vec2::new(side_w, grid.height())) } else { Rect::from_min_size(Pos2::new(grid.min.x, grid.max.y + 48.0), Vec2::new(grid.width(), body.max.y - grid.max.y - 48.0)) };
         let best = (self.config.settings.mines_best > 0).then(|| t.mines_best.replace("{t}", &time_text(self.config.settings.mines_best)));
         let board = self.mines.floor.board().map(<[_]>::to_vec);
-        self.game_board(ui, side, &theme, board, best, t.mines_need_pseudo, time_text);
+        self.game_board(ui, side, &theme, board, best, t.game_need_pseudo, time_text);
         // The time runs: a frame each tenth of a second.
         if self.mines.board.state == State::Playing {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
