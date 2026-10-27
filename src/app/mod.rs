@@ -2179,8 +2179,8 @@ impl App {
         }
     }
 
-    /// The notices in the bottom right corner: a few seconds each (longer under the pointer); a click
-    /// goes to their tab.
+    /// The notices in the bottom right corner: a few seconds each (longer under the pointer); a button
+    /// (or a click on them) goes to their tab, another closes them.
     fn toasts_ui(&mut self, ctx: &egui::Context) {
         const LIFE: f32 = 7.0;
         self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < LIFE);
@@ -2200,6 +2200,8 @@ impl App {
         let mut hovered_any = false;
         let t_go_to_tab = self.t().go_to_tab;
         let t_see_mail = self.t().mail_see;
+        let t_close = self.t().close;
+        let mut dismiss = None;
         let mut rects = vec![Rect::NOTHING; self.toasts.len()];
         for (k, toast) in self.toasts.iter().enumerate().rev() {
             let width = 320.0;
@@ -2238,10 +2240,19 @@ impl App {
                     });
                     ui.add_space(4.0);
                     ui.add(egui::Label::new(egui::RichText::new(&toast.body).size(12.5).color(self.theme.text_muted)).wrap());
-                    if hovered {
+                    // Two plain buttons: go to what it's about, or just dismiss it.
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let see = egui::Button::new(egui::RichText::new(format!("{}  →", if toast.mail.is_some() { t_see_mail } else { t_go_to_tab })).size(13.0).strong().color(self.theme.bg)).fill(mark).corner_radius(8.0).min_size(Vec2::new(0.0, 30.0));
+                        if ui.add(see).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            go = Some((k, toast.tab, toast.mail.clone()));
+                        }
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new(format!("{}  →", if toast.mail.is_some() { t_see_mail } else { t_go_to_tab })).size(11.5).color(accent));
-                    }
+                        let close = egui::Button::new(egui::RichText::new(t_close).size(13.0).color(self.theme.text)).fill(self.theme.tab_hover).stroke(Stroke::new(1.0, self.theme.text_muted.gamma_multiply(0.4))).corner_radius(8.0).min_size(Vec2::new(0.0, 30.0));
+                        if ui.add(close).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            dismiss = Some(k);
+                        }
+                    });
                 });
                 // A strip of the accent on the left, and the time left at the bottom.
                 let r = shown.response.rect;
@@ -2254,7 +2265,7 @@ impl App {
             // Clicked through the area's own sense: interacting again with its id is a double use.
             let resp = area.response.clone();
             hovered_any |= resp.hovered();
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && go.is_none() && dismiss.is_none() {
                 go = Some((k, toast.tab, toast.mail.clone()));
             }
             // The next one stacks away from the edge.
@@ -2270,7 +2281,9 @@ impl App {
             }
         }
         self.toast_rects = rects;
-        if let Some((k, tab, mail)) = go {
+        if let Some(k) = dismiss {
+            self.toasts.remove(k);
+        } else if let Some((k, tab, mail)) = go {
             self.toasts.remove(k);
             match mail {
                 Some(id) => self.open_mail(&id),
