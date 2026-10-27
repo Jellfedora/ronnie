@@ -443,10 +443,17 @@ first in PATH (`PATH=\"<bin folder>:$PATH\" npm test`{path_note}).
 every mail sent to it, delivering none, and shows them in Ronnie (HTML, text, headers, source, attachments). To test the \
 mails of a project, point its SMTP settings at it instead of suggesting Mailpit or MailHog; the user starts it in Ronnie.
 - SSH servers (\"{hosts}\"): saved with their login (key, password, jump host), imported from ~/.ssh/config; each opens \
-a terminal and a file browser (upload, download, edit, permissions) with the server's health. Commands Claude runs here \
-are local: for a server, the user opens its terminal in Ronnie.
+a terminal and a file browser (upload, download, edit, permissions) with the server's health. You can reach them \
+yourself: those logging in with a key take the `ssh` command given below (non-interactive, `ssh … 'command'`); those \
+logging in with a password only go through Ronnie, so for them the user runs the commands in the server's terminal.
 - Databases (\"{dbs}\"): MariaDB / MySQL and SQL Server, directly or through an SSH server; tables to browse and edit, \
-an SQL editor with completion.
+an SQL editor with completion. You can query them too, with their client (`mysql`, `sqlcmd`), through an `ssh -L` port \
+forward for those reached through a server; their passwords stay in Ronnie: take the project's own settings (`.env`…) \
+or ask the user.
+- When the user's question is about a server or a database, say you can look into it and do so, rather than saying \
+you have no access. With care: reading (logs, status, files, SELECT) as needed, but anything changing a server or a \
+database (writing or deleting files, UPDATE / DELETE / ALTER, migrations, restarts, deploys) is shown to the user \
+first and run only once they agree, one change at a time; on production (a name with \"prod\"…) even more so.
 - Terminals (\"{local}\"): tabs, splits and profiles (a project's tab saved with its folder and panes); beside them the \
 profile's files, its git (changes, history, issues) and an editor. Ronnie tells the user when you are done or wait for \
 them while this pane isn't on screen.",
@@ -480,15 +487,72 @@ them while this pane isn't on screen.",
     text.push_str(&format!("\n- The mail catcher is {} (port {port}).", if running { "running" } else { "stopped" }));
     if let Some(config) = config {
         if !config.ssh.is_empty() {
-            let names: Vec<&str> = config.ssh.iter().map(|h| h.name.as_str()).collect();
-            text.push_str(&format!("\n- SSH servers saved in Ronnie: {}.", names.join(", ")));
+            text.push_str("\n- SSH servers saved in Ronnie:");
+            for host in &config.ssh {
+                text.push_str(&format!("\n  - {}: {}", host.name, ssh_line(host)));
+            }
         }
         if !config.databases.is_empty() {
-            let names: Vec<String> = config.databases.iter().map(|d| format!("{} ({})", d.name, d.engine.label())).collect();
-            text.push_str(&format!("\n- Databases saved in Ronnie: {}.", names.join(", ")));
+            text.push_str("\n- Databases saved in Ronnie:");
+            for db in &config.databases {
+                let mut line = format!("\n  - {} ({}): {}", db.name, db.engine.label(), db.address());
+                if let Some(database) = &db.database {
+                    line.push_str(&format!(", database {database}"));
+                }
+                if let Some(host) = db.ssh.and_then(|id| config.ssh.iter().find(|h| h.id == id)) {
+                    line.push_str(&format!(", through the SSH server {} (host and port as seen from it)", host.name));
+                }
+                text.push_str(&line);
+            }
         }
     }
     text
+}
+
+/// How Claude reaches a saved SSH host: the `ssh` command for one logging in with a key (or ssh's
+/// defaults), without prompts; for one needing a password, the user's terminal in Ronnie.
+fn ssh_line(host: &crate::ssh::SshHost) -> String {
+    use crate::ssh::SshAuth;
+    let key = host.identity_file.as_deref().filter(|_| matches!(host.auth_method(), SshAuth::Key));
+    let password = match host.auth_method() {
+        SshAuth::Password | SshAuth::Ask | SshAuth::Interactive => true,
+        // A protected key: its passphrase is typed by Ronnie (as for a PuTTY key's copy).
+        SshAuth::Key => host.password_saved || key.is_some_and(crate::ssh::is_putty_key),
+        SshAuth::Auto => false,
+    };
+    if password {
+        return format!("{} (password: through the user)", host.address());
+    }
+    let mut args = vec!["ssh".to_owned(), "-o".to_owned(), "BatchMode=yes".to_owned()];
+    if let Some(port) = host.port.filter(|p| *p != 22) {
+        args.extend(["-p".to_owned(), port.to_string()]);
+    }
+    if let Some(key) = key {
+        args.extend(["-i".to_owned(), shell_word(&crate::ssh::expand_home(key).display().to_string()), "-o".to_owned(), "IdentitiesOnly=yes".to_owned()]);
+    }
+    if let Some(jump) = &host.jump {
+        args.extend(["-J".to_owned(), shell_word(jump)]);
+    }
+    for option in &host.options {
+        if let Some((key, value)) = option.trim().split_once(char::is_whitespace) {
+            args.extend(["-o".to_owned(), shell_word(&format!("{key}={}", value.trim()))]);
+        }
+    }
+    let target = match &host.user {
+        Some(user) => format!("{user}@{}", host.host),
+        None => host.host.clone(),
+    };
+    args.push(shell_word(&target));
+    format!("`{}`", args.join(" "))
+}
+
+/// A word as the shell reads it: quoted when it holds anything but plain characters.
+fn shell_word(word: &str) -> String {
+    if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./_-~".contains(c)) {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 /// Watches this Ronnie's events folder (twice a second): what comes goes to `queue`, and the window
@@ -632,5 +696,11 @@ mod tests {
         assert!(text.contains("mail catcher is stopped"));
         let text = context(None, None, &[]);
         assert!(text.contains("no Node.js version of Ronnie's") && text.contains("No Node.js version installed"));
+        let mut host = crate::ssh::SshHost::new();
+        (host.host, host.user, host.port, host.jump) = ("example.org".into(), Some("deploy".into()), Some(2222), Some("bastion".into()));
+        assert_eq!(ssh_line(&host), "`ssh -o BatchMode=yes -p 2222 -J bastion deploy@example.org`");
+        host.auth = Some(crate::ssh::SshAuth::Password);
+        assert_eq!(ssh_line(&host), "deploy@example.org:2222 (password: through the user)");
+        assert_eq!(shell_word("/a b/it's"), "'/a b/it'\\''s'");
     }
 }
