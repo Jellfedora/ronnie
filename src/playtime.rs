@@ -1,5 +1,5 @@
 //! The games during working hours: one game of Speed Metal, one of Puissance 4, one of the
-//! minesweeper and one run of Ronnie Run a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
+//! minesweeper, one run of Ronnie Run and one song of Riff Hero a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
 //! 18:00 — 17:20 on Fridays — and at the weekend). Not a setting: Ronnie is for work first.
 //!
 //! What was played is kept in the config file, sealed (an HMAC of this machine and user): edited
@@ -56,7 +56,7 @@ pub fn checked(usage: &mut GameUsage, now: NaiveDateTime) -> Option<Period> {
     let wanted = match &p {
         // Out of working hours nothing is limited: a record to trust again from here.
         None if !valid => Some(fresh("")),
-        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, runner: true, seal: String::new() }),
+        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, runner: true, riff: true, seal: String::new() }),
         Some(p) if usage.period != p.key => Some(fresh(&p.key)),
         _ => None,
     };
@@ -81,6 +81,9 @@ fn seal(usage: &GameUsage) -> String {
     }
     if usage.runner {
         message.push_str("|runner");
+    }
+    if usage.riff {
+        message.push_str("|riff");
     }
     hmac(format!("ronnie-playtime-7f3a9c|{who}").as_bytes(), message.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -131,7 +134,7 @@ mod tests {
         reseal(&mut usage);
         usage.speed_metal = false;
         checked(&mut usage, on(2026, 10, 12, 15, 0));
-        assert!(usage.speed_metal && usage.four && usage.mines && usage.runner);
+        assert!(usage.speed_metal && usage.four && usage.mines && usage.runner && usage.riff);
     }
 
     #[test]

@@ -38,6 +38,7 @@ mod mail;
 mod procs;
 mod mailhtml;
 mod mines;
+mod riff;
 mod runner;
 mod loading;
 mod motion;
@@ -378,6 +379,8 @@ pub struct App {
     mines: mines::Mines,
     /// Ronnie Run's page.
     runner: runner::Runner,
+    /// Riff Hero's page, and the song being played.
+    riff: riff::Riff,
     /// Ronnie.io's page, and its connection to floor.
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
@@ -1202,6 +1205,7 @@ impl App {
             four: four::Four::default(),
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
+            riff: riff::Riff::default(),
             blob: blob::Blob::default(),
             games_seen: false,
             backup: None,
@@ -1425,6 +1429,12 @@ impl App {
             if std::env::var("RONNIE_OPEN_BLOB").is_ok() {
                 app.splash = None;
                 app.open_blob();
+            }
+            // Riff Hero: "lobby", or "solo" (a song started).
+            if let Ok(riff) = std::env::var("RONNIE_OPEN_RIFF") {
+                app.splash = None;
+                app.open_riff();
+                app.riff_demo(&riff);
             }
             if let Ok(page) = std::env::var("RONNIE_OPEN_SETTINGS") {
                 app.settings_dialog = true;
@@ -5046,6 +5056,7 @@ impl App {
             self.ssh_prompt_window(ui.ctx());
             self.live_frame(ui.ctx());
             self.blob_frame(ui.ctx());
+            self.riff_frame(ui.ctx());
             self.pseudo_window(ui.ctx());
         }
         self.poll_uploads();

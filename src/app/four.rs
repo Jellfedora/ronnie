@@ -16,6 +16,7 @@ pub(super) enum HomeGame {
     Blob,
     Mines,
     Runner,
+    Riff,
 }
 
 /// A disc falling into place, since `at`.
@@ -73,7 +74,7 @@ impl Default for Four {
 }
 
 /// What a click in the lobby asks.
-enum LobbyAction {
+pub(super) enum LobbyAction {
     Level(Level),
     PlayAi,
     Invite(String),
@@ -91,6 +92,117 @@ fn level_name(t: &Strings, level: Level) -> &'static str {
         Level::Easy => t.four_easy,
         Level::Medium => t.four_medium,
         Level::Hard => t.four_hard,
+    }
+}
+
+/// An invitation's game name, and what it says ("{n} invites you…"), by its game.
+fn invite_texts(t: &Strings, game: Option<&str>) -> (&'static str, &'static str) {
+    match game {
+        Some("ronnie-io") => (t.blob_name, t.blob_invited),
+        Some("riff-hero") => (t.riff_name, t.riff_invited),
+        _ => (t.four_name, t.four_invited),
+    }
+}
+
+/// The lobby's card of the players online (`title` above them): without a pseudo, a button to pick
+/// one; floor not reached yet, or not at all; each player with a button to invite them; the invitation
+/// sent and how it went. What was clicked.
+pub(super) fn players_ui(ui: &mut Ui, live: &crate::live::Live, title: &str, pseudo: Option<&str>, t: &Strings, theme: &Theme) -> Option<LobbyAction> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).size(16.0).strong());
+        if pseudo.is_some() && live.reachable == Some(true) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(t.four_online.replace("{n}", &live.online.len().to_string())).size(12.0).color(theme.text_muted));
+            });
+        }
+    });
+    ui.add_space(10.0);
+    if pseudo.is_none() {
+        ui.label(egui::RichText::new(t.four_need_pseudo).size(13.0).color(theme.text_muted));
+        ui.add_space(10.0);
+        if ui.button(egui::RichText::new(t.pseudo_pick).size(13.0)).clicked() {
+            action = Some(LobbyAction::Pseudo);
+        }
+        return action;
+    }
+    match live.reachable {
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(t.four_connecting).size(13.0).color(theme.text_muted));
+            });
+            return None;
+        }
+        Some(false) => {
+            ui.label(egui::RichText::new(t.four_offline).size(13.0).color(theme.ansi[1]));
+            return None;
+        }
+        Some(true) => {}
+    }
+    let pending = live.sent.as_ref().filter(|s| s.status == "pending");
+    if live.online.is_empty() {
+        ui.label(egui::RichText::new(t.four_nobody).size(13.0).color(theme.text_muted));
+    }
+    egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+        for player in &live.online {
+            ui.horizontal(|ui| {
+                ui.set_min_height(30.0);
+                ui.label(egui::RichText::new("●").size(10.0).color(theme.ansi[2]));
+                ui.label(egui::RichText::new(&player.name).size(13.5));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if player.busy {
+                        ui.label(egui::RichText::new(t.four_busy).size(12.0).color(theme.text_muted));
+                    } else if ui.add_enabled(pending.is_none(), egui::Button::new(egui::RichText::new(t.four_invite).size(12.5)).corner_radius(6.0)).clicked() {
+                        action = Some(LobbyAction::Invite(player.name.clone()));
+                    }
+                });
+            });
+        }
+    });
+    if let Some(sent) = &live.sent {
+        let to = sent.to.as_deref().unwrap_or(t.game_anonymous);
+        ui.add_space(8.0);
+        match sent.status.as_str() {
+            "pending" => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.four_sent.replace("{n}", to)).size(13.0));
+                    if ui.small_button(t.cancel).clicked() {
+                        action = Some(LobbyAction::Cancel);
+                    }
+                });
+            }
+            "declined" => drop(ui.label(egui::RichText::new(t.four_declined.replace("{n}", to)).size(13.0).color(theme.text_muted))),
+            "expired" => drop(ui.label(egui::RichText::new(t.four_expired.replace("{n}", to)).size(13.0).color(theme.text_muted))),
+            _ => {}
+        }
+    }
+    if let Some(e) = &live.refused {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(e).size(12.5).color(theme.ansi[1]));
+    }
+    action
+}
+
+/// The board of online wins of `game` (`title` above it), under the players online.
+pub(super) fn wins_ui(ui: &mut Ui, live: &crate::live::Live, game: &str, title: &str, pseudo: Option<&str>, t: &Strings, theme: &Theme) {
+    if pseudo.is_none() || live.reachable != Some(true) {
+        return;
+    }
+    let Some(board) = live.boards.get(game).filter(|b| !b.is_empty()) else { return };
+    ui.add_space(12.0);
+    ui.separator();
+    ui.label(egui::RichText::new(title).size(12.5).strong().color(theme.text_muted));
+    for (k, (name, wins)) in board.iter().take(5).enumerate() {
+        ui.horizontal(|ui| {
+            let me = pseudo == Some(name.as_str());
+            ui.label(egui::RichText::new(format!("{}.", k + 1)).size(12.5).color(theme.text_muted));
+            ui.label(egui::RichText::new(if name.is_empty() { t.game_anonymous } else { name }).size(12.5).color(if me { theme.accent } else { theme.text }));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(wins.to_string()).size(12.5).monospace());
+            });
+        });
     }
 }
 
@@ -131,7 +243,7 @@ impl App {
         let new = self.versus.new_invites();
         if let Some(invite) = new.first() {
             if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
-                let (game, text) = if invite.game.as_deref() == Some("ronnie-io") { (t.blob_name, t.blob_invited) } else { (t.four_name, t.four_invited) };
+                let (game, text) = invite_texts(t, invite.game.as_deref());
                 crate::notify::send(game, &text.replace("{n}", invite.from.as_deref().unwrap_or(t.game_anonymous)));
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
             }
@@ -139,35 +251,43 @@ impl App {
         // A match started (an invitation accepted, a rematch): to its page.
         if let Some(game) = self.versus.game.as_ref().filter(|g| !g.over && self.four.followed.as_ref() != Some(&g.id)) {
             self.four.followed = Some(game.id.clone());
-            self.four.mode = Mode::Online;
-            self.open_four();
+            if game.riff() {
+                self.open_riff_battle();
+            } else {
+                self.four.mode = Mode::Online;
+                self.open_four();
+            }
         }
         self.invite_window(ctx);
     }
 
-    /// "Dio invites you to a game" (of Puissance 4, or on Ronnie.io): play, or decline.
+    /// "Dio invites you to a game" (of Puissance 4, on Ronnie.io, or a battle of Riff Hero): play, or decline.
     fn invite_window(&mut self, ctx: &egui::Context) {
         let Some(invite) = self.versus.invites.first().cloned() else { return };
-        let blob = invite.game.as_deref() == Some("ronnie-io");
+        let game = match invite.game.as_deref() {
+            Some("ronnie-io") => HomeGame::Blob,
+            Some("riff-hero") => HomeGame::Riff,
+            _ => HomeGame::Four,
+        };
         let t = self.t();
         let theme = self.theme.clone();
         let mut answer = None;
         // Played enough this half-day of work: only to decline.
-        let locked = self.game_locked(if blob { HomeGame::Blob } else { HomeGame::Four }).map(|p| t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
+        let locked = self.game_locked(game).map(|p| t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent));
+        let (name, text) = invite_texts(t, invite.game.as_deref());
         let modal = egui::Modal::new(egui::Id::new("four-invite")).frame(frame).show(ctx, |ui| {
             ui.set_width(400.0);
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                if blob {
-                    super::blob::paint_blob_icon(ui.painter(), rect.center(), &theme, 1.2);
-                } else {
-                    paint_four_icon(ui.painter(), rect.center(), &theme, 1.2);
+                match game {
+                    HomeGame::Blob => super::blob::paint_blob_icon(ui.painter(), rect.center(), &theme, 1.2),
+                    HomeGame::Riff => super::riff::paint_riff_icon(ui.painter(), rect.center(), &theme, 1.2),
+                    _ => paint_four_icon(ui.painter(), rect.center(), &theme, 1.2),
                 }
-                ui.label(egui::RichText::new(if blob { t.blob_name } else { t.four_name }).size(18.0).strong());
+                ui.label(egui::RichText::new(name).size(18.0).strong());
             });
             ui.add_space(8.0);
-            let text = if blob { t.blob_invited } else { t.four_invited };
             ui.label(egui::RichText::new(text.replace("{n}", invite.from.as_deref().unwrap_or(t.game_anonymous))).size(14.0));
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -184,9 +304,13 @@ impl App {
             answer.get_or_insert(false);
         }
         match answer {
-            Some(true) if blob => {
+            Some(true) if game == HomeGame::Blob => {
                 self.versus.accept(&invite.id);
                 self.open_blob();
+            }
+            Some(true) if game == HomeGame::Riff => {
+                self.versus.accept(&invite.id);
+                self.open_riff_battle();
             }
             Some(true) => {
                 self.versus.accept(&invite.id);
@@ -204,7 +328,7 @@ impl App {
         // A game under way is the half-day of work's; once played, the lobby gives way.
         let in_game = match &self.four.mode {
             Mode::Ai(game) => game.winner.is_none(),
-            Mode::Online => self.versus.game.as_ref().is_some_and(|g| !g.over),
+            Mode::Online => self.versus.game.as_ref().is_some_and(|g| !g.over && !g.riff()),
             Mode::Lobby => false,
         };
         if in_game {
@@ -219,7 +343,7 @@ impl App {
         let now = ui.input(|i| i.time);
         paint_metal(ui.painter(), Pos2::new(rect.center().x, rect.min.y + 50.0), Align2::CENTER_CENTER, t.four_name, 40.0, theme.accent, 1.0);
         // Back: from a game to the lobby, from the lobby home (not during an online match: give up first).
-        let playing_online = matches!(self.four.mode, Mode::Online) && self.versus.game.as_ref().is_some_and(|g| !g.over);
+        let playing_online = matches!(self.four.mode, Mode::Online) && self.versus.game.as_ref().is_some_and(|g| !g.over && !g.riff());
         if !playing_online {
             let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
             if ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0)).clicked() {
@@ -251,7 +375,7 @@ impl App {
         // The board of wins, fetched again every half minute while the lobby shows.
         if pseudo.is_some() && self.four.board_at.is_none_or(|at| now - at > 30.0) {
             self.four.board_at = Some(now);
-            self.versus.fetch_board();
+            self.versus.fetch_board("puissance-4");
         }
         let width = body.width().min(820.0);
         let wide = width >= 640.0;
@@ -292,95 +416,8 @@ impl App {
         };
         let live = &self.versus;
         let mut players = |ui: &mut Ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.four_vs_player).size(16.0).strong());
-                if pseudo.is_some() && live.reachable == Some(true) {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(t.four_online.replace("{n}", &live.online.len().to_string())).size(12.0).color(theme.text_muted));
-                    });
-                }
-            });
-            ui.add_space(10.0);
-            if pseudo.is_none() {
-                ui.label(egui::RichText::new(t.four_need_pseudo).size(13.0).color(theme.text_muted));
-                ui.add_space(10.0);
-                if ui.button(egui::RichText::new(t.pseudo_pick).size(13.0)).clicked() {
-                    action = Some(LobbyAction::Pseudo);
-                }
-                return;
-            }
-            match live.reachable {
-                None => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(egui::RichText::new(t.four_connecting).size(13.0).color(theme.text_muted));
-                    });
-                    return;
-                }
-                Some(false) => {
-                    ui.label(egui::RichText::new(t.four_offline).size(13.0).color(theme.ansi[1]));
-                    return;
-                }
-                Some(true) => {}
-            }
-            let pending = live.sent.as_ref().filter(|s| s.status == "pending");
-            if live.online.is_empty() {
-                ui.label(egui::RichText::new(t.four_nobody).size(13.0).color(theme.text_muted));
-            }
-            egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
-                for player in &live.online {
-                    ui.horizontal(|ui| {
-                        ui.set_min_height(30.0);
-                        ui.label(egui::RichText::new("●").size(10.0).color(theme.ansi[2]));
-                        ui.label(egui::RichText::new(&player.name).size(13.5));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if player.busy {
-                                ui.label(egui::RichText::new(t.four_busy).size(12.0).color(theme.text_muted));
-                            } else if ui.add_enabled(pending.is_none(), egui::Button::new(egui::RichText::new(t.four_invite).size(12.5)).corner_radius(6.0)).clicked() {
-                                action = Some(LobbyAction::Invite(player.name.clone()));
-                            }
-                        });
-                    });
-                }
-            });
-            if let Some(sent) = &live.sent {
-                let to = sent.to.as_deref().unwrap_or(t.game_anonymous);
-                ui.add_space(8.0);
-                match sent.status.as_str() {
-                    "pending" => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(egui::RichText::new(t.four_sent.replace("{n}", to)).size(13.0));
-                            if ui.small_button(t.cancel).clicked() {
-                                action = Some(LobbyAction::Cancel);
-                            }
-                        });
-                    }
-                    "declined" => drop(ui.label(egui::RichText::new(t.four_declined.replace("{n}", to)).size(13.0).color(theme.text_muted))),
-                    "expired" => drop(ui.label(egui::RichText::new(t.four_expired.replace("{n}", to)).size(13.0).color(theme.text_muted))),
-                    _ => {}
-                }
-            }
-            if let Some(e) = &live.refused {
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(e).size(12.5).color(theme.ansi[1]));
-            }
-            // The board of online wins.
-            if let Some(board) = live.board.as_ref().filter(|b| !b.is_empty()) {
-                ui.add_space(12.0);
-                ui.separator();
-                ui.label(egui::RichText::new(t.four_wins).size(12.5).strong().color(theme.text_muted));
-                for (k, (name, wins)) in board.iter().take(5).enumerate() {
-                    ui.horizontal(|ui| {
-                        let me = pseudo.as_deref() == Some(name.as_str());
-                        ui.label(egui::RichText::new(format!("{}.", k + 1)).size(12.5).color(theme.text_muted));
-                        ui.label(egui::RichText::new(if name.is_empty() { t.game_anonymous } else { name }).size(12.5).color(if me { theme.accent } else { theme.text }));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(wins.to_string()).size(12.5).monospace());
-                        });
-                    });
-                }
-            }
+            action = players_ui(ui, live, t.four_vs_player, pseudo.as_deref(), t, &theme);
+            wins_ui(ui, live, "puissance-4", t.four_wins, pseudo.as_deref(), t, &theme);
         };
         if wide {
             child.horizontal_top(|ui| {
@@ -496,7 +533,7 @@ impl App {
     fn four_online(&mut self, ui: &mut Ui, body: Rect, now: f64) {
         let t = self.t();
         let theme = self.theme.clone();
-        let Some(game) = self.versus.game.clone() else {
+        let Some(game) = self.versus.game.clone().filter(|g| !g.riff()) else {
             // Waiting for floor's first answer (an invitation just accepted).
             let at = body.center();
             if let Some(e) = &self.versus.refused {

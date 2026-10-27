@@ -45,6 +45,7 @@ impl App {
                 HomeGame::Blob => t.blob_tagline,
                 HomeGame::Mines => t.arcade_mines,
                 HomeGame::Runner => t.arcade_runner,
+                HomeGame::Riff => t.arcade_riff,
             };
             let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 52.0, card.center().y), Some(card.min.x + 100.0), card.width() - 120.0) };
             let scale = if wide { 2.8 } else { 2.0 };
@@ -54,6 +55,7 @@ impl App {
                 HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, scale),
                 HomeGame::Mines => super::mines::paint_mines_icon(&painter, icon, &theme, scale),
                 HomeGame::Runner => super::runner::paint_runner_icon(&painter, icon, &theme, scale),
+                HomeGame::Riff => super::riff::paint_riff_icon(&painter, icon, &theme, scale),
             }
             let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
             let desc_galley = painter.layout(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);
