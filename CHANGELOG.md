@@ -2,6 +2,20 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.34.0] - 2026-10-27
+
+### Nouveautés
+
+- **Un démineur dans les jeux** : une grille de 16 × 16 et 40 mines, à déminer le plus vite possible. Le premier clic ouvre toujours une zone ; clic droit pour un drapeau, clic sur un chiffre entouré d'autant de drapeaux pour découvrir ses voisins. Ton record est gardé, et avec un pseudo tu entres au classement en ligne (le plus rapide d'abord). Comme Speed Metal et Puissance 4 : une partie par demi-journée de travail. Merci à Jonathan !
+- **Des sous-groupes dans les serveurs SSH et les bases de données** : le menu d'un groupe crée un sous-groupe, et un groupe glissé sur un autre s'y range (décalé d'un cran par niveau).
+- **Déplacer plusieurs serveurs ou bases à la fois** : choisis-les avec ⌘ / Ctrl ou ⇧ + clic, puis glisse-les ensemble, ou range-les tous d'un coup avec « Déplacer vers » ou « Nouveau groupe ».
+- **Tous les disques d'un serveur** : au survol de sa santé dans la barre d'un pane SSH, chaque disque est listé avec son point de montage, sa place prise, sa taille et son pourcentage (la barre montre toujours le plus plein).
+- **Les notifications ont deux vrais boutons** : « Aller à l'onglet » (ou « Voir le mail ») et « Fermer », toujours visibles, au lieu d'une petite flèche qui n'apparaissait qu'au survol.
+
+### Corrections
+
+- **Le mode clair ou sombre du système ne se voit plus dans Ronnie** : avec macOS en mode clair et un thème sombre, des boutons étaient clairs avec un texte clair. Seul le thème choisi compte maintenant.
+
 ## [0.33.0] - 2026-10-22
 
 ### Nouveautés
