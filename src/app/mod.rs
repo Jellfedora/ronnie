@@ -3453,8 +3453,12 @@ fn health_badge(ui: &mut Ui, rect: Rect, right: f32, id: PaneId, s: &crate::heal
     if let (Some((used, total)), Some(p)) = (s.mem, mem) {
         tip.push(t.health_mem.replace("{u}", &crate::health::bytes(used, units)).replace("{t}", &crate::health::bytes(total, units)).replace("{p}", &format!("{p:.0}")));
     }
-    if let (Some((used, total, mount)), Some(p)) = (&s.disk, disk) {
-        tip.push(t.health_disk.replace("{m}", mount).replace("{u}", &crate::health::bytes(*used, units)).replace("{t}", &crate::health::bytes(*total, units)).replace("{p}", &format!("{p:.0}")));
+    let disk_line = |text: &str, (used, total, mount): &(u64, u64, String)| text.replace("{m}", mount).replace("{u}", &crate::health::bytes(*used, units)).replace("{t}", &crate::health::bytes(*total, units)).replace("{p}", &format!("{:.0}", *used as f32 * 100.0 / *total as f32));
+    if !s.disks.is_empty() {
+        tip.push(t.health_disks.to_owned());
+        tip.extend(s.disks.iter().map(|d| disk_line(t.health_disks_line, d)));
+    } else if let Some(d) = &s.disk {
+        tip.push(disk_line(t.health_disk, d));
     }
     if let Some(up) = s.uptime {
         let (d, h, m) = (up.as_secs() / 86400, up.as_secs() / 3600 % 24, up.as_secs() / 60 % 60);

@@ -1,5 +1,5 @@
 //! Health of the SSH servers open in a tab: one quiet ssh per server runs a small sh loop that prints
-//! its processor, memory, fullest disk and uptime every few seconds (read from /proc on Linux; other
+//! its processor, memory, disks and uptime every few seconds (read from /proc on Linux; other
 //! systems tell what they can).
 
 use std::collections::HashMap;
@@ -21,7 +21,8 @@ const RETRY: Duration = Duration::from_secs(30);
 const TAG: &str = "RONNIE_HEALTH";
 
 /// The loop run on the server. Each line: tag | first line of /proc/stat | total and available memory
-/// (kB) | total and used kB, then mount point, of the fullest disk | uptime (s) | 1-minute load | cores.
+/// (kB) | total and used kB, then mount point, of the fullest disk | uptime (s) | 1-minute load | cores
+/// | every disk the same way, separated by ";" (each device once).
 fn script() -> String {
     format!(
         r#"while :; do
@@ -32,7 +33,8 @@ d=$(df -Pk 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ && $2>0 {{
 u=$(cut -d ' ' -f 1 /proc/uptime 2>/dev/null)
 l=$(cut -d ' ' -f 1 /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg 2>/dev/null | awk '{{print $2}}')
 n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null)
-echo "{TAG}|$c|$m|$d|$u|$l|$n" || exit
+a=$(df -Pk 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ && $2>0 && !s[$1]++ {{m=$6; for (i=7; i<=NF; i++) m=m" "$i; printf "%s%s %s %s", (k++ ? ";" : ""), $2, $3, m}}')
+echo "{TAG}|$c|$m|$d|$u|$l|$n|$a" || exit
 sleep {EVERY}
 done"#
     )
@@ -49,6 +51,8 @@ pub struct Stats {
     pub mem: Option<(u64, u64)>,
     /// The fullest disk: used and total bytes, mount point.
     pub disk: Option<(u64, u64, String)>,
+    /// Every disk, as the server lists them: used and total bytes, mount point.
+    pub disks: Vec<(u64, u64, String)>,
     pub uptime: Option<Duration>,
 }
 
@@ -95,17 +99,20 @@ fn parse(line: &str, before: Option<(u64, u64)>) -> Option<(Stats, Option<(u64, 
         [Some(total), Some(available)] if total > 0 => Some((total.saturating_sub(available) * 1024, total * 1024)),
         _ => None,
     };
-    let disk = {
-        let mut parts = f[2].splitn(3, ' ');
+    let disk_of = |s: &str| {
+        let mut parts = s.splitn(3, ' ');
         match (parts.next().and_then(|n| n.parse::<u64>().ok()), parts.next().and_then(|n| n.parse::<u64>().ok()), parts.next()) {
             (Some(total), Some(used), Some(mount)) if total > 0 => Some((used * 1024, total * 1024, mount.trim().to_owned())),
             _ => None,
         }
     };
+    let disk = disk_of(f[2]);
+    // Not told by a loop started before Ronnie asked for it.
+    let disks = f.get(6).map_or_else(Vec::new, |a| a.split(';').filter_map(disk_of).collect());
     let uptime = f[3].trim().parse::<f64>().ok().map(Duration::from_secs_f64);
     let load = f[4].trim().replace(',', ".").parse().ok();
     let cores = f[5].trim().parse().ok().filter(|n| *n > 0);
-    Some((Stats { cpu, load, cores, mem, disk, uptime }, times))
+    Some((Stats { cpu, load, cores, mem, disk, disks, uptime }, times))
 }
 
 #[derive(Default)]
@@ -299,6 +306,10 @@ mod tests {
         let (stats, _) = parse(&second, times).unwrap();
         assert_eq!(stats.cpu, Some(25.0));
         assert_eq!(stats.disk.unwrap().2, "/data disk");
+        assert!(stats.disks.is_empty());
+        let third = format!("{TAG}|cpu  150 0 150 1100 0 0 0 0 0 0|8000000 2000000|61000000 30500000 /|12350|0.5|4|61000000 30500000 /;20000000 1000000 /mnt/my backups");
+        let (stats, _) = parse(&third, None).unwrap();
+        assert_eq!(stats.disks, vec![(30500000 * 1024, 61000000 * 1024, "/".to_owned()), (1000000 * 1024, 20000000 * 1024, "/mnt/my backups".to_owned())]);
     }
 
     #[test]
@@ -319,7 +330,7 @@ mod tests {
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let first = lines.next().unwrap().unwrap();
         let (stats, times) = parse(&first, None).unwrap();
-        assert!(stats.disk.is_some() && stats.cores.is_some() && stats.load.is_some(), "{first}");
+        assert!(stats.disk.is_some() && !stats.disks.is_empty() && stats.cores.is_some() && stats.load.is_some(), "{first}");
         if cfg!(target_os = "linux") {
             let (stats, _) = parse(&lines.next().unwrap().unwrap(), times).unwrap();
             assert!(stats.cpu.is_some() && stats.mem.is_some() && stats.uptime.is_some());
