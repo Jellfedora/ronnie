@@ -1,5 +1,5 @@
-//! The games during working hours: one game of Speed Metal and one of Puissance 4 a morning and an
-//! afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
+//! The games during working hours: one game of Speed Metal, one of Puissance 4 and one of the
+//! minesweeper a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
 //! 18:00 — 17:20 on Fridays — and at the weekend). Not a setting: Ronnie is for work first.
 //!
 //! What was played is kept in the config file, sealed (an HMAC of this machine and user): edited
@@ -56,7 +56,7 @@ pub fn checked(usage: &mut GameUsage, now: NaiveDateTime) -> Option<Period> {
     let wanted = match &p {
         // Out of working hours nothing is limited: a record to trust again from here.
         None if !valid => Some(fresh("")),
-        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, seal: String::new() }),
+        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, seal: String::new() }),
         Some(p) if usage.period != p.key => Some(fresh(&p.key)),
         _ => None,
     };
@@ -74,7 +74,11 @@ pub fn reseal(usage: &mut GameUsage) {
 
 fn seal(usage: &GameUsage) -> String {
     let who = format!("{}|{}", std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default(), std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default());
-    let message = format!("{}|{}|{}|{}", usage.period, usage.speed_metal, usage.four, usage.blob_secs);
+    let mut message = format!("{}|{}|{}|{}", usage.period, usage.speed_metal, usage.four, usage.blob_secs);
+    // Only once played: the records sealed before the minesweeper stay valid.
+    if usage.mines {
+        message.push_str("|mines");
+    }
     hmac(format!("ronnie-playtime-7f3a9c|{who}").as_bytes(), message.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -124,7 +128,26 @@ mod tests {
         reseal(&mut usage);
         usage.speed_metal = false;
         checked(&mut usage, on(2026, 10, 12, 15, 0));
-        assert!(usage.speed_metal && usage.four);
+        assert!(usage.speed_metal && usage.four && usage.mines);
+    }
+
+    #[test]
+    fn a_seal_made_before_the_minesweeper_holds() {
+        let monday = on(2026, 10, 12, 9, 0);
+        let mut usage = GameUsage::default();
+        checked(&mut usage, monday);
+        usage.four = true;
+        reseal(&mut usage);
+        let before = usage.seal.clone();
+        // The seal a version without the minesweeper made of this record.
+        let who = format!("{}|{}", std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default(), std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default());
+        let old: String = hmac(format!("ronnie-playtime-7f3a9c|{who}").as_bytes(), format!("{}|false|true|0", usage.period).as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(before, old);
+        checked(&mut usage, monday);
+        assert!(usage.four && !usage.speed_metal && !usage.mines);
+        usage.mines = true;
+        reseal(&mut usage);
+        assert_ne!(usage.seal, before);
     }
 
     fn on(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {

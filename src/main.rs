@@ -15,6 +15,7 @@ mod i18n;
 mod live;
 mod log;
 mod mailbox;
+mod mines;
 mod media_keys;
 mod modules;
 mod node;
