@@ -37,6 +37,7 @@ mod library;
 mod mail;
 mod procs;
 mod mailhtml;
+mod mines;
 mod loading;
 mod motion;
 mod music;
@@ -370,6 +371,8 @@ pub struct App {
     versus: crate::live::Live,
     /// Puissance 4's page.
     four: four::Four,
+    /// The minesweeper's page.
+    mines: mines::Mines,
     /// Ronnie.io's page, and its connection to floor.
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
@@ -1189,6 +1192,7 @@ impl App {
             pseudo_prompt: None,
             versus: crate::live::Live::default(),
             four: four::Four::default(),
+            mines: mines::Mines::default(),
             blob: blob::Blob::default(),
             games_seen: false,
             backup: None,

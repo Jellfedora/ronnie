@@ -14,6 +14,7 @@ pub(super) enum HomeGame {
     SpeedMetal,
     Four,
     Blob,
+    Mines,
 }
 
 /// A disc falling into place, since `at`.

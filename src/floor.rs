@@ -378,6 +378,126 @@ pub fn shown(floor: Option<&[Entry]>, local: &[TypingScore], pseudo: Option<&str
     rows
 }
 
+/// The minesweeper on floor: the fastest game won of each player.
+const MINES_GAME: &str = "demineur";
+
+/// A game of the minesweeper won.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct MinesRound {
+    /// Its time, in milliseconds.
+    pub ms: u32,
+    pub clicks: u32,
+}
+
+/// A line of the minesweeper's board.
+#[derive(Clone, Debug)]
+pub struct MinesEntry {
+    pub name: Option<String>,
+    pub ms: u32,
+    pub me: bool,
+}
+
+#[derive(Default)]
+struct MinesShared {
+    busy: bool,
+    /// The board, and the round not sent (floor unreachable).
+    done: Option<(Option<Vec<MinesEntry>>, Option<MinesRound>)>,
+}
+
+/// The minesweeper's board, kept as `Floor` keeps Speed Metal's: fetched in the background, the game
+/// just won sent with it.
+#[derive(Default)]
+pub struct MinesFloor {
+    shared: Arc<Mutex<MinesShared>>,
+    board: Option<Vec<MinesEntry>>,
+    last: Option<f64>,
+    pending: Option<MinesRound>,
+}
+
+impl MinesFloor {
+    /// floor's board when it answered, the fastest first.
+    pub fn board(&self) -> Option<&[MinesEntry]> {
+        self.board.as_deref()
+    }
+
+    /// A game won: sent at the next sync (the fastest one, when several wait).
+    pub fn finished(&mut self, round: MinesRound) {
+        if self.pending.is_none_or(|p| round.ms < p.ms) {
+            self.pending = Some(round);
+        }
+    }
+
+    /// Takes what a sync brought back.
+    pub fn poll(&mut self) {
+        let Some((board, unsent)) = self.shared.lock().ok().and_then(|mut s| s.done.take()) else { return };
+        if let Some(round) = unsent {
+            self.finished(round);
+        }
+        if board.is_some() {
+            self.board = board;
+        }
+    }
+
+    /// A sync, if the last one is older than `every` seconds (None: now). Without a pseudo, only the
+    /// board is fetched.
+    pub fn sync(&mut self, ctx: &egui::Context, now: f64, every: Option<f64>, account: Option<&FloorAccount>) {
+        if every.is_some_and(|every| self.last.is_some_and(|last| now - last < every)) {
+            return;
+        }
+        let Some(url) = url() else { return };
+        self.last = Some(now);
+        {
+            let Ok(mut shared) = self.shared.lock() else { return };
+            if shared.busy {
+                return;
+            }
+            shared.busy = true;
+        }
+        let account = account.filter(|a| a.url == url && a.name.is_some()).cloned();
+        let round = self.pending.take().filter(|_| account.is_some());
+        let (shared, ctx) = (self.shared.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let done = match mines_sync(&url, account.as_ref(), round) {
+                Ok(board) => (Some(board), None),
+                Err(e) => {
+                    crate::log::info(&format!("floor: {e}"));
+                    // Refused by floor (out of its bounds): not tried again.
+                    (None, round.filter(|_| !matches!(e, ureq::Error::StatusCode(400..=499))))
+                }
+            };
+            if let Ok(mut shared) = shared.lock() {
+                shared.done = Some(done);
+                shared.busy = false;
+            }
+            ctx.request_repaint();
+        });
+    }
+}
+
+fn mines_sync(url: &str, account: Option<&FloorAccount>, round: Option<MinesRound>) -> Result<Vec<MinesEntry>, ureq::Error> {
+    #[derive(Deserialize)]
+    struct Line {
+        name: Option<String>,
+        score: u32,
+        me: bool,
+    }
+    #[derive(Deserialize)]
+    struct Answer {
+        entries: Vec<Line>,
+    }
+    let agent = agent();
+    // floor keeps the fastest one anyway.
+    if let (Some(account), Some(round)) = (account, round) {
+        agent.post(format!("{url}/v1/games/{MINES_GAME}/scores")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).send_json(round)?;
+    }
+    let mut request = agent.get(format!("{url}/v1/games/{MINES_GAME}/leaderboard")).query("limit", BOARD.to_string()).header("User-Agent", USER_AGENT);
+    if let Some(a) = account {
+        request = request.header("Authorization", format!("Bearer {}", a.token));
+    }
+    let answer: Answer = request.call()?.body_mut().read_json()?;
+    Ok(answer.entries.into_iter().map(|l| MinesEntry { name: l.name, ms: l.score, me: l.me }).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

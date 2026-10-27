@@ -19,11 +19,12 @@ impl App {
         }
 
         let games = self.games_list();
-        // Three cards side by side when they fit, else one under the other, flatter.
-        let wide = rect.width() >= 780.0;
+        // The cards side by side when they fit, else one under the other, flatter.
+        let n = games.len() as f32;
         let gap = 20.0;
-        let card_size = if wide { Vec2::new(((rect.width() - 96.0 - 2.0 * gap) / 3.0).min(280.0), 270.0) } else { Vec2::new((rect.width() - 48.0).min(520.0), 104.0) };
-        let block = if wide { Vec2::new(3.0 * card_size.x + 2.0 * gap, card_size.y) } else { Vec2::new(card_size.x, 3.0 * card_size.y + 2.0 * gap) };
+        let wide = rect.width() >= 96.0 + n * 200.0 + (n - 1.0) * gap;
+        let card_size = if wide { Vec2::new(((rect.width() - 96.0 - (n - 1.0) * gap) / n).min(280.0), 270.0) } else { Vec2::new((rect.width() - 48.0).min(520.0), 104.0) };
+        let block = if wide { Vec2::new(n * card_size.x + (n - 1.0) * gap, card_size.y) } else { Vec2::new(card_size.x, n * card_size.y + (n - 1.0) * gap) };
         let title_h = 96.0;
         let top = (rect.center().y - (block.y + title_h) / 2.0).max(rect.min.y + 56.0);
         paint_metal(&painter, Pos2::new(rect.center().x, top + 34.0), Align2::CENTER_CENTER, t.cat_games, 46.0, theme.accent, 1.0);
@@ -42,6 +43,7 @@ impl App {
                 HomeGame::SpeedMetal => t.arcade_metal,
                 HomeGame::Four => t.arcade_four,
                 HomeGame::Blob => t.blob_tagline,
+                HomeGame::Mines => t.arcade_mines,
             };
             let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 52.0, card.center().y), Some(card.min.x + 100.0), card.width() - 120.0) };
             let scale = if wide { 2.8 } else { 2.0 };
@@ -49,6 +51,7 @@ impl App {
                 HomeGame::SpeedMetal => paint_metal(&painter, icon, Align2::CENTER_CENTER, "R", 20.0 * scale, theme.accent, 1.0),
                 HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, scale),
                 HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, scale),
+                HomeGame::Mines => super::mines::paint_mines_icon(&painter, icon, &theme, scale),
             }
             let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
             let desc_galley = painter.layout(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);

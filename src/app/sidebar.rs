@@ -34,7 +34,9 @@ impl App {
                 return;
             }
             self.fold_for_game(false);
-            if self.home_game {
+            if self.home_game && self.home_which == super::four::HomeGame::Mines {
+                self.mines_page(ui, rect);
+            } else if self.home_game {
                 self.four_page(ui, rect);
             } else {
                 self.home_dashboard(ui, rect);
@@ -366,7 +368,7 @@ impl App {
     }
 
     /// The "Games" category: Speed Metal (with the best score), Puissance 4 (with the players online),
-    /// Ronnie.io (with the best mass).
+    /// Ronnie.io (with the best mass), the minesweeper (with the best time).
     fn games_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
         use super::four::HomeGame;
         let t = self.t();
@@ -386,6 +388,7 @@ impl App {
                 HomeGame::SpeedMetal => super::paint_metal(&painter, icon, Align2::CENTER_CENTER, "R", 20.0, theme.accent, 1.0),
                 HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Mines => super::mines::paint_mines_icon(&painter, icon, &theme, 1.0),
             }
             painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
             if let Some(note) = note {
@@ -403,16 +406,18 @@ impl App {
         }
     }
 
-    /// The games, with their name and a note: the best score of Speed Metal and Ronnie.io, the
-    /// players online at Puissance 4; when played enough this half-day of work, when it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 3] {
+    /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io and the
+    /// minesweeper, the players online at Puissance 4; when played enough this half-day of work, when
+    /// it's back.
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 4] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
         let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
         let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
         let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best)];
+        let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
@@ -434,6 +439,7 @@ impl App {
             HomeGame::SpeedMetal => self.open_game(),
             HomeGame::Four => self.open_four(),
             HomeGame::Blob => self.open_blob(),
+            HomeGame::Mines => self.open_mines(),
         }
     }
 
