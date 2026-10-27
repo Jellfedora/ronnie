@@ -142,6 +142,8 @@ enum Kind {
     Upload,
     /// A zip archive being made (no progress, no cancel).
     Zip,
+    /// A zip archive being extracted (no progress, no cancel).
+    Unzip,
     Delete,
     Move,
     Copy,
@@ -154,6 +156,7 @@ impl Kind {
             Kind::Download => "↓",
             Kind::Upload => "↑",
             Kind::Zip => "📦",
+            Kind::Unzip => "📂",
             Kind::Delete => "🗑",
             Kind::Move => "➡",
             Kind::Copy => "⧉",
@@ -328,6 +331,7 @@ pub(super) enum TreeOp {
     CopyInto(Vec<std::path::PathBuf>, std::path::PathBuf),
     Duplicate(Vec<std::path::PathBuf>),
     Compress(Vec<std::path::PathBuf>),
+    Extract(Vec<std::path::PathBuf>),
     Permissions(Vec<std::path::PathBuf>),
     Sizes(Vec<std::path::PathBuf>),
     Delete(Vec<std::path::PathBuf>),
@@ -557,6 +561,10 @@ impl FileManager {
             TreeOp::Compress(paths) => {
                 let names = names_in(self, &paths);
                 self.compress(Side::Local, names, t);
+            }
+            TreeOp::Extract(paths) => {
+                let names = names_in(self, &paths);
+                self.extract(Side::Local, names, t);
             }
             TreeOp::Permissions(paths) => {
                 let names = names_in(self, &paths);
@@ -1280,12 +1288,48 @@ impl FileManager {
         self.transfers.push(Transfer::new(id, Kind::Zip, out, TransferState::Running));
     }
 
+    /// Extracts each zip of `names` next to it, into a folder named after it ("a.zip" → "a", "a 2"...);
+    /// an archive holding a single item (a folder zipped) gives that item, when its name is free.
+    fn extract(&mut self, side: Side, names: Vec<String>, t: &Strings) {
+        let mut taken: HashSet<String> = self.panel(side).entries.iter().map(|e| e.name.clone()).collect();
+        let dir = self.panel(side).path.clone();
+        for name in names.into_iter().filter(|n| is_zip(n)) {
+            let stem = &name[..name.len() - 4];
+            let out = (1..).map(|n| if n == 1 { stem.to_owned() } else { format!("{stem} {n}") }).find(|c| !taken.contains(c)).unwrap();
+            taken.insert(out.clone());
+            let id = self.next_id;
+            self.next_id += 1;
+            match side {
+                Side::Local => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let ctx = self.ctx.clone();
+                    let (dir, name, out) = (std::path::PathBuf::from(&dir), name.clone(), out.clone());
+                    std::thread::spawn(move || {
+                        let _ = tx.send(unzip_local(&dir, &name, &out));
+                        if let Some(ctx) = ctx {
+                            ctx.request_repaint();
+                        }
+                    });
+                    self.jobs.push((id, side, rx));
+                }
+                Side::Remote => {
+                    if self.ssh_host.is_none() {
+                        return;
+                    }
+                    self.run_on_server(id, unzip_script(&dir, &name, &out), None, t);
+                }
+            }
+            self.transfers.push(Transfer::new(id, Kind::Unzip, name, TransferState::Running));
+        }
+    }
+
     /// Runs `script` with sh on the server, in the background, as the work of line `id`: nothing goes
     /// through this computer. `fallback`: sent to the SFTP session instead if the account has no shell.
     fn run_on_server(&mut self, id: u64, script: String, fallback: Option<Request>, t: &Strings) {
         let Some(host) = self.ssh_host.clone() else { return };
         let askpass = self.askpass.clone();
         let no_zip = t.files_no_zip;
+        let no_unzip = t.files_no_unzip;
         let read_only = t.files_read_only_dir;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.ctx.clone();
@@ -1295,6 +1339,7 @@ impl FileManager {
                 match o.status.code() {
                     _ if o.status.success() => Ok(()),
                     Some(127) if err.contains("RONNIE_NO_ZIP") => Err(no_zip.to_owned()),
+                    Some(127) if err.contains("RONNIE_NO_UNZIP") => Err(no_unzip.to_owned()),
                     Some(126) if err.contains("RONNIE_READ_ONLY") => Err(read_only.to_owned()),
                     // On one line: the queue's bar has room for one.
                     _ => Err(err.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" · ").chars().take(300).collect()),
@@ -2173,6 +2218,10 @@ impl FileManager {
                         out.compress = Some(selection.clone());
                         ui.close();
                     }
+                    if selection.iter().all(|n| is_zip(n)) && ui.add_enabled(side == Side::Local || connected, egui::Button::new(format!("📂  {}", t.files_extract))).clicked() {
+                        out.extract = Some(selection.clone());
+                        ui.close();
+                    }
                     if ui.add_enabled(side == Side::Local || connected, egui::Button::new(t.duplicate)).clicked() {
                         out.duplicate = Some(selection.clone());
                         ui.close();
@@ -2326,6 +2375,9 @@ impl FileManager {
         if let Some(names) = out.compress {
             self.compress(side, names, t);
         }
+        if let Some(names) = out.extract {
+            self.extract(side, names, t);
+        }
         if let Some((paths, dir)) = out.imported {
             self.import(side, paths, dir, t);
         }
@@ -2411,6 +2463,7 @@ impl FileManager {
                         // The changes say what they do (the transfers show it by their arrow).
                         let (doing, did) = match tr.kind {
                             Kind::Zip => (t.files_compressing, t.files_compressed),
+                            Kind::Unzip => (t.files_extracting, t.files_extracted),
                             Kind::Delete => (t.files_deleting, t.files_deleted),
                             Kind::Move => (t.files_moving, t.files_moved),
                             Kind::Copy => (t.files_copying, t.files_copied),
@@ -2456,7 +2509,7 @@ impl FileManager {
                         let hover = if let TransferState::Failed(e) = &tr.state { e } else { &tr.current };
                         ui.add(bar).on_hover_text(hover);
                         // Work on this computer's threads can't be stopped, nor a move (mostly instant renames).
-                        let stoppable = !matches!(tr.kind, Kind::Zip | Kind::Move) && !self.jobs.iter().any(|(id, ..)| *id == tr.id);
+                        let stoppable = !matches!(tr.kind, Kind::Zip | Kind::Unzip | Kind::Move) && !self.jobs.iter().any(|(id, ..)| *id == tr.id);
                         if stoppable && matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
                             cancel = Some(tr.id);
                         }
@@ -3019,6 +3072,7 @@ struct PanelOut {
     duplicate: Option<Vec<String>>,
     view: Option<String>,
     compress: Option<Vec<String>>,
+    extract: Option<Vec<String>>,
     /// Files from the Finder, and the folder they were dropped into.
     imported: Option<(Vec<std::path::PathBuf>, String)>,
 }
@@ -3114,6 +3168,57 @@ fn zip_script(dir: &str, names: &[String], out: &str) -> String {
         "cd {} || exit 1\n[ -e {out_q} ] && {{ echo \"{out} exists\" >&2; exit 1; }}\n( : > {out_q} ) 2>/dev/null && rm -f {out_q} || {{ echo RONNIE_READ_ONLY >&2; exit 126; }}\nif command -v zip >/dev/null 2>&1; then zip -rqy {out_q} {items}\nelif command -v python3 >/dev/null 2>&1; then python3 -m zipfile -c {out_q} {items}\nelse echo RONNIE_NO_ZIP >&2; exit 127; fi",
         sh_quote(dir)
     )
+}
+
+/// A zip archive, by its name.
+pub(super) fn is_zip(name: &str) -> bool {
+    name.len() > 4 && name.is_char_boundary(name.len() - 4) && name[name.len() - 4..].eq_ignore_ascii_case(".zip")
+}
+
+/// Extracts `name` of `dir` into a temporary folder, then keeps its only item if its name is free in
+/// `dir`, or else the folder, as `out`. With `unzip` (or Python's zipfile), which keep it inside.
+fn unzip_script(dir: &str, name: &str, out: &str) -> String {
+    let (zip_q, out_q) = (sh_quote(&format!("./{name}")), sh_quote(out));
+    format!(
+        "cd {} || exit 1\nt=.ronnie-unzip-$$\nmkdir \"$t\" || exit 1\n\
+         if command -v unzip >/dev/null 2>&1; then unzip -qo {zip_q} -d \"$t\"\n\
+         elif command -v python3 >/dev/null 2>&1; then python3 -m zipfile -e {zip_q} \"$t\"\n\
+         else rmdir \"$t\"; echo RONNIE_NO_UNZIP >&2; exit 127; fi || {{ rm -rf \"$t\"; exit 1; }}\n\
+         one=$(ls -A \"$t\")\n\
+         if [ \"$(ls -A \"$t\" | wc -l)\" -eq 1 ] && [ ! -e \"./$one\" ] && [ ! -L \"./$one\" ]; then mv \"$t/$one\" \"./$one\" && rmdir \"$t\"\n\
+         elif [ -e {out_q} ]; then echo \"{out} exists\" >&2; rm -rf \"$t\"; exit 1\n\
+         else mv \"$t\" {out_q}; fi",
+        sh_quote(dir)
+    )
+}
+
+/// Extracts zip `name` of `dir` as `unzip_script` does, on this computer.
+fn unzip_local(dir: &std::path::Path, name: &str, out: &str) -> Result<(), String> {
+    let temp = dir.join(format!(".ronnie-unzip-{}", std::process::id()));
+    std::fs::create_dir(&temp).map_err(|e| format!("{} : {e}", dir.display()))?;
+    let extracted = std::fs::File::open(dir.join(name)).map_err(|e| e.to_string()).and_then(|f| {
+        let mut archive = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| e.to_string())?;
+        archive.extract(&temp).map_err(|e| e.to_string())
+    });
+    let kept = extracted.and_then(|_| {
+        let items: Vec<_> = std::fs::read_dir(&temp).map_err(|e| e.to_string())?.flatten().collect();
+        if let [one] = items.as_slice() {
+            let target = dir.join(one.file_name());
+            if target.symlink_metadata().is_err() {
+                std::fs::rename(one.path(), &target).map_err(|e| e.to_string())?;
+                return std::fs::remove_dir(&temp).map_err(|e| e.to_string());
+            }
+        }
+        let target = dir.join(out);
+        if target.symlink_metadata().is_ok() {
+            return Err(format!("{out} exists"));
+        }
+        std::fs::rename(&temp, &target).map_err(|e| e.to_string())
+    });
+    kept.map_err(|e| {
+        let _ = std::fs::remove_dir_all(&temp);
+        format!("{name} : {e}")
+    })
 }
 
 /// Zips `names` of `dir` into `out` (in `dir`, which must not exist yet); links are stored as links.
@@ -3680,6 +3785,46 @@ mod tests {
             assert!(archive.file_names().any(|n| n.ends_with("sub/a.txt")));
             let again = std::process::Command::new("sh").arg("-c").arg(&script).status().unwrap();
             assert!(!again.success(), "never over an existing archive");
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracts_here_and_on_a_server() {
+        let base = std::env::temp_dir().join(format!("ronnie-unzip-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("it's dir/sub")).unwrap();
+        std::fs::write(base.join("it's dir/sub/a.txt"), b"hello").unwrap();
+        std::fs::write(base.join("-b.txt"), b"world").unwrap();
+        zip_local(&base, &["it's dir".to_owned()], "one.zip").unwrap();
+        zip_local(&base, &["it's dir".to_owned(), "-b.txt".to_owned()], "two.zip").unwrap();
+        let script = |dir: &std::path::Path, name: &str, out: &str| {
+            let status = std::process::Command::new("sh").arg("-c").arg(unzip_script(&dir.display().to_string(), name, out)).status().unwrap();
+            if status.success() { Ok(()) } else { Err(status.code()) }
+        };
+        for (here, remote) in [("local", false), ("remote", true)] {
+            let dir = base.join(here);
+            std::fs::create_dir(&dir).unwrap();
+            for zip in ["one.zip", "two.zip"] {
+                std::fs::copy(base.join(zip), dir.join(zip)).unwrap();
+            }
+            let extract = |name: &str, out: &str| if remote { script(&dir, name, out).map_err(|e| format!("{e:?}")) } else { unzip_local(&dir, name, out) };
+            if remote && extract("one.zip", "one") == Err("Some(127)".to_owned()) {
+                continue; // Neither unzip nor python3 here.
+            }
+            if !remote {
+                extract("one.zip", "one").unwrap();
+            }
+            // A single folder comes out as itself, the rest in a folder named after the archive.
+            assert_eq!(std::fs::read(dir.join("it's dir/sub/a.txt")).unwrap(), b"hello");
+            extract("two.zip", "two").unwrap();
+            assert_eq!(std::fs::read(dir.join("two/-b.txt")).unwrap(), b"world");
+            // Its name taken, the single folder goes in a folder too.
+            extract("one.zip", "one").unwrap();
+            assert!(dir.join("one/it's dir/sub/a.txt").is_file());
+            assert!(extract("two.zip", "two").is_err(), "never over an existing folder");
+            let left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with('.')).collect();
+            assert!(left.is_empty(), "no temporary folder left: {left:?}");
         }
         std::fs::remove_dir_all(&base).unwrap();
     }

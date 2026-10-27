@@ -770,6 +770,9 @@ impl App {
             menu_item(ui, t.files_move, TreeAction::Op(TreeOp::Move(targets.clone())), action);
             menu_item(ui, t.duplicate, TreeAction::Op(TreeOp::Duplicate(targets.clone())), action);
             menu_item(ui, &format!("📦  {}", t.files_compress), TreeAction::Op(TreeOp::Compress(targets.clone())), action);
+            if targets.iter().all(|p| p.is_file() && p.file_name().is_some_and(|n| super::files::is_zip(&n.to_string_lossy()))) {
+                menu_item(ui, &format!("📂  {}", t.files_extract), TreeAction::Op(TreeOp::Extract(targets.clone())), action);
+            }
             // Windows has no such permissions.
             if cfg!(unix) {
                 menu_item(ui, t.files_permissions, TreeAction::Op(TreeOp::Permissions(targets.clone())), action);
