@@ -1964,7 +1964,7 @@ impl App {
     fn apply_config(&mut self, config: Config) {
         if config.settings.theme != self.config.settings.theme {
             self.theme = Preset::find(&config.settings.theme).theme();
-            self.ctx.set_visuals(self.theme.visuals());
+            self.theme.apply(&self.ctx);
         }
         self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
         if config.settings.ui_zoom != self.config.settings.ui_zoom {

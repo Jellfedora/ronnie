@@ -345,6 +345,16 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Gives egui the theme's styling. The system's light or dark mode must never show: egui is pinned to
+    /// the theme's own mode instead of following it, and both its styles get the theme (`set_visuals`
+    /// alone left the other one egui's default: light buttons on a dark theme with macOS in light mode).
+    pub fn apply(&self, ctx: &egui::Context) {
+        ctx.set_theme(if self.dark { egui::Theme::Dark } else { egui::Theme::Light });
+        let v = self.visuals();
+        ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+        ctx.set_visuals_of(egui::Theme::Light, v);
+    }
+
     /// egui styling matching the theme, for menus, popups and dialogs.
     pub fn visuals(&self) -> egui::Visuals {
         let mut v = if self.dark { egui::Visuals::dark() } else { egui::Visuals::light() };

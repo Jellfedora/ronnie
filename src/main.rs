@@ -253,7 +253,7 @@ fn main() -> eframe::Result {
             #[cfg(target_os = "macos")]
             tune_macos_window(cc, theme.chrome_bg);
             install_fonts(&cc.egui_ctx);
-            cc.egui_ctx.set_visuals(theme.visuals());
+            theme.apply(&cc.egui_ctx);
             Ok(Box::new(app::App::new(cc, session, session_error, config, theme)))
         }),
     );
