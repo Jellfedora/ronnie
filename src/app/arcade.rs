@@ -44,6 +44,7 @@ impl App {
                 HomeGame::Four => t.arcade_four,
                 HomeGame::Blob => t.blob_tagline,
                 HomeGame::Mines => t.arcade_mines,
+                HomeGame::Runner => t.arcade_runner,
             };
             let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 52.0, card.center().y), Some(card.min.x + 100.0), card.width() - 120.0) };
             let scale = if wide { 2.8 } else { 2.0 };
@@ -52,6 +53,7 @@ impl App {
                 HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, scale),
                 HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, scale),
                 HomeGame::Mines => super::mines::paint_mines_icon(&painter, icon, &theme, scale),
+                HomeGame::Runner => super::runner::paint_runner_icon(&painter, icon, &theme, scale),
             }
             let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
             let desc_galley = painter.layout(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);
@@ -83,6 +85,51 @@ impl App {
             self.game_to_new_window(game);
         } else if let Some(game) = open.filter(|&g| !self.show_game_elsewhere(g)) {
             self.open_home_game(game);
+        }
+    }
+
+    /// A game's board from floor, beside its page: the player's best (`best`, worded), then floor's
+    /// best rounds (`score` words each one); without a pseudo, why (`need_pseudo`) and a button to pick one.
+    pub(super) fn game_board(&mut self, ui: &mut Ui, area: Rect, theme: &Theme, board: Option<Vec<crate::floor::GameEntry>>, best: Option<String>, need_pseudo: &str, score: fn(u32) -> String) {
+        let t = self.t();
+        let painter = ui.painter_at(area);
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
+        let mut y = area.min.y + 4.0;
+        painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, t.game_board_world, FontId::proportional(15.0), theme.text);
+        y += 28.0;
+        if let Some(best) = best {
+            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, best, FontId::proportional(13.0), theme.accent);
+            y += 24.0;
+        }
+        if pseudo.is_none() {
+            let galley = painter.layout(need_pseudo.to_owned(), FontId::proportional(12.5), theme.text_muted, area.width());
+            let h = galley.size().y;
+            painter.galley(Pos2::new(area.min.x, y), galley, theme.text_muted);
+            y += h + 10.0;
+            if ui.put(Rect::from_min_size(Pos2::new(area.min.x, y), Vec2::new(150.0, 28.0)), egui::Button::new(egui::RichText::new(t.pseudo_pick).size(13.0)).corner_radius(6.0)).clicked() {
+                self.ask_pseudo();
+            }
+            return;
+        }
+        let Some(board) = board else {
+            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, "…", FontId::proportional(13.0), theme.text_muted);
+            return;
+        };
+        if board.is_empty() {
+            let galley = painter.layout(t.game_board_empty.to_owned(), FontId::proportional(12.5), theme.text_muted, area.width());
+            painter.galley(Pos2::new(area.min.x, y), galley, theme.text_muted);
+            return;
+        }
+        for (k, entry) in board.iter().enumerate() {
+            if y + 18.0 > area.max.y {
+                break;
+            }
+            let color = if entry.me { theme.accent } else { theme.text };
+            let name = if entry.me { pseudo.as_deref() } else { entry.name.as_deref() }.unwrap_or(t.game_anonymous);
+            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, format!("{}.", k + 1), FontId::monospace(13.0), theme.text_muted);
+            painter.text(Pos2::new(area.min.x + 30.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
+            painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, score(entry.score), FontId::monospace(13.0), color);
+            y += 22.0;
         }
     }
 }

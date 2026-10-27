@@ -378,51 +378,54 @@ pub fn shown(floor: Option<&[Entry]>, local: &[TypingScore], pseudo: Option<&str
     rows
 }
 
-/// The minesweeper on floor: the fastest game won of each player.
-const MINES_GAME: &str = "demineur";
-
-/// A game of the minesweeper won.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct MinesRound {
-    /// Its time, in milliseconds.
-    pub ms: u32,
-    pub clicks: u32,
+/// A game's board on floor, kept as `Floor` keeps Speed Metal's: fetched in the background, the round
+/// just played sent with it. The minesweeper's (the fastest), Ronnie Run's (the farthest).
+pub struct GameFloor {
+    game: &'static str,
+    /// The smaller score wins (a time).
+    lower_wins: bool,
+    shared: Arc<Mutex<GameShared>>,
+    board: Option<Vec<GameEntry>>,
+    last: Option<f64>,
+    pending: Option<GameRound>,
 }
 
-/// A line of the minesweeper's board.
+/// A round to send: its score, and the body floor reads it from.
 #[derive(Clone, Debug)]
-pub struct MinesEntry {
+pub struct GameRound {
+    pub score: u32,
+    pub details: serde_json::Value,
+}
+
+/// A line of a game's board.
+#[derive(Clone, Debug)]
+pub struct GameEntry {
     pub name: Option<String>,
-    pub ms: u32,
+    pub score: u32,
     pub me: bool,
 }
 
 #[derive(Default)]
-struct MinesShared {
+struct GameShared {
     busy: bool,
     /// The board, and the round not sent (floor unreachable).
-    done: Option<(Option<Vec<MinesEntry>>, Option<MinesRound>)>,
+    done: Option<(Option<Vec<GameEntry>>, Option<GameRound>)>,
 }
 
-/// The minesweeper's board, kept as `Floor` keeps Speed Metal's: fetched in the background, the game
-/// just won sent with it.
-#[derive(Default)]
-pub struct MinesFloor {
-    shared: Arc<Mutex<MinesShared>>,
-    board: Option<Vec<MinesEntry>>,
-    last: Option<f64>,
-    pending: Option<MinesRound>,
-}
+impl GameFloor {
+    pub fn new(game: &'static str, lower_wins: bool) -> Self {
+        Self { game, lower_wins, shared: Default::default(), board: None, last: None, pending: None }
+    }
 
-impl MinesFloor {
-    /// floor's board when it answered, the fastest first.
-    pub fn board(&self) -> Option<&[MinesEntry]> {
+    /// floor's board when it answered, the best first.
+    pub fn board(&self) -> Option<&[GameEntry]> {
         self.board.as_deref()
     }
 
-    /// A game won: sent at the next sync (the fastest one, when several wait).
-    pub fn finished(&mut self, round: MinesRound) {
-        if self.pending.is_none_or(|p| round.ms < p.ms) {
+    /// A round played: sent at the next sync (the best one, when several wait).
+    pub fn finished(&mut self, round: GameRound) {
+        let better = |p: &GameRound| if self.lower_wins { round.score < p.score } else { round.score > p.score };
+        if self.pending.as_ref().is_none_or(better) {
             self.pending = Some(round);
         }
     }
@@ -455,9 +458,9 @@ impl MinesFloor {
         }
         let account = account.filter(|a| a.url == url && a.name.is_some()).cloned();
         let round = self.pending.take().filter(|_| account.is_some());
-        let (shared, ctx) = (self.shared.clone(), ctx.clone());
+        let (game, shared, ctx) = (self.game, self.shared.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let done = match mines_sync(&url, account.as_ref(), round) {
+            let done = match game_sync(&url, game, account.as_ref(), round.as_ref()) {
                 Ok(board) => (Some(board), None),
                 Err(e) => {
                     crate::log::info(&format!("floor: {e}"));
@@ -474,7 +477,7 @@ impl MinesFloor {
     }
 }
 
-fn mines_sync(url: &str, account: Option<&FloorAccount>, round: Option<MinesRound>) -> Result<Vec<MinesEntry>, ureq::Error> {
+fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Option<&GameRound>) -> Result<Vec<GameEntry>, ureq::Error> {
     #[derive(Deserialize)]
     struct Line {
         name: Option<String>,
@@ -486,16 +489,16 @@ fn mines_sync(url: &str, account: Option<&FloorAccount>, round: Option<MinesRoun
         entries: Vec<Line>,
     }
     let agent = agent();
-    // floor keeps the fastest one anyway.
+    // floor keeps the best one anyway.
     if let (Some(account), Some(round)) = (account, round) {
-        agent.post(format!("{url}/v1/games/{MINES_GAME}/scores")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).send_json(round)?;
+        agent.post(format!("{url}/v1/games/{game}/scores")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).send_json(&round.details)?;
     }
-    let mut request = agent.get(format!("{url}/v1/games/{MINES_GAME}/leaderboard")).query("limit", BOARD.to_string()).header("User-Agent", USER_AGENT);
+    let mut request = agent.get(format!("{url}/v1/games/{game}/leaderboard")).query("limit", BOARD.to_string()).header("User-Agent", USER_AGENT);
     if let Some(a) = account {
         request = request.header("Authorization", format!("Bearer {}", a.token));
     }
     let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| MinesEntry { name: l.name, ms: l.score, me: l.me }).collect())
+    Ok(answer.entries.into_iter().map(|l| GameEntry { name: l.name, score: l.score, me: l.me }).collect())
 }
 
 #[cfg(test)]

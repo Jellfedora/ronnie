@@ -16,6 +16,7 @@ mod live;
 mod log;
 mod mailbox;
 mod mines;
+mod runner;
 mod media_keys;
 mod modules;
 mod node;

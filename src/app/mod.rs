@@ -38,6 +38,7 @@ mod mail;
 mod procs;
 mod mailhtml;
 mod mines;
+mod runner;
 mod loading;
 mod motion;
 mod music;
@@ -375,6 +376,8 @@ pub struct App {
     four: four::Four,
     /// The minesweeper's page.
     mines: mines::Mines,
+    /// Ronnie Run's page.
+    runner: runner::Runner,
     /// Ronnie.io's page, and its connection to floor.
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
@@ -1198,6 +1201,7 @@ impl App {
             versus: crate::live::Live::default(),
             four: four::Four::default(),
             mines: mines::Mines::default(),
+            runner: runner::Runner::default(),
             blob: blob::Blob::default(),
             games_seen: false,
             backup: None,

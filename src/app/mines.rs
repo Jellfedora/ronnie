@@ -18,12 +18,12 @@ pub(super) struct Mines {
     record: bool,
     rng: u64,
     /// floor's board of the fastest games.
-    floor: crate::floor::MinesFloor,
+    floor: crate::floor::GameFloor,
 }
 
 impl Default for Mines {
     fn default() -> Self {
-        Self { board: Board::default(), started: None, ended: None, record: false, rng: 0, floor: Default::default() }
+        Self { board: Board::default(), started: None, ended: None, record: false, rng: 0, floor: crate::floor::GameFloor::new("demineur", true) }
     }
 }
 
@@ -136,7 +136,9 @@ impl App {
         painter.text(Pos2::new(grid.center().x, grid.max.y + 22.0), Align2::CENTER_CENTER, line, FontId::proportional(13.5), color);
 
         let side = if wide { Rect::from_min_size(Pos2::new(grid.max.x + 32.0, grid.min.y), Vec2::new(side_w, grid.height())) } else { Rect::from_min_size(Pos2::new(grid.min.x, grid.max.y + 48.0), Vec2::new(grid.width(), body.max.y - grid.max.y - 48.0)) };
-        self.mines_board(ui, side, &theme);
+        let best = (self.config.settings.mines_best > 0).then(|| t.mines_best.replace("{t}", &time_text(self.config.settings.mines_best)));
+        let board = self.mines.floor.board().map(<[_]>::to_vec);
+        self.game_board(ui, side, &theme, board, best, t.mines_need_pseudo, time_text);
         // The time runs: a frame each tenth of a second.
         if self.mines.board.state == State::Playing {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -228,51 +230,9 @@ impl App {
         }
         // Online only with a pseudo.
         if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
-            self.mines.floor.finished(crate::floor::MinesRound { ms, clicks: self.mines.board.clicks });
+            self.mines.floor.finished(crate::floor::GameRound { score: ms, details: serde_json::json!({ "ms": ms, "clicks": self.mines.board.clicks }) });
             let now = self.ctx.input(|i| i.time);
             self.mines.floor.sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
-        }
-    }
-
-    /// floor's board of the fastest games, and the player's best.
-    fn mines_board(&mut self, ui: &mut Ui, area: Rect, theme: &Theme) {
-        let t = self.t();
-        let painter = ui.painter_at(area);
-        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
-        let mut y = area.min.y + 4.0;
-        painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, t.game_board_world, FontId::proportional(15.0), theme.text);
-        y += 28.0;
-        let best = self.config.settings.mines_best;
-        if best > 0 {
-            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, t.mines_best.replace("{t}", &time_text(best)), FontId::proportional(13.0), theme.accent);
-            y += 24.0;
-        }
-        if pseudo.is_none() {
-            let galley = painter.layout(t.mines_need_pseudo.to_owned(), FontId::proportional(12.5), theme.text_muted, area.width());
-            let h = galley.size().y;
-            painter.galley(Pos2::new(area.min.x, y), galley, theme.text_muted);
-            y += h + 10.0;
-            if ui.put(Rect::from_min_size(Pos2::new(area.min.x, y), Vec2::new(150.0, 28.0)), egui::Button::new(egui::RichText::new(t.pseudo_pick).size(13.0)).corner_radius(6.0)).clicked() {
-                self.ask_pseudo();
-            }
-            return;
-        }
-        let Some(board) = self.mines.floor.board() else {
-            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, "…", FontId::proportional(13.0), theme.text_muted);
-            return;
-        };
-        if board.is_empty() {
-            let galley = painter.layout(t.game_board_empty.to_owned(), FontId::proportional(12.5), theme.text_muted, area.width());
-            painter.galley(Pos2::new(area.min.x, y), galley, theme.text_muted);
-            return;
-        }
-        for (k, entry) in board.iter().enumerate() {
-            let color = if entry.me { theme.accent } else { theme.text };
-            let name = if entry.me { pseudo.as_deref() } else { entry.name.as_deref() }.unwrap_or(t.game_anonymous);
-            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, format!("{}.", k + 1), FontId::monospace(13.0), theme.text_muted);
-            painter.text(Pos2::new(area.min.x + 30.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
-            painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, time_text(entry.ms), FontId::monospace(13.0), color);
-            y += 22.0;
         }
     }
 }
