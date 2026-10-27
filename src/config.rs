@@ -274,6 +274,9 @@ pub struct Group {
     /// A group of database connections (in the Databases section).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub db: bool,
+    /// The group it is a sub-group of (None: at the top of its section).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Uuid>,
     /// Fields written by another version of Ronnie: kept as they are, so that running an older or newer
     /// version never erases them.
     #[serde(flatten)]
@@ -283,7 +286,7 @@ pub struct Group {
 impl Group {
     pub fn new(name: &str, kind: GroupKind) -> Self {
         let (local, db) = (kind == GroupKind::Profiles, kind == GroupKind::Databases);
-        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local, db, extra: Default::default() }
+        Self { id: Uuid::new_v4(), name: name.to_owned(), collapsed: false, items: Vec::new(), local, db, parent: None, extra: Default::default() }
     }
 
     pub fn kind(&self) -> GroupKind {
@@ -355,6 +358,38 @@ impl Config {
                 self.ungrouped.push(id);
             }
         }
+        // A sub-group's parent exists, is of its kind and isn't nested in it (else it goes to the top).
+        for i in 0..self.groups.len() {
+            let Some(parent) = self.groups[i].parent else { continue };
+            let kind = self.groups[i].kind();
+            let fits = self.groups.iter().any(|g| g.id == parent && g.kind() == kind) && !self.group_and_subgroups(self.groups[i].id).contains(&parent);
+            if !fits {
+                self.groups[i].parent = None;
+            }
+        }
+    }
+
+    /// The group `id` and every group nested in it, at any depth.
+    pub fn group_and_subgroups(&self, id: Uuid) -> Vec<Uuid> {
+        let mut found = vec![id];
+        let mut i = 0;
+        while i < found.len() {
+            let parent = found[i];
+            found.extend(self.groups.iter().filter(|g| g.parent == Some(parent) && !found.contains(&g.id)).map(|g| g.id).collect::<Vec<_>>());
+            i += 1;
+        }
+        found
+    }
+
+    /// How many groups `id` is nested in.
+    pub fn group_depth(&self, id: Uuid) -> usize {
+        let mut depth = 0;
+        let mut parent = self.groups.iter().find(|g| g.id == id).and_then(|g| g.parent);
+        while let Some(p) = parent.filter(|_| depth < self.groups.len()) {
+            depth += 1;
+            parent = self.groups.iter().find(|g| g.id == p).and_then(|g| g.parent);
+        }
+        depth
     }
 
     /// Removes an item from wherever it is in the sidebar.
@@ -1417,6 +1452,30 @@ mod tests {
         assert_eq!(config.ungrouped, [h]);
         let json = config.to_json();
         assert_eq!(Config::from_json(&json).unwrap().groups[0].kind(), GroupKind::Databases);
+    }
+
+    #[test]
+    fn keeps_subgroups_sound() {
+        let mut config = Config::default();
+        let mut a = Group::new("A", GroupKind::Ssh);
+        let mut b = Group::new("B", GroupKind::Ssh);
+        let mut c = Group::new("C", GroupKind::Databases);
+        b.parent = Some(a.id);
+        c.parent = Some(a.id);
+        // A cycle: A in B, B in A.
+        a.parent = Some(b.id);
+        config.groups = vec![a, b, c];
+        config.normalize();
+        // A database group can't sit in an SSH one; the cycle is broken.
+        assert_eq!(config.groups[2].parent, None);
+        assert!(config.groups[0].parent.is_none() || config.groups[1].parent.is_none());
+        let (a, b) = (config.groups[0].id, config.groups[1].id);
+        if config.groups[1].parent == Some(a) {
+            assert_eq!(config.group_depth(b), 1);
+            assert_eq!(config.group_and_subgroups(a), [a, b]);
+        }
+        let json = config.to_json();
+        assert_eq!(Config::from_json(&json).unwrap().groups, config.groups);
     }
 
     #[test]

@@ -81,6 +81,8 @@ const ROW_H: f32 = 32.0;
 const ROW_GAP: f32 = 3.0;
 /// Height of a group title in the profiles section.
 const GROUP_H: f32 = 26.0;
+/// How far a sub-group of the sidebar is shifted right, per level.
+const SUBGROUP_INDENT: f32 = 14.0;
 /// Bottom strip of the sidebar holding the settings button.
 const FOOTER_H: f32 = 40.0;
 /// How often open tabs are compared with what is on disk.
@@ -447,6 +449,8 @@ pub struct App {
     local_db: bool,
     /// Profile or group being dragged in the sidebar.
     item_drag: Option<ItemDrag>,
+    /// SSH hosts or databases picked with ⌘ / Ctrl or ⇧ clicks, to move together (the last one picked last).
+    selected_items: Vec<Uuid>,
     /// Group being renamed: id, typed name, whether the editor was just opened.
     group_rename: Option<(Uuid, String, bool)>,
     /// Profile being renamed in the sidebar.
@@ -671,9 +675,10 @@ enum Row {
     Group(usize),
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Dragged {
-    Item(Uuid),
+    /// The row grabbed first, then the other selected ones moving with it.
+    Items(Vec<Uuid>),
     Group(Uuid),
 }
 
@@ -685,9 +690,9 @@ struct ItemDrag {
 
 impl ItemDrag {
     fn is(&self, row: Row, config: &Config) -> bool {
-        match (self.what, row) {
-            (Dragged::Item(id), Row::Item(_, other)) => id == other,
-            (Dragged::Group(id), Row::Group(gi)) => config.groups.get(gi).is_some_and(|g| g.id == id),
+        match (&self.what, row) {
+            (Dragged::Items(ids), Row::Item(_, other)) => ids.first() == Some(&other),
+            (Dragged::Group(id), Row::Group(gi)) => config.groups.get(gi).is_some_and(|g| g.id == *id),
             _ => false,
         }
     }
@@ -761,38 +766,50 @@ fn pane_drop(p: Pos2, dragged: PaneId, layout: Rect, rects: &[(PaneId, Rect)]) -
 fn drop_target(drag: &ItemDrag, p: Pos2, rects: &[(Row, Rect)], config: &Config) -> (TabAction, Mark) {
     let bottom = rects.last().map_or(p.y, |(_, r)| r.max.y + 1.0);
     let group_id = |gi: usize| config.groups[gi].id;
-    match drag.what {
-        Dragged::Item(id) => {
+    match &drag.what {
+        Dragged::Items(ids) => {
+            let items = || ids.clone();
             // Only the groups shown in this section count (local and SSH groups are listed apart).
+            // Between rows, it goes in the group of the row above (a group title: in that group).
             let mut previous_group = None;
             for &(row, rect) in rects {
                 match row {
-                    Row::Item(_, other) if other == id => {}
-                    Row::Group(gi) if rect.contains(p) => return (TabAction::DropItem(id, Some(group_id(gi)), None), Mark::Into(rect)),
+                    Row::Item(_, other) if ids.contains(&other) => {}
+                    Row::Group(gi) if rect.contains(p) => return (TabAction::DropItem(items(), Some(group_id(gi)), None), Mark::Into(rect)),
                     Row::Item(g, other) if p.y < rect.center().y => {
-                        return (TabAction::DropItem(id, g.map(group_id), Some(other)), Mark::Line(rect.min.y - 1.0));
+                        return (TabAction::DropItem(items(), g.map(group_id), Some(other)), Mark::Line(rect.min.y - 1.0));
                     }
-                    // Above a group title: at the end of whatever comes before it.
                     Row::Group(_) if p.y < rect.min.y => {
-                        return (TabAction::DropItem(id, previous_group.map(group_id), None), Mark::Line(rect.min.y - 1.0));
+                        return (TabAction::DropItem(items(), previous_group.map(group_id), None), Mark::Line(rect.min.y - 1.0));
                     }
                     _ => {}
                 }
-                if let Row::Group(gi) = row {
-                    previous_group = Some(gi);
+                match row {
+                    Row::Group(gi) => previous_group = Some(gi),
+                    Row::Item(g, other) if !ids.contains(&other) => previous_group = g,
+                    Row::Item(..) => {}
                 }
             }
-            (TabAction::DropItem(id, previous_group.map(group_id), None), Mark::Line(bottom))
+            (TabAction::DropItem(items(), previous_group.map(group_id), None), Mark::Line(bottom))
         }
         Dragged::Group(id) => {
+            // Not into itself nor into one of its sub-groups. The top of a title puts it before that
+            // group, the rest of the title inside it.
+            let moved = config.group_and_subgroups(*id);
             for &(row, rect) in rects {
-                if let Row::Group(gi) = row {
-                    if group_id(gi) != id && p.y < rect.center().y {
-                        return (TabAction::DropGroup(id, Some(group_id(gi))), Mark::Line(rect.min.y - 1.0));
-                    }
+                let Row::Group(gi) = row else { continue };
+                let g = &config.groups[gi];
+                if moved.contains(&g.id) {
+                    continue;
+                }
+                if p.y < rect.min.y + rect.height() * 0.3 {
+                    return (TabAction::DropGroup(*id, g.parent, Some(g.id)), Mark::Line(rect.min.y - 1.0));
+                }
+                if rect.contains(p) {
+                    return (TabAction::DropGroup(*id, Some(g.id), None), Mark::Into(rect));
                 }
             }
-            (TabAction::DropGroup(id, None), Mark::Line(bottom))
+            (TabAction::DropGroup(*id, None, None), Mark::Line(bottom))
         }
     }
 }
@@ -1217,6 +1234,7 @@ impl App {
             }),
             local_db: crate::db::local_server(),
             item_drag: None,
+            selected_items: Vec::new(),
             group_rename: None,
             item_rename: None,
             profile_names: HashMap::new(),
@@ -3807,17 +3825,22 @@ enum TabAction {
     RenameGroup(Uuid, String),
     /// New group of local profiles, SSH hosts or databases.
     NewGroup(config::GroupKind),
-    /// New group holding this item.
-    NewGroupWith(Uuid),
+    /// New group holding these items.
+    NewGroupWith(Vec<Uuid>),
+    /// New group inside that one.
+    NewSubgroup(Uuid),
+    /// Add an item to the sidebar's selection or take it out (true: with those between it and the
+    /// last one picked).
+    SelectItem(Uuid, bool),
     /// Opens the profile editor.
     EditProfile(Uuid),
     /// Opens an SSH host's tab on its file manager.
     OpenFiles(Uuid),
     DeleteGroup(Uuid),
-    /// Move an item into a group (None: outside groups), before another item or at the end.
-    DropItem(Uuid, Option<Uuid>, Option<Uuid>),
-    /// Move a group before another one, or last.
-    DropGroup(Uuid, Option<Uuid>),
+    /// Move items into a group (None: outside groups), before another item or at the end.
+    DropItem(Vec<Uuid>, Option<Uuid>, Option<Uuid>),
+    /// Move a group into another (None: at the top), before another group or last.
+    DropGroup(Uuid, Option<Uuid>, Option<Uuid>),
     /// Restart every session of an SSH tab.
     Reconnect(usize),
     /// Copy a profile (right after it), or open the host or database editor on a copy of a host or a database.

@@ -331,20 +331,20 @@ impl App {
                     _ => None,
                 }).collect();
                 match others.iter().find(|(_, r)| r.center().x > px) {
-                    Some((before, r)) => Some((r.min.x - CHIP_GAP / 2.0, TabAction::DropItem(id, group, Some(*before)))),
+                    Some((before, r)) => Some((r.min.x - CHIP_GAP / 2.0, TabAction::DropItem(vec![id], group, Some(*before)))),
                     None => {
                         let end = others.last().map_or(seg.rect.min.x + SEG_PAD + seg.label_w + 2.0, |(_, r)| r.max.x + CHIP_GAP / 2.0);
-                        Some((end, TabAction::DropItem(id, group, None)))
+                        Some((end, TabAction::DropItem(vec![id], group, None)))
                     }
                 }
             }
             BarDrag::Group { id, .. } => {
                 let groups: Vec<(Uuid, Rect)> = segments.iter().filter_map(|s| s.group.map(|gi| (self.config.groups[gi].id, s.rect))).filter(|(g, _)| *g != id).collect();
                 match groups.iter().find(|(_, r)| r.center().x > px) {
-                    Some((before, r)) => Some((r.min.x - SEG_GAP / 2.0, TabAction::DropGroup(id, Some(*before)))),
+                    Some((before, r)) => Some((r.min.x - SEG_GAP / 2.0, TabAction::DropGroup(id, None, Some(*before)))),
                     None => {
                         let end = groups.last().map(|(_, r)| r.max.x + SEG_GAP / 2.0)?;
-                        Some((end, TabAction::DropGroup(id, None)))
+                        Some((end, TabAction::DropGroup(id, None, None)))
                     }
                 }
             }

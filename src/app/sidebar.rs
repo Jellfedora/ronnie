@@ -557,20 +557,19 @@ impl App {
         let painter = ui.painter().clone();
         // The dragged row is painted above the others.
         let drag_painter = painter.clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, ui.id().with("item-drag")));
-        let of_kind = |id: &&Uuid| self.config.item_kind(**id) == Some(kind);
-        let mut rows: Vec<Row> = self.config.ungrouped.iter().filter(of_kind).map(|id| Row::Item(None, *id)).collect();
-        for (gi, g) in self.config.groups.iter().enumerate().filter(|(_, g)| g.kind() == kind) {
-            rows.push(Row::Group(gi));
-            if !g.collapsed {
-                rows.extend(g.items.iter().filter(of_kind).map(|id| Row::Item(Some(gi), *id)));
-            }
-        }
+        let rows = section_rows(&self.config, kind, false);
         let (pointer, pointer_down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
         let mut rects: Vec<(Row, Rect)> = Vec::with_capacity(rows.len());
 
         for row in rows {
             let h = if matches!(row, Row::Group(_)) { GROUP_H } else { ROW_H };
-            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, h));
+            // Sub-groups (and what they hold) shifted right, a step per level.
+            let group = match row {
+                Row::Group(gi) | Row::Item(Some(gi), _) => Some(self.config.groups[gi].id),
+                Row::Item(None, _) => None,
+            };
+            let indent = group.map_or(0.0, |g| self.config.group_depth(g) as f32 * SUBGROUP_INDENT);
+            let slot = Rect::from_min_size(Pos2::new(left + indent, *y), Vec2::new(row_w - indent, h));
             *y += h + ROW_GAP;
             rects.push((row, slot));
             let dragged_here = self.item_drag.as_ref().is_some_and(|d| pointer_down && d.is(row, &self.config));
@@ -586,9 +585,45 @@ impl App {
             }
         }
 
+        // Several picked: how many, and a way to let them go.
+        let picked = self.selected_items.iter().filter(|id| self.config.item_kind(**id) == Some(kind)).count();
+        if picked > 0 {
+            let t = self.t();
+            let line = Rect::from_min_size(Pos2::new(left, *y + 2.0), Vec2::new(row_w, 20.0));
+            let clear_rect = Rect::from_center_size(Pos2::new(line.max.x - 12.0, line.center().y), Vec2::splat(18.0));
+            let mut job = egui::text::LayoutJob::simple_singleline(t.n_selected.replace("{n}", &picked.to_string()), FontId::proportional(11.5), self.theme.text_muted);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(clear_rect.min.x - line.min.x - 10.0);
+            let galley = painter.layout_job(job);
+            painter.galley(Pos2::new(line.min.x + 6.0, line.center().y - galley.size().y / 2.0), galley, self.theme.text_muted);
+            let clear = ui.interact(clear_rect, ui.id().with(("clear-selection", kind as u8)), Sense::click());
+            if clear.hovered() {
+                painter.rect_filled(clear_rect, 4.0, self.theme.tab_hover.gamma_multiply(1.8));
+            }
+            paint_cross(&painter, clear_rect.center(), if clear.hovered() { self.theme.text } else { self.theme.text_muted });
+            if clear.clicked() {
+                self.selected_items.clear();
+            }
+            *y += 24.0;
+            // A plain click anywhere but on a row lets them go too.
+            let (clicked, mods) = ui.input(|i| (i.pointer.primary_clicked(), i.modifiers));
+            let on_row = pointer.is_some_and(|p| rects.iter().any(|(row, r)| matches!(row, Row::Item(..)) && r.contains(p)));
+            if clicked && !mods.command && !mods.shift && !on_row {
+                self.selected_items.clear();
+            }
+        }
+
         // Drop target of a drag in progress, shown as a line (or a highlighted group); applied on release.
         if let (Some(drag), Some(p)) = (&self.item_drag, pointer) {
             let (target, mark) = drop_target(drag, p, &rects, &self.config);
+            // Several rows moving: how many, beside the one under the pointer.
+            if let (Dragged::Items(ids), true) = (&drag.what, pointer_down) {
+                if ids.len() > 1 {
+                    let galley = painter.layout_no_wrap(ids.len().to_string(), FontId::proportional(11.0), self.theme.bg);
+                    let pill = Rect::from_min_size(Pos2::new(p.x + 10.0, p.y - 20.0), Vec2::new((galley.size().x + 10.0).max(18.0), 18.0));
+                    drag_painter.rect_filled(pill, 9.0, self.theme.accent);
+                    drag_painter.galley(pill.center() - galley.size() / 2.0, galley, self.theme.bg);
+                }
+            }
             if pointer_down {
                 match mark {
                     Mark::Line(y) => {
@@ -645,7 +680,8 @@ impl App {
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_rect.width());
         let galley = painter.layout_job(job);
         painter.galley(Pos2::new(text_rect.min.x, text_rect.center().y - galley.size().y / 2.0), galley, color);
-        let count = group.items.iter().filter(|id| self.config.item_kind(**id) == Some(kind)).count();
+        let nested = self.config.group_and_subgroups(gid);
+        let count = self.config.groups.iter().filter(|g| nested.contains(&g.id)).flat_map(|g| &g.items).filter(|id| self.config.item_kind(**id) == Some(kind)).count();
         // How many items, in a small pill.
         {
             let galley = painter.layout_no_wrap(count.to_string(), FontId::proportional(10.5), self.theme.text_muted);
@@ -661,6 +697,7 @@ impl App {
         resp.context_menu(|ui| {
             ui.set_min_width(170.0);
             menu_item(ui, t.rename, TabAction::StartGroupRename(gid), action);
+            menu_item(ui, t.new_subgroup, TabAction::NewSubgroup(gid), action);
             menu_item(ui, t.new_group, TabAction::NewGroup(kind), action);
             ui.separator();
             menu_item(ui, t.delete_group, TabAction::DeleteGroup(gid), action);
@@ -671,14 +708,13 @@ impl App {
         let t = self.t();
         let Some(item) = self.item(id) else { return };
         let resp = ui.interact(slot, ui.id().with(("item", id)), Sense::click_and_drag());
-        if resp.drag_started() {
-            if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-                self.item_drag = Some(ItemDrag { what: Dragged::Item(id), grab: p.y - slot.min.y });
-            }
-        }
+        self.start_item_drag(ui, &resp, id, slot);
         let hovered = resp.contains_pointer() && self.item_drag.is_none();
         let active = item.open.is_some() && item.open == self.shown_tab();
         paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
+        if self.selected_items.contains(&id) {
+            paint_selected(painter, rect, &self.theme);
+        }
         let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
         paint_badge(painter, dot, &item.name, item.color, item.ssh, item.open.is_some(), active, &self.theme);
         let live = item.open.and_then(|i| self.live.get(i).cloned().flatten());
@@ -773,9 +809,12 @@ impl App {
             hint.push_str(&format!("\n{summary}"));
         }
         let resp = resp.on_hover_text(hint);
-        if resp.double_clicked() {
+        if let Some(range) = picked(ui, &resp) {
+            *action = Some(TabAction::SelectItem(id, range));
+        } else if resp.double_clicked() {
             *action = Some(if item.ssh { TabAction::EditHost(id) } else { TabAction::StartItemRename(id) });
         } else if resp.clicked() {
+            self.selected_items.clear();
             action.get_or_insert(TabAction::OpenItem(id));
         }
         if resp.middle_clicked() {
@@ -980,15 +1019,14 @@ impl App {
         let t = self.t();
         let Some(c) = self.config.databases.iter().find(|c| c.id == id).cloned() else { return };
         let resp = ui.interact(slot, ui.id().with(("db-item", c.id)), Sense::click_and_drag());
-        if resp.drag_started() {
-            if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-                self.item_drag = Some(ItemDrag { what: Dragged::Item(id), grab: p.y - slot.min.y });
-            }
-        }
+        self.start_item_drag(ui, &resp, id, slot);
         let open = self.tabs.iter().position(|tab| tab.db == Some(c.id));
         let active = open.is_some() && open == self.shown_tab();
         let hovered = resp.contains_pointer() && self.item_drag.is_none();
         paint_row_bg(painter, rect, active || dragged, hovered, &self.theme);
+        if self.selected_items.contains(&id) {
+            paint_selected(painter, rect, &self.theme);
+        }
         let dot = Pos2::new(rect.min.x + 17.0, rect.center().y);
         paint_badge(painter, dot, &c.name, c.color, false, open.is_some(), active, &self.theme);
         let close_rect = Rect::from_center_size(Pos2::new(rect.max.x - 14.0, rect.center().y), Vec2::splat(18.0));
@@ -1010,9 +1048,12 @@ impl App {
             }
         }
         let resp = resp.on_hover_text(c.address());
-        if resp.double_clicked() {
+        if let Some(range) = picked(ui, &resp) {
+            *action = Some(TabAction::SelectItem(id, range));
+        } else if resp.double_clicked() {
             *action = Some(TabAction::EditDb(c.id));
         } else if resp.clicked() {
+            self.selected_items.clear();
             action.get_or_insert(TabAction::OpenDb(c.id));
         }
         resp.context_menu(|ui| {
@@ -1233,27 +1274,58 @@ impl App {
         menu_item(ui, t.delete, if item.ssh { TabAction::DeleteHost(id) } else { TabAction::DeleteProfile(id) }, action);
     }
 
-    /// "Move to" submenu of an item: out of groups, into another group of its kind, or a new one.
+    /// `items` in the order the sidebar lists them (those it doesn't list last).
+    fn in_sidebar_order(&self, mut items: Vec<Uuid>) -> Vec<Uuid> {
+        let Some(kind) = items.first().and_then(|i| self.config.item_kind(*i)) else { return items };
+        let order: Vec<Uuid> = section_rows(&self.config, kind, true).into_iter().filter_map(|r| if let Row::Item(_, i) = r { Some(i) } else { None }).collect();
+        items.sort_by_key(|i| order.iter().position(|o| o == i).unwrap_or(usize::MAX));
+        items.dedup();
+        items
+    }
+
+    /// "Move to" submenu of an item (of all those picked, when it is one of them): out of groups, into
+    /// another group of its kind (sub-groups under theirs), or a new one.
     fn move_to_menu(&self, ui: &mut Ui, id: Uuid, kind: config::GroupKind, action: &mut Option<TabAction>) {
         let t = self.t();
-        ui.menu_button(t.move_to, |ui| {
-            let current = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
-            if ui.add_enabled(current.is_some(), egui::Button::new(t.no_group)).clicked() {
-                *action = Some(TabAction::DropItem(id, None, None));
+        let ids = if self.selected_items.contains(&id) { self.selected_items.clone() } else { vec![id] };
+        let label = if ids.len() > 1 { t.move_n_to.replace("{n}", &ids.len().to_string()) } else { t.move_to.to_owned() };
+        ui.menu_button(label, |ui| {
+            let group_of = |item: &Uuid| self.config.groups.iter().find(|g| g.items.contains(item)).map(|g| g.id);
+            let all_in = |group: Option<Uuid>| ids.iter().all(|i| group_of(i) == group);
+            if ui.add_enabled(!all_in(None), egui::Button::new(t.no_group)).clicked() {
+                *action = Some(TabAction::DropItem(ids.clone(), None, None));
                 ui.close();
             }
-            for g in self.config.groups.iter().filter(|g| g.kind() == kind) {
-                if ui.add_enabled(current != Some(g.id), egui::Button::new(&g.name)).clicked() {
-                    *action = Some(TabAction::DropItem(id, Some(g.id), None));
+            for row in section_rows(&self.config, kind, true) {
+                let Row::Group(gi) = row else { continue };
+                let g = &self.config.groups[gi];
+                let name = format!("{}{}", "    ".repeat(self.config.group_depth(g.id)), g.name);
+                if ui.add_enabled(!all_in(Some(g.id)), egui::Button::new(name)).clicked() {
+                    *action = Some(TabAction::DropItem(ids.clone(), Some(g.id), None));
                     ui.close();
                 }
             }
             ui.separator();
             if ui.button(t.new_group).clicked() {
-                *action = Some(TabAction::NewGroupWith(id));
+                *action = Some(TabAction::NewGroupWith(ids.clone()));
                 ui.close();
             }
         });
+    }
+
+    /// A row of the sidebar starts being dragged: it takes along the others picked with it.
+    fn start_item_drag(&mut self, ui: &Ui, resp: &egui::Response, id: Uuid, slot: Rect) {
+        if !resp.drag_started() {
+            return;
+        }
+        let Some(p) = ui.input(|i| i.pointer.interact_pos()) else { return };
+        let ids = if self.selected_items.contains(&id) {
+            std::iter::once(id).chain(self.selected_items.iter().copied().filter(|i| *i != id)).collect()
+        } else {
+            self.selected_items.clear();
+            vec![id]
+        };
+        self.item_drag = Some(ItemDrag { what: Dragged::Items(ids), grab: p.y - slot.min.y });
     }
 
     /// Right-click menu of a tab.
@@ -1632,13 +1704,50 @@ impl App {
                 self.config.groups.push(group);
             }
             Some(TabAction::EditProfile(id)) => self.open_profile_editor(id),
-            Some(TabAction::NewGroupWith(item)) => {
-                let kind = self.config.item_kind(item).unwrap_or(config::GroupKind::Ssh);
+            Some(TabAction::NewGroupWith(items)) => {
+                let kind = items.first().and_then(|i| self.config.item_kind(*i)).unwrap_or(config::GroupKind::Ssh);
                 let mut group = config::Group::new(t.new_group_name, kind);
-                self.config.unplace(item);
-                group.items.push(item);
+                for item in self.in_sidebar_order(items) {
+                    self.config.unplace(item);
+                    group.items.push(item);
+                }
+                self.selected_items.clear();
                 self.group_rename = Some((group.id, group.name.clone(), true));
                 self.config.groups.push(group);
+            }
+            Some(TabAction::NewSubgroup(parent)) => {
+                if let Some(p) = self.config.groups.iter_mut().find(|g| g.id == parent) {
+                    p.collapsed = false;
+                    let mut group = config::Group::new(t.new_group_name, p.kind());
+                    group.parent = Some(parent);
+                    self.group_rename = Some((group.id, group.name.clone(), true));
+                    self.config.groups.push(group);
+                }
+            }
+            Some(TabAction::SelectItem(id, range)) => {
+                let kind = self.config.item_kind(id);
+                // One section at a time.
+                if self.selected_items.first().is_some_and(|s| self.config.item_kind(*s) != kind) {
+                    self.selected_items.clear();
+                }
+                let order: Vec<Uuid> = kind.map_or_else(Vec::new, |k| section_rows(&self.config, k, false).into_iter().filter_map(|r| if let Row::Item(_, i) = r { Some(i) } else { None }).collect());
+                let anchor = self.selected_items.last().copied();
+                let span = anchor.and_then(|a| Some((order.iter().position(|i| *i == a)?, order.iter().position(|i| *i == id)?)));
+                match span.filter(|_| range) {
+                    // From the last one picked to this one; that one stays the start of the next range.
+                    Some((a, b)) => {
+                        for i in &order[a.min(b)..=a.max(b)] {
+                            if !self.selected_items.contains(i) {
+                                self.selected_items.push(*i);
+                            }
+                        }
+                        let a = order[a];
+                        self.selected_items.retain(|i| *i != a);
+                        self.selected_items.push(a);
+                    }
+                    None if self.selected_items.contains(&id) => self.selected_items.retain(|i| *i != id),
+                    None => self.selected_items.push(id),
+                }
             }
             Some(TabAction::Duplicate(id)) => self.duplicate_item(id),
             Some(TabAction::NewDb) => self.db_editor = Some(DbEditor::new(config::DbConnection::new(), true)),
@@ -1658,20 +1767,30 @@ impl App {
             Some(TabAction::ItemNewWindow(id)) => self.item_to_new_window(id),
             Some(TabAction::TabNewWindow(i)) => self.tab_to_new_window(i),
             Some(TabAction::DeleteGroup(id)) => {
-                // Its items stay, outside groups.
+                // Its items and sub-groups stay, in the group it was in (or outside groups).
                 if let Some(index) = self.config.groups.iter().position(|g| g.id == id) {
                     let group = self.config.groups.remove(index);
-                    self.config.ungrouped.extend(group.items);
+                    for g in self.config.groups.iter_mut().filter(|g| g.parent == Some(id)) {
+                        g.parent = group.parent;
+                    }
+                    match group.parent.and_then(|p| self.config.groups.iter_mut().find(|g| g.id == p)) {
+                        Some(parent) => parent.items.extend(group.items),
+                        None => self.config.ungrouped.extend(group.items),
+                    }
                 }
             }
-            Some(TabAction::DropItem(item, group, before)) => {
-                self.config.unplace(item);
+            Some(TabAction::DropItem(items, group, before)) => {
+                let items = self.in_sidebar_order(items);
+                for item in &items {
+                    self.config.unplace(*item);
+                }
                 let list = match group.and_then(|g| self.config.groups.iter_mut().find(|x| x.id == g)) {
                     Some(g) => &mut g.items,
                     None => &mut self.config.ungrouped,
                 };
                 let at = before.and_then(|b| list.iter().position(|x| *x == b)).unwrap_or(list.len());
-                list.insert(at, item);
+                list.splice(at..at, items);
+                self.selected_items.clear();
             }
             Some(TabAction::Reconnect(i)) => {
                 if let Some(tab) = self.tabs.get(i) {
@@ -1680,9 +1799,15 @@ impl App {
                     self.select(i);
                 }
             }
-            Some(TabAction::DropGroup(id, before)) => {
-                if let Some(index) = self.config.groups.iter().position(|g| g.id == id) {
-                    let group = self.config.groups.remove(index);
+            Some(TabAction::DropGroup(id, parent, before)) => {
+                // Never into itself or one of its own sub-groups.
+                let inside_itself = parent.is_some_and(|p| self.config.group_and_subgroups(id).contains(&p));
+                if let Some(index) = self.config.groups.iter().position(|g| g.id == id).filter(|_| !inside_itself) {
+                    let mut group = self.config.groups.remove(index);
+                    group.parent = parent;
+                    if let Some(p) = parent.and_then(|p| self.config.groups.iter_mut().find(|g| g.id == p)) {
+                        p.collapsed = false;
+                    }
                     let at = before.and_then(|b| self.config.groups.iter().position(|g| g.id == b)).unwrap_or(self.config.groups.len());
                     self.config.groups.insert(at, group);
                 }
@@ -1741,6 +1866,38 @@ fn paint_done(painter: &egui::Painter, c: Pos2, ok: bool, theme: &crate::theme::
         painter.line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], stroke);
         painter.line_segment([c + Vec2::new(-d, d), c + Vec2::new(d, -d)], stroke);
     }
+}
+
+/// The rows of the SSH or Databases section, top to bottom: the items outside groups, then each group
+/// with its items and then its sub-groups (not what a folded group holds, unless `all`).
+fn section_rows(config: &config::Config, kind: config::GroupKind, all: bool) -> Vec<Row> {
+    fn push_groups(config: &config::Config, kind: config::GroupKind, all: bool, parent: Option<Uuid>, depth: usize, rows: &mut Vec<Row>) {
+        if depth > config.groups.len() {
+            return;
+        }
+        for (gi, g) in config.groups.iter().enumerate().filter(|(_, g)| g.kind() == kind && g.parent == parent) {
+            rows.push(Row::Group(gi));
+            if all || !g.collapsed {
+                rows.extend(g.items.iter().filter(|id| config.item_kind(**id) == Some(kind)).map(|id| Row::Item(Some(gi), *id)));
+                push_groups(config, kind, all, Some(g.id), depth + 1, rows);
+            }
+        }
+    }
+    let mut rows: Vec<Row> = config.ungrouped.iter().filter(|id| config.item_kind(**id) == Some(kind)).map(|id| Row::Item(None, *id)).collect();
+    push_groups(config, kind, all, None, 0, &mut rows);
+    rows
+}
+
+/// A click on a row with ⌘ / Ctrl (Some(false): picks it or lets it go) or ⇧ (Some(true): picks a range).
+fn picked(ui: &Ui, resp: &egui::Response) -> Option<bool> {
+    let mods = ui.input(|i| i.modifiers);
+    (resp.clicked() && (mods.command || mods.shift)).then_some(mods.shift)
+}
+
+/// A row picked to move with others: a touch of the accent, outlined.
+fn paint_selected(painter: &egui::Painter, rect: Rect, theme: &crate::theme::Theme) {
+    painter.rect_filled(rect, 8.0, theme.accent.gamma_multiply(0.12));
+    painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.55)), egui::StrokeKind::Inside);
 }
 
 /// Background of a sidebar row: nothing at rest, a light fill on hover, and for the open one a fill
