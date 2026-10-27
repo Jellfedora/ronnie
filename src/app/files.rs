@@ -358,6 +358,8 @@ pub(super) struct FileManager {
     dir_sizes: HashMap<(Side, String), Option<Result<u64, String>>>,
     /// Folders of this computer being counted.
     local_sizing: Vec<(String, std::sync::mpsc::Receiver<Result<u64, String>>)>,
+    /// Folders of the server being counted with its `find`: an Err goes on through SFTP (much slower).
+    remote_sizing: Vec<(String, std::sync::mpsc::Receiver<Result<u64, String>>)>,
     error: Option<String>,
     show_hidden: bool,
     /// The panel the keyboard acts on (last clicked).
@@ -427,6 +429,7 @@ impl FileManager {
             remember_choice: false,
             dir_sizes: HashMap::new(),
             local_sizing: Vec::new(),
+            remote_sizing: Vec::new(),
             error: None,
             show_hidden: false,
             active: Side::Remote,
@@ -823,6 +826,26 @@ impl FileManager {
         });
         for (path, result) in counted {
             self.dir_sizes.insert((Side::Local, path), Some(result));
+        }
+        let mut counted = Vec::new();
+        self.remote_sizing.retain(|(path, rx)| match rx.try_recv() {
+            Ok(result) => {
+                counted.push((path.clone(), result));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                counted.push((path.clone(), Err(String::new())));
+                false
+            }
+        });
+        for (path, result) in counted {
+            match result {
+                Ok(n) => {
+                    self.dir_sizes.insert((Side::Remote, path), Some(Ok(n)));
+                }
+                Err(_) => self.send(Request::DirSize(vec![path])),
+            }
         }
         self.feed_viewer();
         self.poll_drag_out();
@@ -1261,35 +1284,22 @@ impl FileManager {
     /// through this computer. `fallback`: sent to the SFTP session instead if the account has no shell.
     fn run_on_server(&mut self, id: u64, script: String, fallback: Option<Request>, t: &Strings) {
         let Some(host) = self.ssh_host.clone() else { return };
-        // Printed first: missing, no shell ran the script (an account limited to SFTP).
-        let launch = host.exec_command(&format!("sh -c {}", sh_quote(&format!("echo {SHELL_MARK}\n{script}"))));
         let askpass = self.askpass.clone();
         let no_zip = t.files_no_zip;
+        let read_only = t.files_read_only_dir;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
-            let mut cmd = std::process::Command::new(&launch.program);
-            cmd.args(&launch.args).envs(launch.env.iter().cloned()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x0800_0000);
-            }
-            let result = match cmd.spawn() {
-                Ok(child) => {
-                    if let Some(askpass) = &askpass {
-                        askpass.allow_interactive(child.id(), &host);
-                    }
-                    match child.wait_with_output() {
-                        Ok(o) if !String::from_utf8_lossy(&o.stdout).contains(SHELL_MARK) => Err(NO_SHELL.to_owned()),
-                        Ok(o) if o.status.success() => Ok(()),
-                        Ok(o) if o.status.code() == Some(127) && String::from_utf8_lossy(&o.stderr).contains("RONNIE_NO_ZIP") => Err(no_zip.to_owned()),
-                        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().chars().take(300).collect()),
-                        Err(e) => Err(e.to_string()),
-                    }
+            let result = exec_script(&host, askpass.as_ref(), &script).and_then(|o| {
+                let err = String::from_utf8_lossy(&o.stderr);
+                match o.status.code() {
+                    _ if o.status.success() => Ok(()),
+                    Some(127) if err.contains("RONNIE_NO_ZIP") => Err(no_zip.to_owned()),
+                    Some(126) if err.contains("RONNIE_READ_ONLY") => Err(read_only.to_owned()),
+                    // On one line: the queue's bar has room for one.
+                    _ => Err(err.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" · ").chars().take(300).collect()),
                 }
-                Err(e) => Err(format!("ssh : {e}")),
-            };
+            });
             let _ = tx.send(result);
             if let Some(ctx) = ctx {
                 ctx.request_repaint();
@@ -1493,7 +1503,25 @@ impl FileManager {
             self.dir_sizes.insert((side, path.clone()), None);
         }
         match side {
-            Side::Remote => self.send(Request::DirSize(paths)),
+            // With the server's find: a folder of thousands goes in a second, where SFTP asks for each one.
+            Side::Remote => {
+                let Some(host) = self.ssh_host.clone() else { return self.send(Request::DirSize(paths)) };
+                for path in paths {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let (script, host, askpass, ctx) = (size_script(&path), host.clone(), self.askpass.clone(), ctx.clone());
+                    let _ = std::thread::Builder::new().name("dir-size".into()).spawn(move || {
+                        let total = exec_script(&host, askpass.as_ref(), &script).and_then(|o| {
+                            let out = String::from_utf8_lossy(&o.stdout);
+                            o.status.success().then(|| out.lines().last().and_then(|l| l.trim().parse().ok())).flatten().ok_or_else(String::new)
+                        });
+                        let _ = tx.send(total);
+                        if let Some(ctx) = ctx {
+                            ctx.request_repaint();
+                        }
+                    });
+                    self.remote_sizing.push((path, rx));
+                }
+            }
             Side::Local => {
                 for path in paths {
                     let (tx, rx) = std::sync::mpsc::channel();
@@ -2424,7 +2452,9 @@ impl FileManager {
                         };
                         let bar_w = (ui.available_width() - 40.0).max(80.0);
                         let bar = egui::ProgressBar::new(if matches!(tr.state, TransferState::Done(_)) { 1.0 } else { fraction }).text(egui::RichText::new(text).size(11.5)).fill(color.gamma_multiply(0.6)).desired_width(bar_w).animate(unknown);
-                        ui.add(bar).on_hover_text(&tr.current);
+                        // A failure in full (the bar cuts it).
+                        let hover = if let TransferState::Failed(e) = &tr.state { e } else { &tr.current };
+                        ui.add(bar).on_hover_text(hover);
                         // Work on this computer's threads can't be stopped, nor a move (mostly instant renames).
                         let stoppable = !matches!(tr.kind, Kind::Zip | Kind::Move) && !self.jobs.iter().any(|(id, ..)| *id == tr.id);
                         if stoppable && matches!(tr.state, TransferState::Queued | TransferState::Running) && ui.small_button("✕").on_hover_text(t.cancel).clicked() {
@@ -3046,12 +3076,42 @@ fn remove_script(paths: &[String]) -> Option<String> {
 
 /// The sh script making `out` from `names` in `dir`, on the server: Info-ZIP's zip if there, else
 /// Python's zipfile; neither: exit 127 with RONNIE_NO_ZIP.
+/// Runs `script` with sh on the server and waits for it. Err(NO_SHELL) if no shell ran it (an account
+/// limited to SFTP).
+fn exec_script(host: &SshHost, askpass: Option<&crate::askpass::Server>, script: &str) -> Result<std::process::Output, String> {
+    // Printed first: missing, no shell ran the script.
+    let launch = host.exec_command(&format!("sh -c {}", sh_quote(&format!("echo {SHELL_MARK}\n{script}"))));
+    let mut cmd = std::process::Command::new(&launch.program);
+    cmd.args(&launch.args).envs(launch.env.iter().cloned()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let child = cmd.spawn().map_err(|e| format!("ssh : {e}"))?;
+    if let Some(askpass) = askpass {
+        askpass.allow_interactive(child.id(), host);
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !String::from_utf8_lossy(&output.stdout).contains(SHELL_MARK) {
+        return Err(NO_SHELL.to_owned());
+    }
+    Ok(output)
+}
+
+/// Prints the total size of the files under folder `path` (links not followed, as the SFTP count does);
+/// fails without a find that knows -printf (BusyBox), for the SFTP count to take over.
+fn size_script(path: &str) -> String {
+    let q = sh_quote(&format!("{}/", path.trim_end_matches('/')));
+    format!("find {q} -maxdepth 0 -printf '' >/dev/null 2>&1 || exit 3\nfind {q} ! -type d ! -type l -printf '%s\\n' 2>/dev/null | awk '{{ s += $1 }} END {{ print s + 0 }}'")
+}
+
 fn zip_script(dir: &str, names: &[String], out: &str) -> String {
     // "./" first: a name starting with "-" is not an option.
     let items: Vec<String> = names.iter().map(|n| sh_quote(&format!("./{n}"))).collect();
     let (items, out_q) = (items.join(" "), sh_quote(out));
     format!(
-        "cd {} || exit 1\n[ -e {out_q} ] && {{ echo \"{out} exists\" >&2; exit 1; }}\nif command -v zip >/dev/null 2>&1; then zip -rqy {out_q} {items}\nelif command -v python3 >/dev/null 2>&1; then python3 -m zipfile -c {out_q} {items}\nelse echo RONNIE_NO_ZIP >&2; exit 127; fi",
+        "cd {} || exit 1\n[ -e {out_q} ] && {{ echo \"{out} exists\" >&2; exit 1; }}\n( : > {out_q} ) 2>/dev/null && rm -f {out_q} || {{ echo RONNIE_READ_ONLY >&2; exit 126; }}\nif command -v zip >/dev/null 2>&1; then zip -rqy {out_q} {items}\nelif command -v python3 >/dev/null 2>&1; then python3 -m zipfile -c {out_q} {items}\nelse echo RONNIE_NO_ZIP >&2; exit 127; fi",
         sh_quote(dir)
     )
 }
