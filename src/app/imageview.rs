@@ -34,6 +34,9 @@ enum State {
 pub(super) enum ImageAction {
     None,
     Close,
+    /// The image shown: asked about first by the file manager.
+    Delete,
+    Rename,
 }
 
 pub(super) struct ImageView {
@@ -117,6 +120,34 @@ impl ImageView {
         }
     }
 
+    /// Renamed (once the user said so): the same image, under its new name.
+    pub fn renamed(&mut self, from: &str, to: &str) {
+        if let Some(n) = self.names.iter_mut().find(|n| *n == from) {
+            *n = to.to_owned();
+        }
+    }
+
+    /// Deleted: the next image is shown. False when none is left.
+    pub fn removed(&mut self, names: &[String]) -> bool {
+        let shown = self.name().to_owned();
+        let before = self.names.len();
+        self.names.retain(|n| !names.contains(n));
+        if self.names.is_empty() {
+            return false;
+        }
+        if names.contains(&shown) {
+            // The one after it took its place (the first one after the last).
+            self.index = self.index.min(self.names.len() - 1);
+            self.state = State::Reading(None);
+            self.want = true;
+            self.zoom = None;
+            self.offset = Vec2::ZERO;
+        } else if self.names.len() != before {
+            self.index = self.names.iter().position(|n| *n == shown).unwrap_or(0);
+        }
+        true
+    }
+
     fn go(&mut self, step: isize) {
         if self.names.len() < 2 {
             return;
@@ -144,17 +175,26 @@ impl ImageView {
             }
         }
         let typing = ui.ctx().egui_wants_keyboard_input() || ui.ctx().memory(|m| m.top_modal_layer().is_some());
-        let (prev, next, close) = if typing {
-            (false, false, false)
+        let mut action = ImageAction::None;
+        let (prev, next, close, delete, rename) = if typing {
+            (false, false, false, false, false)
         } else {
             ui.input_mut(|i| {
                 (
                     i.consume_key(Modifiers::NONE, Key::ArrowLeft) || i.consume_key(Modifiers::NONE, Key::ArrowUp),
                     i.consume_key(Modifiers::NONE, Key::ArrowRight) || i.consume_key(Modifiers::NONE, Key::ArrowDown),
                     i.consume_key(Modifiers::NONE, Key::Escape) || i.consume_key(Modifiers::NONE, Key::Space),
+                    i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::COMMAND, Key::Backspace),
+                    i.consume_key(Modifiers::NONE, Key::F2),
                 )
             })
         };
+        if delete {
+            action = ImageAction::Delete;
+        }
+        if rename {
+            action = ImageAction::Rename;
+        }
         if prev {
             self.go(-1);
         }
@@ -180,6 +220,13 @@ impl ImageView {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(egui::RichText::new(format!("✕  {}", t.close)).size(13.0)).clicked() {
                     self.close_requested = true;
+                }
+                ui.add_space(6.0);
+                if ui.button(egui::RichText::new(t.delete).size(13.0)).on_hover_text(if cfg!(target_os = "macos") { "⌘ ⌫" } else { "Suppr" }).clicked() {
+                    action = ImageAction::Delete;
+                }
+                if ui.button(egui::RichText::new(t.rename).size(13.0)).on_hover_text("F2").clicked() {
+                    action = ImageAction::Rename;
                 }
                 if self.names.len() > 1 {
                     ui.add_space(6.0);
@@ -276,7 +323,7 @@ impl ImageView {
             self.close_requested = false;
             return ImageAction::Close;
         }
-        ImageAction::None
+        action
     }
 }
 
@@ -316,6 +363,19 @@ mod tests {
         assert!(viewable("a.b.webp"));
         assert!(!viewable("film.mp4"));
         assert!(!viewable("png"));
+    }
+
+    #[test]
+    fn deleting_shows_the_next() {
+        let names = ["a.png", "b.png", "c.png"].map(String::from).to_vec();
+        let mut v = ImageView::new(false, "/x".into(), names, 2);
+        v.renamed("c.png", "d.png");
+        assert_eq!(v.name(), "d.png");
+        assert!(v.removed(&["d.png".into()]));
+        assert_eq!(v.name(), "b.png");
+        assert!(v.removed(&["a.png".into()]));
+        assert_eq!(v.name(), "b.png");
+        assert!(!v.removed(&["b.png".into()]));
     }
 
     #[test]

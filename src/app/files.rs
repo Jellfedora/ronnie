@@ -1857,14 +1857,21 @@ impl FileManager {
         }
         if let Some(view) = &mut self.image {
             let area = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), rect.max);
-            if let ImageAction::Close = view.ui(ui, area, theme, t) {
-                // The image last seen is the one selected.
-                let (side, name) = (if view.remote { Side::Remote } else { Side::Local }, view.name().to_owned());
-                self.image = None;
-                let panel = self.panel(side);
-                panel.selected = HashSet::from([name.clone()]);
-                panel.anchor = Some(name);
+            let image_action = view.ui(ui, area, theme, t);
+            let (side, name) = (if view.remote { Side::Remote } else { Side::Local }, view.name().to_owned());
+            match image_action {
+                ImageAction::None => {}
+                ImageAction::Close => {
+                    // The image last seen is the one selected.
+                    self.image = None;
+                    let panel = self.panel(side);
+                    panel.selected = HashSet::from([name.clone()]);
+                    panel.anchor = Some(name);
+                }
+                ImageAction::Delete => self.dialog = Some(Dialog::Delete { side, names: vec![name] }),
+                ImageAction::Rename => self.dialog = Some(Dialog::Rename { side, from: name.clone(), text: name, fresh: true }),
             }
+            self.dialog_ui(ui.ctx(), theme, t);
             return action;
         }
         // A file being edited takes the panels' and the queue's place.
@@ -2818,6 +2825,9 @@ impl FileManager {
                         self.error = Some(t.files_exists.replace("{name}", to));
                     } else {
                         self.rename(side, &from, to);
+                        if let Some(view) = self.image.as_mut().filter(|v| v.remote == (side == Side::Remote)) {
+                            view.renamed(&from, to);
+                        }
                     }
                 }
             }
@@ -2837,7 +2847,12 @@ impl FileManager {
                     }
                 }
             }
-            (Dialog::Delete { side, names }, _) => self.delete(side, &names, t),
+            (Dialog::Delete { side, names }, _) => {
+                self.delete(side, &names, t);
+                if self.image.as_mut().is_some_and(|v| v.remote == (side == Side::Remote) && !v.removed(&names)) {
+                    self.image = None;
+                }
+            }
             (Dialog::Move { side, from, dir, copy: true, .. }, _) => self.copy_into(side, from, &dir, t),
             (Dialog::Move { side, from, dir, .. }, _) => self.move_paths(side, from, &dir),
             (Dialog::Chmod { side, edit }, _) if edit.invalid => {
