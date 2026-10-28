@@ -221,6 +221,16 @@ impl Four {
         }
         self.mode = Mode::Ai(game);
     }
+
+    /// A battle of Riff Hero takes the place of the match online (they share floor's match): to the lobby.
+    pub(super) fn leave_online(&mut self) {
+        if matches!(self.mode, Mode::Online) {
+            self.mode = Mode::Lobby;
+            self.thinking = None;
+            self.falling = None;
+            self.clearing = None;
+        }
+    }
 }
 
 impl App {
@@ -255,6 +265,7 @@ impl App {
             if game.riff() {
                 self.open_riff_battle();
             } else {
+                self.riff.leave_battle();
                 self.four.mode = Mode::Online;
                 self.open_four();
             }
@@ -315,6 +326,7 @@ impl App {
             }
             Some(true) => {
                 self.versus.accept(&invite.id);
+                self.riff.leave_battle();
                 self.four.mode = Mode::Online;
                 self.four.seen = None;
                 self.open_four();
@@ -351,7 +363,7 @@ impl App {
                 match self.four.mode {
                     Mode::Lobby => self.home_game = false,
                     Mode::Online => {
-                        self.versus.watch(None);
+                        self.versus.unwatch(false);
                         self.four.mode = Mode::Lobby;
                     }
                     Mode::Ai(_) => self.four.mode = Mode::Lobby,

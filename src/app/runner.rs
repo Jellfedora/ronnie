@@ -36,17 +36,6 @@ impl Default for Runner {
 }
 
 impl Runner {
-    fn seed(&mut self) -> u64 {
-        if self.rng == 0 {
-            self.rng = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0x9e37_79b9) | 1;
-        }
-        // xorshift64.
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        self.rng
-    }
-
     /// A run is on.
     fn running(&self) -> bool {
         self.run.as_ref().is_some_and(|r| !r.over)
@@ -136,7 +125,7 @@ impl App {
         });
         // A new run: away from the last one's end for a moment (a key still held doesn't start one).
         if !running && start && self.runner.ended.is_none_or(|at| now - at > 0.5) && self.game_locked(HomeGame::Runner).is_none() {
-            let seed = self.runner.seed();
+            let seed = super::game::random(&mut self.runner.rng);
             self.runner.run = Some(Run::new(seed));
             self.runner.ended = None;
             self.runner.record = false;
@@ -176,8 +165,9 @@ impl App {
         let side = Rect::from_min_max(Pos2::new(stage.center().x - 160.0, stage.max.y + 70.0), Pos2::new(stage.center().x + 160.0, rect.max.y - 12.0));
         if !running && side.height() > 60.0 {
             let best = (self.config.settings.runner_best > 0).then(|| t.runner_best.replace("{m}", &self.config.settings.runner_best.to_string()));
-            let board = self.runner.floor.board().map(<[_]>::to_vec);
-            self.game_board(ui, side, &theme, board, best, t.game_need_pseudo, meters_text);
+            if self.game_board(ui, side, &theme, self.runner.floor.board(), best, meters_text) {
+                self.ask_pseudo();
+            }
         }
     }
 

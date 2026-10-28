@@ -229,9 +229,11 @@ impl Show {
         (!self.wall(next)).then_some(next)
     }
 
-    /// For those after him: an amp is a wall too.
+    /// For those after him: an amp is a wall too, unless the singer stands on it (he walked back onto
+    /// his own): it doesn't hide him.
     fn chaser_step_to(&self, c: Cell, dir: Dir) -> Option<Cell> {
-        self.step_to(c, dir).filter(|n| !self.amps_down.iter().any(|(a, _)| a == n))
+        let standing = (self.player.from == self.player.to).then_some(self.player.from);
+        self.step_to(c, dir).filter(|n| Some(*n) == standing || !self.amps_down.iter().any(|(a, _)| a == n))
     }
 
     /// Krog's start: in the middle, where the floor is far enough from the singer's start.
@@ -381,9 +383,14 @@ impl Show {
             self.wanted = input.dir;
         }
         if input.amp && self.amps > 0 && self.frozen <= 0.0 {
-            // On the cell he leaves, behind him (not on one of them).
-            let cell = self.player.from;
-            if !self.amps_down.iter().any(|(c, _)| *c == cell) && self.chasers.iter().all(|c| c.walker.cell() != cell) {
+            // Behind him: on the cell he leaves, or standing, the one at his back (another way open when
+            // that's a wall); never on his own, which would keep him out of their reach. Not on one of them.
+            let p = self.player;
+            let cell = if p.from != p.to { Some(p.from) } else { [p.facing.back()].into_iter().chain(Dir::ALL).find_map(|d| self.step_to(p.from, d)) };
+            if let Some(cell) = cell
+                && !self.amps_down.iter().any(|(c, _)| *c == cell)
+                && self.chasers.iter().all(|c| c.walker.cell() != cell)
+            {
                 self.amps_down.push((cell, AMP_SECS));
                 self.amps -= 1;
             }
@@ -637,8 +644,26 @@ mod tests {
         run(&mut s, 1.2, Input::default());
         s.step(STEP, Input { dir: None, amp: true });
         assert_eq!((s.amps, s.amps_down.len()), (AMPS - 1, 1));
+        // Standing, he drops it beside him, not where he stands.
+        assert_ne!(s.amps_down[0].0, s.player.cell());
         run(&mut s, AMP_SECS + 0.1, Input::default());
         assert!(s.amps_down.is_empty());
+    }
+
+    #[test]
+    fn an_amp_never_hides_the_singer_standing_on_it() {
+        // A single corridor, the singer standing still on an amp (walked back onto his own), Krog seeing him.
+        let mut show = Show::new(2);
+        show.frozen = 0.0;
+        show.walls = vec![vec![true; W]; H];
+        for x in 1..11 {
+            show.walls[1][x] = false;
+        }
+        show.picks.clear();
+        show.player = Walker::at((1, 1));
+        show.chasers[0].walker = Walker::at((6, 1));
+        show.amps_down.push(((1, 1), AMP_SECS));
+        assert!(run(&mut show, 3.0, Input::default()).caught);
     }
 
     #[test]

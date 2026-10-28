@@ -28,17 +28,6 @@ impl Default for Mines {
 }
 
 impl Mines {
-    fn seed(&mut self) -> u64 {
-        if self.rng == 0 {
-            self.rng = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0x9e37_79b9) | 1;
-        }
-        // xorshift64.
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        self.rng
-    }
-
     fn restart(&mut self) {
         self.board = Board::default();
         self.started = None;
@@ -137,8 +126,9 @@ impl App {
 
         let side = if wide { Rect::from_min_size(Pos2::new(grid.max.x + 32.0, grid.min.y), Vec2::new(side_w, grid.height())) } else { Rect::from_min_size(Pos2::new(grid.min.x, grid.max.y + 48.0), Vec2::new(grid.width(), body.max.y - grid.max.y - 48.0)) };
         let best = (self.config.settings.mines_best > 0).then(|| t.mines_best.replace("{t}", &time_text(self.config.settings.mines_best)));
-        let board = self.mines.floor.board().map(<[_]>::to_vec);
-        self.game_board(ui, side, &theme, board, best, t.game_need_pseudo, time_text);
+        if self.game_board(ui, side, &theme, self.mines.floor.board(), best, time_text) {
+            self.ask_pseudo();
+        }
         // The time runs: a frame each tenth of a second.
         if self.mines.board.state == State::Playing {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -153,7 +143,7 @@ impl App {
         let over = self.mines.board.over();
         if let Some((c, r)) = at.filter(|_| !over) {
             if resp.clicked() {
-                let seed = self.mines.seed();
+                let seed = super::game::random(&mut self.mines.rng);
                 if self.mines.board.state == State::Fresh {
                     self.mines.started = Some(Instant::now());
                 }

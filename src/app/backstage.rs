@@ -45,17 +45,6 @@ impl Default for Backstage {
 }
 
 impl Backstage {
-    fn seed(&mut self) -> u64 {
-        if self.rng == 0 {
-            self.rng = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0x9e37_79b9) | 1;
-        }
-        // xorshift64.
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        self.rng
-    }
-
     /// A show is on.
     fn playing(&self) -> bool {
         self.show.as_ref().is_some_and(|s| !s.over)
@@ -155,7 +144,7 @@ impl App {
         }
         // A new show: away from the last one's end for a moment.
         if !playing && start && self.backstage.ended.is_none_or(|at| now - at > 0.6) && self.game_locked(HomeGame::Backstage).is_none() {
-            let seed = self.backstage.seed();
+            let seed = super::game::random(&mut self.backstage.rng);
             let b = &mut self.backstage;
             b.show = Some(Show::new(seed));
             b.ended = None;
@@ -195,8 +184,9 @@ impl App {
         if wide {
             let side = Rect::from_min_max(Pos2::new(maze.max.x + 32.0, maze.min.y), Pos2::new(maze.max.x + 32.0 + side_w, maze.max.y));
             let best = (self.config.settings.backstage_best > 0).then(|| t.backstage_best.replace("{s}", &self.config.settings.backstage_best.to_string()));
-            let board = self.backstage.floor.board().map(<[_]>::to_vec);
-            self.game_board(ui, side, &theme, board, best, t.game_need_pseudo, |s| s.to_string());
+            if self.game_board(ui, side, &theme, self.backstage.floor.board(), best, |s| s.to_string()) {
+                self.ask_pseudo();
+            }
         }
     }
 

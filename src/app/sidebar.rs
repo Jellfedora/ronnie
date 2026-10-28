@@ -10,10 +10,6 @@ impl App {
         // The games' page: each game, to pick one.
         if self.home_game && self.games_hub {
             self.game.leave();
-            self.blob_leave();
-            self.runner.leave();
-            self.riff.leave();
-            self.backstage.leave();
             self.fold_for_game(false);
             self.arcade_page(ui, rect);
             return;
@@ -29,6 +25,7 @@ impl App {
                     return;
                 }
                 // It folds the sidebar itself, during a life.
+                self.games_drawn.push(super::four::HomeGame::Blob);
                 self.blob_page(ui, rect);
                 let dt = ui.input(|i| i.stable_dt).min(0.1);
                 if let Some(left) = self.count_blob(dt) {
@@ -36,21 +33,15 @@ impl App {
                 }
                 return;
             }
-            if self.home_game && self.home_which == super::four::HomeGame::Runner {
-                // It folds the sidebar itself, during a run.
-                return self.runner_page(ui, rect);
+            // These fold the sidebar themselves, during a run, a song, a show.
+            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage) {
+                self.games_drawn.push(self.home_which);
+                return match self.home_which {
+                    super::four::HomeGame::Runner => self.runner_page(ui, rect),
+                    super::four::HomeGame::Riff => self.riff_page(ui, rect),
+                    _ => self.backstage_page(ui, rect),
+                };
             }
-            self.runner.leave();
-            if self.home_game && self.home_which == super::four::HomeGame::Riff {
-                // It folds the sidebar itself, during a song.
-                return self.riff_page(ui, rect);
-            }
-            self.riff.leave();
-            if self.home_game && self.home_which == super::four::HomeGame::Backstage {
-                // It folds the sidebar itself, during a show.
-                return self.backstage_page(ui, rect);
-            }
-            self.backstage.leave();
             self.fold_for_game(false);
             if self.home_game && self.home_which == super::four::HomeGame::Mines {
                 self.mines_page(ui, rect);
@@ -461,6 +452,26 @@ impl App {
             }
         }
         games
+    }
+
+    /// At the end of each frame: the games whose page no window drew (left for another game, a tab, the
+    /// games' page...) stop what was under way. Their state is the app's, shared by the windows: one
+    /// window can't stop them while another shows them.
+    pub(super) fn leave_games(&mut self) {
+        use super::four::HomeGame;
+        let drawn = std::mem::take(&mut self.games_drawn);
+        if !drawn.contains(&HomeGame::Blob) {
+            self.blob_leave();
+        }
+        if !drawn.contains(&HomeGame::Runner) {
+            self.runner.leave();
+        }
+        if !drawn.contains(&HomeGame::Riff) {
+            self.riff.leave();
+        }
+        if !drawn.contains(&HomeGame::Backstage) {
+            self.backstage.leave();
+        }
     }
 
     /// The games' page, on this window's home page.

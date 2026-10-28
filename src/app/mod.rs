@@ -388,6 +388,8 @@ pub struct App {
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
     games_seen: bool,
+    /// The games whose page a window drew this frame: the others' stop at its end (see `leave_games`).
+    games_drawn: Vec<four::HomeGame>,
     /// Exporting or importing the configuration.
     backup: Option<backup::BackupDialog>,
     /// The automatic backup of the configuration.
@@ -1212,6 +1214,7 @@ impl App {
             backstage: backstage::Backstage::default(),
             blob: blob::Blob::default(),
             games_seen: false,
+            games_drawn: Vec::new(),
             backup: None,
             auto_backup: backup::AutoBackupState::default(),
             backup_ask: None,
@@ -5191,6 +5194,7 @@ impl eframe::App for App {
         self.window_ui(ui);
         self.other_windows(ui.ctx());
         self.tool_windows_ui(ui.ctx());
+        self.leave_games();
 
         // Errors shown to the user also go to ronnie.log, to diagnose them later.
         if self.error != self.logged_error {

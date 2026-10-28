@@ -333,6 +333,14 @@ impl Live {
         self.send(Cmd::Watch(id));
     }
 
+    /// A page left its match: a battle of Riff Hero (`riff`) or a match of Puissance 4. The other
+    /// game's match, watched meanwhile, stays.
+    pub fn unwatch(&mut self, riff: bool) {
+        if self.game.as_ref().is_none_or(|g| g.riff() == riff) {
+            self.watch(None);
+        }
+    }
+
     /// The board of wins of `game` ("puissance-4", "riff-hero"), fetched again.
     pub fn fetch_board(&mut self, game: &'static str) {
         self.send(Cmd::Board(game));

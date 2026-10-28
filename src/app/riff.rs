@@ -46,6 +46,8 @@ struct Song {
     bursts: Vec<(f64, usize)>,
     /// When where the player is was last sent (song time).
     sent_at: f64,
+    /// No sound could be played (no output device): not tried again for this song.
+    mute: bool,
     /// Played to the end (or the battle over): the score is kept, or sent as final.
     finished: bool,
     /// It beat the best score alone.
@@ -64,7 +66,7 @@ impl Song {
                 ctx.request_repaint();
             })
             .ok();
-        Self { play: Play::new(chart), start, battle, samples: None, rendering: Some(rx), pressed: [f64::NEG_INFINITY; LANES], pops: Vec::new(), bursts: Vec::new(), sent_at: f64::NEG_INFINITY, finished: false, record: false }
+        Self { play: Play::new(chart), start, battle, samples: None, rendering: Some(rx), pressed: [f64::NEG_INFINITY; LANES], pops: Vec::new(), bursts: Vec::new(), sent_at: f64::NEG_INFINITY, mute: false, finished: false, record: false }
     }
 
     /// Seconds since the first beat (negative: still counting down).
@@ -136,14 +138,7 @@ pub(super) struct Riff {
 
 impl Riff {
     fn seed(&mut self) -> u32 {
-        if self.rng == 0 {
-            self.rng = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0x9e37_79b9) | 1;
-        }
-        // xorshift64.
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 33) as u32 | 1
+        (super::game::random(&mut self.rng) >> 33) as u32 | 1
     }
 
     /// A song is being played.
@@ -158,6 +153,15 @@ impl Riff {
         if self.mode == Mode::Solo && self.playing() {
             self.song = None;
             self.mode = Mode::Lobby;
+        }
+    }
+
+    /// A match of Puissance 4 takes the place of the battle (they share floor's match): to the lobby.
+    pub(super) fn leave_battle(&mut self) {
+        if self.mode == Mode::Battle {
+            self.mode = Mode::Lobby;
+            self.song = None;
+            self.audio = None;
         }
     }
 }
@@ -192,13 +196,55 @@ impl App {
             self.riff.audio = None;
         }
         self.riff.mode = Mode::Battle;
+        // Floor's match is the battle's now: Puissance 4 no longer waits for its own.
+        self.four.leave_online();
     }
 
-    /// At each frame: the page out of sight, the song's sound stops.
+    /// At each frame: the page out of sight, the song's sound stops; a battle's song goes on, sent to
+    /// floor all the same.
     pub(super) fn riff_frame(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        if self.riff.audio.is_some() && now - self.riff.seen > 0.5 {
+        let out_of_sight = now - self.riff.seen > 0.5;
+        if self.riff.audio.is_some() && out_of_sight {
             self.riff.audio = None;
+        }
+        self.riff_battle_send(out_of_sight);
+    }
+
+    /// Where the player is in a battle, sent to floor every `SEND_EVERY`; at the end the final score,
+    /// sent again until floor has it (lost on the way, floor's match still says it isn't). Out of sight
+    /// (`out_of_sight`), the notes going by are missed here, the page not being there to.
+    fn riff_battle_send(&mut self, out_of_sight: bool) {
+        if self.riff.mode != Mode::Battle {
+            return;
+        }
+        let Some((id, over, mine)) = self.versus.game.as_ref().filter(|g| g.riff()).map(|g| (g.id.clone(), g.over, g.riff[g.you as usize - 1])) else { return };
+        let Some(song) = self.riff.song.as_mut().filter(|s| s.battle.as_ref() == Some(&id)) else { return };
+        if over {
+            // The other gave up: the song stops.
+            if !song.finished {
+                song.finished = true;
+                self.riff.audio = None;
+            }
+            return;
+        }
+        let time = song.time();
+        if !song.finished {
+            if out_of_sight && time >= 0.0 {
+                song.play.advance(time);
+            }
+            song.finished = song.play.over(time);
+        }
+        if song.finished {
+            if !mine.done && time - song.sent_at >= SEND_EVERY {
+                song.sent_at = time;
+                let side = song.side(true);
+                self.versus.riff(side);
+            }
+        } else if time >= 0.0 && time - song.sent_at >= SEND_EVERY && song.side(false) != mine {
+            song.sent_at = time;
+            let side = song.side(false);
+            self.versus.riff(side);
         }
     }
 
@@ -242,7 +288,7 @@ impl App {
         match self.riff.mode {
             Mode::Lobby => self.home_game = false,
             Mode::Solo => {}
-            Mode::Battle => self.versus.watch(None),
+            Mode::Battle => self.versus.unwatch(true),
         }
         self.riff.mode = Mode::Lobby;
         self.riff.song = None;
@@ -396,7 +442,6 @@ impl App {
             self.riff.song = Some(Song::new(&self.ctx.clone(), game.seed, start, Some(game.id.clone())));
         }
         let them = game.them().unwrap_or(t.game_anonymous).to_owned();
-        let mine = game.riff[game.you as usize - 1];
         let theirs = game.riff[2 - game.you as usize];
 
         // The crowd between the two, above the strings.
@@ -424,24 +469,7 @@ impl App {
             }
         }
 
-        // Where the player is, to floor; at the end, the final score.
-        let Some(song) = &mut self.riff.song else { return };
-        let time = song.time();
-        if !song.finished {
-            if game.over {
-                // The other gave up: the song stops.
-                song.finished = true;
-                self.riff.audio = None;
-            } else if song.play.over(time) {
-                song.finished = true;
-                let side = song.side(true);
-                self.versus.riff(side);
-            } else if time >= 0.0 && time - song.sent_at >= SEND_EVERY && song.side(false) != mine {
-                song.sent_at = time;
-                let side = song.side(false);
-                self.versus.riff(side);
-            }
-        }
+        // Where the player is goes to floor at each frame, the page shown or not (see `riff_battle_send`).
         let Some(song) = &self.riff.song else { return };
         if !song.finished {
             return;
@@ -488,10 +516,11 @@ impl App {
         }
         let live = !song.finished && time < LENGTH;
         // The sound, once the song started (from where it is, coming back to the page).
-        if live && sound && time >= -0.02 && riff.audio.is_none()
+        if live && sound && !song.mute && time >= -0.02 && riff.audio.is_none()
             && let Some(samples) = &song.samples
         {
             riff.audio = Audio::start(samples, time);
+            song.mute = riff.audio.is_none();
         }
         if !live {
             riff.audio = None;
