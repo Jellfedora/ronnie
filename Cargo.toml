@@ -18,7 +18,7 @@ eframe = { version = "0.36", default-features = false, features = ["wgpu", "defa
 egui = "0.36"
 flate2 = "1.1.10"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "webp"] }
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust"] }
 portable-pty = "0.9"
 raw-window-handle = "0.6"

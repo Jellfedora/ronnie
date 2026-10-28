@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use super::*;
 use super::editor::{Editor, EditorAction};
+use super::imageview::{viewable, ImageAction, ImageView};
 use super::perms::{perm_ui, PermEdit};
 use super::viewer::{Viewer, ViewerAction};
 use crate::sftp::{self, Entry, Event, Request};
@@ -379,6 +380,8 @@ pub(super) struct FileManager {
     pub editor: Option<Box<Editor>>,
     /// A file too big to edit, shown read-only.
     pub viewer: Option<Box<Viewer>>,
+    /// Images of a folder previewed, shown in place of the panels.
+    pub image: Option<Box<ImageView>>,
     /// The host, for commands run on the server (compressing), and what wakes the window up.
     ssh_host: Option<SshHost>,
     ctx: Option<egui::Context>,
@@ -442,6 +445,7 @@ impl FileManager {
             pending_dir: None,
             editor: None,
             viewer: None,
+            image: None,
             ssh_host: None,
             ctx: None,
             askpass: None,
@@ -487,7 +491,7 @@ impl FileManager {
     pub fn follow_local(&mut self, dir: Option<String>) {
         let Some(dir) = dir.filter(|d| self.terminal_dir.as_ref() != Some(d) && std::path::Path::new(d).is_dir()) else { return };
         self.terminal_dir = Some(dir.clone());
-        if self.editor.is_none() && self.viewer.is_none() {
+        if self.editor.is_none() && self.viewer.is_none() && self.image.is_none() {
             self.open_dir(Side::Local, dir);
         }
     }
@@ -604,8 +608,12 @@ impl FileManager {
         self.error.take()
     }
 
-    /// Opens `name` of `side` in the editor.
+    /// Opens `name` of `side` in the editor (an image in the preview).
     fn edit(&mut self, side: Side, name: &str, t: &Strings) {
+        if viewable(name) {
+            self.preview(side, name);
+            return;
+        }
         let path = self.path_of(side, name);
         // A document of another program (Excel, Word, PDF...): opened with it, as the system would.
         if side == Side::Local && crate::openwith::is_binary(std::path::Path::new(&path)) {
@@ -729,6 +737,30 @@ impl FileManager {
             Side::Remote => self.panel(side).entries.iter().find(|e| e.name == name).map_or(0, |e| e.size),
         };
         self.viewer = Some(Box::new(Viewer::new(side == Side::Remote, path, name.to_owned(), size)));
+    }
+
+    /// Previews the image `name` of `side`, among the folder's other images (in the panel's order).
+    fn preview(&mut self, side: Side, name: &str) {
+        let show_hidden = self.show_hidden;
+        let panel = self.panel(side);
+        panel.ensure_order(show_hidden);
+        let mut names: Vec<String> = panel.ordered_names().into_iter().filter(|n| viewable(n) && panel.entries.iter().any(|e| &e.name == n && !e.is_dir)).collect();
+        if !names.iter().any(|n| n == name) {
+            names = vec![name.to_owned()];
+        }
+        let index = names.iter().position(|n| n == name).unwrap_or(0);
+        let dir = panel.path.clone();
+        self.image = Some(Box::new(ImageView::new(side == Side::Remote, dir, names, index)));
+    }
+
+    /// Asks the server for the image previewed, when it wants one (a local one reads itself).
+    fn feed_image(&mut self) {
+        let (Some(view), Some(ctx)) = (&mut self.image, &self.ctx) else { return };
+        let Some(path) = view.take_request(ctx) else { return };
+        match &self.conn {
+            Some(conn) => conn.send(Request::ReadFile(path)),
+            None => view.arrived(ctx, &path, Err(String::new())),
+        }
     }
 
     /// Gives the viewer the part of its file it needs next (one per frame, so that searching a big local
@@ -856,6 +888,7 @@ impl FileManager {
             }
         }
         self.feed_viewer();
+        self.feed_image();
         self.poll_drag_out();
         self.poll_opening();
         let Some(conn) = &self.conn else { return };
@@ -916,12 +949,17 @@ impl FileManager {
                     }
                 }
                 Event::FileProgress { path, done, total } => {
+                    if let Some(view) = self.image.as_mut().filter(|v| v.remote) {
+                        view.progress(&path, done, total);
+                    }
                     if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
                         editor.progress = Some((done, total));
                     }
                 }
                 Event::FileRead { path, result } => {
-                    if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
+                    if let (Some(view), Some(ctx)) = (self.image.as_mut().filter(|v| v.remote), &self.ctx) {
+                        view.arrived(ctx, &path, result.map(|(data, _)| data));
+                    } else if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
                         editor.loaded(result, t);
                     }
                 }
@@ -1817,6 +1855,18 @@ impl FileManager {
             }
             return action;
         }
+        if let Some(view) = &mut self.image {
+            let area = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), rect.max);
+            if let ImageAction::Close = view.ui(ui, area, theme, t) {
+                // The image last seen is the one selected.
+                let (side, name) = (if view.remote { Side::Remote } else { Side::Local }, view.name().to_owned());
+                self.image = None;
+                let panel = self.panel(side);
+                panel.selected = HashSet::from([name.clone()]);
+                panel.anchor = Some(name);
+            }
+            return action;
+        }
         // A file being edited takes the panels' and the queue's place.
         if let Some(editor) = &mut self.editor {
             let area = Rect::from_min_max(Pos2::new(rect.min.x, bar.max.y), rect.max);
@@ -2156,7 +2206,12 @@ impl FileManager {
                         ui.close();
                     }
                     let editable = !entry.is_dir && (side == Side::Local || connected);
-                    if editable && selection.len() == 1 && ui.button(t.files_edit).clicked() {
+                    if editable && selection.len() == 1 && viewable(&entry.name) {
+                        if ui.button(format!("👁  {}", t.image_preview)).clicked() {
+                            out.edit = Some(entry.name.clone());
+                            ui.close();
+                        }
+                    } else if editable && selection.len() == 1 && ui.button(t.files_edit).clicked() {
                         out.edit = Some(entry.name.clone());
                         ui.close();
                     }
@@ -2402,11 +2457,16 @@ impl FileManager {
             return;
         }
         let side = self.active;
-        let (delete, rename, enter, all) = ui.input_mut(|i| {
+        let (delete, rename, enter, all, space) = ui.input_mut(|i| {
             let delete = i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::COMMAND, Key::Backspace);
-            (delete, i.consume_key(Modifiers::NONE, Key::F2), i.consume_key(Modifiers::NONE, Key::Enter), i.consume_key(Modifiers::COMMAND, Key::A))
+            (delete, i.consume_key(Modifiers::NONE, Key::F2), i.consume_key(Modifiers::NONE, Key::Enter), i.consume_key(Modifiers::COMMAND, Key::A), i.key_pressed(Key::Space))
         });
         let selection = self.panel(side).selection();
+        // Space: the image's preview, as Quick Look does.
+        if space && selection.len() == 1 && viewable(&selection[0]) && (side == Side::Local || matches!(self.status, Status::Ready)) {
+            ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space));
+            self.preview(side, &selection[0].clone());
+        }
         if delete && !selection.is_empty() {
             self.dialog = Some(Dialog::Delete { side, names: selection.clone() });
         }
