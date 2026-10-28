@@ -82,10 +82,57 @@ fn part(bar: usize) -> Part {
     }
 }
 
+/// How hard a song played alone is. Each has its own song, the same for everyone, so that the scores
+/// compare on floor's board.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Level {
+    Easy,
+    #[default]
+    Medium,
+    Hard,
+}
+
+impl Level {
+    pub const ALL: [Level; 3] = [Level::Easy, Level::Medium, Level::Hard];
+
+    /// Its song: never to change, or the boards would mix songs.
+    fn seed(self) -> u32 {
+        match self {
+            Level::Easy => 0x5EED_0001,
+            Level::Medium => 0x5EED_0002,
+            Level::Hard => 0x5EED_0003,
+        }
+    }
+
+    /// Its board on floor.
+    pub fn floor_game(self) -> &'static str {
+        match self {
+            Level::Easy => "riff-hero-facile",
+            Level::Medium => "riff-hero-moyen",
+            Level::Hard => "riff-hero-difficile",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 impl Chart {
+    /// The song of a battle, its `seed` drawn by floor: medium, as it always was (the other player's
+    /// Ronnie may be older).
+    pub fn new(seed: u32) -> Self {
+        Self::make(seed, Level::Medium)
+    }
+
+    /// The song of `level` played alone, the same for everyone.
+    pub fn solo(level: Level) -> Self {
+        Self::make(level.seed(), level)
+    }
+
     /// The song of `seed`: a riff of two bars per part, played again with changes, so that it can be
     /// learned along the way.
-    pub fn new(seed: u32) -> Self {
+    fn make(seed: u32, level: Level) -> Self {
         let mut rng = Rng::new(seed);
         let mut notes = Vec::new();
         let mut riffs: Vec<(Part, Vec<Vec<usize>>)> = Vec::new();
@@ -93,7 +140,7 @@ impl Chart {
             let p = part(bar);
             // A part's riff, written at its first bar; its bars played in turn, a step changed now and then.
             if !riffs.iter().any(|(q, _)| *q == p) {
-                let riff = (0..2).map(|k| write_bar(&mut rng, p, k == 1)).collect();
+                let riff = (0..2).map(|k| write_bar(&mut rng, p, k == 1, level)).collect();
                 riffs.push((p, riff));
             }
             let riff = &riffs.iter().find(|(q, _)| *q == p).unwrap().1;
@@ -128,21 +175,31 @@ impl Chart {
 }
 
 /// A bar of a riff for part `p`: each step the strings it plays (bits). `answer`: the second bar of
-/// two, which ends higher.
-fn write_bar(rng: &mut Rng, p: Part, answer: bool) -> Vec<usize> {
-    let (steps, density, chords) = match p {
-        Part::Intro => (4, 1.0, 0.0),
-        Part::Verse => (8, 0.2, 0.0),
-        Part::Chorus => (8, 0.3, 0.1),
-        Part::Solo => (8, 0.45, 0.0),
-        Part::Last => (8, 0.4, 0.15),
+/// two, which ends higher. Easy: on the beats, few chords; hard: sixteenths in the solo, more chords.
+fn write_bar(rng: &mut Rng, p: Part, answer: bool, level: Level) -> Vec<usize> {
+    // The other beats are played this often in easy.
+    let beats = if level == Level::Easy { 0.55 } else { 0.8 };
+    let (steps, density, chords) = match (level, p) {
+        (_, Part::Intro) => (4, 1.0, 0.0),
+        (Level::Easy, Part::Verse) => (4, 0.0, 0.0),
+        (Level::Easy, Part::Chorus) => (4, 0.0, 0.05),
+        (Level::Easy, Part::Solo) => (8, 0.2, 0.0),
+        (Level::Easy, Part::Last) => (4, 0.0, 0.1),
+        (Level::Medium, Part::Verse) => (8, 0.2, 0.0),
+        (Level::Medium, Part::Chorus) => (8, 0.3, 0.1),
+        (Level::Medium, Part::Solo) => (8, 0.45, 0.0),
+        (Level::Medium, Part::Last) => (8, 0.4, 0.15),
+        (Level::Hard, Part::Verse) => (8, 0.45, 0.1),
+        (Level::Hard, Part::Chorus) => (8, 0.55, 0.25),
+        (Level::Hard, Part::Solo) => (16, 0.5, 0.0),
+        (Level::Hard, Part::Last) => (8, 0.6, 0.3),
     };
     let mut bar = vec![0; steps];
     let mut lane = 0usize;
     for (k, slot) in bar.iter_mut().enumerate() {
         let downbeat = k % (steps / 4) == 0;
         // The first beat is always played, the other beats mostly; the steps between by the part's density.
-        if !(k == 0 || (downbeat && rng.unit() < 0.8) || (!downbeat && rng.unit() < density)) {
+        if !(k == 0 || (downbeat && rng.unit() < beats) || (!downbeat && rng.unit() < density)) {
             continue;
         }
         lane = if p == Part::Intro {
@@ -459,6 +516,19 @@ mod tests {
     }
 
     #[test]
+    fn the_levels_go_from_few_notes_to_many() {
+        let [easy, medium, hard] = Level::ALL.map(|l| Chart::solo(l).len());
+        assert!(easy < medium && medium < hard, "{easy} {medium} {hard}");
+        // Always the same song for a level.
+        assert_eq!(Chart::solo(Level::Hard).notes, Chart::solo(Level::Hard).notes);
+        for level in Level::ALL {
+            let chart = Chart::solo(level);
+            assert!(chart.notes.windows(2).all(|w| w[0].t <= w[1].t));
+            assert!(chart.notes.iter().all(|n| n.lane < LANES && n.t >= 0.0 && n.t < LENGTH));
+        }
+    }
+
+    #[test]
     fn notes_are_judged_by_how_close_the_press_is() {
         let chart = Chart { notes: vec![Note { t: 1.0, lane: 0 }, Note { t: 2.0, lane: 1 }, Note { t: 3.0, lane: 2 }, Note { t: 3.0, lane: 3 }] };
         let mut play = Play::new(chart);
@@ -493,10 +563,12 @@ mod tests {
 
     #[test]
     fn the_song_sounds_and_stays_in_bounds() {
-        let samples = render(&Chart::new(7));
-        assert_eq!(samples.len(), (LENGTH * RATE as f64) as usize);
-        assert!(samples.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
-        let loud = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(loud > 0.3, "{loud}");
+        for chart in [Chart::new(7), Chart::solo(Level::Easy), Chart::solo(Level::Medium), Chart::solo(Level::Hard)] {
+            let samples = render(&chart);
+            assert_eq!(samples.len(), (LENGTH * RATE as f64) as usize);
+            assert!(samples.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+            let loud = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(loud > 0.3, "{loud}");
+        }
     }
 }

@@ -7,7 +7,12 @@ use crate::playtime::{reseal, Period, BLOB_SECS};
 
 impl App {
     /// The half-day of work under way, what was played in it checked (see `crate::playtime::checked`).
+    /// Development builds, even in release, are never limited (the games are to be tried as often as
+    /// needed).
     fn work_period(&mut self) -> Option<Period> {
+        if !crate::config::OFFICIAL {
+            return None;
+        }
         crate::playtime::checked(&mut self.config.settings.game_usage, chrono::Local::now().naive_local())
     }
 
