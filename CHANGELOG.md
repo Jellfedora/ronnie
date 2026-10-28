@@ -2,6 +2,25 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.35.0] - 2026-10-28
+
+### Nouveautés
+
+- **Trois nouveaux jeux** : merci à Jonathan !
+  - **Ronnie Run** : un chanteur court sur scène, de plus en plus vite. Saute par-dessus les amplis et les flight cases (Espace ou ↑, maintenu pour sauter plus haut), baisse-toi sous les projecteurs (↓). Ta plus longue course, en mètres, va au classement en ligne.
+  - **Riff Hero** : une minute de metal composée à chaque fois, à jouer sur les cordes au bon moment. Seul pour battre ton record, ou en battle contre un autre joueur en ligne : le même morceau au même moment, le plus haut score gagne.
+  - **Backstage** : ramasse des médiators dans les coulisses sans te faire attraper par Krog, qui s'énerve tous les dix médiators et appelle ses copains. Espace pose un ampli derrière toi qui les bloque quelques secondes.
+  - Comme les autres jeux : une partie par demi-journée de travail, et la page des jeux range ses cartes sur plusieurs lignes quand la fenêtre est étroite.
+- **Décompresser un zip** dans les fichiers, en local ou sur un serveur : depuis le menu d'un panneau ou de l'arborescence, dans un dossier à son nom (ou directement quand il ne contient qu'un élément).
+- **Claude dans un pane connaît tes serveurs et tes bases** : il peut s'y connecter lui-même (les serveurs avec une clé SSH ; ceux avec un mot de passe passent par toi), lit librement, mais te montre toute modification et attend ton accord avant de la lancer.
+
+### Corrections
+
+- **Revenir sur Terminaux, SSH ou Bases de données** rouvre l'onglet que tu regardais, et plus le dernier de la barre.
+- **La taille d'un dossier sur un serveur** se calcule en une seconde, là où il fallait des minutes pour des milliers de dossiers.
+- **Zipper dans un dossier protégé en écriture** (le `chattr +i` d'ISPConfig, même pour root) le dit clairement, et une ligne en erreur de la file montre son erreur sur une ligne, en entier au survol.
+- **Une partie de Ronnie.io s'arrête** quand plus aucune fenêtre ne l'affiche, comme les autres jeux.
+
 ## [0.34.0] - 2026-10-27
 
 ### Nouveautés
