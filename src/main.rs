@@ -2,6 +2,7 @@
 
 mod app;
 mod askpass;
+mod backstage;
 mod blob;
 mod awake;
 mod claude;

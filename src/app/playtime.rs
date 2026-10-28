@@ -22,12 +22,13 @@ impl App {
             HomeGame::Mines => usage.mines,
             HomeGame::Runner => usage.runner,
             HomeGame::Riff => usage.riff,
+            HomeGame::Backstage => usage.backstage,
         };
         used.then_some(p)
     }
 
     /// A game of `game` under way: it is the half-day's (of Speed Metal, Puissance 4, the minesweeper,
-    /// Ronnie Run or Riff Hero).
+    /// Ronnie Run, Riff Hero or Backstage).
     pub(super) fn count_round(&mut self, game: HomeGame) {
         if self.work_period().is_none() {
             return;
@@ -39,6 +40,7 @@ impl App {
             HomeGame::Mines => &mut usage.mines,
             HomeGame::Runner => &mut usage.runner,
             HomeGame::Riff => &mut usage.riff,
+            HomeGame::Backstage => &mut usage.backstage,
             HomeGame::Blob => return,
         };
         if !*played {
@@ -90,6 +92,7 @@ impl App {
             HomeGame::Mines => super::mines::paint_mines_icon(painter, icon, &theme, 2.6),
             HomeGame::Runner => super::runner::paint_runner_icon(painter, icon, &theme, 2.6),
             HomeGame::Riff => super::riff::paint_riff_icon(painter, icon, &theme, 2.6),
+            HomeGame::Backstage => super::backstage::paint_backstage_icon(painter, icon, &theme, 2.6),
         }
         paint_metal(painter, Pos2::new(c.x, c.y - 50.0), Align2::CENTER_CENTER, t.playtime_title, 44.0, theme.accent, 1.0);
         let name = match game {
@@ -99,6 +102,7 @@ impl App {
             HomeGame::Mines => t.mines_name,
             HomeGame::Runner => t.runner_name,
             HomeGame::Riff => t.riff_name,
+            HomeGame::Backstage => t.backstage_name,
         };
         let why = match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),

@@ -666,6 +666,9 @@ pub struct Settings {
     /// Riff Hero: the best score of a song played alone.
     #[serde(default)]
     pub riff_best: u32,
+    /// Backstage: the best score.
+    #[serde(default)]
+    pub backstage_best: u32,
     /// A round of Ronnie.io reached `theme::JURASSIC_UNLOCK` (since the Jurassic Park theme exists: a
     /// best made before doesn't count).
     #[serde(default)]
@@ -746,6 +749,7 @@ pub struct GameUsage {
     pub mines: bool,
     pub runner: bool,
     pub riff: bool,
+    pub backstage: bool,
     /// Its HMAC (`crate::playtime`): an edit by hand shows.
     #[serde(default)]
     pub seal: String,
@@ -1216,7 +1220,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, auto_backup: AutoBackup::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_best: 0, backstage_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, auto_backup: AutoBackup::default() }
     }
 }
 

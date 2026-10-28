@@ -17,6 +17,7 @@ pub(super) enum HomeGame {
     Mines,
     Runner,
     Riff,
+    Backstage,
 }
 
 /// A disc falling into place, since `at`.

@@ -50,6 +50,7 @@ mod upload;
 mod dev;
 mod modules;
 mod arcade;
+mod backstage;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
@@ -381,6 +382,8 @@ pub struct App {
     runner: runner::Runner,
     /// Riff Hero's page, and the song being played.
     riff: riff::Riff,
+    /// Backstage's page.
+    backstage: backstage::Backstage,
     /// Ronnie.io's page, and its connection to floor.
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
@@ -1206,6 +1209,7 @@ impl App {
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),
+            backstage: backstage::Backstage::default(),
             blob: blob::Blob::default(),
             games_seen: false,
             backup: None,
@@ -1435,6 +1439,10 @@ impl App {
                 app.splash = None;
                 app.open_riff();
                 app.riff_demo(&riff);
+            }
+            if std::env::var("RONNIE_OPEN_BACKSTAGE").is_ok() {
+                app.splash = None;
+                app.open_backstage();
             }
             if let Ok(page) = std::env::var("RONNIE_OPEN_SETTINGS") {
                 app.settings_dialog = true;
