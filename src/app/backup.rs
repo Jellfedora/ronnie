@@ -221,12 +221,21 @@ fn write_export(dir: &Path, out: &Path, manifest: &Manifest, secrets: Option<(&S
     let written: Result<(), Box<dyn std::error::Error>> = (|| {
         let file = std::fs::File::create(out)?;
         let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o600);
+        let now = std::time::SystemTime::now();
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o600)
+            .last_modified_time(files::zip_time(now));
+        // Each file keeps its own date, as in the config folder.
+        let dated = |path: &Path| {
+            let modified = std::fs::metadata(path).and_then(|m| m.modified()).unwrap_or(now);
+            options.last_modified_time(files::zip_time(modified))
+        };
         zip.start_file(MANIFEST, options)?;
         zip.write_all(&serde_json::to_vec_pretty(manifest)?)?;
         for name in FILES {
             if let Ok(bytes) = std::fs::read(dir.join(name)) {
-                zip.start_file(*name, options)?;
+                zip.start_file(*name, dated(&dir.join(name)))?;
                 zip.write_all(&bytes)?;
             }
         }
@@ -235,7 +244,7 @@ fn write_export(dir: &Path, out: &Path, manifest: &Manifest, secrets: Option<(&S
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if entry.file_type().is_ok_and(|t| t.is_file()) && safe_name(&name) {
-                    zip.start_file(format!("{folder}/{name}"), options)?;
+                    zip.start_file(format!("{folder}/{name}"), dated(&entry.path()))?;
                     zip.write_all(&std::fs::read(entry.path())?)?;
                 }
             }
@@ -898,6 +907,11 @@ mod tests {
         let manifest = Manifest { format: FORMAT, version: "0".into(), os: if os_id() == "windows" { "macos" } else { "windows" }.into(), created: 0, secrets: true, hosts: 1, databases: 0, profiles: 1, tabs: 0, auto: false };
         let zip = base.join("export.zip");
         write_export(&from, &zip, &manifest, Some((&secrets, "longpassword"))).unwrap();
+
+        let mut archive = open_zip(&zip).unwrap();
+        let year = archive.by_name("history/abc").unwrap().last_modified().unwrap().year();
+        assert!(year > 2020, "the entries are dated, not left in 1980");
+        drop(archive);
 
         let t = crate::i18n::Lang::En.strings();
         let read = read_manifest(&zip, t).unwrap();

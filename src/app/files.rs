@@ -3221,6 +3221,21 @@ fn unzip_local(dir: &std::path::Path, name: &str, out: &str) -> Result<(), Strin
     })
 }
 
+/// `time` as a zip entry's date, in local time (what unzip tools show); 1980, zip's earliest, if out of range.
+pub(super) fn zip_time(time: std::time::SystemTime) -> zip::DateTime {
+    use chrono::{Datelike as _, Timelike as _};
+    let t = chrono::DateTime::<chrono::Local>::from(time);
+    zip::DateTime::from_date_and_time(
+        u16::try_from(t.year()).unwrap_or(0),
+        t.month() as u8,
+        t.day() as u8,
+        t.hour() as u8,
+        t.minute() as u8,
+        t.second() as u8,
+    )
+    .unwrap_or_default()
+}
+
 /// Zips `names` of `dir` into `out` (in `dir`, which must not exist yet); links are stored as links.
 fn zip_local(dir: &std::path::Path, names: &[String], out: &str) -> Result<(), String> {
     use std::io::Write as _;
@@ -3240,7 +3255,10 @@ fn zip_local(dir: &std::path::Path, names: &[String], out: &str) -> Result<(), S
             let mode = { use std::os::unix::fs::PermissionsExt; meta.permissions().mode() };
             #[cfg(not(unix))]
             let mode = if meta.is_dir() { 0o755 } else { 0o644 };
-            let options = base.unix_permissions(mode & 0o7777).large_file(meta.len() >= u32::MAX as u64);
+            let options = base
+                .unix_permissions(mode & 0o7777)
+                .large_file(meta.len() >= u32::MAX as u64)
+                .last_modified_time(zip_time(meta.modified().unwrap_or_else(|_| std::time::SystemTime::now())));
             if meta.file_type().is_symlink() {
                 zip.add_symlink(&name, std::fs::read_link(&path)?.to_string_lossy(), options)?;
             } else if meta.is_dir() {
