@@ -10,7 +10,6 @@ impl App {
         // The games' page: each game, to pick one.
         if self.home_game && self.games_hub {
             self.game.leave();
-            self.blob_leave();
             self.fold_for_game(false);
             self.arcade_page(ui, rect);
             return;
@@ -26,12 +25,22 @@ impl App {
                     return;
                 }
                 // It folds the sidebar itself, during a life.
+                self.games_drawn.push(super::four::HomeGame::Blob);
                 self.blob_page(ui, rect);
                 let dt = ui.input(|i| i.stable_dt).min(0.1);
                 if let Some(left) = self.count_blob(dt) {
                     self.paint_blob_left(ui, rect, left);
                 }
                 return;
+            }
+            // These fold the sidebar themselves, during a run, a song, a show.
+            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage) {
+                self.games_drawn.push(self.home_which);
+                return match self.home_which {
+                    super::four::HomeGame::Runner => self.runner_page(ui, rect),
+                    super::four::HomeGame::Riff => self.riff_page(ui, rect),
+                    _ => self.backstage_page(ui, rect),
+                };
             }
             self.fold_for_game(false);
             if self.home_game && self.home_which == super::four::HomeGame::Mines {
@@ -380,7 +389,8 @@ impl App {
     }
 
     /// The "Games" category: Speed Metal (with the best score), Puissance 4 (with the players online),
-    /// Ronnie.io (with the best mass), the minesweeper (with the best time).
+    /// Ronnie.io (with the best mass), the minesweeper (with the best time), Ronnie Run (with the
+    /// farthest run), Riff Hero and Backstage (with the best score).
     fn games_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
         use super::four::HomeGame;
         let t = self.t();
@@ -401,6 +411,9 @@ impl App {
                 HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Mines => super::mines::paint_mines_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Runner => super::runner::paint_runner_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Riff => super::riff::paint_riff_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Backstage => super::backstage::paint_backstage_icon(&painter, icon, &theme, 1.0),
             }
             painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
             if let Some(note) = note {
@@ -418,24 +431,47 @@ impl App {
         }
     }
 
-    /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io and the
-    /// minesweeper, the players online at Puissance 4; when played enough this half-day of work, when
+    /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
+    /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
     /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 4] {
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 7] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
         let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
         let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
         let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
+        let runner_best = (self.config.settings.runner_best > 0).then(|| super::runner::meters_text(self.config.settings.runner_best));
         let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best)];
+        let riff_best = (self.config.settings.riff_best > 0).then(|| self.config.settings.riff_best.to_string());
+        let backstage_best = (self.config.settings.backstage_best > 0).then(|| self.config.settings.backstage_best.to_string());
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
             }
         }
         games
+    }
+
+    /// At the end of each frame: the games whose page no window drew (left for another game, a tab, the
+    /// games' page...) stop what was under way. Their state is the app's, shared by the windows: one
+    /// window can't stop them while another shows them.
+    pub(super) fn leave_games(&mut self) {
+        use super::four::HomeGame;
+        let drawn = std::mem::take(&mut self.games_drawn);
+        if !drawn.contains(&HomeGame::Blob) {
+            self.blob_leave();
+        }
+        if !drawn.contains(&HomeGame::Runner) {
+            self.runner.leave();
+        }
+        if !drawn.contains(&HomeGame::Riff) {
+            self.riff.leave();
+        }
+        if !drawn.contains(&HomeGame::Backstage) {
+            self.backstage.leave();
+        }
     }
 
     /// The games' page, on this window's home page.
@@ -452,6 +488,9 @@ impl App {
             HomeGame::Four => self.open_four(),
             HomeGame::Blob => self.open_blob(),
             HomeGame::Mines => self.open_mines(),
+            HomeGame::Runner => self.open_runner(),
+            HomeGame::Riff => self.open_riff(),
+            HomeGame::Backstage => self.open_backstage(),
         }
     }
 

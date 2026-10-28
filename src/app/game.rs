@@ -199,16 +199,21 @@ fn fold(c: char) -> char {
     }
 }
 
+/// The next number of `rng` (xorshift64), seeded from the clock the first time (`rng` at 0). The games'
+/// rounds are drawn with it.
+pub(super) fn random(rng: &mut u64) -> u64 {
+    if *rng == 0 {
+        *rng = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0x9e37_79b9) | 1;
+    }
+    *rng ^= *rng << 13;
+    *rng ^= *rng >> 7;
+    *rng ^= *rng << 17;
+    *rng
+}
+
 impl Game {
     fn random(&mut self) -> u64 {
-        if self.rng == 0 {
-            self.rng = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0x9e37_79b9) | 1;
-        }
-        // xorshift64.
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        self.rng
+        random(&mut self.rng)
     }
 
     fn unit(&mut self) -> f32 {

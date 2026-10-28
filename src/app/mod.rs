@@ -38,6 +38,8 @@ mod mail;
 mod procs;
 mod mailhtml;
 mod mines;
+mod riff;
+mod runner;
 mod loading;
 mod motion;
 mod music;
@@ -48,6 +50,7 @@ mod upload;
 mod dev;
 mod modules;
 mod arcade;
+mod backstage;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
@@ -375,10 +378,18 @@ pub struct App {
     four: four::Four,
     /// The minesweeper's page.
     mines: mines::Mines,
+    /// Ronnie Run's page.
+    runner: runner::Runner,
+    /// Riff Hero's page, and the song being played.
+    riff: riff::Riff,
+    /// Backstage's page.
+    backstage: backstage::Backstage,
     /// Ronnie.io's page, and its connection to floor.
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
     games_seen: bool,
+    /// The games whose page a window drew this frame: the others' stop at its end (see `leave_games`).
+    games_drawn: Vec<four::HomeGame>,
     /// Exporting or importing the configuration.
     backup: Option<backup::BackupDialog>,
     /// The automatic backup of the configuration.
@@ -1198,8 +1209,12 @@ impl App {
             versus: crate::live::Live::default(),
             four: four::Four::default(),
             mines: mines::Mines::default(),
+            runner: runner::Runner::default(),
+            riff: riff::Riff::default(),
+            backstage: backstage::Backstage::default(),
             blob: blob::Blob::default(),
             games_seen: false,
+            games_drawn: Vec::new(),
             backup: None,
             auto_backup: backup::AutoBackupState::default(),
             backup_ask: None,
@@ -1421,6 +1436,16 @@ impl App {
             if std::env::var("RONNIE_OPEN_BLOB").is_ok() {
                 app.splash = None;
                 app.open_blob();
+            }
+            // Riff Hero: "lobby", or "solo" (a song started).
+            if let Ok(riff) = std::env::var("RONNIE_OPEN_RIFF") {
+                app.splash = None;
+                app.open_riff();
+                app.riff_demo(&riff);
+            }
+            if std::env::var("RONNIE_OPEN_BACKSTAGE").is_ok() {
+                app.splash = None;
+                app.open_backstage();
             }
             if let Ok(page) = std::env::var("RONNIE_OPEN_SETTINGS") {
                 app.settings_dialog = true;
@@ -5042,6 +5067,7 @@ impl App {
             self.ssh_prompt_window(ui.ctx());
             self.live_frame(ui.ctx());
             self.blob_frame(ui.ctx());
+            self.riff_frame(ui.ctx());
             self.pseudo_window(ui.ctx());
         }
         self.poll_uploads();
@@ -5168,6 +5194,7 @@ impl eframe::App for App {
         self.window_ui(ui);
         self.other_windows(ui.ctx());
         self.tool_windows_ui(ui.ctx());
+        self.leave_games();
 
         // Errors shown to the user also go to ronnie.log, to diagnose them later.
         if self.error != self.logged_error {

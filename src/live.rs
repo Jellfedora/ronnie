@@ -1,11 +1,11 @@
-//! The game for two, on floor: who is online, the invitations, the Puissance 4 match played. Only with
-//! a pseudo (see floor.rs).
+//! The game for two, on floor: who is online, the invitations, the match played (Puissance 4, or a
+//! battle of Riff Hero). Only with a pseudo (see floor.rs).
 //!
 //! A thread talks to floor while the app runs: a sign of life every few seconds (the player is online
 //! while it comes, and learns who else is, and the invitations received), every second while a match
 //! is watched. The app sends it what the player does, and takes what floor answered at each frame.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,7 @@ pub struct Online {
 pub struct Invite {
     pub id: String,
     pub from: Option<String>,
-    /// "puissance-4" or "ronnie-io".
+    /// "puissance-4", "ronnie-io" or "riff-hero".
     #[serde(default)]
     pub game: Option<String>,
 }
@@ -57,10 +57,39 @@ pub struct Rematch {
     pub them: bool,
 }
 
+/// Where a player of a Riff Hero battle is in the song.
+#[derive(Clone, Copy, Deserialize, Debug, Default, PartialEq)]
+pub struct RiffSide {
+    pub score: u32,
+    pub combo: u32,
+    pub hits: u32,
+    pub misses: u32,
+    /// Played to the end: the score is final.
+    pub done: bool,
+}
+
+fn puissance_4() -> String {
+    "puissance-4".into()
+}
+
 /// A match, as floor sees it for this player.
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 pub struct Match {
     pub id: String,
+    /// "puissance-4" or "riff-hero".
+    #[serde(default = "puissance_4")]
+    pub game: String,
+    /// Riff Hero: the song's seed, in how many milliseconds it starts (from `at`; negative: started),
+    /// where both players are.
+    #[serde(default)]
+    pub seed: u32,
+    #[serde(default)]
+    pub starts_in: i64,
+    #[serde(default)]
+    pub riff: [RiffSide; 2],
+    /// When floor's answer came.
+    #[serde(skip, default = "Instant::now")]
+    pub at: Instant,
     /// Player 1 (who starts), player 2.
     pub players: [Option<String>; 2],
     /// 1 or 2.
@@ -74,7 +103,7 @@ pub struct Match {
     pub over: bool,
     /// 1 or 2, 3: a draw.
     pub winner: Option<u8>,
-    /// "line", "draw" or "forfeit".
+    /// "line", "draw", "forfeit", or "score" (Riff Hero).
     pub reason: Option<String>,
     pub line: Option<Vec<[usize; 2]>>,
     pub rematch: Rematch,
@@ -86,6 +115,11 @@ pub struct Match {
 }
 
 impl Match {
+    /// A battle of Riff Hero.
+    pub fn riff(&self) -> bool {
+        self.game == "riff-hero"
+    }
+
     /// The other player's name.
     pub fn them(&self) -> Option<&str> {
         self.players.get(2 - self.you as usize).and_then(|n| n.as_deref())
@@ -111,17 +145,20 @@ enum Cmd {
     Move(String, usize),
     Leave(String),
     Rematch(String),
+    /// Riff Hero: where the player is in the song.
+    Riff(String, RiffSide),
     /// A message to the other player, in the match.
     Say(String, String),
     /// The match to fetch every second (None: none, out of the page).
     Watch(Option<String>),
-    Board,
+    /// The board of online wins of a game.
+    Board(&'static str),
 }
 
 enum Event {
     Ping(Ping),
     Match(Match),
-    Board(Vec<(String, u32)>),
+    Board(&'static str, Vec<(String, u32)>),
     /// floor refused (its message).
     Refused(String),
     /// floor answered, or not.
@@ -149,8 +186,8 @@ pub struct Live {
     pub playing: Option<String>,
     /// The match watched (the page shows it).
     pub game: Option<Match>,
-    /// The board of online wins (name, wins), when fetched.
-    pub board: Option<Vec<(String, u32)>>,
+    /// The boards of online wins (name, wins), by game, when fetched.
+    pub boards: HashMap<&'static str, Vec<(String, u32)>>,
     /// floor answered (None: not asked yet).
     pub reachable: Option<bool>,
     /// What floor refused last (shown until the next action).
@@ -185,7 +222,9 @@ impl Live {
                         self.game = Some(m);
                     }
                 }
-                Event::Board(b) => self.board = Some(b),
+                Event::Board(game, b) => {
+                    self.boards.insert(game, b);
+                }
                 Event::Refused(e) => self.refused = Some(e),
                 Event::Reachable(r) => self.reachable = Some(r),
                 Event::Forgotten => forgotten = true,
@@ -216,7 +255,7 @@ impl Live {
         self.invite_to(name, "puissance-4");
     }
 
-    /// To a game: "puissance-4" or "ronnie-io".
+    /// To a game: "puissance-4", "ronnie-io" or "riff-hero".
     pub fn invite_to(&mut self, name: &str, game: &'static str) {
         self.send(Cmd::Invite(name.to_owned(), game));
     }
@@ -241,7 +280,7 @@ impl Live {
     /// The disc dropped in column `c`, shown at once (floor's answer follows).
     pub fn play(&mut self, c: usize) {
         let Some(game) = &mut self.game else { return };
-        if game.over || game.turn != game.you || game.columns.get(c).is_none_or(|col| col.len() >= crate::connect4::ROWS) {
+        if game.riff() || game.over || game.turn != game.you || game.columns.get(c).is_none_or(|col| col.len() >= crate::connect4::ROWS) {
             return;
         }
         game.columns[c].push(game.you);
@@ -265,6 +304,18 @@ impl Live {
         }
     }
 
+    /// Riff Hero: where the player is in the song, sent to the other (`done`: the final score).
+    pub fn riff(&mut self, side: RiffSide) {
+        let Some(game) = self.game.as_mut().filter(|g| g.riff() && !g.over) else { return };
+        let k = game.you as usize - 1;
+        if game.riff[k].done {
+            return;
+        }
+        game.riff[k] = side;
+        let id = game.id.clone();
+        self.send(Cmd::Riff(id, side));
+    }
+
     /// A message in the match's chat, shown at once (floor's answer follows).
     pub fn say(&mut self, text: &str) {
         if let Some(game) = &mut self.game {
@@ -282,9 +333,17 @@ impl Live {
         self.send(Cmd::Watch(id));
     }
 
-    /// The board of wins, fetched again.
-    pub fn fetch_board(&mut self) {
-        self.send(Cmd::Board);
+    /// A page left its match: a battle of Riff Hero (`riff`) or a match of Puissance 4. The other
+    /// game's match, watched meanwhile, stays.
+    pub fn unwatch(&mut self, riff: bool) {
+        if self.game.as_ref().is_none_or(|g| g.riff() == riff) {
+            self.watch(None);
+        }
+    }
+
+    /// The board of wins of `game` ("puissance-4", "riff-hero"), fetched again.
+    pub fn fetch_board(&mut self, game: &'static str) {
+        self.send(Cmd::Board(game));
     }
 }
 
@@ -400,6 +459,13 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
                     out.push(Event::Match(m));
                 }
             }
+            Some(Cmd::Riff(id, side)) => {
+                let body = json!({ "score": side.score, "combo": side.combo, "hits": side.hits, "misses": side.misses, "done": side.done });
+                if let Some(m) = result(call(&agent, "POST", format!("{base}/matches/{id}/riff"), token, Some(body)), &mut out).and_then(|v| serde_json::from_value::<Match>(v).ok()) {
+                    out.push(Event::Match(m));
+                    last_match = now();
+                }
+            }
             Some(Cmd::Say(id, text)) => {
                 if let Some(m) = result(call(&agent, "POST", format!("{base}/matches/{id}/chat"), token, Some(json!({ "text": text }))), &mut out).and_then(|v| serde_json::from_value::<Match>(v).ok()) {
                     out.push(Event::Match(m));
@@ -409,7 +475,7 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
                 watched = id;
                 last_match = f64::NEG_INFINITY;
             }
-            Some(Cmd::Board) => {
+            Some(Cmd::Board(game)) => {
                 #[derive(Deserialize)]
                 struct Row {
                     name: Option<String>,
@@ -419,9 +485,9 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
                 struct Board {
                     entries: Vec<Row>,
                 }
-                let board = agent.get(format!("{url}/v1/games/puissance-4/leaderboard")).query("limit", "10").call().ok().and_then(|mut r| r.body_mut().read_json::<Board>().ok());
+                let board = agent.get(format!("{url}/v1/games/{game}/leaderboard")).query("limit", "10").call().ok().and_then(|mut r| r.body_mut().read_json::<Board>().ok());
                 if let Some(b) = board {
-                    out.push(Event::Board(b.entries.into_iter().map(|r| (r.name.unwrap_or_default(), r.score)).collect()));
+                    out.push(Event::Board(game, b.entries.into_iter().map(|r| (r.name.unwrap_or_default(), r.score)).collect()));
                 }
             }
             None => {}
