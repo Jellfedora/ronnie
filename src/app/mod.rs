@@ -318,6 +318,8 @@ struct WindowSlot {
     games_hub: bool,
     /// Which game: Speed Metal or Puissance 4.
     home_which: four::HomeGame,
+    /// The pane last shown of each kind of tab (see `last_tab_of`).
+    category_panes: Vec<(Category, PaneId)>,
     game: game::Game,
     ronnie_show: Option<(PaneId, f64)>,
     game_folded: bool,
@@ -561,6 +563,9 @@ pub struct App {
     games_hub: bool,
     /// Which game: Speed Metal or Puissance 4.
     home_which: four::HomeGame,
+    /// The pane last shown of each kind of tab (local, SSH, database): coming back to its category
+    /// shows its tab again.
+    category_panes: Vec<(Category, PaneId)>,
     game: game::Game,
     /// "ronnie" was typed in this pane: its show, since when (see `easter`).
     ronnie_show: Option<(PaneId, f64)>,
@@ -1273,6 +1278,7 @@ impl App {
             home_game: false,
             games_hub: false,
             home_which: four::HomeGame::SpeedMetal,
+            category_panes: Vec::new(),
             game: game::Game::default(),
             ronnie_show: None,
             game_folded: false,
@@ -1925,6 +1931,7 @@ impl App {
         swap(&mut self.home_game, &mut slot.home_game);
         swap(&mut self.games_hub, &mut slot.games_hub);
         swap(&mut self.home_which, &mut slot.home_which);
+        swap(&mut self.category_panes, &mut slot.category_panes);
         swap(&mut self.game, &mut slot.game);
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
         swap(&mut self.game_folded, &mut slot.game_folded);

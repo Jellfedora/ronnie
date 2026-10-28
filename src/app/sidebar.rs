@@ -210,7 +210,8 @@ impl App {
         }
     }
 
-    /// The tab of `category` to show again: the active one if it is of it, else the last one of it.
+    /// The tab of `category` to show again: the active one if it is of it, else the one last shown
+    /// of it, else the last one of it.
     fn last_tab_of(&self, category: Category) -> Option<usize> {
         if !matches!(category, Category::Local | Category::Ssh | Category::Db) {
             return None;
@@ -218,7 +219,9 @@ impl App {
         if self.active < self.tabs.len() && self.tab_category(self.active) == category {
             return Some(self.active);
         }
-        (0..self.tabs.len()).rev().find(|&i| self.tab_category(i) == category)
+        let seen = self.category_panes.iter().find(|(c, _)| *c == category).map(|&(_, pane)| pane);
+        seen.and_then(|pane| (0..self.tabs.len()).find(|&i| self.tab_category(i) == category && self.tabs[i].panes.contains_key(&pane)))
+            .or_else(|| (0..self.tabs.len()).rev().find(|&i| self.tab_category(i) == category))
     }
 
     /// The category of a tab.
@@ -227,6 +230,15 @@ impl App {
             Some(tab) if tab.ssh.is_some() => Category::Ssh,
             Some(tab) if tab.db.is_some() => Category::Db,
             _ => Category::Local,
+        }
+    }
+
+    /// Notes the pane shown, for its category to show its tab again (see `last_tab_of`).
+    fn note_shown_pane(&mut self) {
+        if let Some(i) = self.shown_tab() {
+            let (category, pane) = (self.tab_category(i), self.tabs[i].focused);
+            self.category_panes.retain(|(c, _)| *c != category);
+            self.category_panes.push((category, pane));
         }
     }
 
@@ -838,6 +850,7 @@ impl App {
         let ctx = ui.ctx().clone();
         self.live = self.tabs.iter_mut().map(|tab| tab.panes.values_mut().find_map(|term| term.live_program(&ctx).map(str::to_owned))).collect();
         self.config.normalize();
+        self.note_shown_pane();
         let bar = ui.max_rect();
         ui.painter().rect_filled(bar, 0.0, self.theme.chrome_bg);
         ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
@@ -1468,6 +1481,7 @@ impl App {
         self.live = self.tabs.iter_mut().map(|tab| tab.panes.values_mut().find_map(|term| term.live_program(&ctx).map(str::to_owned))).collect();
         // New profiles and hosts show up outside groups; deleted ones disappear.
         self.config.normalize();
+        self.note_shown_pane();
         self.follow_shown();
         let category = self.category();
         // On the way into the games, the pseudo, if there is none yet.
