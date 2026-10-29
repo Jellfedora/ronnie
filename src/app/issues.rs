@@ -17,16 +17,16 @@ const REFRESH: Duration = Duration::from_secs(60);
 const ROW_H: f32 = 46.0;
 
 #[derive(Clone, Default, Deserialize, PartialEq, Debug)]
-struct Author {
-    login: String,
+pub(super) struct Author {
+    pub login: String,
 }
 
 #[derive(Clone, Deserialize, PartialEq, Debug)]
-struct Label {
-    name: String,
+pub(super) struct Label {
+    pub name: String,
     /// "d73a4a".
     #[serde(default)]
-    color: String,
+    pub color: String,
 }
 
 #[derive(Clone, Deserialize, PartialEq, Debug)]
@@ -75,25 +75,25 @@ fn is_open(state: &str) -> bool {
     state.eq_ignore_ascii_case("open")
 }
 
-fn login(author: &Option<Author>) -> &str {
+pub(super) fn login(author: &Option<Author>) -> &str {
     author.as_ref().map_or("ghost", |a| a.login.as_str())
 }
 
 /// "2026-09-29T08:47:48Z": seconds since 1970.
-fn timestamp(date: &str) -> i64 {
+pub(super) fn timestamp(date: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(date).map(|d| d.timestamp()).unwrap_or(0)
 }
 
 /// Where the repository's issues are.
 #[derive(Clone, PartialEq, Debug)]
-enum Forge {
+pub(super) enum Forge {
     GitHub,
     /// Its host ("gitlab.example.com").
     GitLab(String),
 }
 
 /// GitHub when a remote is on github.com, otherwise GitLab, at the first remote's host.
-fn forge(root: &Path) -> Option<Forge> {
+pub(super) fn forge(root: &Path) -> Option<Forge> {
     let mut cmd = super::git::git(root);
     cmd.args(["remote", "-v"]);
     let out = cmd.output().ok()?;
@@ -134,7 +134,7 @@ fn cli_path(tool: &str) -> Option<PathBuf> {
 
 /// Runs `tool` in the repository with `args` (and `input` on its standard input): its output, or what
 /// it said on failure. None when it isn't installed.
-fn cli(tool: &str, root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
+pub(super) fn cli(tool: &str, root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
     let path = cli_path(tool)?;
     let mut cmd = Command::new(&path);
     cmd.current_dir(root).args(args);
@@ -172,12 +172,12 @@ fn cli(tool: &str, root: &Path, args: &[&str], input: Option<&str>) -> Option<Re
     Some(run())
 }
 
-fn gh(root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
+pub(super) fn gh(root: &Path, args: &[&str], input: Option<&str>) -> Option<Result<Vec<u8>, String>> {
     cli("gh", root, args, input)
 }
 
 /// Why `gh` failed, as shown: not installed, not logged in, not on GitHub, or what it said.
-fn explain(result: Option<Result<Vec<u8>, String>>, t: &Strings) -> Result<Vec<u8>, String> {
+pub(super) fn explain(result: Option<Result<Vec<u8>, String>>, t: &Strings) -> Result<Vec<u8>, String> {
     match result {
         None => Err(t.issues_no_gh.to_owned()),
         Some(Err(e)) if e.contains("gh auth login") => Err(t.issues_no_auth.to_owned()),
@@ -188,7 +188,7 @@ fn explain(result: Option<Result<Vec<u8>, String>>, t: &Strings) -> Result<Vec<u
 
 /// `glab api` on the repository's project (`:id` in `endpoint`), with `fields` ("-f" name=value; a
 /// value "@-" reads `input`).
-fn glab(root: &Path, host: &str, method: &str, endpoint: &str, fields: &[(&str, &str)], input: Option<&str>, t: &Strings) -> Result<Vec<u8>, String> {
+pub(super) fn glab(root: &Path, host: &str, method: &str, endpoint: &str, fields: &[(&str, &str)], input: Option<&str>, t: &Strings) -> Result<Vec<u8>, String> {
     let mut args: Vec<String> = ["api", "--method", method, endpoint].map(str::to_owned).into();
     for (name, value) in fields {
         // "@-" only means the standard input with --field; anything else is sent as typed.
@@ -204,14 +204,14 @@ fn glab(root: &Path, host: &str, method: &str, endpoint: &str, fields: &[(&str, 
 }
 
 #[derive(Deserialize)]
-struct GlUser {
+pub(super) struct GlUser {
     username: String,
 }
 
 /// A label: its name only, or with its color ("#d73a4a") when asked for details.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum GlLabel {
+pub(super) enum GlLabel {
     Name(String),
     Full { name: String, #[serde(default)] color: String },
 }
@@ -244,11 +244,11 @@ struct GlNote {
     system: bool,
 }
 
-fn gl_author(user: Option<GlUser>) -> Option<Author> {
+pub(super) fn gl_author(user: Option<GlUser>) -> Option<Author> {
     user.map(|u| Author { login: u.username })
 }
 
-fn gl_labels(labels: Vec<GlLabel>) -> Vec<Label> {
+pub(super) fn gl_labels(labels: Vec<GlLabel>) -> Vec<Label> {
     labels
         .into_iter()
         .map(|l| match l {
@@ -790,7 +790,7 @@ fn issue_row(ui: &mut Ui, issue: &Issue, selected: bool, theme: &Theme, t: &Stri
 }
 
 /// A label's color on GitHub, kept readable on this theme.
-fn label_color(label: &Label, theme: &Theme) -> Color32 {
+pub(super) fn label_color(label: &Label, theme: &Theme) -> Color32 {
     let rgb = u32::from_str_radix(label.color.trim_start_matches('#'), 16).ok().filter(|_| label.color.len() >= 6);
     let Some(rgb) = rgb else { return theme.accent };
     let c = Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
@@ -803,7 +803,7 @@ fn label_color(label: &Label, theme: &Theme) -> Color32 {
     }
 }
 
-fn label_chip(ui: &mut Ui, label: &Label, theme: &Theme) {
+pub(super) fn label_chip(ui: &mut Ui, label: &Label, theme: &Theme) {
     let c = label_color(label, theme);
     Frame::NONE.fill(c.gamma_multiply(0.18)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
         ui.label(egui::RichText::new(&label.name).size(11.5).color(c));
@@ -811,7 +811,7 @@ fn label_chip(ui: &mut Ui, label: &Label, theme: &Theme) {
 }
 
 /// The description or a comment: who and when, then the text (Markdown, shown as written).
-fn post(ui: &mut Ui, author: &str, created_at: &str, body: Option<&str>, theme: &Theme, t: &Strings) {
+pub(super) fn post(ui: &mut Ui, author: &str, created_at: &str, body: Option<&str>, theme: &Theme, t: &Strings) {
     Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(egui::RichText::new(format!("{author}  ·  {}", super::git::ago(timestamp(created_at), t))).size(11.5).color(theme.text_muted));

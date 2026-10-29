@@ -179,7 +179,7 @@ fn forge_of(url: &str) -> Option<Forge> {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Status {
+pub(super) enum Status {
     Modified,
     Added,
     Deleted,
@@ -224,11 +224,11 @@ impl Status {
 
 /// A file changed since the last commit, or by a commit (paths from the repository's top).
 #[derive(Clone, PartialEq, Debug)]
-struct FileChange {
-    path: String,
+pub(super) struct FileChange {
+    pub path: String,
     /// Its name before, when renamed.
-    old_path: Option<String>,
-    status: Status,
+    pub old_path: Option<String>,
+    pub status: Status,
 }
 
 /// The branch checked out, and how far it is from the one it follows.
@@ -298,7 +298,7 @@ fn parse_status(out: &[u8]) -> (Head, Vec<FileChange>) {
 }
 
 /// `git diff-tree --name-status -z`: "M\0path\0", "R100\0old\0new\0".
-fn parse_name_status(out: &[u8]) -> Vec<FileChange> {
+pub(super) fn parse_name_status(out: &[u8]) -> Vec<FileChange> {
     let text = String::from_utf8_lossy(out);
     let mut parts = text.split('\0').filter(|p| !p.is_empty());
     let mut files = Vec::new();
@@ -427,7 +427,7 @@ pub(super) fn git(root: &Path) -> Command {
 }
 
 /// Its output, or what it said on failure.
-fn run(mut cmd: Command) -> Result<Vec<u8>, String> {
+pub(super) fn run(mut cmd: Command) -> Result<Vec<u8>, String> {
     let out = cmd.output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(out.stdout)
@@ -643,6 +643,8 @@ enum Mode {
     History,
     /// The repository's GitHub issues.
     Issues,
+    /// Its pull requests (merge requests on GitLab).
+    Pulls,
 }
 
 /// A commit picked in the history.
@@ -676,6 +678,7 @@ pub(super) struct GitView {
     commit: Option<OpenCommit>,
     /// Read when its tab is first shown.
     issues: Option<Box<super::issues::Issues>>,
+    pulls: Option<Box<super::pulls::Pulls>>,
     /// The branch menu: the branches (read when it opens), what is typed in it.
     branches: Option<Result<Branches, String>>,
     branch_filter: String,
@@ -732,6 +735,7 @@ impl GitView {
             search: String::new(),
             commit: None,
             issues: None,
+            pulls: None,
             branches: None,
             branch_filter: String::new(),
             focus_filter: false,
@@ -793,7 +797,7 @@ impl GitView {
             }
             // A commit typed in the terminal, another branch.
             Mode::History => self.load_log(ctx),
-            Mode::Issues => {}
+            Mode::Issues | Mode::Pulls => {}
         }
     }
 
@@ -941,6 +945,7 @@ impl GitView {
             Mode::Changes => self.selected.clone().map(|p| (None, p)),
             Mode::History => self.commit.as_ref().and_then(|o| o.file.clone().map(|p| (Some(o.commit.hash.clone()), p))),
             Mode::Issues => None,
+            Mode::Pulls => self.pulls.as_ref().and_then(|p| p.shown_file()).map(|(head, _, change)| (Some(head), change.path)),
         }
     }
 
@@ -966,6 +971,7 @@ impl GitView {
                 }
             }
             (Mode::History, Some((_, path))) => self.pick_commit_file(ctx, path),
+            (Mode::Pulls, Some(_)) => self.load_pull_file(ctx),
             _ => {}
         }
     }
@@ -980,6 +986,31 @@ impl GitView {
                 let root = self.root.clone();
                 self.issues.get_or_insert_with(|| Box::new(super::issues::Issues::new(root))).side(ui, content, theme, t);
             }
+            Mode::Pulls => {
+                let root = self.root.clone();
+                let pulls = self.pulls.get_or_insert_with(|| Box::new(super::pulls::Pulls::new(root)));
+                pulls.side(ui, content, theme, t);
+                let (picked, moved) = (pulls.take_file_picked(), pulls.take_moved());
+                if picked {
+                    self.reset_diff();
+                    self.load_pull_file(ui.ctx());
+                }
+                // A branch checked out or merged: what the folder holds now.
+                if moved {
+                    self.last_status = None;
+                    if self.log_loaded {
+                        self.load_log(ui.ctx());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads the comparison of the pull request's file picked: from where it left its base to its last
+    /// commit.
+    fn load_pull_file(&mut self, ctx: &egui::Context) {
+        if let Some((head, base, change)) = self.pulls.as_ref().and_then(|p| p.shown_file()) {
+            self.load_diff(ctx, change, Some((head, Some(base))));
         }
     }
 
@@ -993,6 +1024,14 @@ impl GitView {
                 if let Some(issues) = &mut self.issues {
                     issues.main(ui, view, theme, t);
                 }
+            }
+            Mode::Pulls => {
+                let Some(pulls) = &mut self.pulls else { return };
+                let Some((head, base, change)) = pulls.shown_file() else { return pulls.main(ui, view, theme, t) };
+                let n = pulls.number().unwrap_or(0).to_string();
+                let short = |h: &str| h.chars().take(7).collect::<String>();
+                let labels = (t.pulls_before.replace("{hash}", &short(&base)), t.pulls_after.replace("{n}", &n).replace("{hash}", &short(&head)));
+                self.diff_ui(ui, view, (Some(head), change.path), Some(change.status), labels, theme, t);
             }
         }
     }
@@ -1046,6 +1085,7 @@ impl GitView {
             Mode::Changes => self.selected.as_deref().map(name),
             Mode::History => self.commit.as_ref().map(|c| c.file.as_deref().map(name).unwrap_or_else(|| c.commit.short.clone())),
             Mode::Issues => self.issues.as_ref().and_then(|i| i.picked()),
+            Mode::Pulls => self.pulls.as_ref().and_then(|p| p.picked()),
         }
     }
 
@@ -1062,6 +1102,9 @@ impl GitView {
         self.commit = None;
         if let Some(issues) = &mut self.issues {
             issues.unpick();
+        }
+        if let Some(pulls) = &mut self.pulls {
+            pulls.unpick();
         }
         self.reset_diff();
     }
@@ -1801,10 +1844,10 @@ impl GitView {
     }
 }
 
-/// "Changes | History | Issues" above the list, each as wide as its label needs; the one clicked.
+/// "Changes | History | Issues | PRs" above the list, each as wide as its label needs; the one clicked.
 fn mode_tabs(ui: &mut Ui, rect: Rect, mode: Mode, root: &Path, theme: &Theme, t: &Strings) -> Option<Mode> {
     ui.painter().rect_filled(rect, 6.0, theme.bg);
-    let tabs = [(Mode::Changes, t.git_tab_changes), (Mode::History, t.git_tab_history), (Mode::Issues, t.git_tab_issues)];
+    let tabs = [(Mode::Changes, t.git_tab_changes), (Mode::History, t.git_tab_history), (Mode::Issues, t.git_tab_issues), (Mode::Pulls, t.git_tab_pulls)];
     let font = FontId::proportional(12.5);
     let widths: Vec<f32> = tabs.iter().map(|(_, label)| ui.painter().layout_no_wrap(label.to_string(), font.clone(), theme.text).size().x + 14.0).collect();
     // The room left shared out evenly (or taken back, when too narrow).
@@ -1832,7 +1875,7 @@ fn mode_tabs(ui: &mut Ui, rect: Rect, mode: Mode, root: &Path, theme: &Theme, t:
 }
 
 /// A file in a list: its icon, name, folder and status letter; true when clicked.
-fn file_row(ui: &mut Ui, change: &FileChange, selected: bool, theme: &Theme, t: &Strings) -> bool {
+pub(super) fn file_row(ui: &mut Ui, change: &FileChange, selected: bool, theme: &Theme, t: &Strings) -> bool {
     let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
     if selected || resp.hovered() {
         ui.painter().rect_filled(row, 5.0, if selected { theme.tab_active } else { theme.tab_hover });

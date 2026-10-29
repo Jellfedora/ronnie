@@ -46,6 +46,7 @@ mod motion;
 mod music;
 mod notes;
 mod perms;
+mod pulls;
 mod sql;
 mod upload;
 mod dev;
