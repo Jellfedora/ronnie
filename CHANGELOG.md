@@ -2,6 +2,26 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.36.0] - 2026-10-29
+
+### Nouveautés
+
+- **Les pull requests dans la vue git** (les merge requests sur GitLab) : un onglet qui montre pour chacune ses vérifications, ses reviews et ses commentaires, et ses fichiers comparés côte à côte. Depuis l'onglet, tu peux commenter, approuver, fusionner, fermer, rouvrir ou récupérer la branche.
+- **Voir les images sans les télécharger** dans les fichiers, en local comme sur un serveur : Entrée, Espace ou « Aperçu », puis ← → pour passer d'une image à l'autre dans le dossier, avec zoom et déplacement. Boutons Supprimer (⌘ ⌫ / Suppr) et Renommer (F2) ; après une suppression, l'image suivante s'affiche.
+- **Riff Hero en trois niveaux** : Facile, Moyen et Difficile, chacun avec son morceau, le même pour tout le monde, et son classement en ligne. Les battles gardent leur morceau. Merci à Jonathan !
+- **Ronnie Run plus dur** : plus rapide, des projecteurs dès 20 m (on ne peut plus sauter par-dessus), deux flight cases empilées qu'on ne passe qu'avec un saut maintenu, des obstacles par paires et des écarts de plus en plus serrés. Merci à Jonathan !
+- **Fermer tous les onglets d'un coup** : une croix à côté du « + » des serveurs SSH et de la barre des terminaux, après confirmation.
+- **Réglages réorganisés** : la page Général est découpée en pages Terminal, Claude Code et Sauvegarde ; les options de la colonne de gauche passent dans Apparence, la santé des serveurs dans SSH.
+- **La page Fonctionnalités à jour** (git, outils de dev, Claude Code, notes, jeux, téléchargements, sauvegarde…), avec une carte Contributeurs qui renvoie au GitHub de chacun.
+
+### Corrections
+
+- **Les caractères absents des polices du terminal** (le « ᵉ » de « 4ᵉ », ✘, ⎿, ⧉…) sont dessinés avec les polices de symboles du système au lieu de cases vides.
+- **Les sauvegardes et les zips faits dans les fichiers** gardent la date de chaque fichier au lieu du 1er janvier 1980.
+- **Un nouveau serveur SSH** se connecte en root sauf si tu changes l'utilisateur : « root » est écrit dans le champ, plus seulement suggéré en gris.
+- **Vue git dans une colonne étroite** : les onglets Modifications, Historique, Issues et PR prennent un nom court (le nom complet au survol) au lieu de finir en points de suspension.
+- **Une note vide** n'affiche plus l'aide Markdown.
+
 ## [0.35.0] - 2026-10-28
 
 ### Nouveautés
