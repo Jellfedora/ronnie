@@ -1,6 +1,6 @@
 //! The notices not seen yet: each notice shown (see `Toast`) is kept until the user sees what it is
 //! about (its tab, the mail, the notes…), follows it or dismisses it. A bell at the bottom of the
-//! strip of categories counts them and lists them.
+//! strip of categories counts them and lists them; with none, it isn't there.
 
 use super::*;
 use super::drive::Lead;
@@ -80,11 +80,18 @@ impl App {
     /// with the number of notices not seen; a click lists them beside.
     pub(super) fn bell_ui(&mut self, ui: &Ui, cx: f32, above: f32, bottom: f32) {
         let rect = Rect::from_center_size(Pos2::new(cx, bottom - 16.0), Vec2::splat(30.0));
+        let count = self.notices.len();
+        // Nothing to see: no bell (and its list closes, the last one dismissed).
+        if count == 0 {
+            if self.bell_open == Some(self.viewport) {
+                self.bell_open = None;
+            }
+            return;
+        }
         if rect.min.y < above {
             return;
         }
         let t = self.t();
-        let count = self.notices.len();
         let resp = ui.interact(rect, ui.id().with("bell"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.notices_tip);
         let open = self.bell_open == Some(self.viewport);
         if resp.hovered() || open {
