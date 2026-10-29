@@ -69,11 +69,10 @@ impl App {
     }
 
     pub(super) fn mines_page(&mut self, ui: &mut Ui, rect: Rect) {
-        // A game under way is the half-day of work's; once played, a fresh grid gives way.
+        // A game under way is the half-day of work's (counted as it starts, see `mines_grid`); once
+        // they are all played, a fresh grid gives way.
         let state = self.mines.board.state;
-        if state == State::Playing {
-            self.count_round(HomeGame::Mines);
-        } else if state == State::Fresh
+        if state == State::Fresh
             && let Some(p) = self.game_locked(HomeGame::Mines)
         {
             return self.locked_page(ui, rect, HomeGame::Mines, &p);
@@ -146,6 +145,7 @@ impl App {
                 let seed = super::game::random(&mut self.mines.rng);
                 if self.mines.board.state == State::Fresh {
                     self.mines.started = Some(Instant::now());
+                    self.count_round(HomeGame::Mines);
                 }
                 self.mines.board.open(c, r, seed);
             } else if resp.secondary_clicked() {

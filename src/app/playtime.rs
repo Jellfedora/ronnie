@@ -3,7 +3,7 @@
 
 use super::*;
 use super::four::HomeGame;
-use crate::playtime::{reseal, Period, BLOB_SECS};
+use crate::playtime::{reseal, Period, BLOB_SECS, MINES_GAMES};
 
 impl App {
     /// The half-day of work under way, what was played in it checked (see `crate::playtime::checked`).
@@ -39,14 +39,21 @@ impl App {
             return;
         }
         let usage = &mut self.config.settings.game_usage;
+        // The minesweeper's games, counted as each one starts (not at each frame of it).
+        if game == HomeGame::Mines {
+            usage.mines_games = (usage.mines_games + 1).min(MINES_GAMES);
+            usage.mines = usage.mines_games >= MINES_GAMES;
+            reseal(usage);
+            self.save_config();
+            return;
+        }
         let played = match game {
             HomeGame::SpeedMetal => &mut usage.speed_metal,
             HomeGame::Four => &mut usage.four,
-            HomeGame::Mines => &mut usage.mines,
             HomeGame::Runner => &mut usage.runner,
             HomeGame::Riff => &mut usage.riff,
             HomeGame::Backstage => &mut usage.backstage,
-            HomeGame::Blob => return,
+            HomeGame::Blob | HomeGame::Mines => return,
         };
         if !*played {
             *played = true;
@@ -112,6 +119,8 @@ impl App {
         let why = match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),
             (HomeGame::Blob, false) => t.playtime_blob_afternoon.to_owned(),
+            (HomeGame::Mines, true) => t.playtime_mines_morning.replace("{n}", &MINES_GAMES.to_string()),
+            (HomeGame::Mines, false) => t.playtime_mines_afternoon.replace("{n}", &MINES_GAMES.to_string()),
             (_, true) => t.playtime_round_morning.replace("{game}", name),
             (_, false) => t.playtime_round_afternoon.replace("{game}", name),
         };

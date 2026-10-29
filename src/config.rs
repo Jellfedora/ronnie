@@ -748,7 +748,10 @@ pub struct GameUsage {
     pub speed_metal: bool,
     pub four: bool,
     pub blob_secs: u32,
+    /// The minesweeper played enough (`crate::playtime::MINES_GAMES` games started).
     pub mines: bool,
+    /// The minesweeper's games started.
+    pub mines_games: u32,
     pub runner: bool,
     pub riff: bool,
     pub backstage: bool,
