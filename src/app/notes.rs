@@ -472,6 +472,13 @@ impl Notes {
         id
     }
 
+    /// The note whose id starts with `prefix` (not in the bin), and its title.
+    pub(super) fn find(&self, prefix: &str) -> Option<(Uuid, String)> {
+        let mut found = self.store.notes.iter().filter(|n| n.trashed.is_none() && n.id.to_string().starts_with(prefix));
+        let note = found.next().filter(|_| found.next().is_none())?;
+        Some((note.id, title_of(&note.text).unwrap_or_default().to_owned()))
+    }
+
     /// The note `id` shown, in its folder, rendered.
     pub(super) fn show(&mut self, id: Uuid) {
         let Some(folder) = self.note(id).map(|n| n.folder) else { return };

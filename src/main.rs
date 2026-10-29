@@ -10,6 +10,7 @@ mod config;
 mod connect4;
 mod db;
 mod dragout;
+mod drive;
 mod floor;
 mod health;
 mod i18n;
@@ -223,7 +224,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if std::env::args().skip(1).any(|a| a == "--help" || a == "-h") {
-        println!("Ronnie {} — Terminal Power Métal\n\nUsage: ronnie [--version | --help]\n       ronnie note [--folder <name>] [file]   add a Markdown note (else from stdin)\n\nEnvironment:\n  RONNIE_CONFIG_DIR   use another config directory\n  RONNIE_UPDATE_CHECK look for updates even in a dev build", update::VERSION);
+        println!("Ronnie {} — Terminal Power Métal\n\nUsage: ronnie [--version | --help]\n\nEnvironment:\n  RONNIE_CONFIG_DIR   use another config directory\n  RONNIE_UPDATE_CHECK look for updates even in a dev build\n\n{}", update::VERSION, drive::USAGE);
         return Ok(());
     }
     log::install_panic_hook();
@@ -237,6 +238,14 @@ fn main() -> eframe::Result {
     // Claude Code's hooks: Claude is done, or waits for the user.
     if std::env::args().nth(1).as_deref() == Some("claude-hook") {
         claude::run_hook();
+        return Ok(());
+    }
+    // Ronnie driven from a pane by Claude: `ronnie panes`, `ronnie run`, `ronnie mails`…
+    if let Some(result) = drive::run_cli() {
+        if let Err(e) = result {
+            eprintln!("ronnie: {e}");
+            std::process::exit(1);
+        }
         return Ok(());
     }
     // A note for the Ronnie running (Claude adds them so).

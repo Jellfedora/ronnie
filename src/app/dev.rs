@@ -75,7 +75,7 @@ impl Dev {
         });
     }
 
-    fn install(&mut self, ctx: &egui::Context, version: String) {
+    pub(super) fn install(&mut self, ctx: &egui::Context, version: String) {
         if self.installing(&version).is_some() {
             return;
         }

@@ -117,7 +117,7 @@ impl App {
             self.save_config();
             self.floor.sync(ui.ctx(), now, None, self.config.settings.floor.as_ref());
             if unlocked {
-                self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, note: None });
+                self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, lead: None });
             }
         }
         // Back to the home page, out of a round.

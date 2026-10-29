@@ -282,7 +282,7 @@ impl App {
             crate::notify::send(&title, &body);
         }
         if style.in_app() {
-            self.toasts.push(Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: Some(id.unwrap_or_default()), note: None });
+            self.toasts.push(Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: Some(id.unwrap_or_default()), lead: None });
         }
     }
 

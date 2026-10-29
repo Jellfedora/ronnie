@@ -370,7 +370,7 @@ pub fn pane_env(token: &str) -> Vec<(&'static str, String)> {
     env
 }
 
-fn events_dir() -> Option<PathBuf> {
+pub fn events_dir() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join("claude-events").join(std::process::id().to_string()))
 }
 
@@ -436,8 +436,8 @@ don't list them unasked. Ronnie's labels below are in the user's language.
 
 - Node.js versions, nvm-style, installed in Ronnie's own folder (nothing on the system): each local pane uses one, first in \
 its PATH. The user picks it from the pane's bar (green Node badge, \"{node_manage}\") or in the \"{dev}\" category of \
-the left column, which installs any nodejs.org version. When a project needs another version, ask the user to pick it in \
-Ronnie rather than installing nvm, fnm, Volta or a system Node; for one command, an installed version's folder can be put \
+the left column, which installs any nodejs.org version. When a project needs another version, set it on the pane yourself \
+(`{ronnie} node <pane> <version>`, see below) rather than installing nvm, fnm, Volta or a system Node; for one command, an installed version's folder can be put \
 first in PATH (`PATH=\"<bin folder>:$PATH\" npm test`{path_note}).
 - A mail catcher (\"{dev}\" > \"{mail}\"): an SMTP server on 127.0.0.1:{port} (no TLS, any login accepted) that keeps \
 every mail sent to it, delivering none, and shows them in Ronnie (HTML, text, headers, source, attachments). To test the \
@@ -457,11 +457,18 @@ first and run only once they agree, one change at a time; on production (a name 
 - Terminals (\"{local}\"): tabs, splits and profiles (a project's tab saved with its folder and panes); beside them the \
 profile's files, its git (changes, history, issues) and an editor. Ronnie tells the user when you are done or wait for \
 them while this pane isn't on screen.
-- Notes (\"{notes}\", in the left column): Markdown notes in folders. When the user asks you for a note (\"crée-moi une \
-note\", \"mets ça dans une note\"…), add it to Ronnie yourself: pipe its Markdown (first line `# Title`; lists, tables, \
-code allowed) to `{note_cmd}`, or give a file: `{note_cmd} note.md`; `--folder \"<name>\"` puts it in that folder (made \
-if missing), else it goes in \"{notes_default}\". Don't write notes.json: Ronnie keeps the notes in memory and would \
-overwrite it. Ronnie shows the note and tells the user.",
+- Notes (\"{notes}\", in the left column): Markdown notes in folders.
+- You can drive this Ronnie from here with `{ronnie}` (`{ronnie} --help` lists it all): `panes` (every window, tab, \
+pane with its number, folder, program and Node.js, and the saved profiles), `run <command>` (a pane split off yours \
+running it: a dev server, a watcher… rather than in the background of your own shell), `output <pane>` (what a pane \
+shows), `tab`, `type <pane> <text>`, `cd <pane> <dir>`, `node <pane> <version|system>`, `node install vX.Y.Z`, \
+`rename`, `close`, `profile` (save one, its JSON on stdin; `profile open <name>`), `notes` / `notes show <id>` (read \
+the user's notes), `note` (add one), `mails` / `mails show <id|last>` (the mails caught by the mail catcher: check a \
+project's mails yourself), `open <file>` and `show <pane|notes|mails|dev…>`. When the user asks for a note \
+(\"crée-moi une note\"…), pipe its Markdown (first line `# Title`) to `{ronnie} note`, `--folder \"<name>\"` to file it \
+(else it goes in \"{notes_default}\"); never write notes.json (Ronnie keeps the notes in memory). What would change \
+the user's view (`show`, `open`) is only proposed in a notice they accept; new tabs open in the background. Typing in \
+or closing a pane where something runs (`running …` in `panes`) interrupts the user's work: ask them first.",
         // Claude Code runs its commands in Git Bash there: C:\Users\… is written /c/Users/….
         path_note = if cfg!(windows) { "; in Git Bash, the folder written /c/Users/…" } else { "" },
         node_manage = t.node_manage,
@@ -472,7 +479,7 @@ overwrite it. Ronnie shows the note and tells the user.",
         local = t.cat_local,
         notes = t.notes,
         notes_default = t.notes_default,
-        note_cmd = ronnie_command("note"),
+        ronnie = ronnie_command("").trim_end(),
     );
     text.push_str("\n\nThis pane and this Ronnie now:");
     // The version is its folder's name: <versions>/v22.11.0/bin (on Windows, the version's folder itself).
@@ -563,9 +570,13 @@ fn shell_word(word: &str) -> String {
     }
 }
 
-/// Watches this Ronnie's events folder (twice a second): what comes goes to `queue`, and the window
-/// is redrawn. Folders left by Ronnies no longer running go away (those are empty).
-pub fn watch_events(ctx: egui::Context, queue: std::sync::Arc<std::sync::Mutex<Vec<(Event, std::time::Instant)>>>) {
+/// What Claude asked this Ronnie (see `crate::drive`), with when it came.
+pub type Asks = std::sync::Arc<std::sync::Mutex<Vec<(crate::drive::Asked, std::time::Instant)>>>;
+
+/// Watches this Ronnie's events folder (ten times a second): the events go to `queue`, Claude's asks
+/// to `asks`, and the window is redrawn. Folders left by Ronnies no longer running go away (those are
+/// empty).
+pub fn watch_events(ctx: egui::Context, queue: std::sync::Arc<std::sync::Mutex<Vec<(Event, std::time::Instant)>>>, asks: Asks) {
     let Some(dir) = events_dir() else { return };
     let _ = std::fs::remove_dir_all(&dir);
     if let Some(parent) = dir.parent() {
@@ -575,20 +586,25 @@ pub fn watch_events(ctx: egui::Context, queue: std::sync::Arc<std::sync::Mutex<V
     }
     let _ = std::thread::Builder::new().name("claude-events".into()).spawn(move || {
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-            let mut events = Vec::new();
-            for path in entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")) {
-                if let Some(event) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Event>(&t).ok()) {
-                    events.push(event);
+            let (mut events, mut asked) = (Vec::new(), Vec::new());
+            for path in entries.flatten().map(|e| e.path()) {
+                let text = || std::fs::read_to_string(&path).ok();
+                match path.extension().and_then(|e| e.to_str()) {
+                    Some("json") => events.extend(text().and_then(|t| serde_json::from_str::<Event>(&t).ok())),
+                    Some("ask") => asked.extend(text().and_then(|t| serde_json::from_str::<crate::drive::Asked>(&t).ok())),
+                    _ => continue,
                 }
                 let _ = std::fs::remove_file(&path);
             }
-            if !events.is_empty() {
-                let now = std::time::Instant::now();
-                queue.lock().unwrap().extend(events.into_iter().map(|e| (e, now)));
-                ctx.request_repaint();
+            if events.is_empty() && asked.is_empty() {
+                continue;
             }
+            let now = std::time::Instant::now();
+            queue.lock().unwrap().extend(events.into_iter().map(|e| (e, now)));
+            asks.lock().unwrap().extend(asked.into_iter().map(|a| (a, now)));
+            ctx.request_repaint();
         }
     });
 }
