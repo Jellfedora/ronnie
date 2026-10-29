@@ -1027,9 +1027,12 @@ impl PuttyKey {
 enum SettingsTab {
     General,
     Appearance,
+    Terminal,
     Profiles,
     Ssh,
+    Claude,
     Music,
+    Backup,
     ConfigFile,
     Logs,
     Shortcuts,
@@ -1456,6 +1459,9 @@ impl App {
                 app.splash = None;
                 app.settings_tab = match page.as_str() {
                     "appearance" => SettingsTab::Appearance,
+                    "terminal" => SettingsTab::Terminal,
+                    "claude" => SettingsTab::Claude,
+                    "backup" => SettingsTab::Backup,
                     "shortcuts" => SettingsTab::Shortcuts,
                     "profiles" => SettingsTab::Profiles,
                     "ssh" => SettingsTab::Ssh,

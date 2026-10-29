@@ -275,7 +275,7 @@ impl App {
     }
 
     /// Settings page for SSH: import from ~/.ssh/config (explained first) and the list of hosts.
-    pub(super) fn ssh_settings_ui(&mut self, ui: &mut Ui, t: &Strings) {
+    pub(super) fn ssh_settings_ui(&mut self, ui: &mut Ui, t: &Strings, picked: &mut config::Settings) {
         let theme = self.theme.clone();
         let (mut edit, mut delete, mut new_host, mut import) = (None, None, false, false);
         let sections = self.grouped_ids(false);
@@ -285,6 +285,11 @@ impl App {
         let mut import_putty = false;
         egui::ScrollArea::vertical().id_salt("settings-ssh").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
             ui.set_width(ui.available_width() - 12.0);
+            card(ui, &theme, None, |ui| {
+                setting_row(ui, &theme, t.health_row, Some(t.health_desc), |ui| {
+                    toggle(ui, &theme, &mut picked.server_health);
+                });
+            });
             // Import from ~/.ssh/config.
             card(ui, &theme, Some(t.import_title), |ui| {
                 match &found {
@@ -1205,10 +1210,13 @@ impl App {
                 let pages = [
                     (SettingsTab::General, "⚙", t.general),
                     (SettingsTab::Appearance, "🎨", t.appearance),
+                    (SettingsTab::Terminal, ">_", t.set_terminal),
                     (SettingsTab::Shortcuts, "⌨", t.shortcuts),
                     (SettingsTab::Profiles, "▣", t.manage_profiles),
                     (SettingsTab::Ssh, "🖧", t.ssh_tab),
+                    (SettingsTab::Claude, "✳", t.set_claude),
                     (SettingsTab::Music, "♫", t.music_nav),
+                    (SettingsTab::Backup, "💾", t.backup_section),
                     (SettingsTab::ConfigFile, "{ }", t.config_nav),
                     (SettingsTab::Logs, "☰", t.logs_nav),
                 ];
@@ -1235,6 +1243,9 @@ impl App {
                 let (title, subtitle) = match self.settings_tab {
                     SettingsTab::General => (t.general, t.sub_general),
                     SettingsTab::Appearance => (t.appearance, t.sub_appearance),
+                    SettingsTab::Terminal => (t.set_terminal, t.sub_terminal),
+                    SettingsTab::Claude => (t.set_claude, t.sub_claude),
+                    SettingsTab::Backup => (t.backup_section, t.sub_backup),
                     SettingsTab::Shortcuts => (t.shortcuts, t.sub_shortcuts),
                     SettingsTab::Profiles => (t.manage_profiles, t.sub_profiles),
                     SettingsTab::Ssh => (t.ssh_tab, t.sub_ssh),
@@ -1262,7 +1273,7 @@ impl App {
                         SettingsTab::ConfigFile => self.config_editor_ui(ui, t),
                         SettingsTab::Logs => self.logs_ui(ui, t, &theme),
                         SettingsTab::Profiles => self.profiles_ui(ui, t),
-                        SettingsTab::Ssh => self.ssh_settings_ui(ui, t),
+                        SettingsTab::Ssh => self.ssh_settings_ui(ui, t, &mut picked),
                         SettingsTab::About => {
                             egui::ScrollArea::vertical().id_salt("settings-about").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
                                 ui.set_width(ui.available_width() - 12.0);
@@ -1281,6 +1292,15 @@ impl App {
                         }
                         SettingsTab::Appearance => {
                             egui::ScrollArea::vertical().id_salt("settings-appearance").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.appearance_page(ui, t, &theme, &mut picked));
+                        }
+                        SettingsTab::Terminal => {
+                            egui::ScrollArea::vertical().id_salt("settings-terminal").max_height(height).auto_shrink([false, false]).show(ui, |ui| terminal_page(ui, t, &theme, &mut picked));
+                        }
+                        SettingsTab::Claude => {
+                            egui::ScrollArea::vertical().id_salt("settings-claude").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.claude_page(ui, t, &theme, &mut picked));
+                        }
+                        SettingsTab::Backup => {
+                            egui::ScrollArea::vertical().id_salt("settings-backup").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.backup_page(ui, t, &theme, &mut picked));
                         }
                     }
                 });
@@ -1318,11 +1338,11 @@ impl App {
         }
     }
 
-    /// "General" page: language, terminal, typing, notifications, reset.
+    /// "General" page: language, startup, home page, notifications and safeguards.
     fn general_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         ui.set_width(ui.available_width() - 12.0);
         let mut test_clicked = false;
-        card(ui, theme, Some(t.language), |ui| {
+        card(ui, theme, None, |ui| {
             setting_row(ui, theme, t.language, Some(t.language_desc), |ui| {
                 for lang in Lang::ALL.iter().rev() {
                     let label = egui::RichText::new(lang.label()).size(13.5);
@@ -1331,23 +1351,21 @@ impl App {
                     }
                 }
             });
-            divider(ui, theme);
+        });
+        card(ui, theme, Some(t.set_startup), |ui| {
             setting_row(ui, theme, t.splash_setting, Some(t.splash_setting_desc), |ui| {
                 toggle(ui, theme, &mut picked.splash);
-            });
-            divider(ui, theme);
-            setting_row(ui, theme, t.home_tips_setting, Some(t.home_tips_setting_desc), |ui| {
-                toggle(ui, theme, &mut picked.home_tips);
-            });
-            divider(ui, theme);
-            setting_row(ui, theme, t.resources_setting, Some(t.resources_setting_desc), |ui| {
-                toggle(ui, theme, &mut picked.resources_panel);
             });
             divider(ui, theme);
             setting_row(ui, theme, t.tour_setting, Some(t.tour_setting_desc), |ui| {
                 if ui.add(egui::Button::new(egui::RichText::new(t.tour_replay).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
                     self.tour = Some(super::tour::Tour::new());
                 }
+            });
+        });
+        card(ui, theme, Some(t.set_home), |ui| {
+            setting_row(ui, theme, t.home_tips_setting, Some(t.home_tips_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.home_tips);
             });
             divider(ui, theme);
             setting_row(ui, theme, t.home_hosts_setting, Some(t.home_hosts_setting_desc), |ui| {
@@ -1358,57 +1376,39 @@ impl App {
                 toggle(ui, theme, &mut picked.home_databases);
             });
         });
-        card(ui, theme, Some(t.sidebar_setting), |ui| {
-            setting_row(ui, theme, t.bar_arrows_setting, Some(t.bar_arrows_setting_desc), |ui| {
-                toggle(ui, theme, &mut picked.bar_arrows);
+        card(ui, theme, Some(t.set_notifications), |ui| {
+            setting_row(ui, theme, t.notify_commands, Some(t.notify_commands_hint), |ui| {
+                toggle(ui, theme, &mut picked.notify_commands);
             });
             divider(ui, theme);
-            ui.label(egui::RichText::new(t.sidebar_setting_desc).size(12.5).color(theme.text_muted));
-            ui.add_space(4.0);
-            for (k, category) in Category::ordered(&picked.category_order).into_iter().enumerate() {
-                if k > 0 {
-                    divider(ui, theme);
-                }
-                let desc = (category == Category::Music).then_some(t.sidebar_music_desc);
-                setting_row(ui, theme, super::sidebar::category_name(t, category), desc, |ui| {
-                    let mut on = !picked.hidden_categories.contains(&category);
-                    if toggle(ui, theme, &mut on).changed() {
-                        picked.hidden_categories.retain(|c| *c != category);
-                        if !on {
-                            picked.hidden_categories.push(category);
+            ui.add_enabled_ui(picked.notify_commands, |ui| {
+                setting_row(ui, theme, t.notify_after, Some(t.notify_after_desc), |ui| {
+                    ui.add(egui::Slider::new(&mut picked.notify_after, config::NOTIFY_AFTER_SECS).logarithmic(true).suffix(" s"));
+                });
+                divider(ui, theme);
+                setting_row(ui, theme, t.notify_style, Some(t.notify_style_desc), |ui| {
+                    for (style, label) in [(config::NotifyStyle::Both, t.notify_both), (config::NotifyStyle::System, t.notify_system), (config::NotifyStyle::InApp, t.notify_in_app)] {
+                        if ui.add(egui::Button::selectable(picked.notify_style == style, egui::RichText::new(label).size(12.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                            picked.notify_style = style;
                         }
                     }
                 });
-            }
-        });
-        card(ui, theme, Some(t.set_terminal), |ui| {
-            setting_row(ui, theme, t.show_cwd, Some(t.show_cwd_desc), |ui| {
-                toggle(ui, theme, &mut picked.show_cwd);
-            });
-            divider(ui, theme);
-            setting_row(ui, theme, t.restore_scrollback, Some(t.restore_scrollback_desc), |ui| {
-                if toggle(ui, theme, &mut picked.restore_scrollback).changed() && !picked.restore_scrollback {
-                    crate::shell::forget_scrollbacks();
+                if picked.notify_style.in_app() {
+                    divider(ui, theme);
+                    setting_row(ui, theme, t.toast_position, Some(t.toast_position_desc), |ui| {
+                        position_picker(ui, theme, &mut picked.toast_position);
+                    });
                 }
-            });
-            divider(ui, theme);
-            setting_row(ui, theme, t.scrollback, Some(t.scrollback_desc), |ui| {
-                ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
-            });
-            divider(ui, theme);
-            setting_row(ui, theme, t.clipboard_from_programs, Some(t.clipboard_desc), |ui| {
-                toggle(ui, theme, &mut picked.clipboard_from_programs);
-            });
-            divider(ui, theme);
-            setting_row(ui, theme, t.health_row, Some(t.health_desc), |ui| {
-                toggle(ui, theme, &mut picked.server_health);
+                divider(ui, theme);
+                setting_row(ui, theme, t.notify_test, Some(t.notify_test_desc), |ui| {
+                    let button = egui::Button::new(egui::RichText::new(format!("🔔  {}", t.notify_test_button)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        test_clicked = true;
+                    }
+                });
             });
         });
-        card(ui, theme, Some(t.set_typing), |ui| {
-            setting_row(ui, theme, t.path_suggestions, Some(t.path_suggestions_desc), |ui| {
-                toggle(ui, theme, &mut picked.path_suggestions);
-            });
-            divider(ui, theme);
+        card(ui, theme, Some(t.set_guards), |ui| {
             setting_row(ui, theme, t.metal_guard, Some(t.metal_guard_desc), |ui| {
                 toggle(ui, theme, &mut picked.metal_guard);
             });
@@ -1416,13 +1416,24 @@ impl App {
             setting_row(ui, theme, t.confirm_close_busy, Some(t.confirm_close_busy_desc), |ui| {
                 toggle(ui, theme, &mut picked.confirm_close_busy);
             });
-        });
-        card(ui, theme, Some(t.set_databases), |ui| {
+            divider(ui, theme);
             setting_row(ui, theme, t.db_confirm_changes, Some(t.db_confirm_changes_desc), |ui| {
                 toggle(ui, theme, &mut picked.db_confirm_changes);
             });
         });
-        card(ui, theme, Some(t.set_claude), |ui| {
+        // With the style picked on this page (it may have just changed).
+        if test_clicked {
+            let saved = self.config.settings.notify_style;
+            self.config.settings.notify_style = picked.notify_style;
+            self.test_notification();
+            self.config.settings.notify_style = saved;
+        }
+    }
+
+    /// "Claude Code" page: its usage, notifications, Ronnie's introduction and the shared memory.
+    fn claude_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        ui.set_width(ui.available_width() - 12.0);
+        card(ui, theme, None, |ui| {
             // Read each time the page is drawn: Claude Code's settings may change elsewhere.
             let connected = crate::claude::connected();
             setting_row(ui, theme, t.claude_usage_row, Some(t.claude_usage_desc), |ui| {
@@ -1484,38 +1495,11 @@ impl App {
                 }
             });
         });
-        card(ui, theme, Some(t.set_notifications), |ui| {
-            setting_row(ui, theme, t.notify_commands, Some(t.notify_commands_hint), |ui| {
-                toggle(ui, theme, &mut picked.notify_commands);
-            });
-            divider(ui, theme);
-            ui.add_enabled_ui(picked.notify_commands, |ui| {
-                setting_row(ui, theme, t.notify_after, Some(t.notify_after_desc), |ui| {
-                    ui.add(egui::Slider::new(&mut picked.notify_after, config::NOTIFY_AFTER_SECS).logarithmic(true).suffix(" s"));
-                });
-                divider(ui, theme);
-                setting_row(ui, theme, t.notify_style, Some(t.notify_style_desc), |ui| {
-                    for (style, label) in [(config::NotifyStyle::Both, t.notify_both), (config::NotifyStyle::System, t.notify_system), (config::NotifyStyle::InApp, t.notify_in_app)] {
-                        if ui.add(egui::Button::selectable(picked.notify_style == style, egui::RichText::new(label).size(12.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))).clicked() {
-                            picked.notify_style = style;
-                        }
-                    }
-                });
-                if picked.notify_style.in_app() {
-                    divider(ui, theme);
-                    setting_row(ui, theme, t.toast_position, Some(t.toast_position_desc), |ui| {
-                        position_picker(ui, theme, &mut picked.toast_position);
-                    });
-                }
-                divider(ui, theme);
-                setting_row(ui, theme, t.notify_test, Some(t.notify_test_desc), |ui| {
-                    let button = egui::Button::new(egui::RichText::new(format!("🔔  {}", t.notify_test_button)).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        test_clicked = true;
-                    }
-                });
-            });
-        });
+    }
+
+    /// "Backup" page: export and import, the automatic backup, and the reset.
+    fn backup_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        ui.set_width(ui.available_width() - 12.0);
         card(ui, theme, Some(t.backup_section), |ui| {
             setting_row(ui, theme, t.backup_row, Some(t.backup_desc), |ui| {
                 let b = |text: &str| egui::Button::new(egui::RichText::new(text).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
@@ -1541,13 +1525,6 @@ impl App {
                 }
             });
         });
-        // With the style picked on this page (it may have just changed).
-        if test_clicked {
-            let saved = self.config.settings.notify_style;
-            self.config.settings.notify_style = picked.notify_style;
-            self.test_notification();
-            self.config.settings.notify_style = saved;
-        }
     }
 
     /// "Music" page: the Subsonic server (Navidrome…), its user and password, and a connection test.
@@ -1783,7 +1760,7 @@ impl App {
         }
     }
 
-    /// "Appearance" page: interface and text size, then the themes.
+    /// "Appearance" page: interface and text size, the sidebar, then the themes.
     fn appearance_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         ui.set_width(ui.available_width() - 12.0);
         card(ui, theme, Some(t.set_interface), |ui| {
@@ -1806,6 +1783,33 @@ impl App {
             setting_row(ui, theme, t.font_size, Some(t.font_size_desc), |ui| {
                 ui.add(egui::Slider::new(&mut picked.font_size, config::FONT_SIZES).step_by(1.0).suffix(" pt"));
             });
+            divider(ui, theme);
+            setting_row(ui, theme, t.bar_arrows_setting, Some(t.bar_arrows_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.bar_arrows);
+            });
+        });
+        card(ui, theme, Some(t.sidebar_setting), |ui| {
+            setting_row(ui, theme, t.resources_setting, Some(t.resources_setting_desc), |ui| {
+                toggle(ui, theme, &mut picked.resources_panel);
+            });
+            divider(ui, theme);
+            ui.label(egui::RichText::new(t.sidebar_setting_desc).size(12.5).color(theme.text_muted));
+            ui.add_space(4.0);
+            for (k, category) in Category::ordered(&picked.category_order).into_iter().enumerate() {
+                if k > 0 {
+                    divider(ui, theme);
+                }
+                let desc = (category == Category::Music).then_some(t.sidebar_music_desc);
+                setting_row(ui, theme, super::sidebar::category_name(t, category), desc, |ui| {
+                    let mut on = !picked.hidden_categories.contains(&category);
+                    if toggle(ui, theme, &mut on).changed() {
+                        picked.hidden_categories.retain(|c| *c != category);
+                        if !on {
+                            picked.hidden_categories.push(category);
+                        }
+                    }
+                });
+            }
         });
         for (dark, title) in [(true, t.themes_dark), (false, t.themes_light)] {
             section_title(ui, theme, title);
@@ -2202,6 +2206,35 @@ impl App {
             self.editor = Some(ConfigEditor::new(self.config.to_json()));
         }
     }
+}
+
+/// "Terminal" page: what the terminals show, and help while typing.
+fn terminal_page(ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+    ui.set_width(ui.available_width() - 12.0);
+    card(ui, theme, Some(t.set_display), |ui| {
+        setting_row(ui, theme, t.show_cwd, Some(t.show_cwd_desc), |ui| {
+            toggle(ui, theme, &mut picked.show_cwd);
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.restore_scrollback, Some(t.restore_scrollback_desc), |ui| {
+            if toggle(ui, theme, &mut picked.restore_scrollback).changed() && !picked.restore_scrollback {
+                crate::shell::forget_scrollbacks();
+            }
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.scrollback, Some(t.scrollback_desc), |ui| {
+            ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
+        });
+    });
+    card(ui, theme, Some(t.set_typing), |ui| {
+        setting_row(ui, theme, t.path_suggestions, Some(t.path_suggestions_desc), |ui| {
+            toggle(ui, theme, &mut picked.path_suggestions);
+        });
+        divider(ui, theme);
+        setting_row(ui, theme, t.clipboard_from_programs, Some(t.clipboard_desc), |ui| {
+            toggle(ui, theme, &mut picked.clipboard_from_programs);
+        });
+    });
 }
 
 /// A page of the settings in the side navigation. Returns whether it was clicked.
