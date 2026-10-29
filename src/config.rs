@@ -732,6 +732,9 @@ pub struct Settings {
     /// The automatic backup (see app/backup.rs).
     #[serde(default)]
     pub auto_backup: AutoBackup,
+    /// The week's recap in the notes (see recap.rs).
+    #[serde(default)]
+    pub recap: Recap,
 }
 
 fn default_mail_port() -> u16 {
@@ -792,6 +795,26 @@ impl Category {
             }
         }
         all
+    }
+}
+
+/// The week's recap: each evening at `hour` o'clock the day goes into the week's note (Tuesday to
+/// Tuesday). Off unless asked: the time spent is counted.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Recap {
+    #[serde(default)]
+    pub on: bool,
+    #[serde(default = "default_recap_hour")]
+    pub hour: u32,
+}
+
+fn default_recap_hour() -> u32 {
+    18
+}
+
+impl Default for Recap {
+    fn default() -> Self {
+        Self { on: false, hour: default_recap_hour() }
     }
 }
 
@@ -1225,7 +1248,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, auto_backup: AutoBackup::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), files_hidden: false, bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, auto_backup: AutoBackup::default(), recap: Recap::default() }
     }
 }
 

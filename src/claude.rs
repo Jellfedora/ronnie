@@ -102,7 +102,7 @@ pub fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 }
 
 /// Claude Code's folder: its settings, its conversations.
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     match std::env::var_os("CLAUDE_CONFIG_DIR") {
         Some(dir) => Some(PathBuf::from(dir)),
         None => Some(directories::BaseDirs::new()?.home_dir().join(".claude")),

@@ -61,6 +61,7 @@ mod popups;
 mod profilebar;
 mod resources;
 mod playtime;
+mod recap;
 mod viewer;
 mod settings;
 mod scorecard;
@@ -399,6 +400,8 @@ pub struct App {
     backup: Option<backup::BackupDialog>,
     /// The automatic backup of the configuration.
     auto_backup: backup::AutoBackupState,
+    /// The week's recap: the time counted, the days written into the notes (see recap.rs).
+    recap: recap::Recap,
     /// Asking whether to turn the automatic backup on.
     backup_ask: Option<backup::BackupAsk>,
     /// Listening to the user, for Claude Code in that pane.
@@ -1243,6 +1246,7 @@ impl App {
             games_drawn: Vec::new(),
             backup: None,
             auto_backup: backup::AutoBackupState::default(),
+            recap: recap::Recap::default(),
             backup_ask: None,
             dictation: None,
             sysmon: None,
@@ -4287,6 +4291,7 @@ impl App {
         if ui.input(|i| i.viewport().focused) == Some(true) {
             self.dialog_viewport = self.viewport;
         }
+        self.recap_track(ui);
         let dialogs_here = self.dialog_viewport == self.viewport;
         // Background tabs must keep answering their programs (cursor position reports, etc).
         for (i, tab) in self.tabs.iter_mut().enumerate() {
@@ -5312,6 +5317,7 @@ impl eframe::App for App {
         self.mail_poll(ctx);
         self.watch_servers(ctx);
         self.auto_backup_poll(ctx);
+        self.recap_poll(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -5388,6 +5394,7 @@ impl eframe::App for App {
         self.save_scrollbacks(None, false);
         self.sync();
         self.auto_backup_on_exit();
+        self.recap_save();
         crate::askpass::cleanup();
         self.mail_stop();
     }

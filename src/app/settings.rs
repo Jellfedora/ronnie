@@ -1437,7 +1437,7 @@ impl App {
         }
     }
 
-    /// "Claude Code" page: its usage, notifications, Ronnie's introduction and the shared memory.
+    /// "Claude Code" page: its usage, notifications, Ronnie's introduction, the shared memory and the week's recap.
     fn claude_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         ui.set_width(ui.available_width() - 12.0);
         card(ui, theme, None, |ui| {
@@ -1500,6 +1500,24 @@ impl App {
                     }
                     self.claude_error = done.err();
                 }
+            });
+        });
+        card(ui, theme, Some(t.recap_section), |ui| {
+            setting_row(ui, theme, t.recap_row, Some(t.recap_desc), |ui| {
+                toggle(ui, theme, &mut picked.recap.on);
+            });
+            ui.add_enabled_ui(picked.recap.on, |ui| {
+                divider(ui, theme);
+                setting_row(ui, theme, t.recap_hour, Some(t.recap_hour_desc), |ui| {
+                    ui.add(egui::DragValue::new(&mut picked.recap.hour).range(0..=23).suffix(" h"));
+                });
+                divider(ui, theme);
+                setting_row(ui, theme, t.recap_now, Some(t.recap_now_desc), |ui| {
+                    let button = egui::Button::new(egui::RichText::new(t.recap_now).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.recap.write_now();
+                    }
+                });
             });
         });
     }
