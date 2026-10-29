@@ -453,6 +453,34 @@ impl Notes {
         self.changed(ui);
     }
 
+    /// A note given whole (by Claude, see `claude::NewNote`), in the folder of that name at the top (made
+    /// when there is none; None: "Notes"), saved now. Its id.
+    pub(super) fn add(&mut self, text: &str, folder: Option<&str>) -> Uuid {
+        let now = now_ms();
+        let folder = folder.map(|name| {
+            let found = self.store.folders.iter().find(|f| !f.deleted && f.parent.is_none() && f.name.to_lowercase() == name.to_lowercase()).map(|f| f.id);
+            found.unwrap_or_else(|| {
+                let id = Uuid::new_v4();
+                self.store.folders.push(Folder { id, name: name.to_owned(), parent: None, updated: now, deleted: false });
+                id
+            })
+        });
+        let id = Uuid::new_v4();
+        self.store.notes.push(Note { id, folder, text: text.to_owned(), created: now, updated: now, pinned: false, trashed: None });
+        self.dirty = Some(0.0);
+        self.flush();
+        id
+    }
+
+    /// The note `id` shown, in its folder, rendered.
+    pub(super) fn show(&mut self, id: Uuid) {
+        let Some(folder) = self.note(id).map(|n| n.folder) else { return };
+        self.place = Place::Folder(folder);
+        self.search.clear();
+        self.rendered = true;
+        self.select(Some(id));
+    }
+
     pub(super) fn apply(&mut self, action: Action, ui: &Ui, t: &Strings) {
         let now = now_ms();
         match action {
@@ -2323,7 +2351,7 @@ fn single_line(text: &str, font: FontId, color: Color32, width: f32) -> LayoutJo
 }
 
 /// A note's title: its first line with text, without the "#" of a heading.
-fn title_of(text: &str) -> Option<&str> {
+pub(super) fn title_of(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| l.trim_start_matches('#').trim()).filter(|l| !l.is_empty())
 }
 
@@ -2782,6 +2810,19 @@ fn paint_more_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_given_whole() {
+        let mut notes = Notes::with(Store::default(), None, None);
+        let a = notes.add("# A", Some("Bureau"));
+        let b = notes.add("# B", Some("bureau"));
+        let c = notes.add("# C", None);
+        assert_eq!(notes.folders().len(), 1);
+        assert_eq!(notes.note(a).unwrap().folder, notes.note(b).unwrap().folder);
+        assert!(notes.note(a).unwrap().folder.is_some() && notes.note(c).unwrap().folder.is_none());
+        notes.show(b);
+        assert_eq!(notes.selected, Some(b));
+    }
 
     #[test]
     fn titles_and_previews() {

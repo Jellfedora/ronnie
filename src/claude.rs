@@ -456,7 +456,12 @@ database (writing or deleting files, UPDATE / DELETE / ALTER, migrations, restar
 first and run only once they agree, one change at a time; on production (a name with \"prod\"…) even more so.
 - Terminals (\"{local}\"): tabs, splits and profiles (a project's tab saved with its folder and panes); beside them the \
 profile's files, its git (changes, history, issues) and an editor. Ronnie tells the user when you are done or wait for \
-them while this pane isn't on screen.",
+them while this pane isn't on screen.
+- Notes (\"{notes}\", in the left column): Markdown notes in folders. When the user asks you for a note (\"crée-moi une \
+note\", \"mets ça dans une note\"…), add it to Ronnie yourself: pipe its Markdown (first line `# Title`; lists, tables, \
+code allowed) to `{note_cmd}`, or give a file: `{note_cmd} note.md`; `--folder \"<name>\"` puts it in that folder (made \
+if missing), else it goes in \"{notes_default}\". Don't write notes.json: Ronnie keeps the notes in memory and would \
+overwrite it. Ronnie shows the note and tells the user.",
         // Claude Code runs its commands in Git Bash there: C:\Users\… is written /c/Users/….
         path_note = if cfg!(windows) { "; in Git Bash, the folder written /c/Users/…" } else { "" },
         node_manage = t.node_manage,
@@ -465,6 +470,9 @@ them while this pane isn't on screen.",
         hosts = t.home_hosts,
         dbs = t.home_databases,
         local = t.cat_local,
+        notes = t.notes,
+        notes_default = t.notes_default,
+        note_cmd = ronnie_command("note"),
     );
     text.push_str("\n\nThis pane and this Ronnie now:");
     // The version is its folder's name: <versions>/v22.11.0/bin (on Windows, the version's folder itself).
@@ -581,6 +589,79 @@ pub fn watch_events(ctx: egui::Context, queue: std::sync::Arc<std::sync::Mutex<V
                 queue.lock().unwrap().extend(events.into_iter().map(|e| (e, now)));
                 ctx.request_repaint();
             }
+        }
+    });
+}
+
+/// A note Claude leaves for Ronnie (`ronnie note`): Markdown, its first line the title, and the folder
+/// to put it in (by name; None: "Notes").
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewNote {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+/// Where notes wait for Ronnie: one folder for every Ronnie on this config, kept while none runs (the
+/// next one to start takes them).
+fn notes_inbox() -> Option<PathBuf> {
+    crate::config::config_dir().map(|d| d.join("notes-inbox"))
+}
+
+/// `ronnie note [--folder <name>] [file]`: the note's Markdown from the file, or stdin.
+pub fn run_note() -> Result<(), String> {
+    let mut args = std::env::args().skip(2);
+    let (mut folder, mut file) = (None, None);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--folder" => folder = Some(args.next().ok_or("--folder: which folder?")?),
+            _ if arg.starts_with('-') && arg != "-" => return Err(format!("unknown option {arg}\nUsage: ronnie note [--folder <name>] [file]   (Markdown, else from stdin)")),
+            _ => file = Some(arg),
+        }
+    }
+    let text = match file.filter(|f| f != "-") {
+        Some(file) => std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?,
+        None => {
+            let mut text = String::new();
+            std::io::stdin().take(4 << 20).read_to_string(&mut text).map_err(|e| e.to_string())?;
+            text
+        }
+    };
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        return Err("empty note".into());
+    }
+    let note = NewNote { text, folder: folder.map(|f| f.trim().to_owned()).filter(|f| !f.is_empty()) };
+    let dir = notes_inbox().ok_or("no config folder")?;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let json = serde_json::to_string(&note).map_err(|e| e.to_string())?;
+    write_atomic(&dir.join(format!("{nanos}-{}.json", std::process::id())), &json).map_err(|e| e.to_string())?;
+    println!("Note left for Ronnie (it adds it within a second, or when it next starts).");
+    Ok(())
+}
+
+/// Watches the notes' inbox (once a second): the notes left go to `queue`, oldest first, and the
+/// window is redrawn. A note is taken by the Ronnie that removes its file.
+pub fn watch_notes(ctx: egui::Context, queue: std::sync::Arc<std::sync::Mutex<Vec<NewNote>>>) {
+    let Some(dir) = notes_inbox() else { return };
+    let _ = std::thread::Builder::new().name("notes-inbox".into()).spawn(move || {
+        loop {
+            let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+            paths.sort();
+            let mut notes = Vec::new();
+            for path in paths {
+                let note = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<NewNote>(&t).ok());
+                if std::fs::remove_file(&path).is_ok()
+                    && let Some(note) = note
+                {
+                    notes.push(note);
+                }
+            }
+            if !notes.is_empty() {
+                queue.lock().unwrap().extend(notes);
+                ctx.request_repaint();
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     });
 }

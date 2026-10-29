@@ -223,7 +223,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if std::env::args().skip(1).any(|a| a == "--help" || a == "-h") {
-        println!("Ronnie {} — Terminal Power Métal\n\nUsage: ronnie [--version | --help]\n\nEnvironment:\n  RONNIE_CONFIG_DIR   use another config directory\n  RONNIE_UPDATE_CHECK look for updates even in a dev build", update::VERSION);
+        println!("Ronnie {} — Terminal Power Métal\n\nUsage: ronnie [--version | --help]\n       ronnie note [--folder <name>] [file]   add a Markdown note (else from stdin)\n\nEnvironment:\n  RONNIE_CONFIG_DIR   use another config directory\n  RONNIE_UPDATE_CHECK look for updates even in a dev build", update::VERSION);
         return Ok(());
     }
     log::install_panic_hook();
@@ -237,6 +237,14 @@ fn main() -> eframe::Result {
     // Claude Code's hooks: Claude is done, or waits for the user.
     if std::env::args().nth(1).as_deref() == Some("claude-hook") {
         claude::run_hook();
+        return Ok(());
+    }
+    // A note for the Ronnie running (Claude adds them so).
+    if std::env::args().nth(1).as_deref() == Some("note") {
+        if let Err(e) = claude::run_note() {
+            eprintln!("ronnie note: {e}");
+            std::process::exit(1);
+        }
         return Ok(());
     }
     #[cfg(target_os = "linux")]

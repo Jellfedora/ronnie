@@ -428,6 +428,8 @@ pub struct App {
     claude_error: Option<String>,
     /// What Claude Code's hooks told (see `claude::watch_events`), until the window of its pane takes it.
     claude_events: std::sync::Arc<std::sync::Mutex<Vec<(crate::claude::Event, Instant)>>>,
+    /// The notes Claude left (see `claude::watch_notes`), until they are added.
+    claude_notes: std::sync::Arc<std::sync::Mutex<Vec<crate::claude::NewNote>>>,
     /// The music server's form in the settings, while they are open.
     subsonic_form: Option<SubsonicForm>,
     /// The radio, and its volume changed since the config was last saved.
@@ -1240,6 +1242,7 @@ impl App {
             claude: ClaudeUsage::default(),
             claude_error: None,
             claude_events: Default::default(),
+            claude_notes: Default::default(),
             subsonic_form: None,
             music: music::Music::default(),
             music_volume_changed: false,
@@ -1428,11 +1431,12 @@ impl App {
             }
         }
         crate::claude::watch_events(app.ctx.clone(), app.claude_events.clone());
+        crate::claude::watch_notes(app.ctx.clone(), app.claude_notes.clone());
         // Development: open the settings on a page right away (to look at them).
         if cfg!(debug_assertions) {
             if std::env::var_os("RONNIE_DEMO_TOAST").is_some() {
                 app.splash = None;
-                app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now(), mail: None });
+                app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now(), mail: None, note: None });
             }
             // Puissance 4: "lobby", or the columns played against the computer ("3342"...).
             if let Ok(four) = std::env::var("RONNIE_OPEN_FOUR") {
@@ -2096,7 +2100,7 @@ impl App {
             // system's, or both, as chosen.
             let body = format!("{command}\n{}  ·  {duration}", tab.title());
             if focused && !shown && settings.notify_style.in_app() {
-                self.toasts.push(Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None });
+                self.toasts.push(Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None, note: None });
             }
             if focused && !shown && settings.notify_style.system() {
                 crate::notify::send(&title, &body);
@@ -2113,6 +2117,7 @@ impl App {
         if self.claude_events(ctx) {
             notified = true;
         }
+        self.claude_notes();
         if notified {
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
@@ -2152,7 +2157,7 @@ impl App {
             let body = t.health_disk_full_body.replace("{host}", &name).replace("{m}", &mount).replace("{p}", &format!("{percent:.0}"));
             let tab = self.tabs.iter().position(|t| t.ssh == Some(id));
             if let Some(tab) = tab.filter(|_| focused && style.in_app()) {
-                self.toasts.push(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now(), mail: None });
+                self.toasts.push(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now(), mail: None, note: None });
             }
             if !focused || style.system() || tab.is_none() {
                 crate::notify::send(t.health_disk_full, &body);
@@ -2202,7 +2207,7 @@ impl App {
             };
             let style = self.config.settings.notify_style;
             if focused && style.in_app() {
-                self.toasts.push(Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None });
+                self.toasts.push(Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None, note: None });
             }
             if !focused || style.system() {
                 crate::notify::send(title, &body);
@@ -2212,13 +2217,28 @@ impl App {
         notified
     }
 
+    /// The notes Claude left: added, and told in a notice that leads to them.
+    fn claude_notes(&mut self) {
+        let notes = std::mem::take(&mut *self.claude_notes.lock().unwrap());
+        for note in notes {
+            let id = self.notes.add(&note.text, note.folder.as_deref());
+            let title = notes::title_of(&note.text).unwrap_or_default();
+            let body = match &note.folder {
+                Some(folder) => format!("{title}\n{folder}"),
+                None => title.to_owned(),
+            };
+            let t = self.t();
+            self.toasts.push(Toast { ok: true, title: t.claude_note.to_owned(), body, tab: self.active, at: std::time::Instant::now(), mail: None, note: Some(id) });
+        }
+    }
+
     /// A sample notice, as the settings' "Test" button shows it (in the window, from the system, or both).
     fn test_notification(&mut self) {
         let t = self.t();
         let body = format!("{}\n{}  ·  12 s", t.notify_test_command, self.tabs.get(self.active).map_or("Ronnie", |t| t.title()));
         let style = self.config.settings.notify_style;
         if style.in_app() {
-            self.toasts.push(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now(), mail: None });
+            self.toasts.push(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now(), mail: None, note: None });
         }
         if style.system() {
             crate::notify::send(t.command_done, &body);
@@ -2246,6 +2266,7 @@ impl App {
         let mut hovered_any = false;
         let t_go_to_tab = self.t().go_to_tab;
         let t_see_mail = self.t().mail_see;
+        let t_see_note = self.t().note_see;
         let t_close = self.t().close;
         let mut dismiss = None;
         let mut rects = vec![Rect::NOTHING; self.toasts.len()];
@@ -2289,9 +2310,9 @@ impl App {
                     // Two plain buttons: go to what it's about, or just dismiss it.
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        let see = egui::Button::new(egui::RichText::new(format!("{}  →", if toast.mail.is_some() { t_see_mail } else { t_go_to_tab })).size(13.0).strong().color(self.theme.bg)).fill(mark).corner_radius(8.0).min_size(Vec2::new(0.0, 30.0));
+                        let see = egui::Button::new(egui::RichText::new(format!("{}  →", if toast.mail.is_some() { t_see_mail } else if toast.note.is_some() { t_see_note } else { t_go_to_tab })).size(13.0).strong().color(self.theme.bg)).fill(mark).corner_radius(8.0).min_size(Vec2::new(0.0, 30.0));
                         if ui.add(see).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            go = Some((k, toast.tab, toast.mail.clone()));
+                            go = Some((k, toast.tab, toast.mail.clone(), toast.note));
                         }
                         ui.add_space(4.0);
                         let close = egui::Button::new(egui::RichText::new(t_close).size(13.0).color(self.theme.text)).fill(self.theme.tab_hover).stroke(Stroke::new(1.0, self.theme.text_muted.gamma_multiply(0.4))).corner_radius(8.0).min_size(Vec2::new(0.0, 30.0));
@@ -2312,7 +2333,7 @@ impl App {
             let resp = area.response.clone();
             hovered_any |= resp.hovered();
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && go.is_none() && dismiss.is_none() {
-                go = Some((k, toast.tab, toast.mail.clone()));
+                go = Some((k, toast.tab, toast.mail.clone(), toast.note));
             }
             // The next one stacks away from the edge.
             let step = area.response.rect.height() + 10.0;
@@ -2329,11 +2350,15 @@ impl App {
         self.toast_rects = rects;
         if let Some(k) = dismiss {
             self.toasts.remove(k);
-        } else if let Some((k, tab, mail)) = go {
+        } else if let Some((k, tab, mail, note)) = go {
             self.toasts.remove(k);
-            match mail {
-                Some(id) => self.open_mail(&id),
-                None => self.select(tab),
+            match (mail, note) {
+                (Some(id), _) => self.open_mail(&id),
+                (None, Some(id)) => {
+                    self.open_notes();
+                    self.notes.show(id);
+                }
+                (None, None) => self.select(tab),
             }
         }
         ctx.request_repaint_after(Duration::from_millis(50));
@@ -3048,6 +3073,8 @@ struct Toast {
     at: std::time::Instant,
     /// A mail caught: leads to it instead (empty: to the mails).
     mail: Option<String>,
+    /// A note added by Claude: leads to it instead.
+    note: Option<Uuid>,
 }
 
 /// "45 s", "2 min 14 s", "1 h 03 min".
