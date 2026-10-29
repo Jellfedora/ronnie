@@ -461,14 +461,17 @@ them while this pane isn't on screen.
 - You can drive this Ronnie from here with `{ronnie}` (`{ronnie} --help` lists it all): `panes` (every window, tab, \
 pane with its number, folder, program and Node.js, and the saved profiles), `run <command>` (a pane split off yours \
 running it: a dev server, a watcher… rather than in the background of your own shell), `output <pane>` (what a pane \
-shows), `tab`, `type <pane> <text>`, `cd <pane> <dir>`, `node <pane> <version|system>`, `node install vX.Y.Z`, \
-`rename`, `close`, `profile` (save one, its JSON on stdin; `profile open <name>`), `notes` / `notes show <id>` (read \
+shows), `tab`, `type <pane> <text>`, `cd <pane> <dir>`, `node <pane> <version|system>`, \
+`node available`, `node install <latest|lts|22|vX.Y.Z>`, `rename`, `close`, `profile` (save one, its JSON on \
+stdin; `profile open <name>`), `notes` / `notes show <id>` (read \
 the user's notes), `note` (add one), `mails` / `mails show <id|last>` (the mails caught by the mail catcher: check a \
 project's mails yourself), `open <file>` and `show <pane|notes|mails|dev…>`. When the user asks for a note \
 (\"crée-moi une note\"…), pipe its Markdown (first line `# Title`) to `{ronnie} note`, `--folder \"<name>\"` to file it \
 (else it goes in \"{notes_default}\"); never write notes.json (Ronnie keeps the notes in memory). What would change \
 the user's view (`show`, `open`) is only proposed in a notice they accept; new tabs open in the background. Typing in \
-or closing a pane where something runs (`running …` in `panes`) interrupts the user's work: ask them first.",
+or closing a pane where something runs (`running …` in `panes`) interrupts the user's work: ask them first. For a \
+new project needing Node.js, propose the newest version (`node available`), install it once the user agrees, and set \
+it on the project's panes.",
         // Claude Code runs its commands in Git Bash there: C:\Users\… is written /c/Users/….
         path_note = if cfg!(windows) { "; in Git Bash, the folder written /c/Users/…" } else { "" },
         node_manage = t.node_manage,

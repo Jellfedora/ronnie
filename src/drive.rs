@@ -138,7 +138,9 @@ Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
   ronnie cd <pane> <dir>                change a pane's folder
   ronnie node                           Node.js versions installed
   ronnie node <pane> <version|system>   a pane's Node.js version, from its next command
-  ronnie node install <vX.Y.Z>          install a Node.js version
+  ronnie node available                 the newest version of each line on nodejs.org (LTS marked)
+  ronnie node install <latest|lts|22|vX.Y.Z>
+                                        install a Node.js version (the newest matching)
   ronnie rename <pane> [name]           name a pane (no name: unnamed)
   ronnie close <pane>                   close a pane
   ronnie show <pane|notes|note ID|mails|mail ID|dev>
@@ -179,7 +181,8 @@ pub fn run_cli() -> Option<Result<(), String>> {
         },
         "node" => match rest.as_slice() {
             [] => Ok(installed_node()),
-            ["install", version] => ask(Ask::NodeInstall { version: (*version).to_owned() }),
+            ["install", spec] => resolve_node(spec).and_then(|version| ask(Ask::NodeInstall { version })),
+            ["available"] => available_node(),
             _ => match pane_arg(&rest) {
                 Ok((pane, [version])) => ask(Ask::Node { pane, version: (*version != "system").then(|| (*version).to_owned()) }),
                 Ok(_) => Err(USAGE.into()),
@@ -302,6 +305,51 @@ fn installed_node() -> String {
     } else {
         format!("Node.js versions installed in Ronnie: {}", installed.join(", "))
     }
+}
+
+/// An exact version for `spec`: as given (vX.Y.Z), else the newest on nodejs.org that is "latest",
+/// "lts", or of that line ("22", "v22", "22.11").
+fn resolve_node(spec: &str) -> Result<String, String> {
+    let spec = spec.trim();
+    let v = if spec.starts_with('v') { spec.to_owned() } else { format!("v{spec}") };
+    if v.split('.').count() == 3 {
+        return Ok(v);
+    }
+    let releases = crate::node::releases().map_err(|e| format!("{e:#}"))?;
+    let found = match spec.to_lowercase().as_str() {
+        "latest" | "current" => releases.first(),
+        "lts" => releases.iter().find(|r| r.lts.is_some()),
+        _ => releases.iter().find(|r| r.version.starts_with(&format!("{v}."))),
+    };
+    found.map(|r| r.version.clone()).ok_or_else(|| format!("no Node.js {spec} on nodejs.org"))
+}
+
+/// The newest version of each of the last lines, from nodejs.org.
+fn available_node() -> Result<String, String> {
+    let releases = crate::node::releases().map_err(|e| format!("{e:#}"))?;
+    let installed = crate::node::installed();
+    let mut lines = Vec::new();
+    let mut majors = Vec::new();
+    for r in &releases {
+        let major = crate::node::parse(&r.version).0;
+        if majors.contains(&major) {
+            continue;
+        }
+        majors.push(major);
+        let mut line = format!("{}  {}", r.version, r.date);
+        if let Some(lts) = &r.lts {
+            line.push_str(&format!("  LTS {lts}"));
+        }
+        if installed.contains(&r.version) {
+            line.push_str("  (installed)");
+        }
+        lines.push(line);
+        if lines.len() == 8 {
+            break;
+        }
+    }
+    Ok(format!("{}
+Installed in Ronnie: {}", lines.join("\n"), if installed.is_empty() { "none".into() } else { installed.join(", ") }))
 }
 
 /// The notes as saved (a change made in the last seconds may not be yet).
