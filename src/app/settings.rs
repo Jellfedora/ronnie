@@ -2308,6 +2308,20 @@ fn features_page(ui: &mut Ui, t: &Strings, theme: &Theme) {
             }
         });
     }
+    card(ui, theme, Some(t.contributors_title), |ui| {
+        for (k, (login, what)) in t.contributors.iter().enumerate() {
+            if k > 0 {
+                divider(ui, theme);
+            }
+            setting_row(ui, theme, &format!("@{login}"), Some(what), |ui| {
+                let url = format!("https://github.com/{login}");
+                let github = egui::Button::new(egui::RichText::new("GitHub").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                if ui.add(github).on_hover_text(&url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    crate::terminal::open_url(&url);
+                }
+            });
+        }
+    });
 }
 
 /// Thin line between two settings of a card.
