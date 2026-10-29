@@ -1,13 +1,11 @@
-//! The Claude button of a local pane's strip: Claude Code started in the pane or, when it held
-//! conversations in that folder already, the list of them, to take one up again or start a new one.
+//! The Claude button of a local pane's strip: Claude Code started or, when it held conversations in
+//! that folder already, the list of them, to take one up again or start a new one. In the pane when its
+//! shell waits at its prompt, else (Claude Code, or another program, runs there) in a new pane beside it.
 
 use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::claude::Session;
-
-/// The orange of Claude's mark.
-pub(super) const CLAUDE_ORANGE: Color32 = Color32::from_rgb(0xD9, 0x77, 0x57);
 
 /// The conversations of a pane's folder, read in the background as their list opens.
 pub(super) struct History {
@@ -32,6 +30,9 @@ impl History {
     }
 }
 
+/// Height of a conversation in the list.
+const ROW_H: f32 = 28.0;
+
 /// What to type at the pane's prompt: Claude Code, taking up conversation `id` if any.
 pub(super) fn command(id: Option<&str>) -> String {
     match id {
@@ -40,13 +41,15 @@ pub(super) fn command(id: Option<&str>) -> String {
     }
 }
 
-/// Claude's mark: rays of two lengths around a center.
-pub(super) fn paint_mark(painter: &egui::Painter, c: Pos2, r: f32, color: Color32) {
-    for k in 0..12 {
-        let dir = Vec2::angled(k as f32 * std::f32::consts::TAU / 12.0 - std::f32::consts::FRAC_PI_2);
-        let len = if k % 2 == 0 { r } else { r * 0.72 };
-        painter.line_segment([c + dir * 1.2, c + dir * len], Stroke::new(1.7, color));
-    }
+/// Claude's mark in `rect` (faded: `tint` less than white).
+pub(super) fn paint_mark(ui: &Ui, rect: Rect, tint: Color32) {
+    let key = egui::Id::new("claude-logo");
+    let texture = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(key)).unwrap_or_else(|| {
+        let texture = load_png(ui.ctx(), "claude-logo", include_bytes!("../../assets/icon/claude-logo.png"));
+        ui.ctx().data_mut(|d| d.insert_temp(key, texture.clone()));
+        texture
+    });
+    ui.painter().image(texture.id(), rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
 }
 
 /// The list under the button: a new conversation, then those held, the latest first, filtered by what is
@@ -82,9 +85,11 @@ pub(super) fn menu(resp: &egui::Response, history: &mut History, theme: &Theme, 
             ui.close();
             return;
         }
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+        // Sized for the rows (the popup's first frame, while they were read, was small).
+        let height = (shown.len() as f32 * (ROW_H + ui.spacing().item_spacing.y)).min(420.0);
+        egui::ScrollArea::vertical().min_scrolled_height(height).max_height(height).show(ui, |ui| {
             for session in shown {
-                let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(row, 4.0, theme.tab_hover);
                 }
