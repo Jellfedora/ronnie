@@ -635,7 +635,6 @@ pub struct Strings {
     pub notes_delete_col: &'static str,
     pub notes_save_error: &'static str,
     pub notes_in_trash: &'static str,
-    pub notes_hint: &'static str,
     /// Month names, January first.
     pub months: [&'static str; 12],
     pub db_exporting: &'static str,
@@ -2210,7 +2209,6 @@ pub static FR: Strings = Strings {
     notes_delete_col: "Supprimer la colonne",
     notes_save_error: "Les notes n'ont pas pu être enregistrées : {e}",
     notes_in_trash: "Dans les suppressions récentes : clic droit dans la liste pour la récupérer. Elle sera supprimée au bout de 30 jours.",
-    notes_hint: "Le titre sur la première ligne, puis du Markdown : # titres, - listes, - [ ] tâches, **gras**, *italique*, `code`.",
     months: ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"],
     db_exporting: "Export de {db}",
     db_importing: "Import de {file}",
@@ -3812,7 +3810,6 @@ pub static EN: Strings = Strings {
     notes_delete_col: "Delete the column",
     notes_save_error: "The notes could not be saved: {e}",
     notes_in_trash: "In Recently deleted: right-click it in the list to recover it. It will be deleted after 30 days.",
-    notes_hint: "The title on the first line, then Markdown: # headings, - lists, - [ ] tasks, **bold**, *italics*, `code`.",
     months: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
     db_exporting: "Exporting {db}",
     db_importing: "Importing {file}",

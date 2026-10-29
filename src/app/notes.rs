@@ -1046,7 +1046,6 @@ impl Notes {
                     .desired_rows(rows)
                     .lock_focus(true)
                     .interactive(!trashed)
-                    .hint_text(t.notes_hint)
                     .layouter(&mut layouter)
                     .show(ui);
                 changed = out.response.changed();
