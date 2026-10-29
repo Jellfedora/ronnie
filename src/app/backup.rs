@@ -575,7 +575,13 @@ impl App {
     /// password, a damaged file) changes nothing.
     pub(super) fn import_config(&mut self, path: &Path, manifest: &Manifest, password: &str) -> Result<(), String> {
         let t = self.t();
-        let prepared = prepare(path, manifest, password, t)?;
+        let mut prepared = prepare(path, manifest, password, t)?;
+        // A dev build trying an export of the installed app: not its open tabs (their programs and SSH
+        // connections would run twice) nor its automatic backup (written beside the installed app's).
+        if !config::OFFICIAL {
+            prepared.session = None;
+            prepared.config.settings.auto_backup = config::AutoBackup { asked: true, ..Default::default() };
+        }
         let dir = config::config_dir().ok_or("no config folder")?;
         // As a reset: nothing written by this instance any more, the current files moved aside.
         self.sync();
