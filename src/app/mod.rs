@@ -4046,8 +4046,9 @@ enum PaneAction {
     Node(PaneId, Option<String>),
     /// Show the Node.js versions (the sidebar's Dev category).
     NodeManage,
-    /// Claude Code in a new pane beside this one, taking up that conversation if any.
-    Claude(PaneId, Option<String>),
+    /// Claude Code taking up that conversation if any: in this pane started again (true), or in a new
+    /// pane beside it.
+    Claude(PaneId, Option<String>, bool),
 }
 
 /// The pane's folder, from the root. On a server (`ssh`), "~" is its home: known once the file
@@ -4729,8 +4730,9 @@ impl App {
                                     term.type_text(&format!("{clear}{}", history::command(session.as_deref())));
                                     term.request_focus(ui);
                                 } else {
-                                    // Claude Code, or another program, runs there: in a new pane beside it.
-                                    pane_action = Some(PaneAction::Claude(id, session));
+                                    // Claude Code there: it gives way, the pane started again. Another
+                                    // program: left running, Claude Code in a new pane beside it.
+                                    pane_action = Some(PaneAction::Claude(id, session, claude_running));
                                 }
                             }
                         }
@@ -5068,7 +5070,12 @@ impl App {
                         tab.focused = id;
                         self.split(ui.ctx(), self.active, side);
                     }
-                    Some(PaneAction::Claude(id, session)) => {
+                    Some(PaneAction::Claude(id, session, true)) => {
+                        self.relaunch(ui.ctx(), self.active, id, false);
+                        self.claude_typing.push((id, history::command(session.as_deref()), Instant::now()));
+                        self.focus_terminal = true;
+                    }
+                    Some(PaneAction::Claude(id, session, false)) => {
                         tab.focused = id;
                         self.split(ui.ctx(), self.active, Direction::Right);
                         let new = self.tabs[self.active].focused;

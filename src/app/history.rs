@@ -1,6 +1,7 @@
 //! The Claude button of a local pane's strip: Claude Code started or, when it held conversations in
 //! that folder already, the list of them, to take one up again or start a new one. In the pane when its
-//! shell waits at its prompt, else (Claude Code, or another program, runs there) in a new pane beside it.
+//! shell waits at its prompt or Claude Code runs there (the pane is started again), else (another
+//! program runs there) in a new pane beside it.
 
 use std::sync::{Arc, Mutex};
 
