@@ -1225,11 +1225,14 @@ impl App {
                         self.settings_tab = tab;
                     }
                 }
-                // "Features" and "About" at the bottom, apart (drawn upwards: About last).
+                // "Features", "What's new" and "About" at the bottom, apart (drawn upwards: About last).
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(4.0);
                     if nav_item(ui, &theme, "i", t.about, self.settings_tab == SettingsTab::About) {
                         self.settings_tab = SettingsTab::About;
+                    }
+                    if nav_item(ui, &theme, "✦", t.changelog_nav, self.settings_tab == SettingsTab::Changelog) {
+                        self.settings_tab = SettingsTab::Changelog;
                     }
                     if nav_item(ui, &theme, "★", t.features_nav, self.settings_tab == SettingsTab::Features) {
                         self.settings_tab = SettingsTab::Features;
@@ -1253,6 +1256,7 @@ impl App {
                     SettingsTab::ConfigFile => (t.config_file, t.sub_config),
                     SettingsTab::Logs => (t.logs_nav, t.sub_logs),
                     SettingsTab::Features => (t.features_nav, t.sub_features),
+                    SettingsTab::Changelog => (t.changelog_nav, t.sub_changelog),
                     SettingsTab::About => (t.about, t.sub_about),
                 };
                 // Title and subtitle, with the close button at the right.
@@ -1281,6 +1285,9 @@ impl App {
                             });
                         }
                         SettingsTab::Shortcuts => self.shortcuts_ui(ui, t, &mut picked),
+                        SettingsTab::Changelog => {
+                            egui::ScrollArea::vertical().id_salt("settings-changelog").max_height(height).auto_shrink([false, false]).show(ui, |ui| changelog_page(ui, t, &theme));
+                        }
                         SettingsTab::Features => {
                             egui::ScrollArea::vertical().id_salt("settings-features").max_height(height).auto_shrink([false, false]).show(ui, |ui| features_page(ui, t, &theme));
                         }
@@ -2056,6 +2063,7 @@ impl App {
                 }
             });
         });
+        contributors_card(ui, t, &theme);
         card(ui, &theme, Some(t.credits), |ui| {
             setting_row(ui, &theme, t.credits_music, Some(t.game_music_credit), |ui| {
                 let pixabay = egui::Button::new(egui::RichText::new("Pixabay").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
@@ -2308,6 +2316,10 @@ fn features_page(ui: &mut Ui, t: &Strings, theme: &Theme) {
             }
         });
     }
+}
+
+/// The people who made Ronnie, each leading to their GitHub.
+fn contributors_card(ui: &mut Ui, t: &Strings, theme: &Theme) {
     card(ui, theme, Some(t.contributors_title), |ui| {
         for (k, (login, what)) in t.contributors.iter().enumerate() {
             if k > 0 {
@@ -2322,6 +2334,115 @@ fn features_page(ui: &mut Ui, t: &Strings, theme: &Theme) {
             });
         }
     });
+}
+
+/// A version of the changelog: its number, its date, and its lines (headings, and items with their
+/// depth).
+struct Release {
+    version: &'static str,
+    date: &'static str,
+    lines: Vec<ChangeLine>,
+}
+
+enum ChangeLine {
+    Heading(&'static str),
+    Item(usize, String),
+}
+
+/// CHANGELOG.md, read once: its versions as written, the newest first.
+fn releases() -> &'static [Release] {
+    static RELEASES: std::sync::OnceLock<Vec<Release>> = std::sync::OnceLock::new();
+    RELEASES.get_or_init(|| parse_changelog(include_str!("../../CHANGELOG.md")))
+}
+
+fn parse_changelog(text: &'static str) -> Vec<Release> {
+    let mut releases: Vec<Release> = Vec::new();
+    for line in text.lines() {
+        if let Some(head) = line.strip_prefix("## ") {
+            // "[0.36.0] - 2026-10-29"
+            let (version, date) = head.split_once(" - ").unwrap_or((head, ""));
+            releases.push(Release { version: version.trim().trim_matches(['[', ']']), date: date.trim(), lines: Vec::new() });
+            continue;
+        }
+        let Some(release) = releases.last_mut() else { continue };
+        if let Some(heading) = line.strip_prefix("### ") {
+            release.lines.push(ChangeLine::Heading(heading.trim()));
+        } else if let Some(item) = line.trim_start().strip_prefix("- ") {
+            let depth = (line.len() - line.trim_start().len()) / 2;
+            release.lines.push(ChangeLine::Item(depth, item.trim().to_owned()));
+        } else if !line.trim().is_empty() {
+            // A line going on with the item above.
+            match release.lines.last_mut() {
+                Some(ChangeLine::Item(_, text)) => {
+                    text.push(' ');
+                    text.push_str(line.trim());
+                }
+                _ => release.lines.push(ChangeLine::Item(0, line.trim().to_owned())),
+            }
+        }
+    }
+    releases
+}
+
+/// A changelog line laid out: **bold** in the text's color, `code` in monospace, the rest muted.
+fn change_job(text: &str, theme: &Theme, width: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = width;
+    let (mut bold, mut code) = (false, false);
+    let mut rest = text;
+    while !rest.is_empty() {
+        let next = [rest.find("**"), rest.find('`')].into_iter().flatten().min().unwrap_or(rest.len());
+        let (chunk, after) = rest.split_at(next);
+        if !chunk.is_empty() {
+            let font = if code { FontId::monospace(12.0) } else { FontId::proportional(13.0) };
+            let color = if bold { theme.text } else { theme.text_muted };
+            job.append(chunk, 0.0, egui::TextFormat { font_id: font, color, ..Default::default() });
+        }
+        if let Some(after) = after.strip_prefix("**") {
+            bold = !bold;
+            rest = after;
+        } else if let Some(after) = after.strip_prefix('`') {
+            code = !code;
+            rest = after;
+        } else {
+            rest = after;
+        }
+    }
+    job
+}
+
+/// "What's new" page: the changelog, a card per version, the newest first.
+fn changelog_page(ui: &mut Ui, t: &Strings, theme: &Theme) {
+    ui.set_width(ui.available_width() - 12.0);
+    for release in releases() {
+        let date = chrono::NaiveDate::parse_from_str(release.date, "%Y-%m-%d").map_or_else(|_| release.date.to_owned(), |d| d.format("%d/%m/%Y").to_string());
+        let mut title = format!("{}  ·  {date}", release.version);
+        if release.version == update::VERSION {
+            title.push_str(&format!("  ·  {}", t.changelog_current));
+        }
+        card(ui, theme, Some(&title), |ui| {
+            ui.add_space(8.0);
+            for line in &release.lines {
+                match line {
+                    ChangeLine::Heading(heading) => {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(*heading).size(12.0).strong().color(theme.accent));
+                        ui.add_space(2.0);
+                    }
+                    ChangeLine::Item(depth, text) => {
+                        let indent = 4.0 + 16.0 * *depth as f32;
+                        let width = ui.available_width() - indent - 14.0;
+                        let galley = ui.painter().layout_job(change_job(text, theme, width));
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), galley.size().y + 6.0), Sense::hover());
+                        let x = rect.min.x + indent;
+                        ui.painter().circle_filled(Pos2::new(x + 3.0, rect.min.y + 3.0 + 8.0), 2.0, theme.text_muted);
+                        ui.painter().galley(Pos2::new(x + 14.0, rect.min.y + 3.0), galley, theme.text_muted);
+                    }
+                }
+            }
+            ui.add_space(8.0);
+        });
+    }
 }
 
 /// Thin line between two settings of a card.
@@ -2437,4 +2558,23 @@ fn checked_host(editor: &HostEditor, t: &'static Strings) -> Result<SshHost, &'s
         return Err(t.password_required);
     }
     Ok(host)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_changelog() {
+        let all = releases();
+        assert!(all.len() > 10);
+        // The newest first, its items read (nested ones deeper).
+        assert!(crate::update::VERSION >= all[0].version || all[0].version.contains("Unreleased"));
+        assert!(all.iter().all(|r| r.lines.iter().any(|l| matches!(l, ChangeLine::Item(..)))));
+        assert!(all.iter().flat_map(|r| &r.lines).any(|l| matches!(l, ChangeLine::Item(1, _))));
+        let parsed = parse_changelog("## [1.0.0] - 2026-01-02\n\n### New\n\n- **A** thing\n  going on\n  - deeper\n");
+        assert_eq!((parsed[0].version, parsed[0].date), ("1.0.0", "2026-01-02"));
+        assert!(matches!(&parsed[0].lines[1], ChangeLine::Item(0, t) if t == "**A** thing going on"));
+        assert!(matches!(&parsed[0].lines[2], ChangeLine::Item(1, t) if t == "deeper"));
+    }
 }

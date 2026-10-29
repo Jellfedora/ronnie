@@ -1591,7 +1591,14 @@ impl App {
             galley = ui.painter().layout_no_wrap(version.clone(), FontId::proportional(size), self.theme.text_muted);
         }
         let at = Pos2::new(strip.center().x - galley.size().x / 2.0, strip.max.y - 12.0 - galley.size().y / 2.0);
-        ui.painter().galley(at, galley, self.theme.text_muted.gamma_multiply(0.7));
+        // A click shows what changed in each version.
+        let hit = Rect::from_center_size(Pos2::new(strip.center().x, at.y + galley.size().y / 2.0), Vec2::new(STRIP_W - 4.0, 18.0));
+        let version_resp = ui.interact(hit, ui.id().with("version"), Sense::click()).on_hover_text(t.changelog_nav).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let color = if version_resp.hovered() { self.theme.text } else { self.theme.text_muted.gamma_multiply(0.7) };
+        ui.painter().galley(at, galley, color);
+        if version_resp.clicked() {
+            self.open_changelog();
+        }
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
         // The logo leads home (the typing game).

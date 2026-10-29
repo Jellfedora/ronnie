@@ -12,6 +12,7 @@ use crate::i18n::Strings;
 
 pub enum MenuAction {
     Settings,
+    Changelog,
     Reload,
     Quit,
     NewWindow,
@@ -21,6 +22,7 @@ pub struct MenuBar {
     /// Kept alive: dropping it would empty the menu bar.
     _menu: Menu,
     settings: MenuItem,
+    changelog: MenuItem,
     reload: MenuItem,
     quit: MenuItem,
     new_window: MenuItem,
@@ -33,6 +35,7 @@ impl MenuBar {
     /// Replaces the default menu bar. Clicks wake the UI up through `ctx`.
     pub fn install(ctx: &egui::Context, t: &'static Strings, settings_shortcut: &Shortcut, new_window_shortcut: &Shortcut) -> Option<Self> {
         let settings = MenuItem::new(format!("{}…", t.settings), true, accelerator(settings_shortcut));
+        let changelog = MenuItem::new(format!("{}…", t.changelog_nav), true, None);
         let reload = MenuItem::new(t.reload_app, true, None);
         let quit = MenuItem::new(t.quit_app, true, "Cmd+Q".parse().ok());
         let new_window = MenuItem::new(t.new_window, true, accelerator(new_window_shortcut));
@@ -44,6 +47,7 @@ impl MenuBar {
                 &PredefinedMenuItem::about(Some(t.about_app), Some(about)),
                 &PredefinedMenuItem::separator(),
                 &settings,
+                &changelog,
                 &reload,
                 &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::services(None),
@@ -82,7 +86,7 @@ impl MenuBar {
             let _ = tx.send(event);
             ctx.request_repaint();
         }));
-        Some(Self { _menu: menu, settings, reload, quit, new_window, events, shown: (t.settings, settings_shortcut.0.clone(), new_window_shortcut.0.clone()) })
+        Some(Self { _menu: menu, settings, changelog, reload, quit, new_window, events, shown: (t.settings, settings_shortcut.0.clone(), new_window_shortcut.0.clone()) })
     }
 
     /// The menu items clicked since the last call.
@@ -91,6 +95,7 @@ impl MenuBar {
             .try_iter()
             .filter_map(|e| match e.id {
                 id if id == *self.settings.id() => Some(MenuAction::Settings),
+                id if id == *self.changelog.id() => Some(MenuAction::Changelog),
                 id if id == *self.reload.id() => Some(MenuAction::Reload),
                 id if id == *self.quit.id() => Some(MenuAction::Quit),
                 id if id == *self.new_window.id() => Some(MenuAction::NewWindow),
@@ -108,6 +113,7 @@ impl MenuBar {
         let _ = self.new_window.set_accelerator(accelerator(new_window_shortcut));
         self.settings.set_text(format!("{}…", t.settings));
         let _ = self.settings.set_accelerator(accelerator(settings_shortcut));
+        self.changelog.set_text(format!("{}…", t.changelog_nav));
         self.reload.set_text(t.reload_app);
         self.quit.set_text(t.quit_app);
         self.shown = (t.settings, settings_shortcut.0.clone(), new_window_shortcut.0.clone());

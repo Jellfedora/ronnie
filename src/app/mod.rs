@@ -1050,6 +1050,7 @@ enum SettingsTab {
     Logs,
     Shortcuts,
     Features,
+    Changelog,
     About,
 }
 
@@ -2652,6 +2653,12 @@ impl App {
             dictation.finish();
             self.dictation_last = true;
         }
+    }
+
+    /// The settings, on the changelog.
+    pub(super) fn open_changelog(&mut self) {
+        self.settings_tab = SettingsTab::Changelog;
+        self.settings_dialog = true;
     }
 
     /// Shows the notes, ready to type in, or hides them.
@@ -5104,6 +5111,7 @@ impl App {
             for action in menu.actions() {
                 match action {
                     crate::menu::MenuAction::Settings => self.settings_dialog = true,
+                    crate::menu::MenuAction::Changelog => self.open_changelog(),
                     crate::menu::MenuAction::Reload => self.request_close(CloseRequest::Restart),
                     crate::menu::MenuAction::Quit => self.request_close(CloseRequest::Window),
                     crate::menu::MenuAction::NewWindow => new_window = true,

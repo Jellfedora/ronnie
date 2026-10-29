@@ -131,6 +131,9 @@ pub struct Strings {
     pub sub_about: &'static str,
     pub features_nav: &'static str,
     pub sub_features: &'static str,
+    pub changelog_nav: &'static str,
+    pub sub_changelog: &'static str,
+    pub changelog_current: &'static str,
     /// What Ronnie does, by theme: the theme, then each feature's name and a line about it.
     pub features: &'static [(&'static str, &'static [(&'static str, &'static str)])],
     pub contributors_title: &'static str,
@@ -1667,6 +1670,9 @@ pub static FR: Strings = Strings {
     sub_about: "Version, mises à jour et projet.",
     features_nav: "Fonctionnalités",
     sub_features: "Tout ce que Ronnie sait faire, par thème.",
+    changelog_nav: "Nouveautés",
+    sub_changelog: "Ce qui a changé à chaque version, la plus récente en premier.",
+    changelog_current: "ta version",
     features: &[
         ("Terminal", &[
             ("Onglets et splits", "Divise un terminal dans les quatre directions, glisse la barre d'un panneau sur un autre pour les échanger."),
@@ -3335,6 +3341,9 @@ pub static EN: Strings = Strings {
     sub_about: "Version, updates and project.",
     features_nav: "Features",
     sub_features: "Everything Ronnie can do, by theme.",
+    changelog_nav: "What's new",
+    sub_changelog: "What changed in each version, the newest first.",
+    changelog_current: "your version",
     features: &[
         ("Terminal", &[
             ("Tabs and splits", "Split a terminal in any of four directions, drag a pane's bar onto another to swap them."),
