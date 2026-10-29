@@ -60,6 +60,20 @@ const SYSTEM_CJK_FONTS: &[&str] = &[
     "C:\\Windows\\Fonts\\msyh.ttc",
 ];
 
+/// Fallbacks for what neither JetBrains Mono nor egui's fonts draw (letters in superscript like the
+/// « ᵉ » of « 4ᵉ », dingbats ✘ ✻, technical symbols ⎿ ⧉ that Claude Code prints): each one found is used, in
+/// this order (a monospace one first).
+const SYSTEM_SYMBOL_FONTS: &[&str] = &[
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Apple Symbols.ttf",
+    "C:\\Windows\\Fonts\\consola.ttf",
+    "C:\\Windows\\Fonts\\seguisym.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+];
+
 /// The notes' faces (regular, bold, italic, bold italic) on each system: font file and the face's
 /// index in it. The first set found is used.
 const NOTE_FONTS: &[[(&str, u32); 4]] = &[
@@ -78,8 +92,14 @@ fn install_fonts(ctx: &egui::Context) {
         ("mono-italic", include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf")),
         ("mono-bold-italic", include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf")),
     ];
-    // Fallbacks: egui's bundled fonts for symbols and emoji, then a system CJK font if present.
+    // Fallbacks: egui's bundled fonts for symbols and emoji, the system's symbols, then a system CJK font
+    // if present.
     let mut fallbacks: Vec<String> = fonts.families[&FontFamily::Monospace].clone();
+    for (i, bytes) in SYSTEM_SYMBOL_FONTS.iter().filter_map(|p| std::fs::read(p).ok()).enumerate() {
+        let name = format!("system-symbols-{i}");
+        fonts.font_data.insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+        fallbacks.push(name);
+    }
     if let Some(bytes) = SYSTEM_CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
         fonts.font_data.insert("system-cjk".to_owned(), Arc::new(FontData::from_owned(bytes)));
         fallbacks.push("system-cjk".to_owned());
@@ -128,6 +148,13 @@ fn install_fonts(ctx: &egui::Context) {
     }
     if let Some(mono_family) = fonts.families.get_mut(&FontFamily::Monospace) {
         mono_family.insert(0, "mono".to_owned());
+    }
+    // The interface shows text from elsewhere too (commits, issues): the system's symbols after its fonts.
+    let symbols: Vec<String> = fallbacks.iter().filter(|n| n.starts_with("system-symbols-")).cloned().collect();
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        if let Some(chain) = fonts.families.get_mut(&family) {
+            chain.extend(symbols.iter().cloned());
+        }
     }
     ctx.set_fonts(fonts);
 }
