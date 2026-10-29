@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.37.0] - 2026-10-29
+
+### Nouveautés
+
+- **Le bouton Claude en haut des terminaux** : il lance Claude Code dans le pane ou, si tu y as déjà discuté avec Claude dans ce dossier, liste les conversations (titrées, les plus récentes d'abord, avec une recherche) pour en reprendre une ou en commencer une nouvelle. Au survol, le crayon renomme une conversation et la corbeille la supprime. Si Claude tourne déjà dans le pane, la conversation choisie prend sa place ; si c'est un autre programme, elle s'ouvre dans un nouveau pane à côté.
+- **Claude pilote Ronnie depuis son terminal** : il liste les panes et les profils, lance une commande dans un nouveau pane, tape dans un pane, le déplace, le renomme ou le ferme, change sa version de Node.js, crée des onglets et des profils, lit tes notes et les mails de la boîte de test. Quand il veut te montrer quelque chose (un fichier, une note…), il le propose dans une notification à accepter. Il lance aussi les processus longs (un serveur de dev…) dans un pane plutôt qu'en arrière-plan.
+- **Claude ajoute des notes** : ce qu'il écrit pour toi arrive dans tes notes, avec une notification qui y mène.
+- **Claude installe Node.js par son nom** (latest, lts, 22…) et connaît les versions de nodejs.org ; sur un nouveau projet, il propose la plus récente.
+- **La cloche des notifications**, au-dessus des ressources du système : elle garde celles que tu n'as pas vues (aussi celles arrivées quand Ronnie était derrière une autre fenêtre). Chacune s'en va dès que tu as vu ce dont elle parle, que tu l'as suivie ou fermée ; sans notification, la cloche disparaît.
+- **Les nouveautés dans les réglages** : l'historique des versions, la plus récente d'abord, aussi depuis le menu Ronnie et d'un clic sur le numéro de version sous les catégories. Les contributeurs passent dans À propos.
+
 ## [0.36.0] - 2026-10-29
 
 ### Nouveautés
