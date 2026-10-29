@@ -11,7 +11,7 @@
 //! the user's other projects lately (see `crate::worklog`, fed by the requests made in the panes).
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -101,13 +101,17 @@ pub fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Claude Code's folder: its settings, its conversations.
+fn config_dir() -> Option<PathBuf> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => Some(directories::BaseDirs::new()?.home_dir().join(".claude")),
+    }
+}
+
 /// Claude Code's user settings.
 fn settings_path() -> Option<PathBuf> {
-    let dir = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => directories::BaseDirs::new()?.home_dir().join(".claude"),
-    };
-    Some(dir.join("settings.json"))
+    Some(config_dir()?.join("settings.json"))
 }
 
 fn read_settings() -> Result<serde_json::Map<String, Value>, String> {
@@ -721,6 +725,96 @@ pub fn is_claude(program: &str) -> bool {
     name.eq_ignore_ascii_case("claude") || (name.split('.').count() == 3 && name.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())))
 }
 
+/// A conversation Claude Code held in a folder, to take up again (`claude --resume <id>`).
+#[derive(Clone, Debug)]
+pub struct Session {
+    pub id: String,
+    pub title: String,
+    /// Last written to, in seconds since the epoch.
+    pub modified: i64,
+}
+
+/// Where Claude Code keeps the conversations held in `dir`: one file each, in a folder named after its
+/// path, every character but letters and digits made a "-".
+fn session_files(dir: &Path) -> Vec<PathBuf> {
+    let name: String = dir.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let Some(folder) = config_dir().map(|d| d.join("projects").join(name)) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+    entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "jsonl") && p.is_file()).collect()
+}
+
+/// Claude Code held conversations in `dir` (quick: they aren't read).
+pub fn has_sessions(dir: &Path) -> bool {
+    !session_files(dir).is_empty()
+}
+
+/// Each conversation read, with when its file changed: read again only once it changed.
+type SessionCache = std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Session>)>;
+static SESSIONS: std::sync::Mutex<Option<SessionCache>> = std::sync::Mutex::new(None);
+
+/// The conversations held in `dir`, the latest first (those where nothing was asked left out).
+pub fn sessions(dir: &Path) -> Vec<Session> {
+    let mut list = Vec::new();
+    for path in session_files(dir) {
+        let Ok(changed) = path.metadata().and_then(|m| m.modified()) else { continue };
+        let cached = SESSIONS.lock().ok().and_then(|c| c.as_ref()?.get(&path).filter(|(at, _)| *at == changed).map(|(_, s)| s.clone()));
+        let session = match cached {
+            Some(session) => session,
+            None => {
+                let session = read_session(&path, changed);
+                if let Ok(mut cache) = SESSIONS.lock() {
+                    cache.get_or_insert_with(Default::default).insert(path.clone(), (changed, session.clone()));
+                }
+                session
+            }
+        };
+        list.extend(session);
+    }
+    list.sort_by_key(|s| std::cmp::Reverse(s.modified));
+    list
+}
+
+/// A conversation's title: the one given (/rename), else Claude Code's, else the last request.
+fn read_session(path: &Path, changed: std::time::SystemTime) -> Option<Session> {
+    use std::io::Seek;
+    // Claude Code writes its titles again as the conversation goes on: the file's end is enough, but
+    // for a long answer at the end.
+    const TAIL: u64 = 512 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut bytes = Vec::new();
+    if len > TAIL {
+        file.seek(std::io::SeekFrom::Start(len - TAIL)).ok()?;
+    }
+    file.read_to_end(&mut bytes).ok()?;
+    let mut title = session_title(&String::from_utf8_lossy(&bytes));
+    if title.is_none() && len > TAIL {
+        title = session_title(&String::from_utf8_lossy(&std::fs::read(path).ok()?));
+    }
+    let modified = changed.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    Some(Session { id: path.file_stem()?.to_string_lossy().into_owned(), title: title?, modified })
+}
+
+/// The title found in these lines of a conversation (the last of each kind), on one line.
+fn session_title(text: &str) -> Option<String> {
+    let kinds = [("custom-title", "customTitle"), ("ai-title", "aiTitle"), ("last-prompt", "lastPrompt")];
+    let mut found: [Option<String>; 3] = Default::default();
+    for line in text.lines() {
+        // Unescaped quotes: not a request quoting it.
+        let Some(k) = kinds.iter().position(|(kind, _)| line.contains(&format!("\"type\":\"{kind}\""))) else { continue };
+        // The first line of the file's end may be cut: not read.
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("type").and_then(Value::as_str) != Some(kinds[k].0) {
+            continue;
+        }
+        let text = v.get(kinds[k].1).and_then(Value::as_str).and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()));
+        if let Some(text) = text {
+            found[k] = Some(text.to_owned());
+        }
+    }
+    found.into_iter().flatten().next()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,5 +899,20 @@ mod tests {
         host.auth = Some(crate::ssh::SshAuth::Password);
         assert_eq!(ssh_line(&host), "deploy@example.org:2222 (password: through the user)");
         assert_eq!(shell_word("/a b/it's"), "'/a b/it'\\''s'");
+    }
+
+    #[test]
+    fn titles_conversations() {
+        let lines = [
+            r#"{"type":"user","message":{"content":"a \"type\":\"custom-title\" quoted"}}"#,
+            r#"{"type":"last-prompt","lastPrompt":"\n  fix the menu\nplease"}"#,
+            r#"{"type":"ai-title","aiTitle":"Menu"}"#,
+            r#"{"type":"ai-title","aiTitle":"Right-click menu"}"#,
+        ];
+        assert_eq!(session_title(&lines[..2].join("\n")).as_deref(), Some("fix the menu"));
+        assert_eq!(session_title(&lines.join("\n")).as_deref(), Some("Right-click menu"));
+        let renamed = format!("{}\n{}", lines.join("\n"), r#"{"type":"custom-title","customTitle":"Mine"}"#);
+        assert_eq!(session_title(&renamed).as_deref(), Some("Mine"));
+        assert_eq!(session_title(lines[0]), None);
     }
 }

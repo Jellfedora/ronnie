@@ -34,6 +34,7 @@ mod git;
 mod home;
 mod imageview;
 mod guard;
+mod history;
 mod issues;
 mod jurassic;
 mod library;
@@ -428,6 +429,10 @@ pub struct App {
     claude: ClaudeUsage,
     /// Why setting up Claude's usage failed.
     claude_error: Option<String>,
+    /// Claude Code is installed: local panes show its button.
+    claude_installed: bool,
+    /// The conversations of a pane's folder, listed under its Claude button.
+    claude_history: Option<history::History>,
     /// What Claude Code's hooks told (see `claude::watch_events`), until the window of its pane takes it.
     claude_events: std::sync::Arc<std::sync::Mutex<Vec<(crate::claude::Event, Instant)>>>,
     /// The notes Claude left (see `claude::watch_notes`), until they are added.
@@ -1253,6 +1258,8 @@ impl App {
             db_editor: None,
             claude: ClaudeUsage::default(),
             claude_error: None,
+            claude_installed: crate::claude::installed(),
+            claude_history: None,
             claude_events: Default::default(),
             claude_notes: Default::default(),
             claude_asks: Default::default(),
@@ -3424,6 +3431,8 @@ struct HeaderClicks {
     gear: Option<egui::Response>,
     /// The Node.js version's badge: its menu opens under it.
     node: Option<egui::Response>,
+    /// The Claude button: Claude Code started, or the folder's conversations listed under it.
+    claude: Option<egui::Response>,
     /// The strip itself: focus the pane.
     focus: bool,
     reconnect: bool,
@@ -3617,7 +3626,8 @@ enum Header<'a> {
 /// `claude`: the plan's usage, when Claude Code runs in the pane and Ronnie gets it.
 /// `mic`: Claude Code runs there and dictation works: Some(None), or Some(Some(level, text)) while
 /// listening.
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, mic: Option<Option<(f32, String)>>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+/// `claude_button`: Claude Code doesn't run there: its button, clickable when the shell waits at its prompt.
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, mic: Option<Option<(f32, String)>>, claude_button: Option<bool>, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     if focused && theme.metal {
@@ -3699,6 +3709,20 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         files_menu(&resp, &mut clicks);
         right -= 30.0;
         max_w -= 96.0;
+        // Claude Code in this folder: started, or its conversations to take one up again.
+        if let Some(ready) = claude_button {
+            let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+            let resp = ui.interact(at, egui::Id::new(("pane-claude-history", id)), if ready { Sense::click() } else { Sense::hover() });
+            if ready && (resp.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp))) {
+                ui.painter().rect_filled(at, 5.0, theme.tab_hover);
+            }
+            let orange = if ready { history::CLAUDE_ORANGE } else { history::CLAUDE_ORANGE.gamma_multiply(0.4) };
+            history::paint_mark(ui.painter(), at.center(), 7.0, orange);
+            let resp = resp.on_hover_text(if ready { t.claude_history_tip } else { t.claude_history_busy });
+            clicks.claude = ready.then(|| resp.on_hover_cursor(egui::CursorIcon::PointingHand));
+            right -= 30.0;
+            max_w -= 30.0;
+        }
         // Hosted on GitHub or GitLab: its page in the browser.
         if let Some(forge) = forge {
             let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
@@ -4655,15 +4679,18 @@ impl App {
                         self.dictation_typed = 0;
                     }
                     let mic = (claude_running && crate::voice::supported()).then(|| self.dictation.as_ref().filter(|(p, _)| *p == id).map(|(_, d)| (d.level(), d.text())));
+                    // Claude Code not running there: its button, in the pane's folder.
+                    let claude_dir = (local && self.claude_installed && !claude_running).then(|| term.cached_cwd(ui.ctx()).map(Path::to_path_buf)).flatten();
+                    let claude_button = claude_dir.as_ref().map(|_| term.ready_for_commands(Duration::ZERO, local));
                     // Split: always a strip, to drag the pane by.
-                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || claude.is_some() || mic.is_some() || tab.nodes.contains_key(&id) {
+                    let body = if !local || self.config.settings.show_cwd || !urls.is_empty() || split || repo.is_some() || claude.is_some() || mic.is_some() || claude_button.is_some() || tab.nodes.contains_key(&id) {
                         let (head, body) = r.split_top_bottom_at_y(r.min.y + PANE_HEADER_H);
                         let cwd = if local && self.config.settings.show_cwd { term.cached_cwd(ui.ctx()).map(Path::to_path_buf) } else { None };
                         // SSH: the folder on the server, when its shell tells.
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let node = tab.nodes.get(&id).cloned();
                         let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref(), node.as_deref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, &self.theme, strings, &self.config.settings.shortcuts);
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, claude_button, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
                                 // Dropped: stops listening, nothing sent.
@@ -4680,6 +4707,28 @@ impl App {
                             let (can_copy, startup) = (term.has_selection(), tab.startup.contains_key(&id));
                             let node = local.then(|| (node_versions.as_slice(), tab.nodes.get(&id).map(String::as_str)));
                             egui::Popup::menu(gear).show(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &mut pane_action));
+                        }
+                        // Never a conversation here: Claude Code starts; else the list of them opens.
+                        if let (Some(button), Some(dir)) = (&clicks.claude, &claude_dir) {
+                            let mut launch = None;
+                            if button.clicked() && !egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
+                                if crate::claude::has_sessions(dir) {
+                                    self.claude_history = Some(history::History::open(id, dir.clone(), ui.ctx()));
+                                } else {
+                                    self.claude_history = None;
+                                    launch = Some(None);
+                                }
+                            }
+                            if let Some(list) = self.claude_history.as_mut().filter(|h| h.pane == id) {
+                                launch = launch.or(history::menu(button, list, &self.theme, strings));
+                            }
+                            if let Some(session) = launch {
+                                // What was typed at the prompt is cleared first, as for the folder edited.
+                                let clear = if cfg!(windows) { "\x1b" } else { "\x05\x15" };
+                                term.type_text(&format!("{clear}{}", history::command(session.as_deref())));
+                                self.claude_history = None;
+                                term.request_focus(ui);
+                            }
                         }
                         if let Some(badge) = &clicks.node {
                             let (mut picked, mut manage) = (None, false);
