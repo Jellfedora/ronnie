@@ -410,7 +410,7 @@ impl App {
             self.import_ssh(import_putty);
         }
         if new_host {
-            self.host_editor = Some(HostEditor::new(SshHost::new(), true, None));
+            self.host_editor = Some(HostEditor::new(SshHost::blank(), true, None));
         }
         if let Some(id) = delete {
             self.delete_host(id);

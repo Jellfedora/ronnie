@@ -120,6 +120,11 @@ impl SshHost {
         }
     }
 
+    /// A host about to be filled in: logging in as root unless changed.
+    pub fn blank() -> Self {
+        Self { user: Some("root".into()), ..Self::new() }
+    }
+
     /// `user@host:port`, for display.
     pub fn address(&self) -> String {
         let mut s = String::new();
