@@ -1,4 +1,4 @@
-//! The games during working hours: one game of Speed Metal, one of Puissance 4, one of the
+//! The games during working hours: one game of Speed Metal, one of Puissance 4, three of the
 //! minesweeper, one run of Ronnie Run, one song of Riff Hero and one show of Backstage a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
 //! 18:00 — 17:20 on Fridays — and at the weekend). Not a setting: Ronnie is for work first.
 //!
@@ -13,6 +13,8 @@ use crate::config::GameUsage;
 
 /// Seconds of Ronnie.io a half-day.
 pub const BLOB_SECS: u32 = 10 * 60;
+/// Games of the minesweeper a half-day (one game is soon over).
+pub const MINES_GAMES: u32 = 3;
 
 /// A half-day of work.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,7 +58,7 @@ pub fn checked(usage: &mut GameUsage, now: NaiveDateTime) -> Option<Period> {
     let wanted = match &p {
         // Out of working hours nothing is limited: a record to trust again from here.
         None if !valid => Some(fresh("")),
-        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, runner: true, riff: true, backstage: true, seal: String::new() }),
+        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, mines_games: MINES_GAMES, runner: true, riff: true, backstage: true, seal: String::new() }),
         Some(p) if usage.period != p.key => Some(fresh(&p.key)),
         _ => None,
     };
@@ -78,6 +80,9 @@ fn seal(usage: &GameUsage) -> String {
     // Only once played: the records sealed before these games stay valid.
     if usage.mines {
         message.push_str("|mines");
+    }
+    if usage.mines_games > 0 {
+        message.push_str(&format!("|mines-games {}", usage.mines_games));
     }
     if usage.runner {
         message.push_str("|runner");
@@ -157,6 +162,21 @@ mod tests {
         usage.mines = true;
         reseal(&mut usage);
         assert_ne!(usage.seal, before);
+    }
+
+    #[test]
+    fn the_minesweepers_games_are_sealed() {
+        let monday = on(2026, 10, 12, 9, 0);
+        let mut usage = GameUsage::default();
+        checked(&mut usage, monday);
+        usage.mines_games = 2;
+        reseal(&mut usage);
+        checked(&mut usage, monday);
+        assert!(usage.mines_games == 2 && !usage.mines && !usage.four);
+        // A game taken back by hand: all played.
+        usage.mines_games = 1;
+        checked(&mut usage, monday);
+        assert!(usage.mines && usage.mines_games == MINES_GAMES && usage.four);
     }
 
     fn on(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {

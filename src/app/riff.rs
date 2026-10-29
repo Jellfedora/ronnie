@@ -1,7 +1,7 @@
 //! Riff Hero, in the games: the song (see `crate::riff`) comes down four strings towards a line, the
-//! arrows play it (← ↓ ↑ →, or a click on the arrows of the line). Alone, the best score kept; or in a
-//! battle against another player online (see live.rs): the same song at the same time, and the crowd
-//! between the two goes over to the best.
+//! arrows play it (← ↓ ↑ →, or a click on the arrows of the line). Alone, a song per level, the same
+//! for everyone, and its board on floor; or in a battle against another player online (see live.rs):
+//! the same song at the same time, and the crowd between the two goes over to the best.
 
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use super::four::{players_ui, wins_ui, HomeGame, LobbyAction};
 use super::*;
 use crate::live::{Match, RiffSide};
-use crate::riff::{Chart, Judgment, Play, Press, LANES, LENGTH};
+use crate::riff::{Chart, Judgment, Level, Play, Press, LANES, LENGTH};
 
 /// A note shows this long before it reaches the line.
 const AHEAD: f64 = 2.4;
@@ -55,8 +55,7 @@ struct Song {
 }
 
 impl Song {
-    fn new(ctx: &egui::Context, seed: u32, start: Instant, battle: Option<String>) -> Self {
-        let chart = Chart::new(seed);
+    fn new(ctx: &egui::Context, chart: Chart, start: Instant, battle: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel();
         let (notes, ctx) = (chart.clone(), ctx.clone());
         std::thread::Builder::new()
@@ -124,7 +123,6 @@ impl Audio {
     }
 }
 
-#[derive(Default)]
 pub(super) struct Riff {
     mode: Mode,
     song: Option<Song>,
@@ -133,14 +131,19 @@ pub(super) struct Riff {
     seen: f64,
     /// When the board of battles won was last fetched.
     board_at: Option<f64>,
-    rng: u64,
+    /// The level picked to play alone, and each level's board on floor.
+    level: Level,
+    floors: [crate::floor::GameFloor; 3],
+}
+
+impl Default for Riff {
+    fn default() -> Self {
+        let floors = Level::ALL.map(|l| crate::floor::GameFloor::new(l.floor_game(), false));
+        Self { mode: Mode::default(), song: None, audio: None, seen: 0.0, board_at: None, level: Level::default(), floors }
+    }
 }
 
 impl Riff {
-    fn seed(&mut self) -> u32 {
-        (super::game::random(&mut self.rng) >> 33) as u32 | 1
-    }
-
     /// A song is being played.
     fn playing(&self) -> bool {
         self.song.as_ref().is_some_and(|s| !s.finished)
@@ -318,8 +321,18 @@ impl App {
                 });
             });
         };
-        let best = self.config.settings.riff_best;
+        // The board of the level picked, fetched again every minute while the lobby shows.
+        let level = self.riff.level;
+        for floor in &mut self.riff.floors {
+            floor.poll();
+        }
+        self.riff.floors[level.index()].sync(ui.ctx(), now, Some(60.0), self.config.settings.floor.as_ref());
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
+        let best = self.config.settings.riff_bests.get(level.index()).copied().unwrap_or(0);
         let mut play = false;
+        let mut picked = level;
+        let mut ask_pseudo = false;
+        let floor_board = self.riff.floors[level.index()].board();
         let mut solo = |ui: &mut Ui| {
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
@@ -328,15 +341,29 @@ impl App {
             });
             ui.add_space(8.0);
             ui.label(egui::RichText::new(t.riff_solo_text).size(13.0).color(theme.text_muted));
-            if best > 0 {
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(t.riff_best.replace("{s}", &best.to_string())).size(13.0).color(theme.accent));
-            }
-            ui.add_space(16.0);
+            ui.add_space(12.0);
+            // The levels: each its song, its board.
+            ui.horizontal(|ui| {
+                for l in Level::ALL {
+                    let on = l == level;
+                    let text = egui::RichText::new(t.riff_levels[l.index()]).size(13.0).color(if on { theme.bg } else { theme.text });
+                    let button = egui::Button::new(text).fill(if on { theme.accent } else { theme.tab_hover }).corner_radius(6.0).min_size(Vec2::new(84.0, 28.0));
+                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        picked = l;
+                    }
+                }
+            });
+            ui.add_space(14.0);
             let button = egui::Button::new(egui::RichText::new(t.four_play).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
             let (at, _) = ui.allocate_exact_size(Vec2::new(140.0, 34.0), Sense::hover());
             if ui.put(at, button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 play = true;
+            }
+            ui.add_space(14.0);
+            let (area, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 200.0), Sense::hover());
+            let best = (best > 0).then(|| t.riff_best.replace("{s}", &best.to_string()));
+            if self.game_board(ui, area, &theme, floor_board, best, |s| s.to_string()) {
+                ask_pseudo = true;
             }
         };
         let live = &self.versus;
@@ -360,6 +387,10 @@ impl App {
         }
         // How to play, under the cards.
         ui.painter().text(Pos2::new(body.center().x, body.max.y - 20.0), Align2::CENTER_CENTER, t.riff_help, FontId::proportional(12.5), theme.text_muted);
+        self.riff.level = picked;
+        if ask_pseudo {
+            self.ask_pseudo();
+        }
         if play {
             self.riff_solo_start();
         }
@@ -379,9 +410,8 @@ impl App {
             self.riff.song = None;
             return;
         }
-        let seed = self.riff.seed();
         self.riff.audio = None;
-        self.riff.song = Some(Song::new(&self.ctx.clone(), seed, Instant::now() + Duration::from_secs_f64(LEAD), None));
+        self.riff.song = Some(Song::new(&self.ctx.clone(), Chart::solo(self.riff.level), Instant::now() + Duration::from_secs_f64(LEAD), None));
         self.riff.mode = Mode::Solo;
     }
 
@@ -394,21 +424,34 @@ impl App {
         }
         let side = Rect::from_min_max(Pos2::new(body.max.x - 220.0, body.min.y), body.max);
         self.riff_play_frame(ui, body);
+        let level = self.riff.level.index();
         let Some(song) = &mut self.riff.song else { return };
         let time = song.time();
         if !song.finished && song.play.over(time) {
+            // Played to the end: kept when it beats the best, and sent to the level's board.
             song.finished = true;
-            song.record = song.play.score > self.config.settings.riff_best;
+            song.record = song.play.score > self.config.settings.riff_bests.get(level).copied().unwrap_or(0);
+            let p = &song.play;
+            let round = crate::floor::GameRound { score: p.score, details: serde_json::json!({ "score": p.score, "hits": p.hits, "perfects": p.perfects, "misses": p.misses, "combo": p.best_combo }) };
             if song.record {
-                self.config.settings.riff_best = song.play.score;
+                let bests = &mut self.config.settings.riff_bests;
+                bests.resize(bests.len().max(level + 1), 0);
+                bests[level] = song.play.score;
                 self.save_config();
+            }
+            if round.score > 0 && crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
+                let now = ui.input(|i| i.time);
+                self.riff.floors[level].finished(round);
+                self.riff.floors[level].sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
             }
         }
         let Some(song) = &self.riff.song else { return };
         if !song.finished {
-            let best = self.config.settings.riff_best;
-            if best > 0 && side.width() > 0.0 {
-                ui.painter().text(Pos2::new(side.max.x, side.min.y + 6.0), Align2::RIGHT_TOP, t.riff_best.replace("{s}", &best.to_string()), FontId::proportional(13.0), theme.text_muted);
+            let best = self.config.settings.riff_bests.get(level).copied().unwrap_or(0);
+            let label = t.riff_levels[level];
+            if side.width() > 0.0 {
+                let text = if best > 0 { format!("{label} · {}", t.riff_best.replace("{s}", &best.to_string())) } else { label.to_owned() };
+                ui.painter().text(Pos2::new(side.max.x, side.min.y + 6.0), Align2::RIGHT_TOP, text, FontId::proportional(13.0), theme.text_muted);
             }
             return;
         }
@@ -439,7 +482,7 @@ impl App {
         if self.riff.song.as_ref().and_then(|s| s.battle.as_ref()) != Some(&game.id) {
             let start = if game.starts_in >= 0 { game.at + Duration::from_millis(game.starts_in as u64) } else { game.at.checked_sub(Duration::from_millis(game.starts_in.unsigned_abs())).unwrap_or(game.at) };
             self.riff.audio = None;
-            self.riff.song = Some(Song::new(&self.ctx.clone(), game.seed, start, Some(game.id.clone())));
+            self.riff.song = Some(Song::new(&self.ctx.clone(), Chart::new(game.seed), start, Some(game.id.clone())));
         }
         let them = game.them().unwrap_or(t.game_anonymous).to_owned();
         let theirs = game.riff[2 - game.you as usize];

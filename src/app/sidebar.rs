@@ -443,7 +443,7 @@ impl App {
         let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
         let runner_best = (self.config.settings.runner_best > 0).then(|| super::runner::meters_text(self.config.settings.runner_best));
         let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
-        let riff_best = (self.config.settings.riff_best > 0).then(|| self.config.settings.riff_best.to_string());
+        let riff_best = self.config.settings.riff_bests.iter().max().filter(|&&b| b > 0).map(u32::to_string);
         let backstage_best = (self.config.settings.backstage_best > 0).then(|| self.config.settings.backstage_best.to_string());
         let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best)];
         for (game, _, note) in &mut games {

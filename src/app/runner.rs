@@ -263,15 +263,22 @@ fn paint_obstacle(painter: &egui::Painter, at: &dyn Fn(f32, f32) -> Pos2, scale:
             }
             painter.line_segment([at(x + 6.0, bottom + h - 14.0), at(x + 16.0, bottom + h - 14.0)], Stroke::new(1.5 * scale, theme.accent));
         }
-        Kind::Case => {
-            painter.rect_filled(body, 1.0, inside);
-            painter.rect_stroke(body, 1.0, outline, egui::StrokeKind::Outside);
-            painter.rect_stroke(body, 1.0, Stroke::new(1.5 * scale, metal), egui::StrokeKind::Inside);
-            // Its corners, its latch.
-            for (cx, cy) in [(x, bottom), (x + w - 5.0, bottom), (x, bottom + h - 5.0), (x + w - 5.0, bottom + h - 5.0)] {
-                painter.rect_filled(Rect::from_two_pos(at(cx, cy), at(cx + 5.0, cy + 5.0)), 0.0, metal);
+        Kind::Case | Kind::Stack => {
+            // One case, or two one on the other.
+            let tiers = if kind == Kind::Stack { 2 } else { 1 };
+            let h = h / tiers as f32;
+            for tier in 0..tiers {
+                let bottom = bottom + tier as f32 * h;
+                let body = Rect::from_two_pos(at(x, bottom), at(x + w, bottom + h));
+                painter.rect_filled(body, 1.0, inside);
+                painter.rect_stroke(body, 1.0, outline, egui::StrokeKind::Outside);
+                painter.rect_stroke(body, 1.0, Stroke::new(1.5 * scale, metal), egui::StrokeKind::Inside);
+                // Its corners, its latch.
+                for (cx, cy) in [(x, bottom), (x + w - 5.0, bottom), (x, bottom + h - 5.0), (x + w - 5.0, bottom + h - 5.0)] {
+                    painter.rect_filled(Rect::from_two_pos(at(cx, cy), at(cx + 5.0, cy + 5.0)), 0.0, metal);
+                }
+                painter.rect_filled(Rect::from_two_pos(at(x + w / 2.0 - 4.0, bottom + h / 2.0 - 2.0), at(x + w / 2.0 + 4.0, bottom + h / 2.0 + 2.0)), 0.0, metal);
             }
-            painter.rect_filled(Rect::from_two_pos(at(x + w / 2.0 - 4.0, bottom + h / 2.0 - 2.0), at(x + w / 2.0 + 4.0, bottom + h / 2.0 + 2.0)), 0.0, metal);
         }
         Kind::Cable => {
             // Loops of cable, flat on the floor.
