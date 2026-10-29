@@ -300,7 +300,7 @@ impl App {
                 self.config.settings.jurassic_unlocked = true;
                 self.save_config();
                 let t = self.t();
-                self.toasts.push(super::Toast { ok: true, title: t.jurassic_unlocked.to_owned(), body: t.jurassic_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, lead: None });
+                self.push_toast(super::Toast { ok: true, title: t.jurassic_unlocked.to_owned(), body: t.jurassic_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
             }
         }
         if news.ate > 0 {
@@ -321,11 +321,11 @@ impl App {
             self.blob_sound(Sfx::Sparkle);
             self.config.settings.blob_skin = "ronnie".to_owned();
             self.save_config();
-            self.toasts.push(super::Toast { ok: true, title: t.blob_badge.to_owned(), body: t.blob_badge_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, lead: None });
+            self.push_toast(super::Toast { ok: true, title: t.blob_badge.to_owned(), body: t.blob_badge_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
         }
         // A goal reached: its skin announced (Ronnie's has its own toast).
         for id in news.unlocked.iter().filter(|id| *id != "ronnie") {
-            self.toasts.push(super::Toast { ok: true, title: t.blob_unlocked.replace("{n}", skin_name(t, id)), body: t.blob_unlocked_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, lead: None });
+            self.push_toast(super::Toast { ok: true, title: t.blob_unlocked.replace("{n}", skin_name(t, id)), body: t.blob_unlocked_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
         }
         let alive = self.blob.online.alive();
         self.fold_for_game(alive);

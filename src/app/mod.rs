@@ -18,6 +18,7 @@ use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
 mod backup;
+mod bell;
 mod bigtext;
 mod complete;
 mod blob;
@@ -435,6 +436,11 @@ pub struct App {
     claude_asks: crate::claude::Asks,
     /// Lines Claude has typed in new panes once their shell is ready, and since when they wait.
     claude_typing: Vec<(PaneId, String, Instant)>,
+    /// The notices not seen yet, for every window (see `bell`), the last one's id, and the window
+    /// listing them.
+    notices: Vec<bell::Notice>,
+    next_notice: u64,
+    bell_open: Option<egui::ViewportId>,
     /// The music server's form in the settings, while they are open.
     subsonic_form: Option<SubsonicForm>,
     /// The radio, and its volume changed since the config was last saved.
@@ -1250,6 +1256,9 @@ impl App {
             claude_notes: Default::default(),
             claude_asks: Default::default(),
             claude_typing: Vec::new(),
+            notices: Vec::new(),
+            next_notice: 0,
+            bell_open: None,
             subsonic_form: None,
             music: music::Music::default(),
             music_volume_changed: false,
@@ -1443,7 +1452,7 @@ impl App {
         if cfg!(debug_assertions) {
             if std::env::var_os("RONNIE_DEMO_TOAST").is_some() {
                 app.splash = None;
-                app.toasts.push(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now(), mail: None, lead: None });
+                app.push_toast(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
             }
             // Puissance 4: "lobby", or the columns played against the computer ("3342"...).
             if let Ok(four) = std::env::var("RONNIE_OPEN_FOUR") {
@@ -2074,6 +2083,8 @@ impl App {
         let settings = &self.config.settings;
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         let mut notified = false;
+        // (shown, the notice): kept until seen in any case.
+        let mut notices = Vec::new();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let shown = i == self.active && self.home.is_none() && !self.notes_page && !tab.covered();
             // Taken even when disabled, not to report old commands once enabled.
@@ -2106,9 +2117,8 @@ impl App {
             // Ronnie in front, another tab shown: a notice in the window (which leads to the tab), the
             // system's, or both, as chosen.
             let body = format!("{command}\n{}  ·  {duration}", tab.title());
-            if focused && !shown && settings.notify_style.in_app() {
-                self.toasts.push(Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None, lead: None });
-            }
+            let toast = Toast { ok, title: title.clone(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None, notice: 0, lead: None };
+            notices.push((focused && !shown && settings.notify_style.in_app(), toast));
             if focused && !shown && settings.notify_style.system() {
                 crate::notify::send(&title, &body);
             }
@@ -2121,11 +2131,19 @@ impl App {
                 notified = true;
             }
         }
+        for (show, mut toast) in notices {
+            if show {
+                self.push_toast(toast);
+            } else {
+                self.keep_notice(&mut toast);
+            }
+        }
         if self.claude_events(ctx) {
             notified = true;
         }
         self.claude_notes();
         self.claude_asks(ctx);
+        self.sweep_notices(ctx);
         if notified {
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
@@ -2165,7 +2183,7 @@ impl App {
             let body = t.health_disk_full_body.replace("{host}", &name).replace("{m}", &mount).replace("{p}", &format!("{percent:.0}"));
             let tab = self.tabs.iter().position(|t| t.ssh == Some(id));
             if let Some(tab) = tab.filter(|_| focused && style.in_app()) {
-                self.toasts.push(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now(), mail: None, lead: None });
+                self.push_toast(Toast { ok: false, title: t.health_disk_full.to_owned(), body: body.clone(), tab, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
             }
             if !focused || style.system() || tab.is_none() {
                 crate::notify::send(t.health_disk_full, &body);
@@ -2214,8 +2232,11 @@ impl App {
                 None => tab.title().to_owned(),
             };
             let style = self.config.settings.notify_style;
+            let mut toast = Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None, notice: 0, lead: None };
             if focused && style.in_app() {
-                self.toasts.push(Toast { ok: true, title: title.to_owned(), body: body.clone(), tab: i, at: std::time::Instant::now(), mail: None, lead: None });
+                self.push_toast(toast);
+            } else {
+                self.keep_notice(&mut toast);
             }
             if !focused || style.system() {
                 crate::notify::send(title, &body);
@@ -2236,7 +2257,7 @@ impl App {
                 None => title.to_owned(),
             };
             let t = self.t();
-            self.toasts.push(Toast { ok: true, title: t.claude_note.to_owned(), body, tab: self.active, at: std::time::Instant::now(), mail: None, lead: Some(drive::Lead::Note(id)) });
+            self.push_toast(Toast { ok: true, title: t.claude_note.to_owned(), body, tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: Some(drive::Lead::Note(id)) });
         }
     }
 
@@ -2246,7 +2267,7 @@ impl App {
         let body = format!("{}\n{}  ·  12 s", t.notify_test_command, self.tabs.get(self.active).map_or("Ronnie", |t| t.title()));
         let style = self.config.settings.notify_style;
         if style.in_app() {
-            self.toasts.push(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now(), mail: None, lead: None });
+            self.push_toast(Toast { ok: true, title: t.command_done.to_owned(), body: body.clone(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
         }
         if style.system() {
             crate::notify::send(t.command_done, &body);
@@ -2358,9 +2379,11 @@ impl App {
         }
         self.toast_rects = rects;
         if let Some(k) = dismiss {
-            self.toasts.remove(k);
+            let toast = self.toasts.remove(k);
+            self.forget_notice(toast.notice);
         } else if let Some((k, tab, mail, lead)) = go {
-            self.toasts.remove(k);
+            let toast = self.toasts.remove(k);
+            self.forget_notice(toast.notice);
             match (mail, lead) {
                 (Some(id), _) => self.open_mail(&id),
                 (None, Some(lead)) => self.follow(lead),
@@ -3081,6 +3104,8 @@ struct Toast {
     mail: Option<String>,
     /// A notice from Claude: leads where it says instead.
     lead: Option<drive::Lead>,
+    /// Its notice kept until seen (see `bell`), set by `push_toast`.
+    notice: u64,
 }
 
 /// "45 s", "2 min 14 s", "1 h 03 min".

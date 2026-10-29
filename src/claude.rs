@@ -458,6 +458,9 @@ first and run only once they agree, one change at a time; on production (a name 
 profile's files, its git (changes, history, issues) and an editor. Ronnie tells the user when you are done or wait for \
 them while this pane isn't on screen.
 - Notes (\"{notes}\", in the left column): Markdown notes in folders.
+- Processes that keep running or that the user may want to watch (dev servers, watchers, long builds or test \
+runs): start them in a pane of Ronnie with `{ronnie} run <command>` (a pane beside yours), not in your own shell's \
+background; follow them with `{ronnie} output <pane>`. Short commands whose result you need stay in your shell.
 - You can drive this Ronnie from here with `{ronnie}` (`{ronnie} --help` lists it all): `panes` (every window, tab, \
 pane with its number, folder, program and Node.js, and the saved profiles), `run <command>` (a pane split off yours \
 running it: a dev server, a watcher… rather than in the background of your own shell), `output <pane>` (what a pane \

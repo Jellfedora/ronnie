@@ -19,11 +19,12 @@ const GAUGE_GAP: f32 = 7.0;
 
 impl App {
     /// The gauges between `x.min` and `x.max`, ending at `bottom`; none if they don't reach down
-    /// from `above`. Their thread starts when shown and stops when turned off in the settings.
-    pub(super) fn resources_gauges(&mut self, ui: &Ui, x: egui::Rangef, above: f32, bottom: f32) {
+    /// from `above`. Their thread starts when shown and stops when turned off in the settings. Where
+    /// they start (`bottom` when not shown).
+    pub(super) fn resources_gauges(&mut self, ui: &Ui, x: egui::Rangef, above: f32, bottom: f32) -> f32 {
         if !self.config.settings.resources_panel {
             self.sysmon = None;
-            return;
+            return bottom;
         }
         let s = self.sysmon.get_or_insert_with(|| crate::sysmon::Monitor::start(ui.ctx())).snapshot();
         let (t, theme) = (self.t(), self.theme.clone());
@@ -40,7 +41,7 @@ impl App {
         let height: f32 = gauges.iter().map(|g| GAUGE_TEXT_H + 2.0 + if g.2.is_some() { GAUGE_CURVE_H } else { GAUGE_BAR_H }).sum::<f32>() + GAUGE_GAP * (gauges.len() - 1) as f32;
         let top = bottom - height;
         if top - 10.0 < above {
-            return;
+            return bottom;
         }
         let painter = ui.painter();
         painter.hline(x.min + 4.0..=x.max - 4.0, top - 9.0, Stroke::new(1.0, theme.tab_hover.gamma_multiply(0.7)));
@@ -80,7 +81,7 @@ impl App {
         let over_details = shown.zip(ui.ctx().pointer_hover_pos()).is_some_and(|(r, p)| r.union(area).contains(p));
         if !ui.rect_contains_pointer(area) && !over_details {
             ui.ctx().data_mut(|d| d.remove::<Rect>(id));
-            return;
+            return top - 9.0;
         }
         let mut open = ui.interact(area, id.with("gauges"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         let details = egui::Area::new(id).order(egui::Order::Foreground).pivot(Align2::LEFT_BOTTOM).fixed_pos(Pos2::new(area.max.x + 10.0, bottom + 6.0)).show(ui.ctx(), |ui| {
@@ -105,6 +106,7 @@ impl App {
             ui.ctx().data_mut(|d| d.remove::<Rect>(id));
             self.open_procs_page();
         }
+        top - 9.0
     }
 }
 

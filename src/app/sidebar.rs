@@ -117,7 +117,7 @@ impl App {
             self.save_config();
             self.floor.sync(ui.ctx(), now, None, self.config.settings.floor.as_ref());
             if unlocked {
-                self.toasts.push(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, lead: None });
+                self.push_toast(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
             }
         }
         // Back to the home page, out of a round.
@@ -924,7 +924,8 @@ impl App {
         self.rail_flyout_ui(ui, bar, hovered);
         // The machine's resources at its bottom, above the settings.
         let below_categories = unfold.max.y + 14.0 + 46.0 * self.categories().len() as f32;
-        self.resources_gauges(ui, egui::Rangef::new(bar.min.x + 12.0, bar.max.x - 12.0), below_categories, footer - 10.0);
+        let gauges_top = self.resources_gauges(ui, egui::Rangef::new(bar.min.x + 12.0, bar.max.x - 12.0), below_categories, footer - 10.0);
+        self.bell_ui(ui, cx, below_categories, gauges_top - 4.0);
 
         ui.painter().hline(bar.min.x + 16.0..=bar.max.x - 16.0, footer + 2.0, Stroke::new(1.0, self.theme.tab_hover));
         let gear = Rect::from_center_size(Pos2::new(cx, bar.max.y - 26.0), Vec2::splat(32.0));
@@ -1579,7 +1580,8 @@ impl App {
         self.category_strip(ui, strip, strip_top, false);
         // The machine's resources at its bottom, above the version.
         let below_categories = strip_top + 46.0 * self.categories().len() as f32;
-        self.resources_gauges(ui, egui::Rangef::new(strip.min.x + 7.0, strip.max.x - 7.0), below_categories, strip.max.y - 28.0);
+        let gauges_top = self.resources_gauges(ui, egui::Rangef::new(strip.min.x + 7.0, strip.max.x - 7.0), below_categories, strip.max.y - 28.0);
+        self.bell_ui(ui, strip.center().x, below_categories, gauges_top - 4.0);
         // The version, at the bottom of the strip: small, and smaller still if it doesn't fit.
         let version = format!("v{}", update::VERSION);
         let mut size = 9.5;

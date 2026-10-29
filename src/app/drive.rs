@@ -145,7 +145,7 @@ impl App {
 
     /// A notice from Claude: what it did or proposes, and where it leads once accepted.
     fn claude_notice(&mut self, title: &str, body: String, lead: Lead) {
-        self.toasts.push(Toast { ok: true, title: title.to_owned(), body, tab: self.active, at: Instant::now(), mail: None, lead: Some(lead) });
+        self.push_toast(Toast { ok: true, title: title.to_owned(), body, tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: Some(lead) });
         self.ctx.request_repaint();
     }
 
@@ -174,7 +174,7 @@ impl App {
     }
 
     /// Pane `id` on screen: its tab shown (its window in front), the pane focused.
-    fn show_pane(&mut self, id: PaneId) {
+    pub(super) fn show_pane(&mut self, id: PaneId) {
         if let Some(i) = tab_of(&self.tabs, id) {
             self.select(i);
             self.tabs[i].focused = id;
@@ -331,7 +331,7 @@ impl App {
                     }
                     View::Mails | View::Mail(_) => {
                         let id = if let View::Mail(id) = what { id.clone() } else { String::new() };
-                        self.toasts.push(Toast { ok: true, title: t.claude_suggests.to_owned(), body: t.mail_title.to_owned(), tab: self.active, at: Instant::now(), mail: Some(id), lead: None });
+                        self.push_toast(Toast { ok: true, title: t.claude_suggests.to_owned(), body: t.mail_title.to_owned(), tab: self.active, at: Instant::now(), mail: Some(id), notice: 0, lead: None });
                         return Ok("Proposed to the user (a notice to accept).".into());
                     }
                     View::Dev => (t.cat_dev.to_owned(), Lead::Dev),
