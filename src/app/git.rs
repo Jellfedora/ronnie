@@ -1849,16 +1849,27 @@ fn mode_tabs(ui: &mut Ui, rect: Rect, mode: Mode, root: &Path, theme: &Theme, t:
     ui.painter().rect_filled(rect, 6.0, theme.bg);
     let tabs = [(Mode::Changes, t.git_tab_changes), (Mode::History, t.git_tab_history), (Mode::Issues, t.git_tab_issues), (Mode::Pulls, t.git_tab_pulls)];
     let font = FontId::proportional(12.5);
-    let widths: Vec<f32> = tabs.iter().map(|(_, label)| ui.painter().layout_no_wrap(label.to_string(), font.clone(), theme.text).size().x + 14.0).collect();
-    // The room left shared out evenly (or taken back, when too narrow).
-    let extra = (rect.width() - widths.iter().sum::<f32>()) / tabs.len() as f32;
+    let measure = |labels: [&str; 4]| labels.map(|label| ui.painter().layout_no_wrap(label.to_owned(), font.clone(), theme.text).size().x + 14.0);
+    let mut widths = measure(tabs.map(|(_, label)| label));
+    // Too narrow for the full names: the short ones, the full one on hover.
+    let short = widths.iter().sum::<f32>() > rect.width();
+    if short {
+        widths = measure(t.git_tabs_short);
+    }
+    // The room left shared out evenly, or each tab shrunk in proportion when there is still too little.
+    let total = widths.iter().sum::<f32>();
+    let fit = |w: f32| if total <= rect.width() { w + (rect.width() - total) / tabs.len() as f32 } else { w * rect.width() / total };
     let mut clicked = None;
     let mut x = rect.min.x;
-    for (k, ((m, label), w)) in tabs.into_iter().zip(widths).enumerate() {
-        let w = (w + extra).max(20.0);
+    for (k, ((m, full), w)) in tabs.into_iter().zip(widths).enumerate() {
+        let label = if short { t.git_tabs_short[k] } else { full };
+        let w = fit(w);
         let cell = Rect::from_min_size(Pos2::new(x, rect.min.y), Vec2::new(w, rect.height())).shrink(2.0);
         x += w;
-        let resp = ui.interact(cell, egui::Id::new(("git-mode", root, k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let mut resp = ui.interact(cell, egui::Id::new(("git-mode", root, k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if short {
+            resp = resp.on_hover_text(full);
+        }
         let active = m == mode;
         if active || resp.hovered() {
             ui.painter().rect_filled(cell, 5.0, if active { theme.tab_active } else { theme.tab_hover });
