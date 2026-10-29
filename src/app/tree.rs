@@ -131,7 +131,6 @@ enum TreeAction {
     ShowInTree(PathBuf),
     Refresh,
     CollapseAll,
-    ToggleHidden,
 }
 
 fn home_dir() -> PathBuf {
@@ -139,16 +138,13 @@ fn home_dir() -> PathBuf {
 }
 
 /// The items of `dir`: folders first, then by name (case aside).
-fn read_items(dir: &Path, hidden: bool) -> Vec<Item> {
+fn read_items(dir: &Path) -> Vec<Item> {
     let mut items: Vec<Item> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !hidden && name.starts_with('.') {
-                return None;
-            }
             let is_link = entry.file_type().is_ok_and(|t| t.is_symlink());
             // A link to a folder unfolds as one.
             let is_dir = entry.path().is_dir();
@@ -160,11 +156,11 @@ fn read_items(dir: &Path, hidden: bool) -> Vec<Item> {
 }
 
 /// Folders a search doesn't go into: too big, and never what is looked for.
-fn skipped(name: &str, hidden: bool) -> bool {
-    matches!(name, ".git" | "node_modules") || (!hidden && name.starts_with('.'))
+fn skipped(name: &str) -> bool {
+    matches!(name, ".git" | "node_modules")
 }
 
-fn start_search(root: PathBuf, query: String, hidden: bool, ctx: egui::Context) -> Search {
+fn start_search(root: PathBuf, query: String, ctx: egui::Context) -> Search {
     let found = Arc::new(Mutex::new(Vec::new()));
     let (done, stop) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
     let words: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_owned).collect();
@@ -180,7 +176,7 @@ fn start_search(root: PathBuf, query: String, hidden: bool, ctx: egui::Context) 
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-                if skipped(&name, hidden) {
+                if skipped(&name) {
                     continue;
                 }
                 let lower = name.to_lowercase();
@@ -207,11 +203,11 @@ fn start_search(root: PathBuf, query: String, hidden: bool, ctx: egui::Context) 
 }
 
 impl FileTree {
-    fn items(&mut self, dir: &Path, hidden: bool) -> Vec<Item> {
+    fn items(&mut self, dir: &Path) -> Vec<Item> {
         match self.listings.get(dir) {
             Some((at, items)) if at.elapsed() < RELIST => items.clone(),
             _ => {
-                let items = read_items(dir, hidden);
+                let items = read_items(dir);
                 self.listings.insert(dir.to_path_buf(), (Instant::now(), items.clone()));
                 items
             }
@@ -286,7 +282,6 @@ impl App {
             self.tree.search = None;
             self.tree.scope = None;
         }
-        let hidden = self.config.settings.files_hidden;
         let painter = ui.painter().clone();
         let mut action = None;
         self.tree.last_order = std::mem::take(&mut self.tree.order);
@@ -311,12 +306,6 @@ impl App {
                 menu_item(ui, &format!(">_  {}", t.tree_terminal_root), TreeAction::RootFromTerminal, &mut action);
             }
             menu_item(ui, &format!("⌂  {}", t.tree_home_root), TreeAction::SetRoot(None), &mut action);
-            ui.separator();
-            let mut on = hidden;
-            if ui.checkbox(&mut on, t.files_hidden).clicked() {
-                action = Some(TreeAction::ToggleHidden);
-                ui.close();
-            }
         });
         if icon_button(ui, &painter, button(1.0), "tree-collapse", &theme, paint_collapse).on_hover_text(t.tree_collapse).clicked() {
             action = Some(TreeAction::CollapseAll);
@@ -522,7 +511,6 @@ impl App {
 
     /// The tree under `root`: unfolded folders with their items, row after row.
     fn tree_rows(&mut self, ui: &mut Ui, root: &Path, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TreeAction>) {
-        let hidden = self.config.settings.files_hidden;
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
         let visible = ui.clip_rect();
@@ -531,7 +519,7 @@ impl App {
             self.naming_row(ui, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, TREE_ROW_H)), 0);
             *y += TREE_ROW_H;
         }
-        let mut stack: Vec<(PathBuf, Item, usize)> = self.tree.items(root, hidden).into_iter().rev().map(|i| (root.join(&i.name), i, 0)).collect();
+        let mut stack: Vec<(PathBuf, Item, usize)> = self.tree.items(root).into_iter().rev().map(|i| (root.join(&i.name), i, 0)).collect();
         if stack.is_empty() {
             painter.text(Pos2::new(left + 12.0, *y + TREE_ROW_H / 2.0), Align2::LEFT_CENTER, self.t().tree_empty, FontId::proportional(12.5), theme.text_muted);
             *y += TREE_ROW_H;
@@ -541,7 +529,7 @@ impl App {
             *y += TREE_ROW_H;
             let open = item.is_dir && self.tree.expanded.contains(&path);
             if open {
-                let children = self.tree.items(&path, hidden);
+                let children = self.tree.items(&path);
                 stack.extend(children.into_iter().rev().map(|i| (path.join(&i.name), i, depth + 1)));
             }
             // Off screen: only its place.
@@ -567,7 +555,7 @@ impl App {
             // Once typing pauses.
             match self.tree.typed {
                 Some(at) if at.elapsed() < TYPING_PAUSE => ui.ctx().request_repaint_after(TYPING_PAUSE - at.elapsed()),
-                _ => self.tree.search = Some(start_search(root.to_path_buf(), query.to_owned(), self.config.settings.files_hidden, ui.ctx().clone())),
+                _ => self.tree.search = Some(start_search(root.to_path_buf(), query.to_owned(), ui.ctx().clone())),
             }
         }
         let Some(search) = &self.tree.search else { return };
@@ -1013,11 +1001,6 @@ impl App {
                 self.tree.search = None;
             }
             TreeAction::CollapseAll => self.tree.expanded.clear(),
-            TreeAction::ToggleHidden => {
-                self.config.settings.files_hidden = !self.config.settings.files_hidden;
-                self.tree.listings.clear();
-                self.tree.search = None;
-            }
         }
     }
 
