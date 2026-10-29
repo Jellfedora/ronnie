@@ -438,6 +438,36 @@ impl Notes {
         self.cell_edit = None;
     }
 
+    /// A week's recap note (see `crate::recap`): `id` while it is there out of the bin, otherwise a new
+    /// one in the top folder `folder_name` (made if need be). Its text made by `write` from the former
+    /// one, and saved now.
+    pub(super) fn recap_note(&mut self, id: Option<Uuid>, folder_name: &str, write: impl FnOnce(&str) -> String) -> Uuid {
+        let now = now_ms();
+        let id = match id.filter(|id| self.note(*id).is_some_and(|n| n.trashed.is_none())) {
+            Some(id) => id,
+            None => {
+                let folder = match self.store.folders.iter().find(|f| !f.deleted && f.parent.is_none() && f.name == folder_name) {
+                    Some(f) => f.id,
+                    None => {
+                        let id = Uuid::new_v4();
+                        self.store.folders.push(Folder { id, name: folder_name.to_owned(), parent: None, updated: now, deleted: false });
+                        id
+                    }
+                };
+                let id = Uuid::new_v4();
+                self.store.notes.push(Note { id, folder: Some(folder), text: String::new(), created: now, updated: now, pinned: false, trashed: None });
+                id
+            }
+        };
+        if let Some(note) = self.note_mut(id) {
+            note.text = write(&note.text);
+            note.updated = now;
+        }
+        self.dirty = Some(0.0);
+        self.flush();
+        id
+    }
+
     fn new_note(&mut self, ui: &Ui) {
         let folder = match self.place {
             Place::Folder(f) => f,

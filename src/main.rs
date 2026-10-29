@@ -34,6 +34,7 @@ mod pane;
 mod putty;
 mod procs;
 mod playtime;
+mod recap;
 mod screens;
 mod sftp;
 mod shell;
