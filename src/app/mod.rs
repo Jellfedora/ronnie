@@ -908,6 +908,8 @@ enum CloseRequest {
     Window,
     /// Close to start the updated app.
     Restart,
+    /// Every SSH tab of the window (true), or every terminal tab (false): always asked first.
+    All(bool),
 }
 
 /// A close waiting for confirmation, with what it would interrupt.
@@ -2512,7 +2514,7 @@ impl App {
         }
         let pending = self.confirm_close.as_mut().map(|c| match &mut c.request {
             CloseRequest::Pane(i, _) | CloseRequest::Tab(i) => shift(i),
-            CloseRequest::Window | CloseRequest::Restart => true,
+            CloseRequest::Window | CloseRequest::Restart | CloseRequest::All(_) => true,
         });
         if pending == Some(false) {
             self.confirm_close = None;
@@ -3907,6 +3909,8 @@ enum TabAction {
     DropGroup(Uuid, Option<Uuid>, Option<Uuid>),
     /// Restart every session of an SSH tab.
     Reconnect(usize),
+    /// Close every SSH tab (true), or every terminal tab (false), once confirmed.
+    CloseAll(bool),
     /// Copy a profile (right after it), or open the host or database editor on a copy of a host or a database.
     Duplicate(Uuid),
     /// Open a profile or an SSH host in a new window (moving its tab there if it is open here).

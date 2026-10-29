@@ -78,7 +78,9 @@ impl App {
 
         // Laid out from 0, then shifted by the scroll.
         let plus_rect = Rect::from_center_size(Pos2::new(rect.max.x - 22.0, rect.center().y), Vec2::splat(26.0));
-        let area = Rect::from_min_max(Pos2::new(rect.min.x + 8.0, rect.min.y), Pos2::new(plus_rect.min.x - 6.0, rect.max.y));
+        // Beside the "+", while some are open: close them all.
+        let close_all = (!self.tabs_of(false).is_empty()).then(|| plus_rect.translate(Vec2::new(-28.0, 0.0)));
+        let area = Rect::from_min_max(Pos2::new(rect.min.x + 8.0, rect.min.y), Pos2::new(close_all.unwrap_or(plus_rect).min.x - 6.0, rect.max.y));
         let cy = rect.center().y;
         let mut x = 0.0;
         for seg in &mut segments {
@@ -261,7 +263,12 @@ impl App {
             ui.data_mut(|d| d.insert_temp(goal_id, goal));
             ui.ctx().request_repaint();
         }
-        painter.vline(plus_rect.min.x - 3.0, egui::Rangef::new(cy - 10.0, cy + 10.0), Stroke::new(1.0, theme.tab_hover));
+        painter.vline(close_all.unwrap_or(plus_rect).min.x - 3.0, egui::Rangef::new(cy - 10.0, cy + 10.0), Stroke::new(1.0, theme.tab_hover));
+        if let Some(r) = close_all {
+            if icon_button(ui, &painter, r, "ws-close-all", &theme, paint_cross).on_hover_text(t.close_all_terminals).clicked() {
+                action = Some(TabAction::CloseAll(false));
+            }
+        }
         let new_hint = format!("{} ({})", t.new_tab, self.config.settings.shortcuts.new_tab.label());
         if icon_button(ui, &painter, plus_rect, "ws-new-tab", &theme, paint_plus).on_hover_text(new_hint).clicked() {
             action = Some(TabAction::New);

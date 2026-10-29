@@ -455,8 +455,22 @@ impl App {
         busy
     }
 
+    /// The tabs closed by closing all of a kind: the SSH ones, or the terminals (neither SSH nor databases).
+    pub(super) fn tabs_of(&self, ssh: bool) -> Vec<usize> {
+        (0..self.tabs.len()).filter(|&i| if ssh { self.tabs[i].ssh.is_some() } else { self.tabs[i].ssh.is_none() && self.tabs[i].db.is_none() }).collect()
+    }
+
     pub(super) fn busy_for(&self, request: CloseRequest) -> Vec<String> {
         match request {
+            // Every tab closed is named, what runs in it beside.
+            CloseRequest::All(ssh) => self
+                .tabs_of(ssh)
+                .into_iter()
+                .map(|i| {
+                    let running: Vec<String> = if ssh { Vec::new() } else { self.busy(i, None) };
+                    if running.is_empty() { self.tabs[i].title().to_owned() } else { running.join(", ") }
+                })
+                .collect(),
             CloseRequest::Pane(index, id) => self.busy(index, Some(&[id])),
             CloseRequest::Tab(index) => self.busy(index, None),
             // This window; quitting (from the main one) or restarting: every window.
@@ -473,6 +487,12 @@ impl App {
     /// Closes right away, or asks first when that would interrupt running programs.
     pub(super) fn request_close(&mut self, request: CloseRequest) {
         let busy = self.busy_for(request);
+        if let CloseRequest::All(_) = request {
+            if !busy.is_empty() {
+                self.confirm_close = Some(ConfirmClose { request, busy, dont_ask: false });
+            }
+            return;
+        }
         let skip = matches!(request, CloseRequest::Pane(..) | CloseRequest::Tab(_)) && !self.config.settings.confirm_close_busy;
         if busy.is_empty() || skip {
             self.do_close(request);
@@ -485,6 +505,12 @@ impl App {
         match request {
             CloseRequest::Pane(index, id) => self.close_pane(index, id),
             CloseRequest::Tab(index) => self.close_tab(index),
+            // From the last: the indexes of those before stay right.
+            CloseRequest::All(ssh) => {
+                for i in self.tabs_of(ssh).into_iter().rev() {
+                    self.close_tab(i);
+                }
+            }
             // Another window than the main one closes alone, with its tabs.
             CloseRequest::Window if self.viewport != egui::ViewportId::ROOT => self.window_closing = true,
             CloseRequest::Window => {
@@ -972,9 +998,14 @@ impl App {
         let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg);
         let modal = egui::Modal::new(egui::Id::new("confirm-close")).frame(frame).show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.label(egui::RichText::new(t.close_anyway_title).size(17.0).strong());
+            let (title, body) = match confirm.request {
+                CloseRequest::All(true) => (t.close_all_ssh_title, t.close_all_body),
+                CloseRequest::All(false) => (t.close_all_terminals_title, t.close_all_body),
+                _ => (t.close_anyway_title, t.close_anyway_body),
+            };
+            ui.label(egui::RichText::new(title).size(17.0).strong());
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(t.close_anyway_body).size(13.5).color(theme.text_muted));
+            ui.label(egui::RichText::new(body).size(13.5).color(theme.text_muted));
             ui.add_space(6.0);
             for item in confirm.busy.iter().take(8) {
                 ui.label(egui::RichText::new(format!("•  {item}")).size(13.0).monospace());

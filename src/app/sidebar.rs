@@ -595,6 +595,13 @@ impl App {
             menu_item(ui, t.new_host, TabAction::NewHost, action);
             menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Ssh), action);
         });
+        // Beside it, while some are open: close them all.
+        if self.tabs.iter().any(|tab| tab.ssh.is_some()) {
+            let close_rect = plus_rect.translate(Vec2::new(-24.0, 0.0));
+            if icon_button(ui, &painter, close_rect, "ssh-close-all", &self.theme, paint_cross).on_hover_text(t.close_all_ssh).clicked() {
+                *action = Some(TabAction::CloseAll(true));
+            }
+        }
         *y += SECTION_HEADER_H;
         }
 
@@ -1696,10 +1703,11 @@ impl App {
             }
             Some(TabAction::Select(i)) => self.select(i),
             Some(TabAction::Close(i)) => self.request_close(CloseRequest::Tab(i)),
+            Some(TabAction::CloseAll(ssh)) => self.request_close(CloseRequest::All(ssh)),
             Some(TabAction::New) => self.new_tab(ui.ctx()),
             Some(TabAction::Split(i, side)) => self.split(ui.ctx(), i, side),
             Some(TabAction::DeleteProfile(id)) => self.delete_profile(id),
-            Some(TabAction::NewHost) => self.host_editor = Some(HostEditor::new(SshHost::new(), true, None)),
+            Some(TabAction::NewHost) => self.host_editor = Some(HostEditor::new(SshHost::blank(), true, None)),
             Some(TabAction::EditHost(id)) => {
                 if let Some(host) = self.config.ssh.iter().find(|h| h.id == id) {
                     let group = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
