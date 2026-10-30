@@ -2,6 +2,19 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.39.0] - 2026-10-30
+
+### Nouveautés
+
+- **Les classements restent affichés quand la limite de jeu est atteinte** : sous le message qui dit quand le jeu revient, chaque jeu montre son classement en ligne (celui du niveau choisi pour Riff Hero, les victoires pour Puissance 4, les meilleures masses pour Ronnie.io).
+- **Ouvrir une catégorie dans une nouvelle fenêtre** : clic droit sur son icône dans la colonne de gauche. Pour les terminaux locaux, ça ouvre un nouveau terminal.
+
+### Changements
+
+- **Riff Hero joue la musique de Speed Metal**, et ses morceaux suivent son tempo.
+- **Speed Metal retrouve sa première liste de mots**, plus courte.
+- Les classements de Ronnie.io, Speed Metal et Ronnie Run repartent de zéro, ces jeux ayant changé.
+
 ## [0.38.0] - 2026-10-30
 
 ### Nouveautés
