@@ -5,7 +5,8 @@
 //! and database, Ronnie in front and in use, and in the games), from git (the user's own commits of the
 //! day in those projects) and from Claude Code's sessions (`~/.claude/projects/*/*.jsonl`: the requests
 //! typed, the tokens). Only the commits' subjects leave this computer, to Claude, to be translated
-//! into French (and the European Central Bank is asked for the dollar's rate).
+//! into French, and the folders of the day's projects when the user gave Claude instructions for the
+//! recap (and the European Central Bank is asked for the dollar's rate).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,10 @@ const PROD_BRANCHES: [&str; 4] = ["main", "master", "prod", "production"];
 /// Tokens in a page, in a novel: for the fun of the day's figures.
 const PAGE_TOKENS: u64 = 500;
 const NOVEL_TOKENS: u64 = 100_000;
+/// Folder names that say which part of a project it is, not which project: named with their parent's.
+const PARTS: [&str; 24] = [
+    "admin", "api", "app", "back", "back-end", "backend", "client", "core", "docs", "front", "front-end", "frontend", "mobile", "modules", "packages", "plugins", "public", "server", "site", "src", "theme", "themes", "web", "www",
+];
 
 /// What was done, day by day.
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -70,6 +75,11 @@ pub struct Day {
     /// hour), it is written again the next day.
     #[serde(default)]
     pub written_seconds: Option<u32>,
+    /// The day its section was last written ("2026-10-28"): written that same day (before the evening
+    /// was over), it is written again the next day, whole (Claude's work in another terminal, the
+    /// commits of the evening, aren't counted in Ronnie's seconds).
+    #[serde(default)]
+    pub written_on: Option<String>,
 }
 
 impl Day {
@@ -112,6 +122,10 @@ pub struct Facts {
     /// The time of the projects Ronnie didn't count, from Claude's sessions, by project name.
     #[serde(default)]
     pub estimated: BTreeMap<String, u32>,
+    /// The time Ronnie counted, by project name, the projects left out by the user's instructions not
+    /// in it (None: written before, the journal's folders count).
+    #[serde(default)]
+    pub projects: Option<BTreeMap<String, u32>>,
 }
 
 /// Where the time goes.
@@ -182,8 +196,8 @@ impl Journal {
     }
 
     /// The days to write now (at `hour` o'clock): those before today not written yet (Ronnie was closed
-    /// at that hour) or worked on again after (the evening), and today once the hour has come. The
-    /// oldest first, within the last two weeks.
+    /// at that hour), written while they went on, or worked on again after (the evening), and today once
+    /// the hour has come. The oldest first, within the last two weeks.
     pub fn due(&self, now: chrono::NaiveDateTime, hour: u32) -> Vec<NaiveDate> {
         let today = now.date();
         let from = today - Duration::days(14);
@@ -195,7 +209,7 @@ impl Journal {
                     return false;
                 }
                 if self.written.contains(&key(*d)) {
-                    return *d < today && day.written_seconds.is_some_and(|s| day.seconds() >= s + 60);
+                    return *d < today && (day.written_on.as_deref() == Some(key(*d).as_str()) || day.written_seconds.is_some_and(|s| day.seconds() >= s + 60));
                 }
                 *d < today || now.hour() >= hour
             })
@@ -281,9 +295,14 @@ fn tokens(n: u64, lang: Lang) -> String {
     if lang == Lang::Fr { text.replace('.', ",") } else { text }
 }
 
-/// A project's name: its folder's.
+/// A project's name: its folder's, with its parent's for a part of one ("shop/Backend").
 fn name_of(path: &str) -> String {
-    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_owned())
+    let path = Path::new(path);
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return path.display().to_string() };
+    match path.parent().and_then(Path::file_name) {
+        Some(parent) if PARTS.contains(&name.to_lowercase().as_str()) => format!("{}/{name}", parent.to_string_lossy()),
+        _ => name,
+    }
 }
 
 /// Two writings of a folder as one (Windows: any case, either slash).
@@ -343,6 +362,8 @@ struct Git {
 #[derive(Default, Debug)]
 struct Work {
     path: String,
+    /// As shown: its folder's (see `name_of`), or the one the user's instructions gave it.
+    name: String,
     seconds: u32,
     git: Git,
     prompts: u32,
@@ -376,9 +397,9 @@ pub struct Report {
 /// production, another branch, not pushed yet, and today what isn't committed; in French, translated
 /// by Claude), then the day's figures, Claude's from the sessions of every account of Claude Code on
 /// this computer. The projects worked on in Ronnie that day and those Claude worked in (their time
-/// then Claude's, when Ronnie didn't count it). Runs git and Claude, reaches the European Central
-/// Bank: off the interface's thread.
-pub fn report(date: NaiveDate, day: &Day, lang: Lang) -> Report {
+/// then Claude's, when Ronnie didn't count it), named and left out as the user's `rules` for Claude
+/// say. Runs git and Claude, reaches the European Central Bank: off the interface's thread.
+pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &str) -> Report {
     let mut works: HashMap<String, Work> = HashMap::new();
     for (path, seconds) in day.projects.iter().filter(|(_, s)| **s >= 60) {
         let work = works.entry(same_key(path)).or_insert_with(|| Work { path: path.clone(), ..Default::default() });
@@ -401,11 +422,18 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang) -> Report {
         work.wh += session.wh;
         work.claude_seconds += session.active;
     }
+    let mut cache = load_cache();
+    let paths: Vec<String> = works.values().map(|w| w.path.clone()).chain(day.projects.keys().cloned()).collect();
+    let named = cache.name(&paths, rules);
+    let name = |path: &str| named.get(&same_key(path)).cloned().unwrap_or_else(|| Some(name_of(path)));
+    works.retain(|_, w| name(&w.path).is_some());
+    for work in works.values_mut() {
+        work.name = name(&work.path).unwrap_or_default();
+    }
     let today = Local::now().date_naive() == date;
     for work in works.values_mut() {
         work.git = git_day(Path::new(&work.path), date, today);
     }
-    let mut cache = load_cache();
     let usd_per_eur = cache.usd_per_eur();
     if lang == Lang::Fr {
         let subjects: Vec<&str> = works.values().flat_map(|w| w.git.commits.iter().map(|c| c.subject.as_str())).collect();
@@ -424,14 +452,21 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang) -> Report {
     let fr = lang == Lang::Fr;
     let mut out = vec![day_heading(date, lang), String::new()];
     let mut facts = Facts::default();
+    let mut projects = BTreeMap::new();
+    for (path, seconds) in &day.projects {
+        if let Some(name) = name(path) {
+            *projects.entry(name).or_default() += seconds;
+        }
+    }
+    facts.projects = Some(projects);
     for work in &works {
-        let mut head = format!("**{}**", name_of(&work.path));
+        let mut head = format!("**{}**", work.name);
         if work.seconds >= 60 {
             head += &format!(" · {}", duration(work.seconds));
         } else if work.claude_seconds >= 60 {
             // Not counted in Ronnie (closed, the recap off, another terminal): Claude's time at it.
             head += &if fr { format!(" · ≈ {} avec Claude", duration(work.claude_seconds)) } else { format!(" · ≈ {} with Claude", duration(work.claude_seconds)) };
-            facts.estimated.insert(name_of(&work.path), work.claude_seconds);
+            facts.estimated.insert(work.name.clone(), work.claude_seconds);
         }
         out.push(head);
         // The commits by how far they went (production first), then by branch, each group in order.
@@ -478,7 +513,7 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang) -> Report {
         }
         facts.wh += work.wh;
         if work.tokens > 0 {
-            *facts.project_tokens.entry(name_of(&work.path)).or_default() += work.tokens;
+            *facts.project_tokens.entry(work.name.clone()).or_default() += work.tokens;
         }
         for commit in &work.git.commits {
             facts.added += commit.added;
@@ -669,8 +704,9 @@ pub fn total(journal: &Journal, week: NaiveDate, lang: Lang) -> String {
     for k in 0..7 {
         let date = week + Duration::days(k);
         let Some(day) = journal.days.get(&key(date)) else { continue };
-        for (path, seconds) in &day.projects {
-            *projects.entry(name_of(path)).or_default() += seconds;
+        match day.facts.as_ref().and_then(|f| f.projects.as_ref()) {
+            Some(named) => named.iter().for_each(|(name, seconds)| *projects.entry(name.clone()).or_default() += seconds),
+            None => day.projects.iter().for_each(|(path, seconds)| *projects.entry(name_of(path)).or_default() += seconds),
         }
         games += day.games;
         if day.seconds() >= 60 && busiest.is_none_or(|(_, s)| day.seconds() > s) {
@@ -1176,6 +1212,12 @@ struct Cache {
     fr: BTreeMap<String, String>,
     #[serde(default)]
     used: BTreeMap<String, String>,
+    /// The user's instructions for the recap the names below follow, and each project's by its folder
+    /// (`same_key`): its name, None to leave it out.
+    #[serde(default)]
+    rules: String,
+    #[serde(default)]
+    named: BTreeMap<String, Option<String>>,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -1231,6 +1273,32 @@ impl Cache {
     }
 }
 
+impl Cache {
+    /// The projects of `paths` as the user's `rules` want them, by folder (`same_key`): their name,
+    /// None to leave them out. Claude asked once for each folder (again when the rules change); those
+    /// it didn't answer for are missing, as they are.
+    fn name(&mut self, paths: &[String], rules: &str) -> BTreeMap<String, Option<String>> {
+        let rules = rules.trim();
+        if self.rules != rules {
+            self.rules = rules.to_owned();
+            self.named.clear();
+        }
+        if rules.is_empty() {
+            return BTreeMap::new();
+        }
+        let mut seen = BTreeSet::new();
+        let missing: Vec<&String> = paths.iter().filter(|p| !self.named.contains_key(&same_key(p)) && seen.insert(same_key(p))).collect();
+        if !missing.is_empty() {
+            for (path, answer) in missing.iter().zip(named_by_claude(&missing, rules)) {
+                if let Some(answer) = answer {
+                    self.named.insert(same_key(path), (answer != "-").then_some(answer));
+                }
+            }
+        }
+        paths.iter().filter_map(|p| Some((same_key(p), self.named.get(&same_key(p))?.clone()))).collect()
+    }
+}
+
 /// The dollars to the euro of the European Central Bank's rates of the day.
 fn ecb_rate() -> Option<f64> {
     let agent = ureq::config::Config::builder().timeout_global(Some(std::time::Duration::from_secs(10))).build().new_agent();
@@ -1248,8 +1316,7 @@ fn claude_program() -> PathBuf {
     local.filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from("claude"))
 }
 
-/// `subjects` in French, by Claude (Haiku, through Claude Code: the user's own account), in their
-/// order; None where it didn't answer.
+/// `subjects` in French, by Claude, in their order; None where it didn't answer.
 fn translated(subjects: &[&str]) -> Vec<Option<String>> {
     let mut prompt = String::from(
         "Traduis en français chacun de ces titres de commits git. Garde tels quels les noms propres, les noms de jeux, \
@@ -1259,8 +1326,43 @@ fn translated(subjects: &[&str]) -> Vec<Option<String>> {
     for (i, subject) in subjects.iter().enumerate() {
         prompt += &format!("{}. {}\n", i + 1, subject.replace('\n', " "));
     }
-    let mut out = vec![None; subjects.len()];
-    // Without any tool (a commit's subject asks for nothing to be done), nor a session kept, from a
+    numbered(ask_claude(&prompt).as_deref().unwrap_or_default(), subjects.len())
+}
+
+/// The projects of `paths` as the user's `rules` want them, by Claude, in their order: the name to
+/// show, "-" to leave one out; None where it didn't answer.
+fn named_by_claude(paths: &[&String], rules: &str) -> Vec<Option<String>> {
+    let mut prompt = format!(
+        "Voici les projets d'une journée de travail, pour le récap de la semaine : chacun son numéro, le nom affiché et son dossier. \
+         Applique les consignes de l'utilisateur. Réponds uniquement par une ligne par projet : son numéro, un point, puis le nom \
+         à afficher (le nom affiché tel quel s'il n'y a rien à changer), ou « - » si le projet ne doit pas compter, sans rien d'autre.\n\n\
+         Consignes de l'utilisateur :\n{rules}\n\nProjets :\n"
+    );
+    for (i, path) in paths.iter().enumerate() {
+        prompt += &format!("{}. {} ({path})\n", i + 1, name_of(path));
+    }
+    numbered(ask_claude(&prompt).as_deref().unwrap_or_default(), paths.len())
+}
+
+/// The `n` numbered lines of Claude's answer ("1. ..."), in their order; None where one is missing.
+fn numbered(text: &str, n: usize) -> Vec<Option<String>> {
+    let mut out = vec![None; n];
+    for line in text.lines() {
+        let Some((n, answer)) = line.trim().split_once(". ") else { continue };
+        let answer = answer.trim().trim_matches(['«', '»']).trim();
+        if let Some(slot) = n.parse::<usize>().ok().and_then(|n| out.get_mut(n.wrapping_sub(1)))
+            && !answer.is_empty()
+        {
+            *slot = Some(answer.to_owned());
+        }
+    }
+    out
+}
+
+/// Claude's answer to `prompt` (Haiku, through Claude Code: the user's own account); None when it
+/// can't be run or takes too long.
+fn ask_claude(prompt: &str) -> Option<String> {
+    // Without any tool (nothing is to be done, only answered), nor a session kept, from a
     // folder of no project all the same: it counts in no day's figures.
     let mut cmd = Command::new(claude_program());
     cmd.args(["-p", "--model", "haiku", "--output-format", "text", "--no-session-persistence", "--tools", ""]).current_dir(std::env::temp_dir()).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
@@ -1269,7 +1371,7 @@ fn translated(subjects: &[&str]) -> Vec<Option<String>> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let Ok(mut child) = cmd.spawn() else { return out };
+    let mut child = cmd.spawn().ok()?;
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
         let _ = stdin.write_all(prompt.as_bytes());
@@ -1292,21 +1394,11 @@ fn translated(subjects: &[&str]) -> Vec<Option<String>> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return out;
+                return None;
             }
         }
     }
-    let Ok(text) = reader.join() else { return out };
-    for line in text.lines() {
-        let Some((n, fr)) = line.trim().split_once(". ") else { continue };
-        let fr = fr.trim();
-        if let Some(slot) = n.parse::<usize>().ok().and_then(|n| out.get_mut(n.wrapping_sub(1)))
-            && !fr.is_empty()
-        {
-            *slot = Some(fr.to_owned());
-        }
-    }
-    out
+    reader.join().ok()
 }
 
 #[cfg(test)]
@@ -1339,6 +1431,16 @@ mod tests {
     }
 
     #[test]
+    fn a_part_of_a_project_is_named_with_it() {
+        assert_eq!(name_of("/www/shop"), "shop");
+        assert_eq!(name_of("/www/shop/Backend"), "shop/Backend");
+        // Claude's numbered answer: the name, « - » to leave out, nothing when it skipped one.
+        assert_eq!(numbered("1. Ma boutique
+2. « - »
+Voilà.", 3), vec![Some("Ma boutique".to_owned()), Some("-".to_owned()), None]);
+    }
+
+    #[test]
     fn the_days_due_wait_for_the_hour_and_catch_up() {
         let mut journal = Journal::default();
         journal.seen(d(2026, 10, 27));
@@ -1356,6 +1458,13 @@ mod tests {
         assert_eq!(journal.due(at(9), 18), Vec::<NaiveDate>::new());
         journal.days.get_mut(&key(d(2026, 10, 27))).unwrap().projects.insert("C:\\www\\shop".into(), 3600 + 600);
         assert_eq!(journal.due(at(9), 18), vec![d(2026, 10, 27)]);
+        // Written on the day itself (at the hour, before the evening was over): whole the next day, once.
+        let day = journal.days.get_mut(&key(d(2026, 10, 27))).unwrap();
+        day.written_seconds = Some(day.seconds());
+        day.written_on = Some(key(d(2026, 10, 27)));
+        assert_eq!(journal.due(at(9), 18), vec![d(2026, 10, 27)]);
+        journal.days.get_mut(&key(d(2026, 10, 27))).unwrap().written_on = Some(key(d(2026, 10, 28)));
+        assert_eq!(journal.due(at(9), 18), Vec::<NaiveDate>::new());
         // Turned on a Friday: the week's Tuesday to Thursday caught up.
         let mut journal = Journal::default();
         journal.seen(d(2026, 10, 30));
@@ -1405,11 +1514,11 @@ mod tests {
         let mut day = Day::default();
         // Under a minute in a project: nothing to say.
         day.projects.insert("C:\\www\\nowhere".into(), 30);
-        let report = report(d(2026, 10, 31), &day, Lang::Fr);
+        let report = report(d(2026, 10, 31), &day, Lang::Fr, "");
         assert!(report.empty);
-        assert_eq!(report.facts, Facts::default());
+        assert_eq!(Facts { projects: None, ..report.facts }, Facts::default());
         day.servers.insert("Apache 12".into(), 600);
-        assert!(!super::report(d(2026, 10, 31), &day, Lang::Fr).empty);
+        assert!(!super::report(d(2026, 10, 31), &day, Lang::Fr, "").empty);
     }
 
     #[test]

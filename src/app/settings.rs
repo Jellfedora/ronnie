@@ -1512,6 +1512,10 @@ impl App {
                     ui.add(egui::DragValue::new(&mut picked.recap.hour).range(0..=23).suffix(" h"));
                 });
                 divider(ui, theme);
+                setting_row(ui, theme, t.recap_rules, Some(t.recap_rules_desc), |_| {});
+                ui.add(egui::TextEdit::multiline(&mut picked.recap.rules).hint_text(t.recap_rules_hint).desired_width(f32::INFINITY).desired_rows(3).margin(Vec2::new(8.0, 6.0)));
+                ui.add_space(10.0);
+                divider(ui, theme);
                 setting_row(ui, theme, t.recap_now, Some(t.recap_now_desc), |ui| {
                     let button = egui::Button::new(egui::RichText::new(t.recap_now).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
                     if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
