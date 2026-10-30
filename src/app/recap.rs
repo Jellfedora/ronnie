@@ -137,11 +137,12 @@ impl App {
         {
             let day = self.recap.journal.days.get(&recap::key(date)).cloned().unwrap_or_default();
             let lang = self.config.settings.language;
+            let rules = self.config.settings.recap.rules.clone();
             let ctx = ctx.clone();
             self.recap.job = std::thread::Builder::new()
                 .name("recap".into())
                 .spawn(move || {
-                    let report = recap::report(date, &day, lang);
+                    let report = recap::report(date, &day, lang, &rules);
                     ctx.request_repaint();
                     report
                 })
@@ -169,6 +170,7 @@ impl App {
         // the day.
         if report.date < now.date_naive() || chrono::Timelike::hour(&now) >= self.config.settings.recap.hour {
             day.written_seconds = Some(day.seconds());
+            day.written_on = Some(recap::key(now.date_naive()));
             self.recap.journal.written.insert(day_key.clone());
         }
         // A day without anything done (Ronnie only open, a Saturday...) stays out of the note, unless
