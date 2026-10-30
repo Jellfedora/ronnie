@@ -54,6 +54,8 @@ pub(super) struct Blob {
     flip: f32,
     /// When the Demogorgon last caught the player (the screen flashes red).
     grabbed_at: Option<f64>,
+    /// floor's board of best masses, shown in place of the game once its minutes are up.
+    pub(super) floor: Option<crate::floor::GameFloor>,
 }
 
 /// A cell's radius, from its mass (as floor's).

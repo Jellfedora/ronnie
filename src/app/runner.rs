@@ -26,7 +26,7 @@ pub(super) struct Runner {
     /// have none).
     jump_pending: bool,
     rng: u64,
-    floor: crate::floor::GameFloor,
+    pub(super) floor: crate::floor::GameFloor,
 }
 
 impl Default for Runner {

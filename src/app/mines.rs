@@ -18,7 +18,7 @@ pub(super) struct Mines {
     record: bool,
     rng: u64,
     /// floor's board of the fastest games.
-    floor: crate::floor::GameFloor,
+    pub(super) floor: crate::floor::GameFloor,
 }
 
 impl Default for Mines {

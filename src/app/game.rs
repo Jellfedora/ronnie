@@ -16,7 +16,7 @@ const COUNTDOWN: f64 = 3.0;
 /// The last seconds, when the clock turns red and beats.
 const HURRY: f64 = 10.0;
 /// The soundtrack ("Thrash Metal", by Alex Morgan on Pixabay), inside the app.
-const MUSIC: &[u8] = include_bytes!("../../assets/audio/alex-morgan-thrash-metal-591343.mp3");
+pub(super) const MUSIC: &[u8] = include_bytes!("../../assets/audio/alex-morgan-thrash-metal-591343.mp3");
 const MUSIC_VOLUME: f32 = 0.7;
 /// The music fades out this long after the round.
 const MUSIC_FADE: f64 = 2.5;
@@ -33,26 +33,6 @@ const WORDS_FR: &[&str] = &[
     "rugir", "hurler", "frapper", "vibrer", "exploser", "brûler", "foncer", "cogner", "déchirer", "gronder",
     "légende", "chaos", "furie", "rage", "gloire", "victoire", "bataille", "royaume", "trône", "couronne",
     "vitesse", "puissance", "fureur", "tonitruant", "électrique", "sauvage", "éternel", "infernal", "brutal", "lourd",
-    "ampère", "accord", "tempo", "mesure", "partition", "refrain", "couplet", "fosse", "pogo", "slam",
-    "roadie", "backstage", "festival", "affiche", "vinyle", "cassette", "platine", "enceinte", "câble", "jack",
-    "sono", "projecteur", "fumée", "laser", "décibel", "tympan", "sueur", "foudre", "orage", "brasier",
-    "cendre", "braise", "lave", "séisme", "ouragan", "avalanche", "titan", "géant", "cyclope", "griffon",
-    "vampire", "spectre", "fantôme", "sorcier", "dague", "hache", "armure", "casque", "massue", "catapulte",
-    "forteresse", "donjon", "rempart", "citadelle", "bannière", "glaive", "octet", "pixel", "binaire", "variable",
-    "boucle", "fonction", "module", "paquet", "console", "prompt", "sudo", "docker", "conteneur", "cluster",
-    "pipeline", "cache", "socket", "pointeur", "vecteur", "thread", "verrou", "signal", "tampon", "déploie",
-    "écraser", "broyer", "marteler", "secouer", "trembler", "pulvériser", "vacarme", "ténèbres", "abîme", "néant",
-    "orgueil", "colère", "vengeance", "destin", "prophétie", "féroce", "implacable", "colossal", "maudit", "ultime",
-    "demogorgon", "onze", "hawkins", "upside", "vecna", "gaufre", "talkie", "hopper", "dustin", "eggo",
-    "elfe", "hobbit", "gandalf", "mordor", "anneau", "sauron", "gollum", "frodon", "nazgul", "orque",
-    "jedi", "sith", "sabre", "wookiee", "padawan", "vador", "yoda", "chewbacca", "droide", "empire",
-    "poudlard", "moldu", "quidditch", "dumbledore", "horcruxe", "vifdor", "patronus", "serpentard", "zelda", "hyrule",
-    "triforce", "mario", "champignon", "tuyau", "pikachu", "pokeball", "dresseur", "dracaufeu", "matrix", "neo",
-    "morpheus", "delorean", "doc", "ghostbusters", "gremlins", "goonies", "terminator", "alien", "predator", "robocop",
-    "tortue", "ninja", "shredder", "batman", "joker", "gotham", "avengers", "thanos", "gantelet", "asgard",
-    "wakanda", "vibranium", "mjolnir", "hulk", "spiderman", "venom", "krypton", "kryptonite", "tetris", "pacman",
-    "sonic", "arcade", "joystick", "manette", "cartouche", "boss", "checkpoint", "respawn", "targaryen", "dothraki",
-    "westeros", "dragonnier", "witcher", "geralt", "kaamelott", "perceval", "excalibur", "graal", "tardis", "dalek",
 ];
 
 const WORDS_EN: &[&str] = &[
@@ -66,26 +46,6 @@ const WORDS_EN: &[&str] = &[
     "roar", "scream", "strike", "shake", "explode", "burn", "rush", "pound", "shred", "rumble",
     "chaos", "fury", "rage", "glory", "victory", "battle", "kingdom", "throne", "crown", "speed",
     "power", "wild", "eternal", "infernal", "brutal", "heavy", "electric", "loud", "fast", "fierce",
-    "ampere", "chord", "tempo", "measure", "chorus", "verse", "moshpit", "pogo", "slam", "roadie",
-    "backstage", "festival", "poster", "vinyl", "cassette", "turntable", "speaker", "cable", "jack", "spotlight",
-    "smoke", "laser", "decibel", "eardrum", "sweat", "tremolo", "blaze", "ashes", "ember", "lava",
-    "quake", "hurricane", "avalanche", "titan", "giant", "cyclops", "griffin", "vampire", "specter", "ghost",
-    "wizard", "dagger", "axe", "armor", "helmet", "mace", "catapult", "fortress", "dungeon", "rampart",
-    "citadel", "banner", "blade", "byte", "pixel", "binary", "variable", "loop", "function", "module",
-    "package", "deploy", "pipeline", "console", "prompt", "sudo", "docker", "container", "cluster", "cache",
-    "socket", "pointer", "array", "vector", "thread", "mutex", "signal", "buffer", "stack", "router",
-    "crush", "grind", "hammer", "smash", "tremble", "wreck", "howl", "uproar", "darkness", "abyss",
-    "void", "wrath", "vengeance", "destiny", "prophecy", "ferocious", "relentless", "colossal", "cursed", "ultimate",
-    "demogorgon", "eleven", "hawkins", "upsidedown", "vecna", "waffle", "walkie", "hopper", "dustin", "eggo",
-    "elf", "hobbit", "gandalf", "mordor", "ring", "sauron", "gollum", "frodo", "nazgul", "orc",
-    "jedi", "sith", "lightsaber", "wookiee", "padawan", "vader", "yoda", "chewbacca", "droid", "empire",
-    "hogwarts", "wizardry", "wand", "muggle", "quidditch", "dumbledore", "horcrux", "snitch", "patronus", "slytherin",
-    "zelda", "hyrule", "triforce", "mario", "mushroom", "pipe", "pikachu", "pokeball", "trainer", "charizard",
-    "matrix", "neo", "morpheus", "delorean", "doc", "ghostbusters", "gremlins", "goonies", "terminator", "alien",
-    "predator", "robocop", "turtle", "ninja", "shredder", "batman", "joker", "gotham", "avengers", "thanos",
-    "gauntlet", "asgard", "wakanda", "vibranium", "mjolnir", "hulk", "spiderman", "venom", "krypton", "kryptonite",
-    "tetris", "pacman", "sonic", "arcade", "joystick", "gamepad", "cartridge", "boss", "checkpoint", "respawn",
-    "targaryen", "dothraki", "westeros", "khaleesi", "witcher", "geralt", "excalibur", "grail", "tardis", "dalek",
 ];
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -816,7 +776,7 @@ fn paint_speaker(painter: &egui::Painter, c: Pos2, on: bool, color: Color32) {
 /// The leaderboard in `rect`: its best rounds (floor's: the best of each player, named), the podium in gold, silver and bronze, `highlight` (the
 /// round just played) lit; `alpha`: dimmed while playing.
 #[allow(clippy::too_many_arguments)]
-fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[Entry], highlight: Option<usize>, theme: &Theme, t: &Strings, alpha: f32, now: f64) {
+pub(super) fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[Entry], highlight: Option<usize>, theme: &Theme, t: &Strings, alpha: f32, now: f64) {
     let fade = |c: Color32| c.gamma_multiply(alpha);
     painter.rect_filled(rect, 12.0, fade(theme.chrome_bg));
     painter.rect_stroke(rect, 12.0, Stroke::new(1.0, fade(theme.tab_hover)), egui::StrokeKind::Inside);

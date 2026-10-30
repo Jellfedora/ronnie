@@ -57,11 +57,11 @@ struct Song {
 impl Song {
     fn new(ctx: &egui::Context, chart: Chart, start: Instant, battle: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel();
-        let (notes, ctx) = (chart.clone(), ctx.clone());
+        let ctx = ctx.clone();
         std::thread::Builder::new()
             .name("riff-sound".into())
             .spawn(move || {
-                let _ = tx.send(crate::riff::render(&notes));
+                let _ = tx.send(crate::riff::music(super::game::MUSIC));
                 ctx.request_repaint();
             })
             .ok();
@@ -132,8 +132,8 @@ pub(super) struct Riff {
     /// When the board of battles won was last fetched.
     board_at: Option<f64>,
     /// The level picked to play alone, and each level's board on floor.
-    level: Level,
-    floors: [crate::floor::GameFloor; 3],
+    pub(super) level: Level,
+    pub(super) floors: [crate::floor::GameFloor; 3],
 }
 
 impl Default for Riff {

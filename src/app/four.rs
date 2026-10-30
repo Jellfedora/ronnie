@@ -59,7 +59,7 @@ pub(super) struct Four {
     /// The match the page went to (the next one, accepted or rematched, is followed too).
     followed: Option<String>,
     /// When the board of wins was last fetched.
-    board_at: Option<f64>,
+    pub(super) board_at: Option<f64>,
     /// The last game's grid, emptying (since then) before the next one.
     clearing: Option<(Board, f64)>,
     /// The online grid last drawn: it empties when a rematch starts.

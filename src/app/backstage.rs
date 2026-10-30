@@ -28,7 +28,7 @@ pub(super) struct Backstage {
     /// What Krog last did, and when (app time): shown big a moment.
     said: Option<(Said, f64)>,
     rng: u64,
-    floor: crate::floor::GameFloor,
+    pub(super) floor: crate::floor::GameFloor,
 }
 
 /// Krog's doings, told in the middle of the maze.

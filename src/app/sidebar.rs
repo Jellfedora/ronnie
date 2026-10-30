@@ -291,7 +291,7 @@ impl App {
         let mut hovered = None;
         let mut y = top;
         let shown_list = self.categories();
-        let mut moved = None;
+        let (mut moved, mut new_window) = (None, None);
         for &category in &shown_list {
             let slot = Rect::from_center_size(Pos2::new(strip.center().x, y + 20.0), Vec2::splat(40.0));
             y += 46.0;
@@ -344,6 +344,8 @@ impl App {
                 ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
                 ui.painter().circle_filled(dot, 3.0, self.theme.accent);
             }
+            // A right click: the category's screen in a new window.
+            resp.context_menu(|ui| menu_item(ui, &format!("⧉  {}", t.new_window_open), category, &mut new_window));
             if rail {
                 // The flyout shows its name.
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -373,6 +375,11 @@ impl App {
                     }
                 }
             }
+        }
+        // The local terminals: a new one, as ⌘ N.
+        if let Some(category) = new_window {
+            let ctx = ui.ctx().clone();
+            self.new_window(|app| if category == Category::Local { app.new_tab(&ctx) } else { app.show_category(category) });
         }
         // Takes the place of the one under the pointer (hidden ones keep theirs among the others).
         if let Some((category, onto)) = moved {

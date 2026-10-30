@@ -1,10 +1,9 @@
 //! Riff Hero's song: a minute of metal made from a seed (the same seed, the same song: both players of
-//! a battle play the same one), its notes on four strings played with the arrows, and its sound, a
-//! distorted guitar playing those notes over a bass and drums. Times are in seconds from the song's
-//! first beat.
+//! a battle play the same one), its notes on four strings played with the arrows, and its sound, Speed
+//! Metal's thrash at the same tempo. Times are in seconds from the song's first beat.
 
-/// The song's tempo.
-pub const BPM: f64 = 150.0;
+/// The song's tempo: that of Speed Metal's thrash, which it plays over.
+pub const BPM: f64 = 140.0;
 const BEAT: f64 = 60.0 / BPM;
 const BAR: f64 = 4.0 * BEAT;
 /// Its bars: an intro, a verse, a chorus, a solo, the last chorus; then the last chord rings.
@@ -24,9 +23,6 @@ pub const MAX_MULTIPLIER: u32 = 4;
 
 /// The four strings, from the left: ←, ↓, ↑, →.
 pub const LANES: usize = 4;
-/// The power chord each string plays, in semitones above the low E (E, G, A, B).
-const PITCHES: [i32; LANES] = [0, 3, 5, 7];
-const LOW_E: f32 = 82.41;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Note {
@@ -329,158 +325,39 @@ impl Play {
 }
 
 /// The sound's sample rate.
-pub const RATE: u32 = 44_100;
+pub const RATE: u32 = 48_000;
+/// The first beat of Speed Metal's thrash (see `music`), at the song's tempo, in seconds into it.
+const MUSIC_BEAT: f64 = 0.232;
+/// The song fades out over its last seconds.
+const MUSIC_FADE: f64 = 2.0;
 
-/// The song of `chart`, mono: the guitar plays its notes (a chord held until the next note, muted short
-/// when the next one is close), the bass under it an octave lower, the drums keep time.
-pub fn render(chart: &Chart) -> Vec<f32> {
-    let rate = RATE as f64;
-    let mut out = vec![0.0f32; (LENGTH * rate) as usize];
-    let mut noise = Rng::new(0x5eed);
-
-    // The guitar and the bass: the notes at the same time make one chord.
-    let mut onsets: Vec<(f64, Vec<usize>)> = Vec::new();
-    for note in &chart.notes {
-        match onsets.last_mut() {
-            Some((t, lanes)) if (*t - note.t).abs() < 1e-6 => lanes.push(note.lane),
-            _ => onsets.push((note.t, vec![note.lane])),
-        }
-    }
-    for (k, (t, lanes)) in onsets.iter().enumerate() {
-        let next = onsets.get(k + 1).map_or(LENGTH, |(n, _)| *n);
-        let gap = next - t;
-        let last = k + 1 == onsets.len();
-        // Palm-muted when the next note comes soon; the last chord rings.
-        let length = if last { LENGTH - t } else { gap.min(0.45) };
-        let decay = if last { 1.2 } else if gap < 0.25 { 14.0 } else { 5.0 };
-        let root = LOW_E * 2f32.powf(lanes.iter().map(|&l| PITCHES[l]).min().unwrap_or(0) as f32 / 12.0);
-        let high = lanes.iter().map(|&l| PITCHES[l]).max().unwrap_or(0);
-        let top = LOW_E * 2f32.powf(high as f32 / 12.0);
-        guitar(&mut out, *t, length, decay, root, (lanes.len() > 1).then_some(top));
-        bass(&mut out, *t, length, decay * 0.6, root / 2.0);
-    }
-
-    // The drums: the kick on 1 and 3 (every eighth in the solo and the last chorus), the snare on 2 and 4,
-    // the hi-hat on the eighths. The intro's first bars keep only the hi-hat and the kick.
-    for bar in 0..BARS - 1 {
-        let p = part(bar);
-        let start = bar as f64 * BAR;
-        for eighth in 0..8 {
-            let t = start + eighth as f64 * BEAT / 2.0;
-            let double = matches!(p, Part::Solo | Part::Last);
-            if eighth % 4 == 0 || (double && eighth % 2 == 1) || (p == Part::Chorus && eighth % 2 == 0) {
-                kick(&mut out, t);
-            }
-            if eighth % 4 == 2 && (p != Part::Intro || bar >= 2) {
-                snare(&mut out, t, &mut noise);
-            }
-            hat(&mut out, t, eighth % 2 == 0, &mut noise);
-        }
-        // A crash at the start of each part.
-        if bar % 8 == 4 || bar == 0 {
-            crash(&mut out, start, &mut noise);
-        }
-    }
-    let end = (BARS - 1) as f64 * BAR;
-    kick(&mut out, end);
-    crash(&mut out, end, &mut noise);
-
-    // Loud, then kept under 1 with a soft clip.
-    for s in &mut out {
-        *s = (*s * 1.4).tanh() * 0.7;
-    }
-    out
-}
-
-/// The span of `out` from `t` for `length` seconds, and the first sample's index.
-fn span(out: &mut [f32], t: f64, length: f64) -> (usize, usize) {
-    let from = ((t * RATE as f64) as usize).min(out.len());
-    let to = (((t + length) * RATE as f64) as usize).min(out.len());
-    (from, to)
+/// The song's sound, mono: Speed Metal's thrash (`mp3`), from its first beat, as long as the song and
+/// fading out at its end. Empty when it can't be read.
+pub fn music(mp3: &'static [u8]) -> Vec<f32> {
+    use rodio::Source;
+    let Ok(decoder) = rodio::Decoder::new(std::io::Cursor::new(mp3)) else { return Vec::new() };
+    let (channels, rate) = (decoder.channels().get() as usize, decoder.sample_rate().get() as f64);
+    let needed = ((MUSIC_BEAT + LENGTH) * rate) as usize + 2;
+    let samples: Vec<f32> = decoder.take(needed * channels).collect();
+    let frames: Vec<f32> = samples.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect();
+    (0..(LENGTH * RATE as f64) as usize)
+        .map(|k| {
+            let t = k as f64 / RATE as f64;
+            let at = (MUSIC_BEAT + t) * rate;
+            let (i, x) = (at as usize, (at - at.floor()) as f32);
+            let s = match (frames.get(i), frames.get(i + 1)) {
+                (Some(a), Some(b)) => a + (b - a) * x,
+                (Some(a), None) => *a,
+                _ => 0.0,
+            };
+            s * ((LENGTH - t) / MUSIC_FADE).clamp(0.0, 1.0) as f32
+        })
+        .collect()
 }
 
 /// A sawtooth in -1..1.
 fn saw(phase: f32) -> f32 {
     2.0 * (phase - phase.floor()) - 1.0
-}
-
-/// A distorted power chord on `root` (root, fifth, octave; with `top`, its fifth too).
-fn guitar(out: &mut [f32], t: f64, length: f64, decay: f64, root: f32, top: Option<f32>) {
-    let (from, to) = span(out, t, length);
-    let fifth = root * 1.498;
-    let mut low = 0.0f32;
-    for (k, s) in out[from..to].iter_mut().enumerate() {
-        let x = k as f32 / RATE as f32;
-        let mut v = saw(root * x) + saw(fifth * x * 1.002) + 0.6 * saw(2.0 * root * x * 0.998);
-        if let Some(top) = top {
-            v += 0.7 * saw(top * 1.498 * x);
-        }
-        // The amp: driven hard, then rounded off.
-        let driven = (v * 4.0).tanh();
-        low += 0.22 * (driven - low);
-        let envelope = (x * 400.0).min(1.0) * (-(x as f64) * decay).exp() as f32;
-        // The end of a muted note fades out quickly rather than stopping dead.
-        let tail = (((length as f32) - x) * 80.0).clamp(0.0, 1.0);
-        *s += low * envelope * tail * 0.28;
-    }
-}
-
-fn bass(out: &mut [f32], t: f64, length: f64, decay: f64, f: f32) {
-    let (from, to) = span(out, t, length);
-    for (k, s) in out[from..to].iter_mut().enumerate() {
-        let x = k as f32 / RATE as f32;
-        let phase = f * x;
-        // A triangle, a little dirty.
-        let v = (4.0 * (phase - (phase + 0.5).floor()).abs() - 1.0) * 1.2;
-        let envelope = (x * 300.0).min(1.0) * (-(x as f64) * decay).exp() as f32;
-        let tail = (((length as f32) - x) * 60.0).clamp(0.0, 1.0);
-        *s += v.tanh() * envelope * tail * 0.22;
-    }
-}
-
-fn kick(out: &mut [f32], t: f64) {
-    let (from, to) = span(out, t, 0.35);
-    let mut phase = 0.0f32;
-    for (k, s) in out[from..to].iter_mut().enumerate() {
-        let x = k as f32 / RATE as f32;
-        let f = 45.0 + 110.0 * (-x * 30.0).exp();
-        phase += f / RATE as f32;
-        *s += (phase * std::f32::consts::TAU).sin() * (-x * 11.0).exp() * 0.55;
-    }
-}
-
-fn snare(out: &mut [f32], t: f64, noise: &mut Rng) {
-    let (from, to) = span(out, t, 0.25);
-    for (k, s) in out[from..to].iter_mut().enumerate() {
-        let x = k as f32 / RATE as f32;
-        let n = noise.unit() as f32 * 2.0 - 1.0;
-        *s += n * (-x * 18.0).exp() * 0.32 + (x * 190.0 * std::f32::consts::TAU).sin() * (-x * 35.0).exp() * 0.25;
-    }
-}
-
-fn hat(out: &mut [f32], t: f64, accent: bool, noise: &mut Rng) {
-    let (from, to) = span(out, t, 0.06);
-    let mut last = 0.0f32;
-    for (k, s) in out[from..to].iter_mut().enumerate() {
-        let x = k as f32 / RATE as f32;
-        let n = noise.unit() as f32 * 2.0 - 1.0;
-        // Only the high of the noise: each sample less the last.
-        let high = n - last;
-        last = n;
-        *s += high * (-x * 70.0).exp() * if accent { 0.07 } else { 0.045 };
-    }
-}
-
-fn crash(out: &mut [f32], t: f64, noise: &mut Rng) {
-    let (from, to) = span(out, t, 1.4);
-    let mut last = 0.0f32;
-    for (k, s) in out[from..to].iter_mut().enumerate() {
-        let x = k as f32 / RATE as f32;
-        let n = noise.unit() as f32 * 2.0 - 1.0;
-        let high = n - last;
-        last = n;
-        *s += high * (-x * 3.0).exp() * 0.06;
-    }
 }
 
 /// A dull thud, when a note is missed: the string muted.
@@ -563,12 +440,11 @@ mod tests {
 
     #[test]
     fn the_song_sounds_and_stays_in_bounds() {
-        for chart in [Chart::new(7), Chart::solo(Level::Easy), Chart::solo(Level::Medium), Chart::solo(Level::Hard)] {
-            let samples = render(&chart);
-            assert_eq!(samples.len(), (LENGTH * RATE as f64) as usize);
-            assert!(samples.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
-            let loud = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-            assert!(loud > 0.3, "{loud}");
-        }
+        let samples = music(include_bytes!("../assets/audio/alex-morgan-thrash-metal-591343.mp3"));
+        assert_eq!(samples.len(), (LENGTH * RATE as f64) as usize);
+        assert!(samples.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+        let loud = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(loud > 0.3, "{loud}");
+        assert!(samples.last().is_some_and(|s| s.abs() < 1e-3));
     }
 }
