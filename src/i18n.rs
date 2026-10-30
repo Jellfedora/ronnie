@@ -2707,7 +2707,7 @@ pub static FR: Strings = Strings {
     auto_backup_row: "Sauvegarde automatique",
     recap_section: "Récap de la semaine",
     recap_row: "Récap de la semaine dans les notes",
-    recap_desc: "Chaque soir, Ronnie complète la note de la semaine (du mardi au mardi) dans le dossier Récaps : le temps passé par projet, tes commits du jour, tes demandes à Claude et ses tokens, les serveurs et les bases utilisés. Le temps compte quand Ronnie est au premier plan et utilisé. Tout reste sur cet ordinateur.",
+    recap_desc: "Chaque soir, Ronnie complète la note de la semaine (du mardi au mardi) dans le dossier Récaps : le temps passé par projet, tes commits du jour, tes demandes à Claude et ses tokens, les serveurs et les bases utilisés. Le temps compte quand Ronnie est au premier plan et utilisé. Seuls les titres de tes commits quittent l'ordinateur : Claude (Haiku, avec ton compte) les traduit en français.",
     recap_hour: "Heure du récap",
     recap_hour_desc: "La journée est ajoutée à cette heure-là (ou au lancement suivant, si Ronnie était fermé).",
     recap_now: "Écrire aujourd'hui",

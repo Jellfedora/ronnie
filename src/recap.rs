@@ -4,7 +4,8 @@
 //! What it says comes from a journal kept here (`recap.json`: the time spent on each project, server
 //! and database, Ronnie in front and in use, and in the games), from git (the user's own commits of the
 //! day in those projects) and from Claude Code's sessions (`~/.claude/projects/*/*.jsonl`: the requests
-//! typed, the tokens). Nothing leaves this computer.
+//! typed, the tokens). Only the commits' subjects leave this computer, to Claude, to be translated
+//! into French (and the European Central Bank is asked for the dollar's rate).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -319,6 +320,8 @@ struct Commit {
     subject: String,
     /// "08:12", the author's.
     time: String,
+    /// The author's date (Unix seconds): with the subject, the same commit cherry-picked or rebased.
+    authored: i64,
     stage: Stage,
     /// The branch it was found on.
     branch: String,
@@ -848,10 +851,11 @@ fn git_day(root: &Path, date: NaiveDate, today: bool) -> Git {
     let Some(email) = git(root, &["config", "user.email"]).map(|e| e.trim().to_owned()).filter(|e| !e.is_empty()) else { return day };
     // Written that day: by the author's date (a commit rebased or amended later keeps it), looked for
     // among those committed since, on every branch but not in the stash (its commits aren't work
-    // done). The email as it is, not a pattern ("jean+work@...").
+    // done). The email as it is, not a pattern ("jean+work@..."), and whole: "<jean@x.fr>" isn't
+    // "ajean@x.fr".
     let since = format!("--since={} 00:00:00", date.format("%Y-%m-%d"));
-    let author = format!("--author={email}");
-    let args = ["log", "--exclude=refs/stash", "--all", "--source", "--no-merges", "--reverse", "--fixed-strings", &author, &since, "--date=format-local:%Y-%m-%d %H:%M", "--numstat", "--format=%x1e%H%x1f%ad%x1f%S%x1f%s"];
+    let author = format!("--author=<{email}>");
+    let args = ["log", "--exclude=refs/stash", "--all", "--source", "--no-merges", "--reverse", "--fixed-strings", &author, &since, "--date=format-local:%Y-%m-%d %H:%M", "--numstat", "--format=%x1e%H%x1f%ad%x1f%at%x1f%S%x1f%s"];
     let Some(out) = git(root, &args) else { return day };
     // Those on a remote, and on a production branch of one.
     let remotes: Vec<String> = git(root, &["for-each-ref", "--format=%(refname)", "refs/remotes"]).unwrap_or_default().lines().filter(|r| !r.ends_with("/HEAD")).map(str::to_owned).collect();
@@ -870,8 +874,8 @@ fn git_day(root: &Path, date: NaiveDate, today: bool) -> Git {
     for chunk in out.split('\x1e') {
         let mut lines = chunk.lines();
         let Some(head) = lines.next() else { continue };
-        let fields: Vec<&str> = head.splitn(4, '\x1f').collect();
-        let [hash, at, source, subject] = fields[..] else { continue };
+        let fields: Vec<&str> = head.splitn(5, '\x1f').collect();
+        let [hash, at, authored, source, subject] = fields[..] else { continue };
         let Some(time) = at.strip_prefix(&day_prefix) else { continue };
         let subject = subject.trim();
         if subject.is_empty() {
@@ -885,10 +889,10 @@ fn git_day(root: &Path, date: NaiveDate, today: bool) -> Git {
         } else {
             Stage::Local
         };
-        let commit = Commit { subject: subject.to_owned(), time: time.to_owned(), stage, branch: branch_of(source), added, removed };
-        // The same commit twice (cherry-picked, rebased onto another branch): once, where it went
-        // farthest.
-        match day.commits.iter_mut().find(|c| c.subject == commit.subject) {
+        let commit = Commit { subject: subject.to_owned(), time: time.to_owned(), authored: authored.parse().unwrap_or(0), stage, branch: branch_of(source), added, removed };
+        // The same commit twice (cherry-picked, rebased onto another branch: its subject and author's
+        // date kept): once, where it went farthest. Two commits named alike ("fix") stay two.
+        match day.commits.iter_mut().find(|c| c.subject == commit.subject && c.authored == commit.authored) {
             Some(c) if commit.stage > c.stage => *c = commit,
             Some(_) => {}
             None => day.commits.push(commit),
@@ -1456,6 +1460,12 @@ mod tests {
         commit("b.txt", "1\n", "Le stock en direct");
         run(&repo, &["push", "-q", "origin", "feature/stock"]);
         commit("c.txt", "1\n2\n", "Les alertes de stock");
+        // Two commits named alike, at other times: two.
+        for (file, at) in [("d.txt", "2026-10-28T10:00:00"), ("e.txt", "2026-10-28T11:00:00")] {
+            std::fs::write(repo.join(file), "1\n").unwrap();
+            run(&repo, &["add", file]);
+            run(&repo, &["commit", "-q", "-m", "fix", "--date", at]);
+        }
         std::fs::write(repo.join("a.txt"), "1\n").unwrap();
 
         let day = git_day(&repo, d(2026, 10, 28), true);
@@ -1472,6 +1482,8 @@ mod tests {
                 ("Le panier ne se vide plus", Stage::Prod, ""),
                 ("Le stock en direct", Stage::Pushed, "feature/stock"),
                 ("Les alertes de stock", Stage::Local, "feature/stock"),
+                ("fix", Stage::Local, "feature/stock"),
+                ("fix", Stage::Local, "feature/stock"),
             ]
         );
         let cart = day.commits.iter().find(|c| c.stage == Stage::Prod).unwrap();
