@@ -2,6 +2,16 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.38.0] - 2026-10-30
+
+### Nouveautés
+
+- **Le récap de la semaine dans les notes**, pour la réunion du mardi : chaque soir (18 h par défaut), Ronnie ajoute la journée à la note de la semaine (de mardi à mardi, dans le dossier « Récaps ») et réécrit le bilan de la semaine en dessous. Pour chaque projet : le temps passé et tes commits du jour, rangés selon où ils en sont (🚀 en prod, 🛠️ en dev, 💻 pas encore poussés), et le travail pas encore commité. Puis les chiffres du jour : commits et lignes, demandes à Claude, tokens et ce qu'ils coûteraient à l'usage, compte par compte, et un ordre de grandeur écolo. Les jours où Ronnie était fermé sont rattrapés depuis git et les sessions de Claude, et ce que tu retouches dans la note reste à toi. Désactivé par défaut, dans Paramètres › Claude Code. Merci à Jonathan !
+
+### Changements
+
+- Les fichiers cachés sont toujours affichés dans l'arborescence des fichiers ; le bouton pour les masquer disparaît.
+
 ## [0.37.0] - 2026-10-29
 
 ### Nouveautés
