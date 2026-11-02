@@ -72,13 +72,62 @@ fn puissance_4() -> String {
     "puissance-4".into()
 }
 
+/// A piece of Larsen's gear (the amp wall, the drums...): its first cell, its length, which way it lies.
+#[derive(Clone, Copy, Deserialize, serde::Serialize, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub x: u8,
+    pub y: u8,
+    pub length: u8,
+    pub horizontal: bool,
+    /// Fried (the player's own pieces, as floor says).
+    #[serde(default, skip_serializing)]
+    pub fried: bool,
+}
+
+impl Piece {
+    /// Its cells.
+    pub fn cells(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        (0..self.length).map(|k| if self.horizontal { (self.x + k, self.y) } else { (self.x, self.y + k) })
+    }
+}
+
+/// Who set up their gear.
+#[derive(Clone, Copy, Deserialize, Debug, Default, PartialEq)]
+pub struct Placed {
+    pub you: bool,
+    pub them: bool,
+}
+
+/// The gear still standing on each side.
+#[derive(Clone, Copy, Deserialize, Debug, Default, PartialEq)]
+pub struct Standing {
+    pub you: u8,
+    pub them: u8,
+}
+
+/// Larsen's stages as the player sees them: their gear and the feedback it took; of the other's, their
+/// shots and the pieces fried (never the gear standing).
+#[derive(Clone, Deserialize, Debug, Default, PartialEq)]
+pub struct Stage {
+    pub placed: Placed,
+    pub gear: Option<Vec<Piece>>,
+    /// Shots: x, y, hit.
+    pub received: Vec<(u8, u8, bool)>,
+    pub fired: Vec<(u8, u8, bool)>,
+    pub fried: Vec<Piece>,
+    pub standing: Standing,
+}
+
 /// A match, as floor sees it for this player.
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 pub struct Match {
     pub id: String,
-    /// "puissance-4" or "riff-hero".
+    /// "puissance-4", "riff-hero" or "larsen".
     #[serde(default = "puissance_4")]
     pub game: String,
+    /// Larsen: both stages as the player sees them.
+    #[serde(default)]
+    pub stage: Option<Stage>,
     /// Riff Hero: the song's seed, in how many milliseconds it starts (from `at`; negative: started),
     /// where both players are.
     #[serde(default)]
@@ -103,7 +152,7 @@ pub struct Match {
     pub over: bool,
     /// 1 or 2, 3: a draw.
     pub winner: Option<u8>,
-    /// "line", "draw", "forfeit", or "score" (Riff Hero).
+    /// "line", "draw", "forfeit", "score" (Riff Hero) or "fried" (Larsen).
     pub reason: Option<String>,
     pub line: Option<Vec<[usize; 2]>>,
     pub rematch: Rematch,
@@ -118,6 +167,16 @@ impl Match {
     /// A battle of Riff Hero.
     pub fn riff(&self) -> bool {
         self.game == "riff-hero"
+    }
+
+    /// A match of Puissance 4.
+    pub fn four(&self) -> bool {
+        self.game == "puissance-4"
+    }
+
+    /// A match of Larsen.
+    pub fn larsen(&self) -> bool {
+        self.game == "larsen"
     }
 
     /// The other player's name.
@@ -149,6 +208,9 @@ enum Cmd {
     Riff(String, RiffSide),
     /// A message to the other player, in the match.
     Say(String, String),
+    /// Larsen: the player's gear, a shot.
+    Gear(String, Vec<Piece>),
+    Shot(String, u8, u8),
     /// The match to fetch every second (None: none, out of the page).
     Watch(Option<String>),
     /// The board of online wins of a game.
@@ -280,7 +342,7 @@ impl Live {
     /// The disc dropped in column `c`, shown at once (floor's answer follows).
     pub fn play(&mut self, c: usize) {
         let Some(game) = &mut self.game else { return };
-        if game.riff() || game.over || game.turn != game.you || game.columns.get(c).is_none_or(|col| col.len() >= crate::connect4::ROWS) {
+        if !game.four() || game.over || game.turn != game.you || game.columns.get(c).is_none_or(|col| col.len() >= crate::connect4::ROWS) {
             return;
         }
         game.columns[c].push(game.you);
@@ -316,6 +378,30 @@ impl Live {
         self.send(Cmd::Riff(id, side));
     }
 
+    /// Larsen: the player's gear, shown set up at once (floor's answer follows).
+    pub fn gear(&mut self, gear: Vec<Piece>) {
+        let Some(game) = self.game.as_mut().filter(|g| g.larsen() && !g.over) else { return };
+        let stage = game.stage.get_or_insert_with(Stage::default);
+        if stage.placed.you {
+            return;
+        }
+        stage.placed.you = true;
+        stage.gear = Some(gear.clone());
+        let id = game.id.clone();
+        self.send(Cmd::Gear(id, gear));
+    }
+
+    /// Larsen: feedback at (x, y) on the other's stage, on the player's turn (floor says if it hit).
+    pub fn shoot(&mut self, x: u8, y: u8) {
+        let Some(game) = self.game.as_mut().filter(|g| g.larsen() && !g.over && g.turn == g.you) else { return };
+        if !game.stage.as_ref().is_some_and(|n| n.placed.you && n.placed.them && !n.fired.iter().any(|s| (s.0, s.1) == (x, y))) {
+            return;
+        }
+        game.turn = 3 - game.you;
+        let id = game.id.clone();
+        self.send(Cmd::Shot(id, x, y));
+    }
+
     /// A message in the match's chat, shown at once (floor's answer follows).
     pub fn say(&mut self, text: &str) {
         if let Some(game) = &mut self.game {
@@ -333,15 +419,15 @@ impl Live {
         self.send(Cmd::Watch(id));
     }
 
-    /// A page left its match: a battle of Riff Hero (`riff`) or a match of Puissance 4. The other
-    /// game's match, watched meanwhile, stays.
-    pub fn unwatch(&mut self, riff: bool) {
-        if self.game.as_ref().is_none_or(|g| g.riff() == riff) {
+    /// A page left its match of `game` ("puissance-4", "riff-hero", "larsen"). Another game's
+    /// match, watched meanwhile, stays.
+    pub fn unwatch(&mut self, game: &str) {
+        if self.game.as_ref().is_none_or(|g| g.game == game) {
             self.watch(None);
         }
     }
 
-    /// The board of wins of `game` ("puissance-4", "riff-hero"), fetched again.
+    /// The board of wins of `game` ("puissance-4", "riff-hero", "larsen"), fetched again.
     pub fn fetch_board(&mut self, game: &'static str) {
         self.send(Cmd::Board(game));
     }
@@ -471,6 +557,27 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
                     out.push(Event::Match(m));
                 }
             }
+            Some(Cmd::Gear(id, gear)) => {
+                let answer = result(call(&agent, "POST", format!("{base}/matches/{id}/gear"), token, Some(json!({ "gear": gear }))), &mut out);
+                match answer.and_then(|v| serde_json::from_value::<Match>(v).ok()) {
+                    Some(m) => {
+                        out.push(Event::Match(m));
+                        last_match = now();
+                    }
+                    None => last_match = f64::NEG_INFINITY,
+                }
+            }
+            Some(Cmd::Shot(id, x, y)) => {
+                let answer = result(call(&agent, "POST", format!("{base}/matches/{id}/shots"), token, Some(json!({ "x": x, "y": y }))), &mut out);
+                match answer.and_then(|v| serde_json::from_value::<Match>(v).ok()) {
+                    Some(m) => {
+                        out.push(Event::Match(m));
+                        last_match = now();
+                    }
+                    // Refused (or lost): floor's state again.
+                    None => last_match = f64::NEG_INFINITY,
+                }
+            }
             Some(Cmd::Watch(id)) => {
                 watched = id;
                 last_match = f64::NEG_INFINITY;
@@ -591,5 +698,65 @@ mod tests {
         assert_eq!(ozzy.game.as_ref().unwrap().you, 1);
         ozzy.leave();
         until("the forfeit", &mut dio, &mut ozzy, &|d, _| d.game.as_ref().is_some_and(|g| g.over && g.reason.as_deref() == Some("forfeit")));
+    }
+
+    /// A match of Larsen on a floor running (RONNIE_FLOOR_URL): the gear set up, shots in turn, all the
+    /// gear fried wins; neither ever sees the other's gear standing.
+    #[test]
+    #[ignore = "needs a floor running, at RONNIE_FLOOR_URL"]
+    fn two_players_play_larsen() {
+        let url = crate::floor::url().expect("RONNIE_FLOOR_URL");
+        let ctx = egui::Context::default();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
+        let account = |name: String| {
+            let made: Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
+        };
+        let (a, b) = (account(format!("Lars{stamp}")), account(format!("Kirk{stamp}")));
+        let (mut lars, mut kirk) = (Live::default(), Live::default());
+        let until = |what: &str, lars: &mut Live, kirk: &mut Live, done: &dyn Fn(&Live, &Live) -> bool| {
+            let start = Instant::now();
+            while !done(lars, kirk) {
+                assert!(start.elapsed() < Duration::from_secs(20), "waiting for: {what}");
+                lars.frame(&ctx, Some(&a));
+                kirk.frame(&ctx, Some(&b));
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let kirk_name = b.name.clone().unwrap();
+        until("each other online", &mut lars, &mut kirk, &|l, k| l.online.iter().any(|p| p.name == kirk_name) && !k.online.is_empty());
+        lars.invite_to(&kirk_name, "larsen");
+        until("the invitation", &mut lars, &mut kirk, &|_, k| !k.invites.is_empty());
+        assert_eq!(kirk.invites[0].game.as_deref(), Some("larsen"));
+        let id = kirk.invites[0].id.clone();
+        kirk.accept(&id);
+        until("the match, both sides", &mut lars, &mut kirk, &|l, k| l.game.as_ref().is_some_and(Match::larsen) && k.game.as_ref().is_some_and(Match::larsen));
+        let gear: Vec<Piece> = [(0, 0, 5), (0, 2, 4), (0, 4, 3), (0, 6, 3), (0, 8, 2)].map(|(x, y, length)| Piece { x, y, length, horizontal: true, fried: false }).to_vec();
+        lars.gear(gear.clone());
+        kirk.gear(gear.clone());
+        let placed = |g: &Option<Match>| g.as_ref().and_then(|g| g.stage.as_ref()).is_some_and(|n| n.placed.you && n.placed.them);
+        until("both gears set up", &mut lars, &mut kirk, &|l, k| placed(&l.game) && placed(&k.game));
+        // Kirk sees nothing of Lars's gear.
+        let stage = kirk.game.as_ref().unwrap().stage.clone().unwrap();
+        assert_eq!((stage.fried.len(), stage.fired.len(), stage.gear.as_ref().map(Vec::len)), (0, 0, Some(5)));
+        // Lars fries it all, Kirk falls in silence meanwhile.
+        let targets: Vec<(u8, u8)> = gear.iter().flat_map(|s| s.cells().collect::<Vec<_>>()).collect();
+        for (k, &(x, y)) in targets.iter().enumerate() {
+            let shots = 2 * k as u32;
+            until("Lars's turn", &mut lars, &mut kirk, &|l, _| l.game.as_ref().is_some_and(|g| g.turn == 1 && g.moves == shots));
+            lars.shoot(x, y);
+            if k + 1 < targets.len() {
+                until("Kirk's turn", &mut lars, &mut kirk, &|_, k2| k2.game.as_ref().is_some_and(|g| g.turn == 2 && g.moves == shots + 1));
+                kirk.shoot(6 + k as u8 / 10, k as u8 % 10);
+            }
+        }
+        until("the end", &mut lars, &mut kirk, &|l, k| l.game.as_ref().is_some_and(|g| g.over) && k.game.as_ref().is_some_and(|g| g.over));
+        let end = kirk.game.clone().unwrap();
+        assert_eq!((end.winner, end.reason.as_deref()), (Some(1), Some("fried")));
+        let seen = end.stage.unwrap();
+        assert!(seen.gear.unwrap().iter().all(|s| s.fried));
+        assert_eq!((seen.standing.you, seen.received.len()), (0, 17));
+        let won = lars.game.clone().unwrap().stage.unwrap();
+        assert_eq!((won.fried.len(), won.fired.iter().filter(|s| s.2).count()), (5, 17));
     }
 }

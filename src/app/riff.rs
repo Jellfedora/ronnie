@@ -291,7 +291,7 @@ impl App {
         match self.riff.mode {
             Mode::Lobby => self.home_game = false,
             Mode::Solo => {}
-            Mode::Battle => self.versus.unwatch(true),
+            Mode::Battle => self.versus.unwatch("riff-hero"),
         }
         self.riff.mode = Mode::Lobby;
         self.riff.song = None;

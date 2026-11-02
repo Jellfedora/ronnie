@@ -29,6 +29,7 @@ mod easter;
 mod editor;
 mod files;
 mod four;
+mod larsen;
 mod game;
 mod git;
 mod home;
@@ -389,6 +390,7 @@ pub struct App {
     versus: crate::live::Live,
     /// Puissance 4's page.
     four: four::Four,
+    larsen: larsen::Larsen,
     /// The minesweeper's page.
     mines: mines::Mines,
     /// Ronnie Run's page.
@@ -1259,6 +1261,7 @@ impl App {
             pseudo_prompt: None,
             versus: crate::live::Live::default(),
             four: four::Four::default(),
+            larsen: larsen::Larsen::default(),
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),

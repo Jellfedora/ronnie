@@ -28,6 +28,7 @@ impl App {
             HomeGame::Runner => usage.runner,
             HomeGame::Riff => usage.riff,
             HomeGame::Backstage => usage.backstage,
+            HomeGame::Larsen => usage.larsen,
         };
         used.then_some(p)
     }
@@ -53,6 +54,7 @@ impl App {
             HomeGame::Runner => &mut usage.runner,
             HomeGame::Riff => &mut usage.riff,
             HomeGame::Backstage => &mut usage.backstage,
+            HomeGame::Larsen => &mut usage.larsen,
             HomeGame::Blob | HomeGame::Mines => return,
         };
         if !*played {
@@ -106,6 +108,7 @@ impl App {
             HomeGame::Runner => super::runner::paint_runner_icon(painter, icon, &theme, 2.6),
             HomeGame::Riff => super::riff::paint_riff_icon(painter, icon, &theme, 2.6),
             HomeGame::Backstage => super::backstage::paint_backstage_icon(painter, icon, &theme, 2.6),
+            HomeGame::Larsen => super::larsen::paint_larsen_icon(painter, icon, &theme, 2.6),
         }
         paint_metal(painter, Pos2::new(c.x, c.y - 50.0), Align2::CENTER_CENTER, t.playtime_title, 44.0, theme.accent, 1.0);
         let name = match game {
@@ -116,6 +119,7 @@ impl App {
             HomeGame::Runner => t.runner_name,
             HomeGame::Riff => t.riff_name,
             HomeGame::Backstage => t.backstage_name,
+            HomeGame::Larsen => t.larsen_name,
         };
         let why = match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),
@@ -157,14 +161,16 @@ impl App {
                 super::game::paint_board(&ui.painter_at(area), board, &scores, None, &theme, t, 1.0, now);
                 return;
             }
-            HomeGame::Four => {
+            HomeGame::Four | HomeGame::Larsen => {
+                let id = if game == HomeGame::Four { "puissance-4" } else { "larsen" };
                 let pseudo = crate::floor::pseudo(account.as_ref()).map(str::to_owned);
-                if pseudo.is_some() && self.four.board_at.is_none_or(|at| now - at > 30.0) {
-                    self.four.board_at = Some(now);
-                    self.versus.fetch_board("puissance-4");
+                let fetched = if game == HomeGame::Four { &mut self.four.board_at } else { &mut self.larsen.board_at };
+                if pseudo.is_some() && fetched.is_none_or(|at| now - at > 30.0) {
+                    *fetched = Some(now);
+                    self.versus.fetch_board(id);
                 }
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
-                super::four::wins_ui(&mut child, &self.versus, "puissance-4", t.four_wins, pseudo.as_deref(), t, &theme);
+                super::four::wins_ui(&mut child, &self.versus, id, t.four_wins, pseudo.as_deref(), t, &theme);
                 return;
             }
             HomeGame::Blob => (self.blob.floor.get_or_insert_with(|| crate::floor::GameFloor::new("ronnie-io", false)), bests(settings.blob_best, t.blob_best, "{n}", settings.blob_best.to_string()), |s| s.to_string()),

@@ -787,6 +787,8 @@ pub struct GameUsage {
     pub runner: bool,
     pub riff: bool,
     pub backstage: bool,
+    /// Larsen.
+    pub larsen: bool,
     /// Its HMAC (`crate::playtime`): an edit by hand shows.
     #[serde(default)]
     pub seal: String,

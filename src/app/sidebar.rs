@@ -49,6 +49,8 @@ impl App {
             if self.home_game && self.home_which == super::four::HomeGame::Mines {
                 self.mines_page(ui, rect);
                 self.unlocks_pill(ui, rect, super::four::HomeGame::Mines);
+            } else if self.home_game && self.home_which == super::four::HomeGame::Larsen {
+                self.larsen_page(ui, rect);
             } else if self.home_game {
                 self.four_page(ui, rect);
                 if !self.four_playing() {
@@ -476,6 +478,7 @@ impl App {
                 HomeGame::Runner => super::runner::paint_runner_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Riff => super::riff::paint_riff_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Backstage => super::backstage::paint_backstage_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Larsen => super::larsen::paint_larsen_icon(&painter, icon, &theme, 1.0),
             }
             painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
             if let Some(note) = note {
@@ -496,7 +499,7 @@ impl App {
     /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
     /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
     /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 7] {
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 8] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
@@ -507,7 +510,7 @@ impl App {
         let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
         let riff_best = self.config.settings.riff_bests.iter().max().filter(|&&b| b > 0).map(u32::to_string);
         let backstage_best = (self.config.settings.backstage_best > 0).then(|| self.config.settings.backstage_best.to_string());
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best)];
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Larsen, t.larsen_name, online)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
@@ -553,6 +556,7 @@ impl App {
             HomeGame::Runner => self.open_runner(),
             HomeGame::Riff => self.open_riff(),
             HomeGame::Backstage => self.open_backstage(),
+            HomeGame::Larsen => self.open_larsen(),
         }
     }
 
