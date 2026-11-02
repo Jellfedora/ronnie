@@ -53,6 +53,9 @@ mod pulls;
 mod sql;
 mod upload;
 mod dev;
+mod envs;
+mod wamp;
+mod projects;
 mod modules;
 mod arcade;
 mod backstage;
@@ -456,6 +459,14 @@ pub struct App {
     music_volume_changed: bool,
     /// The sidebar's Dev category: the Node.js versions.
     dev: dev::Dev,
+    /// The projects' environments (PHP, nginx): their pages of the Dev category.
+    envs: envs::Envs,
+    /// WAMP's databases being imported (`wamp`).
+    wamp: Option<wamp::WampImport>,
+    /// When WAMP was last looked at, and whether it has databases not imported yet.
+    wamp_checked: Option<(Instant, bool)>,
+    /// The projects running, and the "My projects" category.
+    projects: projects::Projects,
     mail: mail::MailCatcher,
     procs: procs::ProcsPage,
     /// The music page: shown instead of the tabs (in this window), and what it holds (for all).
@@ -1275,6 +1286,10 @@ impl App {
             music: music::Music::default(),
             music_volume_changed: false,
             dev: dev::Dev::new(),
+            envs: envs::Envs::new(),
+            wamp: None,
+            wamp_checked: None,
+            projects: projects::Projects::new(),
             mail: mail::MailCatcher::default(),
             procs: procs::ProcsPage::default(),
             music_page: false,
@@ -1363,7 +1378,11 @@ impl App {
         };
 
         match config::lock_instance() {
-            Ok(lock) => app._instance_lock = lock,
+            Ok(lock) => {
+                app._instance_lock = lock;
+                // What a crash left running for the projects, stopped.
+                crate::projects::clean_up();
+            }
             Err(()) => {
                 app.read_only = true;
                 app.error = Some(app.t().already_running.to_owned());
@@ -1722,6 +1741,8 @@ impl App {
         let Some(id) = self.tabs.get(index).and_then(|t| t.db) else { return };
         let Some(conn) = self.config.databases.iter().find(|c| c.id == id).cloned() else { return };
         let host = conn.ssh.and_then(|id| self.config.ssh.iter().find(|h| h.id == id)).cloned();
+        let local = self.local_db_of(&conn);
+        let show = self.take_db_to_show(id);
         let Some(tab) = self.tabs.get_mut(index) else { return };
         let view = tab.db_view.get_or_insert_with(|| {
             let password = conn.password_saved.then(|| ssh::load_password(conn.id)).flatten();
@@ -1729,10 +1750,19 @@ impl App {
             Box::new(dbview::DbView::new(ui.ctx(), &conn, password, tunnel))
         });
         view.confirm_changes = self.config.settings.db_confirm_changes;
-        let dbview::DbAction::None = view.ui(ui, rect, &self.theme, t);
+        view.local = local.as_ref().map(|(db, state)| (db.label(t.env_system), *state));
+        if let Some(name) = show {
+            view.show_database(name);
+        }
+        let action = view.ui(ui, rect, &self.theme, t);
         // A new SSH forward (opened, or opened again): its prompts are answered in the window.
         if let (Some(pid), Some(h)) = (view.take_tunnel_pid(), &host) {
             self.askpass.allow_interactive(pid, h);
+        }
+        match (action, local) {
+            (dbview::DbAction::StartServer, Some((db, _))) => self.db_server_start(db),
+            (dbview::DbAction::StopServer, Some((db, _))) => self.db_server_stop(db),
+            _ => {}
         }
     }
 
@@ -4015,6 +4045,8 @@ enum TabAction {
     NewDb,
     /// New database connection, filled for the server found on this machine.
     AddLocalDb,
+    /// WAMP's databases imported (`super::wamp`).
+    ImportWamp,
     OpenDb(Uuid),
     EditDb(Uuid),
     DeleteDb(Uuid),
@@ -5312,6 +5344,10 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finished_commands(ctx);
         self.dev_poll();
+        self.envs_poll();
+        self.wamp_import_poll();
+        self.projects_poll();
+        self.projects_restart_poll();
         self.procs.poll();
         self.modules_poll();
         self.mail_poll(ctx);
@@ -5397,6 +5433,7 @@ impl eframe::App for App {
         self.recap_save();
         crate::askpass::cleanup();
         self.mail_stop();
+        self.projects_stop_all();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
