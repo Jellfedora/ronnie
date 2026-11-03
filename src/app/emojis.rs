@@ -13,13 +13,18 @@ pub(super) const QUICK: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "
 /// The recent emojis kept.
 pub(super) const RECENT_MAX: usize = 32;
 
-/// A text with its emojis in colour: as one label when it has none, big when it is only 1 to 3 emojis.
+/// A text with its emojis in colour and its links to click: as one label when it has neither, big
+/// when it is only 1 to 3 emojis.
 pub(super) fn emoji_label(ui: &mut Ui, sheet: Option<&emoji::Faces>, text: &str, size: f32, color: Color32) -> egui::Response {
-    let Some(sheet) = sheet.filter(|_| emoji::has_emoji(text)) else {
+    let has_link = text.contains("http://") || text.contains("https://");
+    let sheet = sheet.filter(|_| emoji::has_emoji(text));
+    if sheet.is_none() && !has_link {
         return ui.add(egui::Label::new(egui::RichText::new(text).size(size).color(color)).wrap().selectable(true));
-    };
-    let pieces = emoji::pieces(text);
-    if let Some(n) = emoji::only_emojis(text) {
+    }
+    let pieces = if sheet.is_some() { emoji::pieces(text) } else { vec![Piece::Text(text)] };
+    if let Some(sheet) = sheet
+        && let Some(n) = emoji::only_emojis(text)
+    {
         let side = if n == 1 { 42.0 } else { 36.0 };
         return ui
             .horizontal(|ui| {
@@ -42,17 +47,30 @@ pub(super) fn emoji_label(ui: &mut Ui, sheet: Option<&emoji::Faces>, text: &str,
                         if k > 0 {
                             ui.end_row();
                         }
-                        if !line.is_empty() {
-                            ui.add(egui::Label::new(egui::RichText::new(line).size(size).color(color)).wrap().selectable(true));
+                        for (bit, link) in crate::talk::links(line) {
+                            if !link {
+                                ui.add(egui::Label::new(egui::RichText::new(bit).size(size).color(color)).wrap().selectable(true));
+                                continue;
+                            }
+                            // A link: underlined, opened in the browser.
+                            let resp = ui.add(egui::Label::new(egui::RichText::new(bit).size(size).color(color).underline()).wrap().sense(egui::Sense::click()));
+                            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(bit).clicked() {
+                                crate::terminal::open_url(bit);
+                            }
                         }
                     }
                 }
-                Piece::Emoji(chars, cell) => {
-                    let name = emoji::find(chars).map(|e| e.name.clone()).unwrap_or_default();
-                    ui.add_space(1.0);
-                    ui.add(sheet.image(*cell, Vec2::splat((size * 1.3).round()))).on_hover_text(name);
-                    ui.add_space(1.0);
-                }
+                Piece::Emoji(chars, cell) => match sheet {
+                    Some(sheet) => {
+                        let name = emoji::find(chars).map(|e| e.name.clone()).unwrap_or_default();
+                        ui.add_space(1.0);
+                        ui.add(sheet.image(*cell, Vec2::splat((size * 1.3).round()))).on_hover_text(name);
+                        ui.add_space(1.0);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(*chars).size(size).color(color));
+                    }
+                },
             }
         }
     })

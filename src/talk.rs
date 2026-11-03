@@ -440,6 +440,58 @@ fn each_name(online: &mut [Member], everyone: &mut [Member], rooms: &mut [Room],
     }
 }
 
+/// A text cut into its plain pieces and its links (`true`): words starting with http:// or https://,
+/// without the punctuation closing a sentence after them.
+pub fn links(text: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = ["https://", "http://"].iter().filter_map(|p| rest.find(p)).min() {
+        // Inside a word: not a link (e.g. "xhttp://").
+        if rest[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric()) {
+            let skip = at + 1;
+            out.push((&rest[..skip], false));
+            rest = &rest[skip..];
+            continue;
+        }
+        let end = rest[at..].find(char::is_whitespace).map_or(rest.len(), |e| at + e);
+        let mut link = &rest[at..end];
+        // Closing punctuation stays text; a ")" only when the link doesn't open one.
+        while let Some(c) = link.chars().next_back() {
+            let open = link.matches('(').count() > link.matches(')').count() - usize::from(c == ')');
+            if ".,;:!?'\"»>]".contains(c) || (c == ')' && !open) {
+                link = &link[..link.len() - c.len_utf8()];
+            } else {
+                break;
+            }
+        }
+        if link.len() <= "https://".len() {
+            out.push((&rest[..end], false));
+            rest = &rest[end..];
+            continue;
+        }
+        if at > 0 {
+            out.push((&rest[..at], false));
+        }
+        out.push((link, true));
+        rest = &rest[at + link.len()..];
+    }
+    if !rest.is_empty() {
+        out.push((rest, false));
+    }
+    // Plain pieces next to each other, as one.
+    let mut merged: Vec<(&str, bool)> = Vec::new();
+    for (piece, link) in out {
+        match merged.last_mut() {
+            Some((last, false)) if !link && last.as_ptr() as usize + last.len() == piece.as_ptr() as usize => {
+                let start = last.as_ptr() as usize - text.as_ptr() as usize;
+                *last = &text[start..start + last.len() + piece.len()];
+            }
+            _ => merged.push((piece, link)),
+        }
+    }
+    merged
+}
+
 /// floor's WebSocket address, from its HTTP one.
 fn ws_url(base: &str) -> String {
     let base = if let Some(rest) = base.strip_prefix("https://") {
@@ -1073,6 +1125,15 @@ mod tests {
         std::fs::write(&empty, b"").unwrap();
         assert_eq!(acceptable(&empty), Err(FileRefusal::Empty));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn links_in_text() {
+        assert_eq!(links("vu sur https://xmltvfr.fr/xmltv.php."), [("vu sur ", false), ("https://xmltvfr.fr/xmltv.php", true), (".", false)]);
+        assert_eq!(links("(voir https://fr.wikipedia.org/wiki/Rust_(langage)) ok"), [("(voir ", false), ("https://fr.wikipedia.org/wiki/Rust_(langage)", true), (") ok", false)]);
+        assert_eq!(links("http://a.b et https://c.d?x=1"), [("http://a.b", true), (" et ", false), ("https://c.d?x=1", true)]);
+        assert_eq!(links("xhttp://a.b https://"), [("xhttp://a.b https://", false)]);
+        assert_eq!(links("rien"), [("rien", false)]);
     }
 
     #[test]
