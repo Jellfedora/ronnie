@@ -371,6 +371,8 @@ pub struct News {
     pub opened: Option<String>,
     /// Groups the player was put in by someone (room id, the message saying so).
     pub invited: Vec<(String, Message)>,
+    /// Someone left a group of the player's (room id, the message saying so).
+    pub departed: Vec<(String, Message)>,
     /// floor refused something (its word).
     pub refused: Option<String>,
     /// floor doesn't know the account: the pseudo is to pick again.
@@ -639,6 +641,9 @@ impl Talk {
                 }
                 if matches!(m.event.as_deref(), Some("created" | "added")) && self.joining.remove(&room) && !mine {
                     news.invited.push((room.clone(), m.clone()));
+                }
+                if m.event.as_deref() == Some("left") && !mine {
+                    news.departed.push((room.clone(), m.clone()));
                 }
                 if let Some(k) = self.rooms.iter().position(|r| r.id == room) {
                     let mut r = self.rooms.remove(k);

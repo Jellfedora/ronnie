@@ -162,6 +162,8 @@ pub(super) struct TalkUi {
     deleting: Option<(String, i64)>,
     /// A quote clicked: the message to bring on screen (once), lit a moment.
     jump: Option<(i64, Instant, bool)>,
+    /// Someone's face shown large (their id).
+    avatar_open: Option<String>,
     /// The conversation whose files are shown, all of them.
     media_open: Option<String>,
     /// The menu to pin a message (how long), where it was asked: its conversation, its id, pinned yet.
@@ -383,6 +385,15 @@ impl App {
             let body = r.members.iter().filter(|x| x.id != me).map(|x| x.name.as_str()).collect::<Vec<_>>().join(", ");
             self.talk_notify(ctx, focused, room.clone(), title, body);
         }
+        // Someone left a group: told of, with those still in it.
+        for (room, m) in &news.departed {
+            let me = self.talk.me.as_ref().map_or("", |m| m.id.as_str());
+            let Some(r) = self.talk.room(room) else { continue };
+            let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
+            let title = t.talk_departed.replace("{n}", &who).replace("{g}", &shown_title(t, r, me));
+            let body = r.members.iter().filter(|x| x.id != me && x.id != m.from).map(|x| x.name.as_str()).collect::<Vec<_>>().join(", ");
+            self.talk_notify(ctx, focused, room.clone(), title, body);
+        }
         let shown = |app: &Self, room: &str| app.talk_page && focused && app.talk_ui.room.as_deref() == Some(room);
         let arrived: Vec<(String, Message)> = news.arrived.into_iter().filter(|(room, _)| !shown(self, room)).collect();
         let Some((room, last)) = arrived.last().cloned() else { return };
@@ -596,6 +607,7 @@ impl App {
         self.talk_windows(ui.ctx(), t, &theme);
         let me_id = self.talk.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
         self.talk_media_window(ui.ctx(), &me_id, t, &theme);
+        self.talk_face_window(ui.ctx(), t, &theme);
         self.talk_viewer(ui.ctx(), t, &theme);
         self.talk_save(t);
         let me = self.talk.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
@@ -629,6 +641,12 @@ impl App {
             self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &p.id, v.as_deref())
         });
         paint_avatar(&painter, c, 14.0, &title, room.kind == Kind::Group, face.as_ref(), &theme);
+        if let Some(peer) = room.peer(&me) {
+            let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with("talk-head-face"), Sense::click());
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.talk_ui.avatar_open = Some(peer.id.clone());
+            }
+        }
         let text_x = c.x + 26.0;
         painter.text(Pos2::new(text_x, head.center().y - 8.0), Align2::LEFT_CENTER, &title, FontId::proportional(16.0), theme.text);
         let sub = match room.kind {
@@ -1133,7 +1151,13 @@ impl App {
                         let name = m.name.clone().unwrap_or_default();
                         let v = self.talk.avatar_of(&m.from);
                         let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.from, v.as_deref());
-                        paint_avatar(ui.painter(), avatar.center() + Vec2::new(0.0, if room.kind == Kind::Group { 16.0 } else { 12.0 }), 14.0, &name, false, face.as_ref(), theme);
+                        let c = avatar.center() + Vec2::new(0.0, if room.kind == Kind::Group { 16.0 } else { 12.0 });
+                        paint_avatar(ui.painter(), c, 14.0, &name, false, face.as_ref(), theme);
+                        // A click shows it large.
+                        let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with(("talk-face", m.id)), Sense::click());
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.talk_ui.avatar_open = Some(m.from.clone());
+                        }
                     }
                     ui.add_space(8.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -1668,6 +1692,36 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Someone's face, large, with their name (and their pseudo, when given another name).
+    fn talk_face_window(&mut self, ctx: &egui::Context, t: &'static Strings, theme: &Theme) {
+        const SIDE: f32 = 256.0;
+        let Some(id) = self.talk_ui.avatar_open.clone() else { return };
+        let name = self.talk.name_of(&id).unwrap_or_default();
+        let pseudo = self.talk.pseudo_of(&id).map(str::to_owned);
+        let v = self.talk.avatar_of(&id);
+        let face = self.avatars.get(ctx, self.config.settings.floor.as_ref(), &id, v.as_deref());
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover));
+        let modal = egui::Modal::new(egui::Id::new("talk-face")).frame(frame).show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(SIDE), Sense::hover());
+                match &face {
+                    Some(face) => {
+                        egui::Image::new((face.id(), Vec2::splat(SIDE))).corner_radius(SIDE / 2.0).paint_at(ui, rect);
+                    }
+                    None => paint_avatar(ui.painter(), rect.center(), SIDE / 2.0, &name, false, None, theme),
+                }
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(&name).size(18.0).strong());
+                if let Some(p) = pseudo {
+                    ui.label(egui::RichText::new(t.talk_nickname_pseudo.replace("{n}", &p)).size(12.5).color(theme.text_muted));
+                }
+            });
+        });
+        if modal.should_close() || ctx.input(|i| i.pointer.any_click()) && modal.response.clicked_elsewhere() {
+            self.talk_ui.avatar_open = None;
+        }
     }
 
     /// An image fetched, made a texture (an animated GIF: the frame of the moment), and its size.

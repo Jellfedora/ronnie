@@ -569,7 +569,7 @@ impl Avatars {
 pub fn fetch_avatar(url: &str, token: &str, id: &str, version: &str) -> Option<egui::ColorImage> {
     let mut res = agent().get(format!("{url}/v1/players/{id}/avatar")).query("v", version).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call().ok()?;
     let bytes = res.body_mut().with_config().limit(512 * 1024).read_to_vec().ok()?;
-    let image = image::load_from_memory(&bytes).ok()?.thumbnail(128, 128).to_rgba8();
+    let image = image::load_from_memory(&bytes).ok()?.thumbnail(256, 256).to_rgba8();
     Some(egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()))
 }
 
