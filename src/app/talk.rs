@@ -137,6 +137,8 @@ pub(super) struct TalkUi {
     settled: Option<(String, u8)>,
     /// The images shown, by file id.
     textures: HashMap<String, egui::TextureHandle>,
+    /// The links' preview pictures shown, by address.
+    preview_textures: HashMap<String, egui::TextureHandle>,
     /// The animated GIFs shown, by file id.
     animations: HashMap<String, crate::gif::Animation>,
     /// The GIF picker, open (for a conversation's field), its search, its previews made textures.
@@ -1355,6 +1357,10 @@ impl App {
                 });
             }
         }
+        // Its first link, previewed under it (a click opens it).
+        if let Some((link, _)) = crate::talk::links(&m.text).into_iter().find(|(_, l)| *l) {
+            self.talk_link_card(ui, link, theme);
+        }
         let marks: Vec<&str> = [m.edited.map(|_| t.talk_edited), m.pinned.as_ref().filter(|p| p.until > now_ms()).map(|_| t.talk_pinned)].into_iter().flatten().collect();
         if !marks.is_empty() {
             ui.label(egui::RichText::new(marks.join(" · ")).size(10.5).italics().color(theme.text_muted.gamma_multiply(0.75))).on_hover_text(m.edited.map(clock).unwrap_or_default());
@@ -1383,6 +1389,43 @@ impl App {
             });
         }
         head
+    }
+
+    /// A link's card: its picture, site, title, description (as floor read them); a click opens it.
+    fn talk_link_card(&mut self, ui: &mut Ui, link: &str, theme: &Theme) {
+        let ctx = ui.ctx().clone();
+        let Some(p) = self.talk.preview(&ctx, link).cloned() else { return };
+        let width = ui.available_width().min(360.0);
+        let texture = p.image.as_ref().map(|image| self.talk_ui.preview_textures.entry(link.to_owned()).or_insert_with(|| ctx.load_texture(format!("preview-{link}"), (**image).clone(), egui::TextureOptions::LINEAR)).clone());
+        ui.add_space(4.0);
+        let shown = ui.allocate_ui_with_layout(Vec2::new(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(12).inner_margin(10).show(ui, |ui| {
+                ui.set_width(width - 20.0);
+                if let Some(texture) = &texture {
+                    let size = texture.size_vec2();
+                    let scale = ((width - 20.0) / size.x).min(200.0 / size.y);
+                    ui.add(egui::Image::new((texture.id(), size * scale)).corner_radius(8.0));
+                    ui.add_space(6.0);
+                }
+                if let Some(site) = &p.site {
+                    ui.add(egui::Label::new(egui::RichText::new(site).size(11.0).color(theme.text_muted)).truncate().selectable(false));
+                }
+                if let Some(title) = &p.title {
+                    ui.add(egui::Label::new(egui::RichText::new(title).size(13.5).strong().color(theme.text)).wrap().selectable(false));
+                }
+                if let Some(description) = &p.description {
+                    ui.add(egui::Label::new(egui::RichText::new(description).size(12.0).color(theme.text_muted)).truncate().selectable(false));
+                }
+            })
+        });
+        let rect = shown.inner.response.rect;
+        let resp = ui.interact(rect, ui.id().with(("talk-link", link)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(link);
+        if resp.hovered() {
+            ui.painter().rect_stroke(rect, 12.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+        }
+        if resp.clicked() {
+            crate::terminal::open_url(link);
+        }
     }
 
     /// A message quoted over the one answering it: who wrote it, its text on one line.

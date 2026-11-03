@@ -150,6 +150,33 @@ pub struct Media {
     pub message: i64,
 }
 
+/// What a link shows of itself (read by floor): its site, title, description, picture.
+#[derive(Clone)]
+pub struct Preview {
+    pub site: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub image: Option<Arc<egui::ColorImage>>,
+}
+
+#[derive(Deserialize)]
+struct WirePreview {
+    #[serde(default)]
+    site: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
+}
+
+/// A link's preview: asked, or come (None: nothing to show).
+pub enum PreviewLoad {
+    Loading,
+    Done(Option<Preview>),
+}
+
 /// A file fetched from floor: its bytes, and for an image, the picture (made smaller if it is big).
 pub enum Fetched {
     Loading,
@@ -409,6 +436,9 @@ pub struct Talk {
     joining: std::collections::HashSet<String>,
     /// The last search's answer: its conversation, what was looked for, the messages found.
     pub found: Option<(String, String, Vec<Message>)>,
+    /// The links' previews, by address.
+    pub previews: HashMap<String, PreviewLoad>,
+    previews_came: Arc<Mutex<Vec<(String, Option<Preview>)>>>,
     /// How far the player said they read, by conversation (this session).
     told_read: HashMap<String, i64>,
     /// The files of the conversations asked for (`ask_media`), the most recent first.
@@ -980,6 +1010,31 @@ impl Talk {
         });
     }
 
+    /// A link's preview, asked of floor the first time (None meanwhile, and when there is nothing to show).
+    pub fn preview(&mut self, ctx: &egui::Context, link: &str) -> Option<&Preview> {
+        if let Ok(mut came) = self.previews_came.lock() {
+            for (url, p) in came.drain(..) {
+                self.previews.insert(url, PreviewLoad::Done(p));
+            }
+        }
+        if !self.previews.contains_key(link) {
+            let (url, token) = self.key.clone()?;
+            self.previews.insert(link.to_owned(), PreviewLoad::Loading);
+            let (came, ctx, link) = (self.previews_came.clone(), ctx.clone(), link.to_owned());
+            std::thread::spawn(move || {
+                let p = fetch_preview(&url, &token, &link);
+                if let Ok(mut came) = came.lock() {
+                    came.push((link, p));
+                }
+                ctx.request_repaint();
+            });
+        }
+        match self.previews.get(link) {
+            Some(PreviewLoad::Done(Some(p))) => Some(p),
+            _ => None,
+        }
+    }
+
     /// Older messages of a conversation, if there are and they aren't asked already.
     pub fn more(&mut self, room: &str) {
         let Some(r) = self.rooms.iter_mut().find(|r| r.id == room) else { return };
@@ -1028,6 +1083,25 @@ fn fetch_file(url: &str, token: &str, id: &str) -> Result<Vec<u8>, String> {
         return Err(refusal(res));
     }
     res.body_mut().with_config().limit(FILE_MAX + 1024).read_to_vec().map_err(|e| e.to_string())
+}
+
+/// A link's preview from floor, its picture with it (None: nothing to show, or floor can't say).
+fn fetch_preview(url: &str, token: &str, link: &str) -> Option<Preview> {
+    let mut res = agent().get(format!("{url}/v1/talk/preview")).query("url", link).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call().ok()?;
+    if res.status() != 200 {
+        return None;
+    }
+    let wire: WirePreview = serde_json::from_slice(&res.body_mut().with_config().limit(64 * 1024).read_to_vec().ok()?).ok()?;
+    let image = wire.image.as_deref().and_then(|path| {
+        let mut res = agent().get(format!("{url}/{}", path.trim_start_matches('/'))).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call().ok()?;
+        if !res.status().is_success() {
+            return None;
+        }
+        let bytes = res.body_mut().with_config().limit(3 * 1024 * 1024 + 1024).read_to_vec().ok()?;
+        let image = image::load_from_memory(&bytes).ok()?.thumbnail(720, 720).to_rgba8();
+        Some(Arc::new(egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw())))
+    });
+    Some(Preview { site: wire.site, title: wire.title, description: wire.description, image })
 }
 
 /// An image's picture, made smaller when it is big (None: not an image this can read).
