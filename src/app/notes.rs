@@ -178,6 +178,14 @@ pub(super) struct Notes {
     notice: Option<(String, f64)>,
     /// The table's cell being edited.
     cell_edit: Option<CellEdit>,
+    /// Claude Code installed, and when it was last looked for.
+    claude: Option<(bool, std::time::Instant)>,
+    /// A note being cleaned up by Claude: its id, its text as sent, the answer once come.
+    cleaning: Option<(Uuid, String, CleanAnswer)>,
+    /// The last note cleaned up: its id, its text before, its text after (to go back while unchanged).
+    cleaned: Option<(Uuid, String, String)>,
+    /// Claude couldn't clean up a note: when (said a moment).
+    clean_failed: Option<std::time::Instant>,
 }
 
 /// A table's cell edited in its own field (rows count without the |---| line, the headings 0).
@@ -212,6 +220,14 @@ enum TableOp {
     DeleteCol(usize),
 }
 
+/// Claude's answer without the ``` fence it may have put around the whole of it.
+fn unfenced(answer: &str) -> String {
+    let answer = answer.trim();
+    let Some(inner) = answer.strip_prefix("```").and_then(|a| a.strip_suffix("```")) else { return answer.to_owned() };
+    // The fence's language (```markdown) on its first line.
+    inner.split_once('\n').map_or(inner, |(_, rest)| rest).trim().to_owned()
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -220,6 +236,9 @@ fn local(ms: i64) -> chrono::DateTime<chrono::Local> {
     chrono::Local.timestamp_millis_opt(ms).single().unwrap_or_else(chrono::Local::now)
 }
 
+/// Claude's answer to a clean-up, once come (None inside: it couldn't answer).
+type CleanAnswer = std::sync::Arc<std::sync::Mutex<Option<Option<String>>>>;
+
 const EDITOR: &str = "notes-editor";
 const SEARCH: &str = "notes-search";
 const RENAME: &str = "notes-rename";
@@ -227,7 +246,7 @@ const CELL: &str = "notes-cell";
 
 impl Notes {
     fn with(store: Store, path: Option<PathBuf>, error: Option<String>) -> Self {
-        Self { store, path, dirty: None, error, place: Place::Folder(None), selected: None, search: String::new(), rename: None, rendered: true, focus_search: false, focus_editor: false, layout: None, images: HashMap::new(), pending: None, notice: None, cell_edit: None }
+        Self { store, path, dirty: None, error, place: Place::Folder(None), selected: None, search: String::new(), rename: None, rendered: true, focus_search: false, focus_editor: false, layout: None, images: HashMap::new(), pending: None, notice: None, cell_edit: None, claude: None, cleaning: None, cleaned: None, clean_failed: None }
     }
 
     pub(super) fn load() -> Self {
@@ -247,6 +266,70 @@ impl Notes {
         notes.selected = notes.listed().first().map(|n| n.id);
         notes.sweep_files();
         notes
+    }
+
+    /// Claude's button: a click sends the note to Claude Code (Haiku), its cleaned up text (spelling,
+    /// phrasing, a neat Markdown layout) put in its place when it comes, unless the note changed
+    /// meanwhile. Greyed without Claude Code, its tooltip saying what it would do.
+    fn clean_button(&mut self, ui: &mut Ui, rect: Rect, id: Uuid, theme: &Theme, t: &Strings) {
+        let installed = match self.claude {
+            Some((found, at)) if at.elapsed() < std::time::Duration::from_secs(60) => found,
+            _ => {
+                let found = crate::recap::claude_installed();
+                self.claude = Some((found, std::time::Instant::now()));
+                found
+            }
+        };
+        // Its answer, come.
+        if let Some((note_id, sent, answer)) = &self.cleaning
+            && let Some(got) = answer.lock().ok().and_then(|mut a| a.take())
+        {
+            let (note_id, sent) = (*note_id, sent.clone());
+            self.cleaning = None;
+            match got.map(|s| unfenced(&s)).filter(|s| !s.trim().is_empty()) {
+                Some(clean) => {
+                    if let Some(note) = self.note_mut(note_id).filter(|n| n.text == sent) {
+                        note.text = clean.clone();
+                        note.updated = now_ms();
+                        self.cleaned = Some((note_id, sent, clean));
+                        self.changed(ui);
+                    }
+                }
+                None => self.clean_failed = Some(std::time::Instant::now()),
+            }
+        }
+        let busy = self.cleaning.as_ref().is_some_and(|(n, ..)| *n == id);
+        if busy {
+            egui::Spinner::new().size(14.0).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(14.0)));
+            ui.interact(rect, Id::new("notes-clean"), Sense::hover()).on_hover_text(t.notes_cleaning);
+            return;
+        }
+        let text = self.note(id).map(|n| n.text.clone()).unwrap_or_default();
+        let failed = self.clean_failed.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(8));
+        let tip = if !installed { t.notes_clean_missing } else if failed { t.notes_clean_failed } else { t.notes_clean };
+        let resp = ui.interact(rect, Id::new("notes-clean"), if installed { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
+        let usable = installed && !text.trim().is_empty() && self.cleaning.is_none();
+        if usable && resp.hovered() {
+            ui.painter().rect_filled(rect, 7.0, theme.tab_hover);
+        }
+        let tint = if !installed { Color32::from_white_alpha(60) } else if failed { theme.ansi[1] } else if resp.hovered() && usable { Color32::WHITE } else { Color32::from_white_alpha(170) };
+        super::history::paint_mark(ui, Rect::from_center_size(rect.center(), Vec2::splat(16.0)), tint);
+        if usable && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            let answer: CleanAnswer = Default::default();
+            self.cleaning = Some((id, text.clone(), answer.clone()));
+            self.clean_failed = None;
+            let (prompt, ctx) = (format!("{}\n\n{text}", t.notes_clean_prompt), ui.ctx().clone());
+            std::thread::spawn(move || {
+                let clean = crate::recap::ask_claude(&prompt);
+                if let Ok(mut a) = answer.lock() {
+                    *a = Some(clean);
+                }
+                ctx.request_repaint();
+            });
+        }
+        if self.cleaning.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        }
     }
 
     /// Writes the notes now if they changed.
@@ -793,6 +876,30 @@ impl Notes {
                     }
                 }
                 right = whole.min.x - 10.0;
+            }
+        }
+        // Claude's button: the note cleaned up (spelling, phrasing, a neat layout); and, right after,
+        // the way back to the text before.
+        if !trashed && let Some(id) = self.selected {
+            let r = Rect::from_center_size(Pos2::new(right - 14.0, y), Vec2::splat(28.0));
+            if r.min.x > editor_x + 8.0 {
+                self.clean_button(ui, r, id, theme, t);
+                right = r.min.x - 6.0;
+                let back = self.cleaned.as_ref().is_some_and(|(n, _, after)| *n == id && self.note(id).is_some_and(|note| note.text == *after));
+                if back {
+                    let r = Rect::from_center_size(Pos2::new(right - 14.0, y), Vec2::splat(28.0));
+                    if r.min.x > editor_x + 8.0 {
+                        if tool_button(ui, r, "notes-clean-back", theme, paint_undo_icon, false).on_hover_text(t.notes_clean_back).clicked()
+                            && let Some((_, before, _)) = self.cleaned.take()
+                            && let Some(note) = self.note_mut(id)
+                        {
+                            note.text = before;
+                            note.updated = now_ms();
+                            self.changed(ui);
+                        }
+                        right = r.min.x - 6.0;
+                    }
+                }
             }
         }
         // The formatting buttons; those without room go in a menu.
@@ -2660,6 +2767,18 @@ fn inline(b: &mut Builder, text: &str, range: Range<usize>, base: &TextFormat, t
 }
 
 
+/// An arrow turning back: the text before.
+fn paint_undo_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let arc: Vec<Pos2> = (0..=12).map(|k| {
+        let a = std::f32::consts::PI * (1.0 + k as f32 / 12.0 * 1.25);
+        c + Vec2::new(1.0, 1.5) + Vec2::angled(a) * 5.5
+    }).collect();
+    let start = arc[0];
+    painter.add(Shape::line(arc, stroke));
+    painter.add(Shape::line(vec![start + Vec2::new(-2.5, -3.5), start, start + Vec2::new(3.0, -2.0)], stroke));
+}
+
 /// A toolbar button: an icon, lit when hovered or `on`.
 fn tool_button(ui: &Ui, rect: Rect, salt: &str, theme: &Theme, paint: fn(&egui::Painter, Pos2, Color32), on: bool) -> egui::Response {
     let resp = ui.interact(rect, Id::new(salt), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -2908,6 +3027,12 @@ mod tests {
         assert_eq!(text, "- a\n");
         let mut text = "plain\n".to_owned();
         assert_eq!(continue_list(&mut text, 6), None);
+    }
+
+    #[test]
+    fn claude_fence_taken_off() {
+        assert_eq!(unfenced("```markdown\n# Titre\n\n- a\n```"), "# Titre\n\n- a");
+        assert_eq!(unfenced("  # Titre\n\n```rust\nfn a() {}\n```\n"), "# Titre\n\n```rust\nfn a() {}\n```");
     }
 
     #[test]
