@@ -480,8 +480,12 @@ impl App {
         }
 
         // The field, at the bottom: as high as its lines (six at most).
+        // Its lines as shown (those wrapped too), measured at the last frame.
+        let rows_id = egui::Id::new(("talk-field-rows", room.id.as_str()));
         let draft = self.talk_ui.drafts.entry(room.id.clone()).or_default();
-        let lines = draft.lines().count().max(1) + usize::from(draft.ends_with('\n'));
+        let typed_lines = draft.lines().count().max(1) + usize::from(draft.ends_with('\n'));
+        let shown_lines = if draft.is_empty() { 1 } else { ui.ctx().data(|d| d.get_temp::<usize>(rows_id)).unwrap_or(1) };
+        let lines = typed_lines.max(shown_lines);
         let field_h = 20.0 + 19.0 * lines.min(6) as f32;
         let foot = Rect::from_min_max(Pos2::new(rect.min.x + margin, rect.max.y - field_h - 44.0), Pos2::new(rect.max.x - margin, rect.max.y));
         let list = Rect::from_min_max(Pos2::new(rect.min.x, head.max.y + 1.0), Pos2::new(rect.max.x, foot.min.y - 4.0));
@@ -587,6 +591,11 @@ impl App {
             .max_height(inner.height())
             .show(&mut field_ui, |ui| {
                 let output = ui.add_enabled_ui(ready, |ui| egui::TextEdit::multiline(&mut *draft).id(id).hint_text(hint).desired_rows(1).char_limit(crate::talk::TEXT_MAX).font(FontId::proportional(14.0)).desired_width(inner.width()).margin(Vec2::ZERO).frame(egui::Frame::NONE).show(ui)).inner;
+                let rows = output.galley.rows.len().max(1);
+                if ui.ctx().data(|d| d.get_temp::<usize>(rows_id)) != Some(rows) {
+                    ui.ctx().data_mut(|d| d.insert_temp(rows_id, rows));
+                    ui.ctx().request_repaint();
+                }
                 // Its emojis in colour, over egui's black and white ones.
                 if let Some(sheet) = &sheet {
                     super::emojis::paint_field_emojis(ui.painter(), &output, draft, sheet, theme.chrome_bg);
