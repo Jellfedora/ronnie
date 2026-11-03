@@ -1210,7 +1210,9 @@ impl App {
             let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p) && on_top(p));
             if self.talk.ready() && self.talk_ui.emoji_open.is_none() && self.talk_ui.gif_open.is_none() && self.talk_ui.pin_menu.is_none() && !m.deleted && hovered {
                 let acts: Vec<Act> = if mine && editable(m) { vec![Act::Pin, Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Pin, Act::Reply, Act::Delete] } else { vec![Act::Pin, Act::Reply] };
-                let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
+                let when = if day_of(m.at) == Some(chrono::Local::now().date_naive()) { clock(m.at) } else { clock_day(m.at) };
+                let when_w = ui.painter().layout_no_wrap(when.clone(), FontId::proportional(11.5), theme.text_muted).size().x + 14.0;
+                let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0 + when_w, 36.0);
                 // Beside the bubble, on its free side (mine on its left, the others' on its right), inside the page.
                 let x = if mine { (column.min.x - 8.0 - bar.x).max(band.min.x + margin) } else { (column.max.x + 8.0).min(band.max.x - margin - bar.x) };
                 let at = Pos2::new(x, band.min.y - 6.0);
@@ -1269,6 +1271,10 @@ impl App {
                                     chosen = Some(*act);
                                 }
                             }
+                            // When it was sent (no tooltip over the message: it would cover its reactions).
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(&when).size(11.5).color(theme.text_muted));
+                            ui.add_space(6.0);
                         });
                     });
                 });
@@ -1329,9 +1335,7 @@ impl App {
                 .stroke(Stroke::new(1.0, theme.tab_hover))
                 .corner_radius(16)
                 .inner_margin(egui::Margin::symmetric(12, 7))
-                .show(ui, |ui| ui.label(egui::RichText::new(t.talk_deleted).size(13.5).italics().color(theme.text_muted)))
-                .response
-                .on_hover_text(clock(m.at));
+                .show(ui, |ui| ui.label(egui::RichText::new(t.talk_deleted).size(13.5).italics().color(theme.text_muted)));
             return (head, ui.min_rect());
         }
         // The message it answers, over it (a click brings it on screen).
@@ -1344,7 +1348,7 @@ impl App {
         }
         if !m.text.is_empty() {
             if crate::emoji::only_emojis(&m.text).is_some() {
-                super::emojis::emoji_label(ui, sheet, &m.text, 14.0, theme.text).on_hover_text(clock(m.at));
+                super::emojis::emoji_label(ui, sheet, &m.text, 14.0, theme.text);
             } else {
                 // Round, tighter on its author's side where its series goes on.
                 let (round, tight) = (16, 5);
@@ -1364,9 +1368,7 @@ impl App {
                         .show(ui, |ui| {
                             ui.set_max_width(inner);
                             super::emojis::emoji_label(ui, sheet, &m.text, 14.0, ink)
-                        })
-                        .response
-                        .on_hover_text(clock(m.at));
+                        });
                 });
             }
         }
@@ -1432,7 +1434,7 @@ impl App {
             })
         });
         let rect = shown.inner.response.rect;
-        let resp = ui.interact(rect, ui.id().with(("talk-link", link)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(link);
+        let resp = ui.interact(rect, ui.id().with(("talk-link", link)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
         if resp.hovered() {
             ui.painter().rect_stroke(rect, 12.0, Stroke::new(1.0, theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
         }
