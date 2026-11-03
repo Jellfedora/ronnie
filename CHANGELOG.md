@@ -2,6 +2,22 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.40.0] - 2026-11-03
+
+### Nouveautés
+
+- **Le tchat entre collègues**, dans sa catégorie de la colonne de gauche : des conversations privées et des groupes (créés même seul, les membres ajoutés ensuite, renommés, quittés). Tous les collègues sont listés, ceux en ligne d'abord, et on peut écrire à quelqu'un d'absent : il le lira en revenant. Les messages sont en bulles, les non-lus comptés et notifiés.
+- **Les emojis en couleur** : un sélecteur (recherche en français et en anglais, catégories, récents, couleurs de peau), l'autocomplétion en tapant `:nom`, les emojis seuls affichés en grand, et les **réactions** aux messages, au survol.
+- **Les GIF** : le bouton GIF du champ montre les tendances et cherche parmi ceux de KLIPY ; ils sont animés dans le tchat, comme ceux que tu envoies depuis ton ordinateur.
+- **Les images et les fichiers** dans le tchat : le bouton +, un glisser-déposer ou ⌘ V pour une capture d'écran. Seuls les images, PDF, textes et documents Office passent, contrôlés par le serveur ; ils sont gardés 3 mois.
+- **De vrais comptes** : un pseudo et un mot de passe, une connexion qui reste sur chaque machine tant que tu t'en sers, un avatar à toi. Ton compte, dans Paramètres › Compte ou en bas de la colonne du tchat et des jeux. Ronnie te le propose au premier lancement.
+- **La page de téléchargement** de Ronnie, pour macOS, Windows et Linux, à donner aux collègues : Paramètres › À propos.
+
+### Changements
+
+- **Ronnie et ses services déménagent sur un nouveau serveur.** Les comptes, les pseudos et les classements repartent de zéro : choisis ton pseudo à nouveau au premier lancement.
+- **Les mises à jour viennent de ce serveur**, et chaque version est signée : Ronnie refuse d'installer une archive qui ne l'est pas.
+
 ## [0.39.0] - 2026-10-30
 
 ### Nouveautés
