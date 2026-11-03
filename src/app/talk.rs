@@ -1331,7 +1331,7 @@ impl App {
                     });
                 }
             }
-            // Hovered (across its line, under its name and time): its bar, to react at once (the usual ones, or any from
+            // Hovered (its side of the line, under its name and time): its bar, to react at once (the usual ones, or any from
             // the picker), to answer it, and one's own to change or take back. It stays while the pointer
             // is on it.
             let row = row.response.rect;
@@ -1339,12 +1339,14 @@ impl App {
             if self.talk_ui.jump.is_some_and(|(id, ..)| id == m.id) {
                 self.light_jump(ui, row, theme);
             }
+            // Only the message's own side wakes it (its avatar, its bubble, the gap to the bar), not the empty rest of the line.
+            let reach = if mine { Rect::from_x_y_ranges((column.min.x - 10.0)..=band.max.x, band.y_range()) } else { Rect::from_x_y_ranges(band.min.x..=(column.max.x + 10.0), band.y_range()) };
             let pointer = ui.input(|i| i.pointer.hover_pos());
-            let on_bar = self.talk_ui.bar.is_some_and(|(id, r)| id == m.id && pointer.is_some_and(|p| r.expand(2.0).contains(p)));
+            let on_bar =self.talk_ui.bar.is_some_and(|(id, r)| id == m.id && pointer.is_some_and(|p| r.expand(2.0).contains(p)));
             // Nothing over it there (a window, a menu): the conversation's layer, or the bar's own.
             let bar_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("react-bar", m.id)));
             let on_top = |p: Pos2| ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id() || l == bar_layer);
-            let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p) && on_top(p));
+            let hovered = pointer.is_some_and(|p| (reach.contains(p) || on_bar) && ui.clip_rect().contains(p) && on_top(p));
             if self.talk.ready() && self.talk_ui.emoji_open.is_none() && self.talk_ui.gif_open.is_none() && self.talk_ui.pin_menu.is_none() && !m.deleted && hovered {
                 let acts: Vec<Act> = if mine && editable(m) { vec![Act::Pin, Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Pin, Act::Reply, Act::Delete] } else { vec![Act::Pin, Act::Reply] };
                 let when = if day_of(m.at) == Some(chrono::Local::now().date_naive()) { clock(m.at) } else { clock_day(m.at) };
