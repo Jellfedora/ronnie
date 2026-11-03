@@ -2,7 +2,7 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
-## [Unreleased]
+## [0.42.0] - 2026-11-03
 
 ### Nouveautés
 
@@ -12,6 +12,10 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Ce qu'un jeu permet de débloquer**, sur sa page : une pastille en bas à gauche, et au survol, chaque déblocage avec sa condition et où tu en es (le thème Ronnie Métal à Speed Metal, Jurassic Park à Ronnie.io, le wizz au démineur, les boutons Claude au Puissance 4).
 - **Cacher une catégorie d'un clic droit** sur son icône, dans la colonne de gauche. Elle se réaffiche dans Paramètres › Apparence.
 - **Claude peut modifier une note** depuis son terminal (`ronnie note --edit` ou `--append`), et plus seulement en créer.
+
+### Corrections
+
+- La barre des réactions n'apparaît plus quand la souris passe dans le vide à côté d'un message, seulement sur le message.
 
 ## [0.41.0] - 2026-11-03
 
