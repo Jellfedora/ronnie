@@ -14,20 +14,20 @@ pub(super) const QUICK: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "
 pub(super) const RECENT_MAX: usize = 32;
 
 /// A text with its emojis in colour: as one label when it has none, big when it is only 1 to 3 emojis.
-pub(super) fn emoji_label(ui: &mut Ui, sheet: Option<&egui::TextureHandle>, text: &str, size: f32, color: Color32) -> egui::Response {
+pub(super) fn emoji_label(ui: &mut Ui, sheet: Option<&emoji::Faces>, text: &str, size: f32, color: Color32) -> egui::Response {
     let Some(sheet) = sheet.filter(|_| emoji::has_emoji(text)) else {
         return ui.add(egui::Label::new(egui::RichText::new(text).size(size).color(color)).wrap().selectable(true));
     };
     let pieces = emoji::pieces(text);
     if let Some(n) = emoji::only_emojis(text) {
-        let side = if n == 1 { 46.0 } else { 38.0 };
+        let side = if n == 1 { 42.0 } else { 36.0 };
         return ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for piece in &pieces {
                     if let Piece::Emoji(chars, cell) = piece {
                         let name = emoji::find(chars).map(|e| e.name.clone()).unwrap_or_default();
-                        ui.add(egui::Image::new((sheet.id(), Vec2::splat(side))).uv(emoji::uv(*cell))).on_hover_text(name);
+                        ui.add(sheet.image(*cell, Vec2::splat(side))).on_hover_text(name);
                     }
                 }
             })
@@ -50,7 +50,7 @@ pub(super) fn emoji_label(ui: &mut Ui, sheet: Option<&egui::TextureHandle>, text
                 Piece::Emoji(chars, cell) => {
                     let name = emoji::find(chars).map(|e| e.name.clone()).unwrap_or_default();
                     ui.add_space(1.0);
-                    ui.add(egui::Image::new((sheet.id(), Vec2::splat((size * 1.3).round()))).uv(emoji::uv(*cell))).on_hover_text(name);
+                    ui.add(sheet.image(*cell, Vec2::splat((size * 1.3).round()))).on_hover_text(name);
                     ui.add_space(1.0);
                 }
             }
@@ -77,7 +77,7 @@ fn rgb(c: u32) -> Color32 {
 }
 
 /// The picker: the emoji clicked, if one (with the skin tone chosen, when it has tones).
-pub(super) fn picker(ui: &mut Ui, state: &mut Picker, sheet: &egui::TextureHandle, recent: &[String], skin: &mut u8, t: &Strings, theme: &Theme) -> Option<String> {
+pub(super) fn picker(ui: &mut Ui, state: &mut Picker, sheet: &emoji::Faces, recent: &[String], skin: &mut u8, t: &Strings, theme: &Theme) -> Option<String> {
     const COLS: usize = 9;
     const CELL: f32 = 36.0;
     let width = CELL * COLS as f32 + 8.0;
@@ -117,7 +117,7 @@ pub(super) fn picker(ui: &mut Ui, state: &mut Picker, sheet: &egui::TextureHandl
                 if let Some(cell) = emoji::cell(tab) {
                     let side = 18.0;
                     let r = Rect::from_center_size(rect.center(), Vec2::splat(side));
-                    ui.painter().image(sheet.id(), r, emoji::uv(cell), if on { Color32::WHITE } else { Color32::from_white_alpha(170) });
+                    sheet.paint_tinted(ui.painter(), cell, r, if on { Color32::WHITE } else { Color32::from_white_alpha(170) });
                 }
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.emoji_categories[k]).clicked() {
                     state.category = k;
@@ -149,7 +149,7 @@ pub(super) fn picker(ui: &mut Ui, state: &mut Picker, sheet: &egui::TextureHandl
                     if resp.hovered() {
                         ui.painter().rect_filled(rect.shrink(1.0), 7.0, theme.tab_hover);
                     }
-                    ui.painter().image(sheet.id(), Rect::from_center_size(rect.center(), Vec2::splat(26.0)), emoji::uv(*cell), Color32::WHITE);
+                    sheet.paint_tinted(ui.painter(), *cell, Rect::from_center_size(rect.center(), Vec2::splat(26.0)), Color32::WHITE);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(name).clicked() {
                         chosen = Some(chars.clone());
                     }
@@ -174,7 +174,7 @@ pub(super) fn remember(recent: &mut Vec<String>, chars: &str) {
 }
 
 /// The field's emojis drawn in colour over egui's black and white glyphs (`bg`: the field's colour).
-pub(super) fn paint_field_emojis(painter: &egui::Painter, output: &egui::text_edit::TextEditOutput, text: &str, sheet: &egui::TextureHandle, bg: Color32) {
+pub(super) fn paint_field_emojis(painter: &egui::Painter, output: &egui::text_edit::TextEditOutput, text: &str, sheet: &emoji::Faces, bg: Color32) {
     if !emoji::has_emoji(text) {
         return;
     }
@@ -196,7 +196,7 @@ pub(super) fn paint_field_emojis(painter: &egui::Painter, output: &egui::text_ed
                 let glyph = Rect::from_min_max(origin + a.min.to_vec2(), Pos2::new(origin.x + b.min.x, origin.y + a.max.y));
                 painter.rect_filled(glyph, 0.0, bg);
                 let side = glyph.height().min(20.0);
-                painter.image(sheet.id(), Rect::from_center_size(glyph.center(), Vec2::splat(side)), emoji::uv(cell), Color32::WHITE);
+                sheet.paint_tinted(painter, cell, Rect::from_center_size(glyph.center(), Vec2::splat(side)), Color32::WHITE);
             }
         }
     }
@@ -233,7 +233,7 @@ pub(super) fn replaced(text: &str, start: usize, end: usize, with: &str) -> (Str
 
 /// The completion's list, above the field: each emoji, its `:name:`, its French name; the one chosen
 /// lit. Returns the one clicked.
-pub(super) fn completion_list(ui: &Ui, at: Pos2, found: &[&emoji::Emoji], lit: usize, skin: u8, sheet: &egui::TextureHandle, theme: &Theme) -> Option<usize> {
+pub(super) fn completion_list(ui: &Ui, at: Pos2, found: &[&emoji::Emoji], lit: usize, skin: u8, sheet: &emoji::Faces, theme: &Theme) -> Option<usize> {
     let mut clicked = None;
     egui::Area::new(egui::Id::new("emoji-completion")).order(egui::Order::Foreground).fixed_pos(at).pivot(Align2::LEFT_BOTTOM).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).inner_margin(4.0).show(ui, |ui| {
@@ -244,7 +244,7 @@ pub(super) fn completion_list(ui: &Ui, at: Pos2, found: &[&emoji::Emoji], lit: u
                     ui.painter().rect_filled(rect, 6.0, theme.tab_hover);
                 }
                 let (_, cell) = e.toned(skin);
-                ui.painter().image(sheet.id(), Rect::from_center_size(Pos2::new(rect.min.x + 18.0, rect.center().y), Vec2::splat(22.0)), emoji::uv(cell), Color32::WHITE);
+                sheet.paint_tinted(ui.painter(), cell, Rect::from_center_size(Pos2::new(rect.min.x + 18.0, rect.center().y), Vec2::splat(22.0)), Color32::WHITE);
                 let short = e.names.first().map(|n| format!(":{n}:")).unwrap_or_default();
                 ui.painter().text(Pos2::new(rect.min.x + 38.0, rect.center().y), Align2::LEFT_CENTER, &short, FontId::monospace(12.5), theme.text);
                 ui.painter().text(Pos2::new(rect.max.x - 8.0, rect.center().y), Align2::RIGHT_CENTER, &e.name, FontId::proportional(12.0), theme.text_muted);

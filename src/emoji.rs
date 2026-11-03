@@ -1,16 +1,17 @@
-//! Emojis in colour: Twemoji images (a 32 px sheet, CC-BY 4.0) drawn by Ronnie, egui's fonts having
-//! them in black and white only. The list comes from emoji-datasource (MIT) with Unicode CLDR's French
+//! Emojis in colour: Twemoji images (64 px, CC-BY 4.0) drawn by Ronnie, egui's fonts having them in
+//! black and white only; each one is decoded the first time it shows (a texture of 16 kB), the whole
+//! sheet would take 67 MB. The list comes from emoji-datasource (MIT) with Unicode CLDR's French
 //! names and keywords (see assets/emoji/LICENSE.md): the picker, the search (French and English), the
 //! `:name:` completion, and finding the emojis in a text to draw them.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// The sheet: 62 × 62 cells of 34 px (an image of 32 px with 1 px around).
-const SHEET: &[u8] = include_bytes!("../assets/emoji/twemoji-32.png");
+/// The images, one PNG after the other, and where each is ("x y offset length": its cell on the sheet
+/// it was cut from, its place in the pack).
+const PACK: &[u8] = include_bytes!("../assets/emoji/twemoji-64.bin");
+const INDEX: &str = include_str!("../assets/emoji/twemoji-64.idx");
 const DATA: &str = include_str!("../assets/emoji/emoji.tsv");
-const CELL: f32 = 34.0;
-const SIDE: f32 = 2108.0;
 /// The longest emoji, in chars (families, flags of regions…).
 const LONGEST: usize = 12;
 
@@ -241,37 +242,94 @@ pub fn find(chars: &str) -> Option<&'static Emoji> {
     all().iter().find(|e| key(&e.chars) == k || e.skins.iter().any(|(_, c, _)| key(c) == k))
 }
 
-/// The sheet, made a texture once.
-#[derive(Default)]
-pub struct Sheet {
-    texture: Option<egui::TextureHandle>,
+/// Each cell's image in the pack (its offset and length).
+fn places() -> &'static HashMap<(u16, u16), (usize, usize)> {
+    static PLACES: OnceLock<HashMap<(u16, u16), (usize, usize)>> = OnceLock::new();
+    PLACES.get_or_init(|| {
+        INDEX
+            .lines()
+            .filter_map(|line| {
+                let mut f = line.split(' ').map(str::parse::<usize>);
+                let (x, y, offset, length) = (f.next()?.ok()?, f.next()?.ok()?, f.next()?.ok()?, f.next()?.ok()?);
+                Some(((x as u16, y as u16), (offset, length)))
+            })
+            .collect()
+    })
 }
 
-impl Sheet {
-    pub fn texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
-        if self.texture.is_none() {
-            let image = image::load_from_memory(SHEET).ok()?.to_rgba8();
-            let picture = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
-            self.texture = Some(ctx.load_texture("twemoji", picture, egui::TextureOptions::LINEAR));
+/// The emojis' images, each made a texture the first time it is drawn (kept: a few hundred at most
+/// are ever shown). Cloned freely: the clones share them.
+#[derive(Clone)]
+pub struct Faces {
+    ctx: egui::Context,
+    loaded: std::sync::Arc<std::sync::Mutex<HashMap<(u16, u16), Option<egui::TextureHandle>>>>,
+}
+
+impl Faces {
+    /// This cell's texture (None: not in the pack, or not readable).
+    pub fn get(&self, cell: (u16, u16)) -> Option<egui::TextureHandle> {
+        let mut loaded = self.loaded.lock().ok()?;
+        loaded
+            .entry(cell)
+            .or_insert_with(|| {
+                let (offset, length) = *places().get(&cell)?;
+                let image = image::load_from_memory(PACK.get(offset..offset + length)?).ok()?.to_rgba8();
+                let picture = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
+                Some(self.ctx.load_texture(format!("emoji-{}-{}", cell.0, cell.1), picture, egui::TextureOptions::LINEAR))
+            })
+            .clone()
+    }
+
+    /// An emoji drawn in `rect`.
+    pub fn paint(&self, painter: &egui::Painter, cell: (u16, u16), rect: egui::Rect) {
+        self.paint_tinted(painter, cell, rect, egui::Color32::WHITE);
+    }
+
+    pub fn paint_tinted(&self, painter: &egui::Painter, cell: (u16, u16), rect: egui::Rect, tint: egui::Color32) {
+        if let Some(texture) = self.get(cell) {
+            painter.image(texture.id(), rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), tint);
         }
-        self.texture.as_ref()
+    }
+
+    /// An emoji as a widget of this size (empty, the same size, when it can't be read).
+    pub fn image(&self, cell: (u16, u16), size: egui::Vec2) -> egui::Image<'static> {
+        match self.get(cell) {
+            Some(texture) => egui::Image::new((texture.id(), size)),
+            None => egui::Image::new((egui::TextureId::default(), size)).tint(egui::Color32::TRANSPARENT),
+        }
     }
 }
 
-/// Where a cell is on the sheet (0 – 1), its 1 px of margin left out.
-pub fn uv(cell: (u16, u16)) -> egui::Rect {
-    let (x, y) = (f32::from(cell.0) * CELL + 1.0, f32::from(cell.1) * CELL + 1.0);
-    egui::Rect::from_min_size(egui::pos2(x / SIDE, y / SIDE), egui::vec2(32.0 / SIDE, 32.0 / SIDE))
+/// The faces, made once for the app's context.
+#[derive(Default)]
+pub struct Sheet {
+    faces: Option<Faces>,
 }
 
-/// An emoji drawn in `rect`.
-pub fn paint(painter: &egui::Painter, texture: &egui::TextureHandle, cell: (u16, u16), rect: egui::Rect) {
-    painter.image(texture.id(), rect, uv(cell), egui::Color32::WHITE);
+impl Sheet {
+    pub fn texture(&mut self, ctx: &egui::Context) -> Option<&Faces> {
+        Some(self.faces.get_or_insert_with(|| Faces { ctx: ctx.clone(), loaded: Default::default() }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_emoji_has_its_image() {
+        let places = places();
+        for e in all() {
+            assert!(places.contains_key(&e.cell), "{} has no image", e.chars);
+            for (_, chars, cell) in &e.skins {
+                assert!(places.contains_key(cell), "{chars} has no image");
+            }
+        }
+        // They are PNGs of 64 px.
+        let (offset, length) = places[&find("👍").unwrap().cell];
+        let image = image::load_from_memory(&PACK[offset..offset + length]).unwrap();
+        assert_eq!((image.width(), image.height()), (64, 64));
+    }
 
     #[test]
     fn reads_the_list() {

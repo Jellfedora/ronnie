@@ -574,7 +574,7 @@ impl App {
             if lit {
                 painter.circle_filled(smiley.center(), 14.0, theme.tab_hover);
             }
-            painter.image(sheet.id(), Rect::from_center_size(smiley.center(), Vec2::splat(if lit { 21.0 } else { 19.0 })), crate::emoji::uv(cell), if lit { Color32::WHITE } else { Color32::from_white_alpha(150) });
+            sheet.paint_tinted(&painter, cell, Rect::from_center_size(smiley.center(), Vec2::splat(if lit { 21.0 } else { 19.0 })), if lit { Color32::WHITE } else { Color32::from_white_alpha(150) });
         }
         if ready && smiley_resp.clicked() {
             let now = ui.input(|i| i.time);
@@ -778,7 +778,7 @@ impl App {
                                 let (fill, edge) = if own { (theme.accent.gamma_multiply(0.18), theme.accent.gamma_multiply(0.7)) } else { (theme.tab_hover.gamma_multiply(if resp.hovered() { 1.0 } else { 0.55 }), theme.tab_hover) };
                                 ui.painter().rect(rect, 12.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
                                 if let (Some(sheet), Some(cell)) = (&sheet, crate::emoji::cell(&r.emoji)) {
-                                    crate::emoji::paint(ui.painter(), sheet, cell, Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), Vec2::splat(16.0)));
+                                    sheet.paint(ui.painter(), cell, Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), Vec2::splat(16.0)));
                                 }
                                 ui.painter().text(Pos2::new(rect.max.x - 9.0, rect.center().y), Align2::RIGHT_CENTER, &count, FontId::proportional(12.0), if own { theme.accent } else { theme.text_muted });
                                 let who: Vec<String> = r.ids.iter().map(|id| if id == me { t.talk_you.to_owned() } else { self.talk.name_of(id).unwrap_or_else(|| "?".into()) }).collect();
@@ -808,7 +808,7 @@ impl App {
                                 }
                                 if let (Some(sheet), Some(cell)) = (&sheet, crate::emoji::cell(q)) {
                                     let side = if resp.hovered() { 22.0 } else { 19.0 };
-                                    crate::emoji::paint(ui.painter(), sheet, cell, Rect::from_center_size(rect.center(), Vec2::splat(side)));
+                                    sheet.paint(ui.painter(), cell, Rect::from_center_size(rect.center(), Vec2::splat(side)));
                                 }
                                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                     let own = m.reactions.iter().any(|r| crate::emoji::cell(&r.emoji) == crate::emoji::cell(q) && r.ids.iter().any(|id| id == me));
