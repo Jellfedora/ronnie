@@ -336,6 +336,11 @@ impl App {
         }
     }
 
+    /// A game shown (against the computer or someone), not the lobby.
+    pub(super) fn four_playing(&self) -> bool {
+        !matches!(self.four.mode, Mode::Lobby)
+    }
+
     /// The page: the lobby, or a game.
     pub(super) fn four_page(&mut self, ui: &mut Ui, rect: Rect) {
         // A game under way is the half-day of work's; once played, the lobby gives way.

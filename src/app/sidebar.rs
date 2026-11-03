@@ -27,6 +27,9 @@ impl App {
                 // It folds the sidebar itself, during a life.
                 self.games_drawn.push(super::four::HomeGame::Blob);
                 self.blob_page(ui, rect);
+                if !self.blob_alive() {
+                    self.unlocks_pill(ui, rect, super::four::HomeGame::Blob);
+                }
                 let dt = ui.input(|i| i.stable_dt).min(0.1);
                 if let Some(left) = self.count_blob(dt) {
                     self.paint_blob_left(ui, rect, left);
@@ -45,8 +48,12 @@ impl App {
             self.fold_for_game(false);
             if self.home_game && self.home_which == super::four::HomeGame::Mines {
                 self.mines_page(ui, rect);
+                self.unlocks_pill(ui, rect, super::four::HomeGame::Mines);
             } else if self.home_game {
                 self.four_page(ui, rect);
+                if !self.four_playing() {
+                    self.unlocks_pill(ui, rect, super::four::HomeGame::Four);
+                }
             } else {
                 self.home_dashboard(ui, rect);
             }
@@ -89,6 +96,9 @@ impl App {
         let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, pseudo.unwrap_or(&settings.player_name));
         // During a round the sidebar folds away, and unfolds after (if it was open).
         self.fold_for_game(self.game.playing());
+        if !self.game.playing() {
+            self.unlocks_pill(ui, game_rect, super::four::HomeGame::SpeedMetal);
+        }
         if self.game.playing() {
             self.count_round(super::four::HomeGame::SpeedMetal);
         }

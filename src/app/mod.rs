@@ -67,6 +67,7 @@ mod playtime;
 mod recap;
 mod viewer;
 mod settings;
+mod unlocks;
 mod scorecard;
 mod sidebar;
 mod emojis;

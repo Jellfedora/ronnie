@@ -274,6 +274,11 @@ impl App {
         }
     }
 
+    /// A life under way in Ronnie.io.
+    pub(super) fn blob_alive(&self) -> bool {
+        self.blob.online.alive()
+    }
+
     pub(super) fn blob_page(&mut self, ui: &mut Ui, rect: Rect) {
         let t = self.t();
         let theme = self.theme.clone();
