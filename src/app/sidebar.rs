@@ -518,8 +518,8 @@ impl App {
         }
     }
 
-    /// The player's pseudo, in a card at the bottom of the "Games" category, with a pencil to change
-    /// it (or a button to pick one). Returns the card's top.
+    /// The player's account, in a card at the bottom of the "Games" and "Chat" categories: its avatar
+    /// and pseudo, with a pencil opening the account window (or a button to sign in). Returns the card's top.
     fn pseudo_card(&mut self, ui: &mut Ui, left: f32, width: f32, bottom: f32) -> f32 {
         let t = self.t();
         let theme = self.theme.clone();
@@ -530,12 +530,19 @@ impl App {
         let fill = if resp.hovered() { lerp_color(theme.tab_active, theme.accent, 0.08) } else { theme.tab_active };
         painter.rect_filled(card, 10.0, fill);
         painter.rect_stroke(card, 10.0, Stroke::new(1.0, theme.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 })), egui::StrokeKind::Inside);
-        // The avatar: the pseudo's first letter in a disc of the accent, a green dot when online.
+        // The avatar: its picture, else the pseudo's first letter in a disc of the accent; a green dot when online.
         let avatar = Pos2::new(card.min.x + 30.0, card.center().y);
-        painter.circle_filled(avatar, 18.0, theme.accent.gamma_multiply(if pseudo.is_some() { 1.0 } else { 0.25 }));
-        let initial = pseudo.as_deref().and_then(|p| p.chars().next()).map_or("?".to_owned(), |c| c.to_uppercase().to_string());
-        painter.text(avatar + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, initial, FontId::proportional(17.0), if pseudo.is_some() { theme.bg } else { theme.text_muted });
-        if pseudo.is_some() && self.versus.reachable == Some(true) {
+        let account = self.config.settings.floor.clone().filter(|_| pseudo.is_some());
+        let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
+        if let (Some(face), Some(name)) = (&face, &pseudo) {
+            super::talk::paint_avatar(&painter, avatar, 18.0, name, false, Some(face), &theme);
+        } else {
+            painter.circle_filled(avatar, 18.0, theme.accent.gamma_multiply(if pseudo.is_some() { 1.0 } else { 0.25 }));
+            let initial = pseudo.as_deref().and_then(|p| p.chars().next()).map_or("?".to_owned(), |c| c.to_uppercase().to_string());
+            painter.text(avatar + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, initial, FontId::proportional(17.0), if pseudo.is_some() { theme.bg } else { theme.text_muted });
+        }
+        let online = if self.category() == Category::Talk { self.talk.ready() } else { self.versus.reachable == Some(true) };
+        if pseudo.is_some() && online {
             let dot = avatar + Vec2::new(13.0, 13.0);
             painter.circle_filled(dot, 5.0, theme.tab_active);
             painter.circle_filled(dot, 3.5, theme.ansi[2]);
@@ -1649,7 +1656,8 @@ impl App {
         }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let card_top = self.music_card(ui, left, row_w, card_top);
-        let card_top = if self.category() == Category::Games { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
+        // The account's card: in the games and the chat (a click: the account window).
+        let card_top = if matches!(self.category(), Category::Games | Category::Talk) { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).

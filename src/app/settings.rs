@@ -1209,6 +1209,7 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 let pages = [
                     (SettingsTab::General, "⚙", t.general),
+                (SettingsTab::Account, "@", t.account_nav),
                     (SettingsTab::Appearance, "🎨", t.appearance),
                     (SettingsTab::Terminal, ">_", t.set_terminal),
                     (SettingsTab::Shortcuts, "⌨", t.shortcuts),
@@ -1245,6 +1246,7 @@ impl App {
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 let (title, subtitle) = match self.settings_tab {
                     SettingsTab::General => (t.general, t.sub_general),
+                    SettingsTab::Account => (t.account_nav, t.sub_account),
                     SettingsTab::Appearance => (t.appearance, t.sub_appearance),
                     SettingsTab::Terminal => (t.set_terminal, t.sub_terminal),
                     SettingsTab::Claude => (t.set_claude, t.sub_claude),
@@ -1293,6 +1295,9 @@ impl App {
                         }
                         SettingsTab::General => {
                             egui::ScrollArea::vertical().id_salt("settings-general").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.general_page(ui, t, &theme, &mut picked));
+                        }
+                        SettingsTab::Account => {
+                            egui::ScrollArea::vertical().id_salt("settings-account").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.account_page(ui, t, &theme));
                         }
                         SettingsTab::Music => {
                             egui::ScrollArea::vertical().id_salt("settings-music").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.music_page(ui, ctx, t, &theme, &mut picked));
@@ -1438,6 +1443,53 @@ impl App {
     }
 
     /// "Claude Code" page: its usage, notifications, Ronnie's introduction and the shared memory.
+    /// The floor account: who one is (avatar, pseudo, server), the account window, signing out; or signing in.
+    fn account_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme) {
+        ui.set_width(ui.available_width() - 12.0);
+        let account = self.config.settings.floor.clone().filter(|a| crate::floor::pseudo(Some(a)).is_some());
+        let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
+        let (mut manage, mut sign_out) = (false, false);
+        card(ui, theme, None, |ui| {
+            let Some(a) = &account else {
+                ui.label(egui::RichText::new(t.pseudo_without).size(13.0).color(theme.text_muted));
+                ui.add_space(10.0);
+                let button = egui::Button::new(egui::RichText::new(t.pseudo_pick).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                manage = ui.add(button).clicked();
+                return;
+            };
+            let name = a.name.clone().unwrap_or_default();
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, &name, false, face.as_ref(), theme);
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(&name).size(18.0).strong().color(theme.text));
+                    let mut sub = t.account_server.replace("{url}", &a.url);
+                    if a.admin {
+                        sub = format!("{sub}  ·  {}", t.account_admin);
+                    }
+                    ui.label(egui::RichText::new(sub).size(12.0).color(theme.text_muted));
+                });
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.pseudo_edit, Some(t.account_manage_desc), |ui| {
+                manage = ui.add(egui::Button::new(egui::RichText::new(t.account_manage).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked();
+            });
+            divider(ui, theme);
+            setting_row(ui, theme, t.account_sign_out, Some(t.account_sign_out_desc), |ui| {
+                sign_out = ui.add(egui::Button::new(egui::RichText::new(t.account_sign_out).size(13.0).color(theme.ansi[1])).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked();
+            });
+        });
+        if manage {
+            self.ask_pseudo();
+        }
+        if sign_out {
+            let account = self.config.settings.floor.clone();
+            self.floor.ask(ui.ctx(), account.as_ref(), crate::floor::AccountAsk::SignOut);
+        }
+    }
+
     fn claude_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         ui.set_width(ui.available_width() - 12.0);
         card(ui, theme, None, |ui| {

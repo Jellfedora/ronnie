@@ -1056,6 +1056,7 @@ impl PuttyKey {
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
     General,
+    Account,
     Appearance,
     Terminal,
     Profiles,
