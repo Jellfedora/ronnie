@@ -405,9 +405,17 @@ impl App {
         // (One's own shakes one's window too, as it did on MSN, but isn't told of.)
         for (room, m) in &news.wizzed {
             let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
+            // Someone else's: Ronnie brought to the front (out of the Dock if it was there).
+            let mut wait = Duration::ZERO;
             if !mine {
                 let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
                 self.talk_notify(ctx, focused, room.clone(), t.talk_wizzed.replace("{n}", &who), String::new());
+                if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    // The shaking once it is back (the system animates it out of the Dock).
+                    wait = Duration::from_millis(600);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
             let fixed = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false) || i.viewport().maximized.unwrap_or(false));
             let outer = ctx.input(|i| i.viewport().outer_rect).filter(|_| !fixed).map(|r| r.min);
@@ -416,7 +424,7 @@ impl App {
                 Some((_, o)) => o,
                 None => outer,
             };
-            self.talk_ui.shake = Some((Instant::now(), origin));
+            self.talk_ui.shake = Some((Instant::now() + wait, origin));
         }
         self.talk_shake(ctx);
         // Someone left a group: told of, with those still in it.
@@ -457,7 +465,11 @@ impl App {
     fn talk_shake(&mut self, ctx: &egui::Context) {
         const SECONDS: f32 = 2.0;
         let Some((since, origin)) = self.talk_ui.shake else { return };
-        let t = since.elapsed().as_secs_f32();
+        // Not yet (the window coming back from the Dock).
+        let Some(t) = Instant::now().checked_duration_since(since).map(|d| d.as_secs_f32()) else {
+            ctx.request_repaint_after(Duration::from_millis(50));
+            return;
+        };
         let offset = if t >= SECONDS {
             self.talk_ui.shake = None;
             Vec2::ZERO

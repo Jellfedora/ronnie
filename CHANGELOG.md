@@ -17,6 +17,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Corriger un message avec Claude** : le bouton Claude du champ corrige les fautes et les tournures de phrase avant l'envoi, si Claude Code est installé.
 - **L'avatar d'un collègue en grand**, en cliquant dessus.
 - **Une notification** quand quelqu'un t'ajoute à un groupe ou quitte l'un des tiens.
+- **Le wizz**, comme sur MSN : le bouton Wizz d'une conversation fait trembler la fenêtre de Ronnie chez l'autre pendant 2 secondes, et la ramène au premier plan, même réduite dans le Dock. Il se débloque en gagnant une partie de démineur, et part au plus une fois toutes les 10 minutes par conversation.
+- **Supprimer une conversation à deux** : elle est effacée pour vous deux sur le serveur, avec ses messages et ses fichiers.
 
 ### Corrections
 
