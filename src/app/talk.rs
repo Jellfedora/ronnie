@@ -979,7 +979,10 @@ impl App {
             }
             let pointer = ui.input(|i| i.pointer.hover_pos());
             let on_bar = self.talk_ui.bar.is_some_and(|(id, r)| id == m.id && pointer.is_some_and(|p| r.expand(2.0).contains(p)));
-            let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p));
+            // Nothing over it there (a window, a menu): the conversation's layer, or the bar's own.
+            let bar_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("react-bar", m.id)));
+            let on_top = |p: Pos2| ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id() || l == bar_layer);
+            let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p) && on_top(p));
             if self.talk.ready() && self.talk_ui.emoji_open.is_none() && !m.deleted && hovered {
                 let acts: Vec<Act> = if mine && editable(m) { vec![Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Reply, Act::Delete] } else { vec![Act::Reply] };
                 let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
