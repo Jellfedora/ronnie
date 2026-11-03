@@ -178,7 +178,7 @@ impl App {
         } else if self.music_page {
             Category::Music
         } else if self.dev_page {
-            Category::Dev
+            self.dev_category()
         } else if self.modules_page {
             Category::Modules
         } else if self.talk_page {
@@ -200,7 +200,7 @@ impl App {
     fn category_screen(&self, category: Category) -> bool {
         match category {
             Category::Local | Category::Ssh | Category::Db => self.last_tab_of(category).is_some(),
-            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules | Category::Talk => true,
+            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules | Category::Talk | Category::Projects => true,
             Category::Files => false,
         }
     }
@@ -216,11 +216,25 @@ impl App {
             Category::Notes => self.open_notes(),
             Category::Music => self.open_music_page(None),
             Category::Games => self.open_arcade(),
-            Category::Dev => self.open_dev_page(),
+            Category::Dev => self.open_dev_page_tool(),
             Category::Modules => self.open_modules_page(),
             Category::Talk => self.open_talk_page(),
+            Category::Projects => self.open_projects_page(),
             Category::Files => {}
         }
+    }
+
+    /// The category of the Dev page shown: a project's page is of "My projects".
+    fn dev_category(&self) -> Category {
+        if self.dev.tool == super::dev::DevTool::Project { Category::Projects } else { Category::Dev }
+    }
+
+    /// The Dev category's page: its tool last shown, not a project's page (of "My projects").
+    fn open_dev_page_tool(&mut self) {
+        if self.dev.tool == super::dev::DevTool::Project {
+            self.dev.tool = super::dev::DevTool::Node;
+        }
+        self.open_dev_page();
     }
 
     /// The tab of `category` to show again: the active one if it is of it, else the one last shown
@@ -269,7 +283,7 @@ impl App {
         } else if self.music_page {
             Category::Music
         } else if self.dev_page {
-            Category::Dev
+            self.dev_category()
         } else if self.modules_page {
             Category::Modules
         } else if self.talk_page {
@@ -1077,8 +1091,33 @@ impl App {
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
             menu_item(ui, t.db_new_connection, TabAction::NewDb, action);
             menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Databases), action);
+            if !crate::projects::wamp_data().is_empty() {
+                ui.separator();
+                menu_item(ui, t.db_import_wamp, TabAction::ImportWamp, action);
+            }
         });
         *y += SECTION_HEADER_H;
+        // WAMP's databases: their import under way, or the button to import them.
+        if let Some((step, fraction)) = self.wamp_import_state() {
+            let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, if fraction.is_some() { 48.0 } else { 34.0 }));
+            painter.rect_filled(r, 8.0, self.theme.accent.gamma_multiply(0.08));
+            let galley = painter.layout_no_wrap(step, FontId::proportional(12.0), self.theme.text);
+            painter.galley(Pos2::new(r.min.x + 30.0, r.min.y + 17.0 - galley.size().y / 2.0), galley, self.theme.text);
+            ui.put(Rect::from_center_size(Pos2::new(r.min.x + 15.0, r.min.y + 17.0), Vec2::splat(14.0)), egui::Spinner::new().size(13.0));
+            if let Some(fraction) = fraction {
+                let bar = Rect::from_min_size(Pos2::new(r.min.x + 10.0, r.max.y - 14.0), Vec2::new(row_w - 20.0, 5.0));
+                painter.rect_filled(bar, 2.5, self.theme.tab_hover);
+                painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * fraction, bar.height())), 2.5, self.theme.accent);
+            }
+            *y += r.height() + 6.0;
+        } else if self.wamp_to_import() {
+            let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, 30.0));
+            let button = egui::Button::new(egui::RichText::new(format!("⇣  {}", t.wamp_import_button)).size(12.5).color(self.theme.bg)).fill(self.theme.accent).corner_radius(6.0);
+            if ui.put(r, button).on_hover_text(t.wamp_import_hint).clicked() {
+                *action = Some(TabAction::ImportWamp);
+            }
+            *y += r.height() + 8.0;
+        }
         if self.config.databases.is_empty() && !self.config.groups.iter().any(|g| g.kind() == config::GroupKind::Databases) {
             if self.local_db {
                 // The button fits its label; the text before it goes on two lines when the sidebar is
@@ -1729,6 +1768,7 @@ impl App {
             Category::Dev => self.dev_section(ui, left, row_w, y),
             Category::Modules => self.modules_section(ui, left, row_w, y),
             Category::Talk => self.talk_section(ui, left, row_w, y),
+            Category::Projects => self.projects_section(ui, left, row_w, y),
         }
     }
 
@@ -1866,6 +1906,7 @@ impl App {
                 c.user = std::env::var("USER").unwrap_or_default();
                 self.db_editor = Some(DbEditor::new(c, true));
             }
+            Some(TabAction::ImportWamp) => self.wamp_import_start(),
             Some(TabAction::OpenDb(id)) => self.open_db(id),
             Some(TabAction::EditDb(id)) => {
                 if let Some(c) = self.config.databases.iter().find(|c| c.id == id) {
@@ -2069,6 +2110,7 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
         Category::Dev => t.cat_dev,
         Category::Modules => t.cat_modules,
         Category::Talk => t.cat_talk,
+        Category::Projects => t.cat_projects,
     }
 }
 
@@ -2085,6 +2127,7 @@ pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Ca
         Category::Dev => super::dev::paint_dev_icon(painter, c, color),
         Category::Modules => super::modules::paint_modules_icon(painter, c, color),
         Category::Talk => super::talk::paint_talk_icon(painter, c, color),
+        Category::Projects => super::projects::paint_projects_icon(painter, c, color),
     }
 }
 

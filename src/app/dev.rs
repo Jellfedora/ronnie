@@ -13,17 +13,35 @@ const LIST_MAX: usize = 80;
 /// The published versions, once fetched (or why they couldn't be).
 type Fetched = Result<Vec<Release>, String>;
 
-/// A tool of the Dev category, with a page of its own (PHP… to come).
+/// A tool of the Dev category, with a page of its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(super) enum DevTool {
     #[default]
     Node,
+    /// The projects' environments (`super::envs`).
+    Php,
+    Nginx,
+    Mysql,
+    Mariadb,
     /// The mail catcher (`super::mail`).
     Mail,
+    /// A project's page (`super::projects`): of the "My projects" category, not listed here.
+    Project,
 }
 
 impl DevTool {
-    pub const ALL: [DevTool; 2] = [DevTool::Node, DevTool::Mail];
+    pub const ALL: [DevTool; 6] = [DevTool::Node, DevTool::Php, DevTool::Nginx, DevTool::Mysql, DevTool::Mariadb, DevTool::Mail];
+
+    /// The environment of the projects it is the page of.
+    pub fn env(self) -> Option<crate::envs::Kind> {
+        match self {
+            DevTool::Php => Some(crate::envs::Kind::Php),
+            DevTool::Nginx => Some(crate::envs::Kind::Nginx),
+            DevTool::Mysql => Some(crate::envs::Kind::Mysql),
+            DevTool::Mariadb => Some(crate::envs::Kind::Mariadb),
+            _ => None,
+        }
+    }
 }
 
 /// What the Dev panel knows and does.
@@ -177,6 +195,13 @@ impl App {
                     });
                     (t.mail_tool, note)
                 }
+                DevTool::Php | DevTool::Nginx | DevTool::Mysql | DevTool::Mariadb => {
+                    let kind = tool.env().unwrap_or(crate::envs::Kind::Php);
+                    super::envs::paint_env_icon(&painter, icon, kind, super::envs::env_color(kind));
+                    let n = self.envs.installed(kind).len();
+                    (kind.name(), (n > 0).then(|| (if n == 1 { t.node_version_one.to_owned() } else { t.node_versions.replace("{n}", &n.to_string()) }, theme.text_muted.gamma_multiply(0.85))))
+                }
+                DevTool::Project => continue,
             };
             painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
             if let Some((note, color)) = note {
@@ -205,6 +230,11 @@ impl App {
         self.notes_page = false;
         self.home_game = false;
         self.dev.show_installed();
+        self.envs.refresh();
+        if let Some(kind) = self.dev.tool.env() {
+            let ctx = self.ctx.clone();
+            self.envs.fetch_if_needed(kind, &ctx);
+        }
         if self.dev.tool == DevTool::Node && self.dev.releases.as_ref().is_none_or(Result::is_err) && self.dev.fetching.is_none() {
             let ctx = self.ctx.clone();
             self.dev.fetch(&ctx);
@@ -227,8 +257,14 @@ impl App {
 
     /// No title: the tool's card takes the whole height.
     fn dev_page_content(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
-        if self.dev.tool == DevTool::Mail {
-            return self.mail_page_ui(ui, t, theme);
+        match self.dev.tool {
+            DevTool::Mail => return self.mail_page_ui(ui, t, theme),
+            DevTool::Project => return self.project_page_ui(ui, t, theme),
+            DevTool::Php | DevTool::Nginx | DevTool::Mysql | DevTool::Mariadb => {
+                let kind = self.dev.tool.env().unwrap_or(crate::envs::Kind::Php);
+                return self.env_page_ui(ui, kind, t, theme);
+            }
+            DevTool::Node => {}
         }
         // Where a terminal's version is picked.
         ui.label(egui::RichText::new(t.node_where).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));

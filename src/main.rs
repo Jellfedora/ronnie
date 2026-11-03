@@ -23,6 +23,8 @@ mod runner;
 mod media_keys;
 mod modules;
 mod node;
+mod envs;
+mod projects;
 mod notify;
 mod openwith;
 #[cfg(target_os = "macos")]

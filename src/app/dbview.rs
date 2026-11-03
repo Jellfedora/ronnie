@@ -388,6 +388,20 @@ impl SqlTab {
 
 pub(super) enum DbAction {
     None,
+    /// Start Ronnie's database server of this connection (it doesn't run).
+    StartServer,
+    /// Stop it (started by hand).
+    StopServer,
+}
+
+/// Ronnie's own database server behind a connection (MySQL or MariaDB it runs), and how it is doing.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum LocalServer {
+    Stopped,
+    /// Starting or stopping.
+    Busy,
+    /// Running; `manual`: started by hand (else for a project).
+    Running { manual: bool },
 }
 
 pub(super) struct DbView {
@@ -482,6 +496,10 @@ pub(super) struct DbView {
     code: Option<CodeEdit>,
     object_filter: String,
     object_dialog: Option<ObjectDialog>,
+    /// Ronnie's server behind this connection (its name, "MySQL 8.4.13"), set each frame.
+    pub local: Option<(String, LocalServer)>,
+    /// A database to open once connected (a project's).
+    want_db: Option<String>,
 }
 
 /// The columns that tell a row apart: the primary key, else a unique key without NULLs.
@@ -586,6 +604,8 @@ impl DbView {
             code: None,
             object_filter: String::new(),
             object_dialog: None,
+            local: None,
+            want_db: None,
         };
         if let Some(d) = conn.database.clone().filter(|d| !d.is_empty()) {
             view.expanded.insert(d.clone());
@@ -594,7 +614,7 @@ impl DbView {
         view
     }
 
-    fn reconnect(&mut self, ctx: &egui::Context) {
+    pub fn reconnect(&mut self, ctx: &egui::Context) {
         let conn = db::Connection::open(ctx, self.target.clone());
         self.new_tunnel_pid = conn.tunnel_pid;
         self.conn = Some(conn);
@@ -1154,8 +1174,23 @@ impl DbView {
         self.send_query(self.db.clone(), sql);
     }
 
+    /// Opens the database `name` (now, or once connected).
+    pub fn show_database(&mut self, name: String) {
+        self.want_db = Some(name);
+    }
+
+    /// Whether it is closed (not connected, nor connecting).
+    pub fn closed(&self) -> bool {
+        matches!(self.status, Status::Closed(_))
+    }
+
     pub fn ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, t: &Strings) -> DbAction {
-        let action = DbAction::None;
+        let mut action = DbAction::None;
+        if matches!(self.status, Status::Ready(_))
+            && let Some(name) = self.want_db.take()
+        {
+            self.select_db(&name);
+        }
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut ui;
         ui.painter().rect_filled(rect, 0.0, theme.bg);
@@ -1195,8 +1230,31 @@ impl DbView {
                 Status::Closed(_) => (format!("● {}", t.db_closed), theme.ansi[1]),
             };
             ui.label(egui::RichText::new(text).size(12.0).color(color));
-            if let Status::Closed(reason) = &self.status {
-                let tip = if db::refused(reason) && self.via.is_none() { format!("{reason}\n\n{}", t.db_refused_hint) } else { reason.clone() };
+            // Ronnie's own server: started from here when it doesn't run (no project needed).
+            match &self.local {
+                Some((name, LocalServer::Stopped)) if !matches!(self.status, Status::Ready(_)) => {
+                    let start = egui::Button::new(egui::RichText::new(format!("▶  {}", t.db_server_start.replace("{name}", name))).color(theme.bg)).fill(theme.accent);
+                    if ui.add(start).on_hover_text(t.db_server_start_tip).clicked() {
+                        action = DbAction::StartServer;
+                    }
+                }
+                Some((name, LocalServer::Busy)) => {
+                    ui.add(egui::Spinner::new().size(13.0));
+                    ui.label(egui::RichText::new(t.db_server_busy.replace("{name}", name)).size(12.0).color(theme.text_muted));
+                }
+                _ => {}
+            }
+            if let Status::Closed(reason) = &self.status
+                && !matches!(self.local, Some((_, LocalServer::Busy)))
+            {
+                let local_stopped = matches!(self.local, Some((_, LocalServer::Stopped)));
+                let tip = if local_stopped {
+                    format!("{reason}\n\n{}", t.db_server_stopped_hint)
+                } else if db::refused(reason) && self.via.is_none() {
+                    format!("{reason}\n\n{}", t.db_refused_hint)
+                } else {
+                    reason.clone()
+                };
                 ui.label(egui::RichText::new("ⓘ").color(theme.ansi[1])).on_hover_text(tip);
                 if ui.button(format!("↻  {}", t.reconnect)).clicked() {
                     self.reconnect(ui.ctx());
@@ -1205,6 +1263,11 @@ impl DbView {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("↻").on_hover_text(t.files_refresh).clicked() {
                     self.refresh();
+                }
+                if let Some((name, LocalServer::Running { manual: true })) = &self.local
+                    && ui.button(format!("■  {}", t.db_server_stop)).on_hover_text(t.db_server_stop_tip.replace("{name}", name)).clicked()
+                {
+                    action = DbAction::StopServer;
                 }
                 let users = egui::Button::selectable(self.page == Page::Users, egui::RichText::new(format!("👤  {}", t.db_users)).size(12.5));
                 // Accounts: MariaDB / MySQL only.
