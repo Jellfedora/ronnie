@@ -529,10 +529,10 @@ impl Avatars {
     /// This player's avatar at this version, once fetched (meanwhile, and without one, None: the initial).
     pub fn get(&mut self, ctx: &egui::Context, account: Option<&FloorAccount>, id: &str, version: Option<&str>) -> Option<egui::TextureHandle> {
         let version = version?;
-        if let Some((v, texture)) = self.textures.get(id) {
-            if v == version {
-                return Some(texture.clone());
-            }
+        if let Some((v, texture)) = self.textures.get(id)
+            && v == version
+        {
+            return Some(texture.clone());
         }
         let url = url()?;
         let account = account.filter(|a| a.url == url)?;
@@ -552,10 +552,10 @@ impl Avatars {
                 let (loads, ctx, token, id, version) = (self.loads.clone(), ctx.clone(), account.token.clone(), id.to_owned(), version.to_owned());
                 std::thread::spawn(move || {
                     let load = fetch_avatar(&url, &token, &id, &version).map_or(Load::Failed, Load::Ready);
-                    if let Ok(mut loads) = loads.lock() {
-                        if loads.get(&id).is_some_and(|(v, _)| *v == version) {
-                            loads.insert(id, (version, load));
-                        }
+                    if let Ok(mut loads) = loads.lock()
+                        && loads.get(&id).is_some_and(|(v, _)| *v == version)
+                    {
+                        loads.insert(id, (version, load));
                     }
                     ctx.request_repaint();
                 });
