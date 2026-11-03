@@ -14,7 +14,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Les liens cliquables, avec leur aperçu** : le titre, la description et l'image de la page sous le message. C'est le serveur qui lit la page, pas l'ordinateur de chacun.
 - **Les médias d'une conversation** : toutes ses images et tous ses fichiers dans une fenêtre, depuis le bouton Médias.
 - **Un surnom pour un collègue**, rien que pour toi : il remplace son pseudo partout chez toi, et lui n'en sait rien.
-- **Corriger un message avec Claude** : le bouton ✳ du champ corrige les fautes et les tournures de phrase avant l'envoi, si Claude Code est installé.
+- **Corriger un message avec Claude** : le bouton Claude du champ corrige les fautes et les tournures de phrase avant l'envoi, si Claude Code est installé.
 - **L'avatar d'un collègue en grand**, en cliquant dessus.
 - **Une notification** quand quelqu'un t'ajoute à un groupe ou quitte l'un des tiens.
 

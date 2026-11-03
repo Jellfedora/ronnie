@@ -1748,7 +1748,7 @@ impl App {
         });
     }
 
-    /// Claude's button: a sparkle; a click sends the draft to Claude Code (Haiku), its fixed text
+    /// Claude's button: its mark; a click sends the draft to Claude Code (Haiku), its fixed text
     /// put in its place when it comes (unless the draft changed meanwhile). Without Claude Code,
     /// greyed, its tooltip saying what it would do.
     fn talk_fix_button(&mut self, ui: &mut Ui, room: &str, rect: Rect, t: &'static Strings, theme: &Theme) {
@@ -1796,15 +1796,9 @@ impl App {
         if lit {
             painter.rect_filled(rect, 6.0, theme.tab_hover);
         }
-        // A sparkle: four long rays and four short ones.
-        let color = if !installed { theme.text_muted.gamma_multiply(0.35) } else if lit { Color32::from_rgb(0xd9, 0x77, 0x57) } else { theme.text_muted };
-        let c = rect.center();
-        for k in 0..8 {
-            let angle = k as f32 * std::f32::consts::FRAC_PI_4;
-            let length = if k % 2 == 0 { 7.0 } else { 4.5 };
-            let dir = Vec2::angled(angle);
-            painter.line_segment([c + dir * 1.5, c + dir * length], Stroke::new(1.6, color));
-        }
+        // Claude's mark: bright when it can be used, faded without Claude Code.
+        let tint = if !installed { Color32::from_white_alpha(60) } else if lit || usable { Color32::WHITE } else { Color32::from_white_alpha(150) };
+        super::history::paint_mark(ui, Rect::from_center_size(rect.center(), Vec2::splat(16.0)), tint);
         if usable && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             let answer = Arc::new(Mutex::new(None));
             self.talk_ui.fixing = Some((room.to_owned(), text.clone(), answer.clone()));
