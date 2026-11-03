@@ -817,6 +817,9 @@ pub struct Recap {
     pub on: bool,
     #[serde(default = "default_recap_hour")]
     pub hour: u32,
+    /// The user's instructions to Claude for the recap (the projects to leave out, their names).
+    #[serde(default)]
+    pub rules: String,
 }
 
 fn default_recap_hour() -> u32 {
@@ -825,7 +828,7 @@ fn default_recap_hour() -> u32 {
 
 impl Default for Recap {
     fn default() -> Self {
-        Self { on: false, hour: default_recap_hour() }
+        Self { on: false, hour: default_recap_hour(), rules: String::new() }
     }
 }
 
