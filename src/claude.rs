@@ -535,16 +535,18 @@ it on the project's panes.",
 }
 
 /// How Claude reaches a saved SSH host: the `ssh` command for one logging in with a key (or ssh's
-/// defaults), without prompts; for one needing a password, the user's terminal in Ronnie.
+/// defaults), without prompts; for one needing a password, the user's terminal in Ronnie. A key with
+/// a passphrase still takes the command: it works once the key is loaded in ssh-agent.
 fn ssh_line(host: &crate::ssh::SshHost) -> String {
     use crate::ssh::SshAuth;
     let key = host.identity_file.as_deref().filter(|_| matches!(host.auth_method(), SshAuth::Key));
     let password = match host.auth_method() {
         SshAuth::Password | SshAuth::Ask | SshAuth::Interactive => true,
-        // A protected key: its passphrase is typed by Ronnie (as for a PuTTY key's copy).
-        SshAuth::Key => host.password_saved || key.is_some_and(crate::ssh::is_putty_key),
+        // A PuTTY key: only Ronnie reads it (through its OpenSSH copy).
+        SshAuth::Key => key.is_some_and(crate::ssh::is_putty_key),
         SshAuth::Auto => false,
     };
+    let protected = matches!(host.auth_method(), SshAuth::Key) && host.password_saved;
     if password {
         return format!("{} (password: through the user)", host.address());
     }
@@ -568,7 +570,11 @@ fn ssh_line(host: &crate::ssh::SshHost) -> String {
         None => host.host.clone(),
     };
     args.push(shell_word(&target));
-    format!("`{}`", args.join(" "))
+    let command = format!("`{}`", args.join(" "));
+    if protected {
+        return format!("{command} (key with a passphrase: works when it is loaded in ssh-agent, else through the user)");
+    }
+    command
 }
 
 /// A word as the shell reads it: quoted when it holds anything but plain characters.
@@ -930,6 +936,8 @@ mod tests {
         assert_eq!(ssh_line(&host), "`ssh -o BatchMode=yes -p 2222 -J bastion deploy@example.org`");
         host.auth = Some(crate::ssh::SshAuth::Password);
         assert_eq!(ssh_line(&host), "deploy@example.org:2222 (password: through the user)");
+        (host.auth, host.identity_file, host.password_saved, host.jump) = (Some(crate::ssh::SshAuth::Key), Some("/k/id".into()), true, None);
+        assert_eq!(ssh_line(&host), "`ssh -o BatchMode=yes -p 2222 -i /k/id -o IdentitiesOnly=yes deploy@example.org` (key with a passphrase: works when it is loaded in ssh-agent, else through the user)");
         assert_eq!(shell_word("/a b/it's"), "'/a b/it'\\''s'");
     }
 
