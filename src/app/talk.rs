@@ -217,6 +217,56 @@ enum Act {
     Delete,
 }
 
+/// The icons of a conversation's head.
+#[derive(Clone, Copy, PartialEq)]
+enum HeadIcon {
+    Search,
+    Media,
+    Wizz,
+    Pencil,
+    Add,
+    Leave,
+    Erase,
+}
+
+/// A conversation's head icon, drawn around `c` (about 18 px).
+fn paint_head_icon(painter: &egui::Painter, c: Pos2, icon: HeadIcon, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let at = |x: f32, y: f32| c + Vec2::new(x, y);
+    match icon {
+        HeadIcon::Search => {
+            painter.circle_stroke(at(-1.5, -1.5), 5.5, stroke);
+            painter.line_segment([at(2.6, 2.6), at(7.0, 7.0)], Stroke::new(2.0, color));
+        }
+        HeadIcon::Media => {
+            // A picture: its frame, a hill, the sun.
+            painter.rect_stroke(Rect::from_center_size(c, Vec2::new(16.0, 13.0)), 2.5, stroke, egui::StrokeKind::Middle);
+            painter.add(egui::Shape::line(vec![at(-8.0, 5.0), at(-3.0, -0.5), at(1.0, 3.0), at(3.5, 1.0), at(8.0, 5.0)], stroke));
+            painter.circle_filled(at(3.5, -2.5), 1.6, color);
+        }
+        HeadIcon::Wizz => {
+            // A bolt.
+            let bolt = vec![at(1.5, -8.0), at(-5.0, 1.0), at(-0.5, 1.0), at(-2.0, 8.0), at(5.0, -1.5), at(0.5, -1.5)];
+            painter.add(egui::Shape::closed_line(bolt, stroke));
+        }
+        HeadIcon::Pencil => paint_act(painter, c, Act::Edit, color),
+        HeadIcon::Erase => paint_act(painter, c, Act::Delete, color),
+        HeadIcon::Add => {
+            // Someone, and a plus.
+            painter.circle_stroke(at(-3.0, -3.5), 3.2, stroke);
+            painter.add(egui::Shape::line(vec![at(-9.0, 7.0), at(-8.0, 2.5), at(-3.0, 0.8), at(2.0, 2.5), at(3.0, 7.0)], stroke));
+            painter.line_segment([at(4.5, -2.0), at(9.5, -2.0)], stroke);
+            painter.line_segment([at(7.0, -4.5), at(7.0, 0.5)], stroke);
+        }
+        HeadIcon::Leave => {
+            // A door, an arrow going out.
+            painter.add(egui::Shape::line(vec![at(-1.0, -7.0), at(-7.0, -7.0), at(-7.0, 7.0), at(-1.0, 7.0)], stroke));
+            painter.line_segment([at(-3.0, 0.0), at(8.0, 0.0)], stroke);
+            painter.add(egui::Shape::line(vec![at(4.5, -3.5), at(8.0, 0.0), at(4.5, 3.5)], stroke));
+        }
+    }
+}
+
 /// A small icon for a message's action, drawn around `c`.
 fn paint_act(painter: &egui::Painter, c: Pos2, act: Act, color: Color32) {
     let stroke = Stroke::new(1.6, color);
@@ -753,65 +803,76 @@ impl App {
             && let Some(peer) = room.peer(&me)
         {
             let mut x = head.max.x - margin;
-            let mut button = |label: &str, key: &str| {
-                let galley = painter.layout_no_wrap(label.to_owned(), FontId::proportional(12.5), theme.text);
-                let w = galley.size().x + 22.0;
-                let r = Rect::from_min_size(Pos2::new(x - w, head.center().y - 14.0), Vec2::new(w, 28.0));
-                x -= w + 8.0;
-                let resp = ui.interact(r, ui.id().with(("talk-act", key)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                painter.rect_filled(r, 6.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg });
-                painter.galley(r.center() - galley.size() / 2.0, galley, theme.text);
+            let mut button = |icon: HeadIcon, tip: &str| {
+                let r = Rect::from_center_size(Pos2::new(x - 16.0, head.center().y), Vec2::splat(32.0));
+                x -= 36.0;
+                let resp = ui.interact(r, ui.id().with(("talk-act", icon as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+                if resp.hovered() {
+                    painter.circle_filled(r.center(), 16.0, theme.tab_hover);
+                }
+                let color = match (icon, resp.hovered()) {
+                    (HeadIcon::Erase | HeadIcon::Leave, true) => theme.ansi[1],
+                    (_, true) => theme.accent,
+                    _ => theme.text_muted,
+                };
+                paint_head_icon(&painter, r.center(), icon, color);
                 resp.clicked()
             };
-            if button(t.talk_nickname, "nickname") {
+            // From the right: erase, wizz, nickname, media, search.
+            if button(HeadIcon::Erase, t.talk_erase) {
+                self.talk_ui.dropping = Some(room.id.clone());
+            }
+            if button(HeadIcon::Wizz, t.talk_wizz) {
+                self.send_wizz(&room.id);
+            }
+            if button(HeadIcon::Pencil, t.talk_nickname) {
                 let given = self.config.settings.talk_nicknames.get(&peer.id).cloned().unwrap_or_default();
                 self.talk_ui.nicknaming = Some((peer.id.clone(), given));
             }
-            if button(t.talk_media, "media") {
+            if button(HeadIcon::Media, t.talk_media) {
                 self.open_media(&room.id);
             }
-            if button(t.talk_search, "search") {
+            if button(HeadIcon::Search, t.talk_search) {
                 self.toggle_search(&room.id);
-            }
-            if button(t.talk_wizz, "wizz") {
-                self.send_wizz(&room.id);
-            }
-            if button(t.talk_erase, "erase") {
-                self.talk_ui.dropping = Some(room.id.clone());
             }
         }
         if room.kind == Kind::Group {
             let names: Vec<String> = room.members.iter().map(|m| if self.talk.is_online(&m.id) { format!("● {}", m.name) } else { format!("○ {}", m.name) }).collect();
             ui.interact(sub_rect, ui.id().with("talk-members"), Sense::hover()).on_hover_text(names.join("\n"));
-            // Add, rename, leave.
+            // From the right: leave, wizz, rename, add, media, search.
             let mut x = head.max.x - margin;
-            let mut button = |label: &str, key: &str| {
-                let galley = painter.layout_no_wrap(label.to_owned(), FontId::proportional(12.5), theme.text);
-                let w = galley.size().x + 22.0;
-                let r = Rect::from_min_size(Pos2::new(x - w, head.center().y - 14.0), Vec2::new(w, 28.0));
-                x -= w + 8.0;
-                let resp = ui.interact(r, ui.id().with(("talk-act", key)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                painter.rect_filled(r, 6.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg });
-                painter.galley(r.center() - galley.size() / 2.0, galley, theme.text);
+            let mut button = |icon: HeadIcon, tip: &str| {
+                let r = Rect::from_center_size(Pos2::new(x - 16.0, head.center().y), Vec2::splat(32.0));
+                x -= 36.0;
+                let resp = ui.interact(r, ui.id().with(("talk-act", icon as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+                if resp.hovered() {
+                    painter.circle_filled(r.center(), 16.0, theme.tab_hover);
+                }
+                let color = match (icon, resp.hovered()) {
+                    (HeadIcon::Erase | HeadIcon::Leave, true) => theme.ansi[1],
+                    (_, true) => theme.accent,
+                    _ => theme.text_muted,
+                };
+                paint_head_icon(&painter, r.center(), icon, color);
                 resp.clicked()
             };
-            if button(t.talk_leave, "leave") {
+            if button(HeadIcon::Leave, t.talk_leave) {
                 self.talk_ui.leaving = Some(room.id.clone());
             }
-            if button(t.talk_rename, "rename") {
+            if button(HeadIcon::Wizz, t.talk_wizz) {
+                self.send_wizz(&room.id);
+            }
+            if button(HeadIcon::Pencil, t.talk_rename) {
                 self.talk_ui.renaming = Some((room.id.clone(), room.name.clone().unwrap_or_default()));
             }
-            if button(t.talk_add, "add") {
+            if button(HeadIcon::Add, t.talk_add) {
                 self.talk_ui.picker = Some(Picker { room: Some(room.id.clone()), name: String::new(), chosen: Vec::new(), focus: false });
             }
-            if button(t.talk_media, "media") {
+            if button(HeadIcon::Media, t.talk_media) {
                 self.open_media(&room.id);
             }
-            if button(t.talk_search, "search") {
+            if button(HeadIcon::Search, t.talk_search) {
                 self.toggle_search(&room.id);
-            }
-            if button(t.talk_wizz, "wizz") {
-                self.send_wizz(&room.id);
             }
         }
 
