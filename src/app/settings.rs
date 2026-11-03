@@ -2138,6 +2138,15 @@ impl App {
                     crate::terminal::open_url(super::game::MUSIC_CREDIT_URL);
                 }
             });
+            divider(ui, &theme);
+            // Twemoji's licence (CC-BY 4.0) asks for its authors to be named.
+            setting_row(ui, &theme, t.credits_emoji, Some(t.credits_emoji_desc), |ui| {
+                let url = "https://creativecommons.org/licenses/by/4.0/";
+                let licence = egui::Button::new(egui::RichText::new("CC-BY 4.0").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                if ui.add(licence).on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    crate::terminal::open_url(url);
+                }
+            });
         });
     }
 

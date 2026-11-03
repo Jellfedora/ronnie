@@ -30,6 +30,7 @@ mod menu;
 mod mssql;
 mod subsonic;
 mod sysmon;
+mod emoji;
 mod talk;
 mod pane;
 mod putty;

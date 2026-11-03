@@ -47,6 +47,13 @@ pub struct Member {
     pub avatar: Option<String>,
 }
 
+/// A reaction to a message: an emoji, and the players who reacted so.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Reaction {
+    pub emoji: String,
+    pub ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Message {
     pub id: i64,
@@ -65,6 +72,9 @@ pub struct Message {
     /// A file sent (an image, a document).
     #[serde(default)]
     pub file: Option<FileInfo>,
+    /// The reactions to it: each emoji, with who reacted so (in order).
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -240,6 +250,8 @@ enum Wire {
     Typing { room: String, from: Member },
     #[serde(rename = "history")]
     History { room: String, messages: Vec<Message>, done: bool },
+    #[serde(rename = "reactions")]
+    Reactions { room: String, message: i64, reactions: Vec<Reaction> },
     #[serde(rename = "pong")]
     Pong {},
     #[serde(rename = "error")]
@@ -484,6 +496,11 @@ impl Talk {
                     r.loading = false;
                 }
             }
+            Wire::Reactions { room, message, reactions } => {
+                if let Some(m) = self.rooms.iter_mut().find(|r| r.id == room).and_then(|r| r.messages.iter_mut().find(|m| m.id == message)) {
+                    m.reactions = reactions;
+                }
+            }
             Wire::Pong {} => {}
             Wire::Error { error } => news.refused = Some(error),
         }
@@ -507,6 +524,12 @@ impl Talk {
         self.online.iter().any(|m| m.id == id)
     }
 
+    /// A player's pseudo, from what floor sent last (everyone, those online, the conversations).
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
+        self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).map(|m| m.name.clone())
+    }
+
     /// A player's avatar version, from what floor sent last (everyone, those online, the conversations).
     pub fn avatar_of(&self, id: &str) -> Option<String> {
         let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
@@ -514,6 +537,11 @@ impl Talk {
     }
 
     /// Said in a conversation (floor sends it back to everyone in it, the player included).
+    /// The player's reaction to a message, added (`on`) or taken back.
+    pub fn react(&mut self, room: &str, message: i64, emoji: &str, on: bool) {
+        self.send(json!({ "t": "react", "room": room, "message": message, "emoji": emoji, "on": on }));
+    }
+
     pub fn say(&mut self, room: &str, text: &str) {
         self.last_typing = None;
         self.send(json!({ "t": "say", "room": room, "text": text }));
@@ -757,7 +785,7 @@ mod tests {
     }
 
     fn msg(id: i64, from: &str, text: &str) -> Message {
-        Message { id, from: from.into(), name: Some(from.into()), text: text.into(), at: 0, event: None, file: None }
+        Message { id, from: from.into(), name: Some(from.into()), text: text.into(), at: 0, event: None, file: None, reactions: Vec::new() }
     }
 
     #[test]

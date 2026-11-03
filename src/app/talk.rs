@@ -44,6 +44,31 @@ pub(super) struct TalkUi {
     viewing: Option<FileInfo>,
     /// A file to save once fetched.
     saving: Option<FileInfo>,
+    /// The emojis' sheet (a texture once used).
+    emoji_sheet: crate::emoji::Sheet,
+    /// The emoji picker, open: for the field or a message's reaction.
+    emoji_open: Option<EmojiOpen>,
+    /// The `:name` completion: the name it was for, the line lit, and a name it was closed for (Esc).
+    completing: (String, usize),
+    completion_closed: Option<String>,
+}
+
+/// What the emoji picker puts its emoji in.
+#[derive(Clone, PartialEq)]
+enum EmojiTarget {
+    /// The field of this conversation (at its cursor).
+    Draft(String),
+    /// A reaction to this message of this conversation.
+    React(String, i64),
+}
+
+pub(super) struct EmojiOpen {
+    target: EmojiTarget,
+    /// Where it hangs (its bottom right for the field, its top right for a message).
+    at: Pos2,
+    picker: super::emojis::Picker,
+    /// When it opened (the click that opened it doesn't close it).
+    opened: f64,
 }
 
 /// A colour of its own for each pseudo.
@@ -485,19 +510,93 @@ impl App {
         let attach = Rect::from_min_size(Pos2::new(full.min.x, full.max.y - 38.0), Vec2::splat(38.0));
         let field = Rect::from_min_max(Pos2::new(full.min.x + 44.0, full.min.y), full.max);
         let id = egui::Id::new(("talk-field", room.id.as_str()));
-        // Enter sends (Shift + Enter: a new line): taken before the field sees it.
         let focused_before = ui.memory(|m| m.has_focus(id));
-        let send = focused_before && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        // A `:name` being typed: its list above the field (↑ ↓ to choose, Enter or Tab to put it, Esc
+        // to close it), its keys taken before the field sees them.
+        let cursor = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range()).map(|r| usize::from(r.primary.index));
+        let typed = self.talk_ui.drafts.get(&room.id).cloned().unwrap_or_default();
+        let completing = cursor.filter(|_| focused_before).and_then(|c| super::emojis::completion(&typed, c).map(|(start, q)| (start, c, q)));
+        let completing = completing.filter(|(_, _, q)| self.talk_ui.completion_closed.as_deref() != Some(q.as_str()));
+        let found: Vec<&'static crate::emoji::Emoji> = completing.as_ref().map(|(_, _, q)| crate::emoji::search(q, 6)).unwrap_or_default();
+        let mut put: Option<usize> = None;
+        if let Some((_, _, q)) = &completing
+            && !found.is_empty()
+        {
+            if self.talk_ui.completing.0 != *q {
+                self.talk_ui.completing = (q.clone(), 0);
+            }
+            let lit = &mut self.talk_ui.completing.1;
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    *lit = (*lit + 1) % found.len();
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    *lit = (*lit + found.len() - 1) % found.len();
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                    put = Some(*lit);
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                    self.talk_ui.completion_closed = Some(q.clone());
+                }
+            });
+            *lit = (*lit).min(found.len() - 1);
+        }
+        // Enter sends (Shift + Enter: a new line): taken before the field sees it.
+        let send = put.is_none() && focused_before && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let ready = self.talk.ready();
         let hint = if room.kind == Kind::Group { t.talk_hint_group } else { t.talk_hint }.replace("{n}", &title);
         let draft = self.talk_ui.drafts.entry(room.id.clone()).or_default();
-        // Inside the frame drawn around it (a field without a frame of its own has no margin).
-        let inner = field.shrink2(Vec2::new(12.0, 9.0));
-        let edit = egui::TextEdit::multiline(draft).id(id).hint_text(hint).desired_rows(1).char_limit(crate::talk::TEXT_MAX).font(FontId::proportional(14.0)).desired_width(inner.width()).margin(Vec2::ZERO).frame(egui::Frame::NONE);
+        // Inside the frame drawn around it (a field without a frame of its own has no margin), the
+        // emoji button on its right.
+        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(44.0, 9.0));
+        let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
         painter.rect(field, 10.0, theme.chrome_bg, Stroke::new(1.0, if focused_before { theme.accent.gamma_multiply(0.6) } else { theme.tab_hover }), egui::StrokeKind::Inside);
         let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         field_ui.set_clip_rect(field.intersect(ui.clip_rect()));
-        let resp = egui::ScrollArea::vertical().id_salt(("talk-field-scroll", room.id.as_str())).max_height(inner.height()).show(&mut field_ui, |ui| ui.add_enabled(ready, edit)).inner;
+        let resp = egui::ScrollArea::vertical()
+            .id_salt(("talk-field-scroll", room.id.as_str()))
+            .max_height(inner.height())
+            .show(&mut field_ui, |ui| {
+                let output = ui.add_enabled_ui(ready, |ui| egui::TextEdit::multiline(&mut *draft).id(id).hint_text(hint).desired_rows(1).char_limit(crate::talk::TEXT_MAX).font(FontId::proportional(14.0)).desired_width(inner.width()).margin(Vec2::ZERO).frame(egui::Frame::NONE).show(ui)).inner;
+                // Its emojis in colour, over egui's black and white ones.
+                if let Some(sheet) = &sheet {
+                    super::emojis::paint_field_emojis(ui.painter(), &output, draft, sheet, theme.chrome_bg);
+                }
+                output.response
+            })
+            .inner;
+        // The emoji button: the picker, above it.
+        let smiley = Rect::from_min_size(Pos2::new(field.max.x - 38.0, field.max.y - 36.0), Vec2::splat(30.0));
+        let smiley_resp = ui.interact(smiley, ui.id().with(("talk-emoji", room.id.as_str())), if ready { Sense::click() } else { Sense::hover() }).on_hover_text(t.talk_emoji);
+        if let (Some(sheet), Some(cell)) = (&sheet, crate::emoji::cell("😊")) {
+            let lit = smiley_resp.hovered() || self.talk_ui.emoji_open.as_ref().is_some_and(|o| o.target == EmojiTarget::Draft(room.id.clone()));
+            if lit {
+                painter.circle_filled(smiley.center(), 14.0, theme.tab_hover);
+            }
+            painter.image(sheet.id(), Rect::from_center_size(smiley.center(), Vec2::splat(if lit { 21.0 } else { 19.0 })), crate::emoji::uv(cell), if lit { Color32::WHITE } else { Color32::from_white_alpha(150) });
+        }
+        if ready && smiley_resp.clicked() {
+            let now = ui.input(|i| i.time);
+            self.talk_ui.emoji_open = match &self.talk_ui.emoji_open {
+                Some(o) if o.target == EmojiTarget::Draft(room.id.clone()) => None,
+                _ => Some(EmojiOpen { target: EmojiTarget::Draft(room.id.clone()), at: Pos2::new(field.max.x, field.min.y - 6.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now }),
+            };
+        }
+        // The completion's list, and the emoji chosen in it put in place of the name (once the field
+        // is done with the draft).
+        let mut completed: Option<(String, usize, usize)> = None;
+        if let (Some((start, end, _)), Some(sheet)) = (&completing, &sheet)
+            && !found.is_empty()
+        {
+            let skin = self.config.settings.emoji_skin;
+            if let Some(k) = super::emojis::completion_list(ui, Pos2::new(field.min.x, field.min.y - 6.0), &found, self.talk_ui.completing.1, skin, sheet, &theme) {
+                put = Some(k);
+            }
+            if let Some(k) = put {
+                completed = Some((found[k].toned(skin).0.to_owned(), *start, *end));
+            }
+        }
         if std::mem::take(&mut self.talk_ui.focus) {
             resp.request_focus();
         }
@@ -511,6 +610,9 @@ impl App {
                 d.clear();
             }
             resp.request_focus();
+        }
+        if let Some((chars, start, end)) = completed {
+            self.put_emoji(ui.ctx(), &room.id, &chars, Some((start, end)));
         }
         let ready = self.talk.ready();
         let attach_resp = ui.interact(attach, ui.id().with(("talk-attach", room.id.as_str())), if ready { Sense::click() } else { Sense::hover() }).on_hover_text(t.talk_attach);
@@ -579,6 +681,9 @@ impl App {
             uploads.retain(|u| u.done.is_none());
         }
 
+        // The emoji picker, open (for the field or a reaction).
+        self.talk_emoji_picker(ui.ctx(), t, &theme);
+
         // Under it: how to send, that no secret goes here; or what floor refused.
         let note_y = field.max.y + 12.0;
         let refused = self.talk_ui.refused.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(6)).map(|(e, _)| e.clone());
@@ -608,6 +713,7 @@ impl App {
     /// The messages of a conversation: the days between them, each person's name over theirs.
     fn talk_messages(&mut self, ui: &mut Ui, room: &Room, me: &str, margin: f32, t: &'static Strings, theme: &Theme) {
         let width = ui.available_width() - margin * 2.0;
+        let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
         let mut prev: Option<&Message> = None;
         for m in &room.messages {
             let day = day_of(m.at);
@@ -632,7 +738,7 @@ impl App {
             if !grouped {
                 ui.add_space(10.0);
             }
-            ui.horizontal_top(|ui| {
+            let row = ui.horizontal_top(|ui| {
                 ui.add_space(margin);
                 // The round of the first of a series; room kept for the others.
                 let (avatar, _) = ui.allocate_exact_size(Vec2::new(30.0, if grouped { 1.0 } else { 30.0 }), Sense::hover());
@@ -655,14 +761,138 @@ impl App {
                         self.talk_file(ui, file, t, theme);
                     }
                     if !m.text.is_empty() {
-                        let resp = ui.add(egui::Label::new(egui::RichText::new(&m.text).size(14.0).color(theme.text)).wrap().selectable(true));
+                        let resp = super::emojis::emoji_label(ui, sheet.as_ref(), &m.text, 14.0, theme.text);
                         if grouped {
                             resp.on_hover_text(clock(m.at));
                         }
                     }
+                    // Its reactions: each emoji and how many; a click adds or takes back one's own.
+                    if !m.reactions.is_empty() {
+                        ui.add_space(3.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                            for r in &m.reactions {
+                                let own = r.ids.iter().any(|id| id == me);
+                                let count = r.ids.len().to_string();
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0 + 7.5 * count.len() as f32, 24.0), Sense::click());
+                                let (fill, edge) = if own { (theme.accent.gamma_multiply(0.18), theme.accent.gamma_multiply(0.7)) } else { (theme.tab_hover.gamma_multiply(if resp.hovered() { 1.0 } else { 0.55 }), theme.tab_hover) };
+                                ui.painter().rect(rect, 12.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+                                if let (Some(sheet), Some(cell)) = (&sheet, crate::emoji::cell(&r.emoji)) {
+                                    crate::emoji::paint(ui.painter(), sheet, cell, Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), Vec2::splat(16.0)));
+                                }
+                                ui.painter().text(Pos2::new(rect.max.x - 9.0, rect.center().y), Align2::RIGHT_CENTER, &count, FontId::proportional(12.0), if own { theme.accent } else { theme.text_muted });
+                                let who: Vec<String> = r.ids.iter().map(|id| if id == me { t.talk_you.to_owned() } else { self.talk.name_of(id).unwrap_or_else(|| "?".into()) }).collect();
+                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(who.join(", ")).clicked() {
+                                    self.talk.react(&room.id, m.id, &r.emoji, !own);
+                                }
+                            }
+                        });
+                    }
                 });
             });
+            // Hovered: its bar, to react at once (the usual ones, or any from the picker).
+            let row = row.response.rect;
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && pointer.is_some_and(|p| row.contains(p) && ui.clip_rect().contains(p)) {
+                let bar = Vec2::new(7.0 * 30.0 + 10.0, 36.0);
+                let at = Pos2::new(row.max.x - margin - bar.x, row.min.y - 2.0);
+                let mut open_picker = false;
+                egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).inner_margin(egui::Margin::symmetric(5, 3)).corner_radius(18.0).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            for q in super::emojis::QUICK {
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                                if resp.hovered() {
+                                    ui.painter().circle_filled(rect.center(), 14.0, theme.tab_hover);
+                                }
+                                if let (Some(sheet), Some(cell)) = (&sheet, crate::emoji::cell(q)) {
+                                    let side = if resp.hovered() { 22.0 } else { 19.0 };
+                                    crate::emoji::paint(ui.painter(), sheet, cell, Rect::from_center_size(rect.center(), Vec2::splat(side)));
+                                }
+                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    let own = m.reactions.iter().any(|r| crate::emoji::cell(&r.emoji) == crate::emoji::cell(q) && r.ids.iter().any(|id| id == me));
+                                    self.talk.react(&room.id, m.id, q, !own);
+                                }
+                            }
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                            if resp.hovered() {
+                                ui.painter().circle_filled(rect.center(), 14.0, theme.tab_hover);
+                            }
+                            let c = if resp.hovered() { theme.accent } else { theme.text_muted };
+                            ui.painter().line_segment([rect.center() - Vec2::new(6.0, 0.0), rect.center() + Vec2::new(6.0, 0.0)], Stroke::new(1.6, c));
+                            ui.painter().line_segment([rect.center() - Vec2::new(0.0, 6.0), rect.center() + Vec2::new(0.0, 6.0)], Stroke::new(1.6, c));
+                            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.talk_react).clicked() {
+                                open_picker = true;
+                            }
+                        });
+                    });
+                });
+                if open_picker {
+                    let now = ui.input(|i| i.time);
+                    self.talk_ui.emoji_open = Some(EmojiOpen { target: EmojiTarget::React(room.id.clone(), m.id), at: Pos2::new(row.max.x - margin, row.min.y + 34.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now });
+                }
+            }
             prev = Some(m);
+        }
+    }
+
+    /// An emoji put in a conversation's field: at its cursor (at the end without one), or in place of
+    /// the `:name` typed (`range`, char indexes). It goes to the recent ones.
+    fn put_emoji(&mut self, ctx: &egui::Context, room: &str, chars: &str, range: Option<(usize, usize)>) {
+        let id = egui::Id::new(("talk-field", room));
+        let draft = self.talk_ui.drafts.entry(room.to_owned()).or_default();
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        let length = draft.chars().count();
+        let (start, end) = range.unwrap_or_else(|| {
+            let c = state.cursor.char_range().map_or(length, |r| usize::from(r.primary.index).min(length));
+            (c, c)
+        });
+        let (text, at) = super::emojis::replaced(draft, start, end, chars);
+        *draft = text;
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(at))));
+        state.store(ctx, id);
+        super::emojis::remember(&mut self.config.settings.emoji_recent, chars);
+        self.save_config();
+        self.talk_ui.focus = true;
+    }
+
+    /// The emoji picker, open: the emoji clicked goes in the field (the picker stays) or reacts to the
+    /// message (it closes); a click elsewhere or Esc closes it.
+    fn talk_emoji_picker(&mut self, ctx: &egui::Context, t: &'static Strings, theme: &Theme) {
+        let Some(sheet) = self.talk_ui.emoji_sheet.texture(ctx).cloned() else { return };
+        let Some(open) = &mut self.talk_ui.emoji_open else { return };
+        let recent = self.config.settings.emoji_recent.clone();
+        let mut skin = self.config.settings.emoji_skin;
+        let pivot = if matches!(open.target, EmojiTarget::Draft(_)) { Align2::RIGHT_BOTTOM } else { Align2::RIGHT_TOP };
+        let shown = egui::Area::new(egui::Id::new("emoji-picker")).order(egui::Order::Foreground).fixed_pos(open.at).pivot(pivot).constrain(true).show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(theme.chrome_bg)
+                .stroke(Stroke::new(1.0, theme.tab_hover))
+                .inner_margin(10.0)
+                .corner_radius(12.0)
+                .show(ui, |ui| super::emojis::picker(ui, &mut open.picker, &sheet, &recent, &mut skin, t, theme))
+                .inner
+        });
+        let (chosen, rect) = (shown.inner, shown.response.rect);
+        let target = open.target.clone();
+        let since = ctx.input(|i| i.time) - open.opened;
+        let outside = since > 0.2 && ctx.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)));
+        let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if skin != self.config.settings.emoji_skin {
+            self.config.settings.emoji_skin = skin;
+            self.save_config();
+        }
+        match (chosen, target) {
+            (Some(chars), EmojiTarget::Draft(room)) => self.put_emoji(ctx, &room, &chars, None),
+            (Some(chars), EmojiTarget::React(room, message)) => {
+                self.talk.react(&room, message, &chars, true);
+                super::emojis::remember(&mut self.config.settings.emoji_recent, &chars);
+                self.save_config();
+                self.talk_ui.emoji_open = None;
+            }
+            (None, _) if outside || escape => self.talk_ui.emoji_open = None,
+            _ => {}
         }
     }
 

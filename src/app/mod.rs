@@ -66,6 +66,7 @@ mod viewer;
 mod settings;
 mod scorecard;
 mod sidebar;
+mod emojis;
 mod talk;
 mod tour;
 mod tree;
