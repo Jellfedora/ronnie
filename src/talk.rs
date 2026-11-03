@@ -84,6 +84,16 @@ pub struct Message {
     /// Its author took it back: empty, it stays in its place.
     #[serde(default)]
     pub deleted: bool,
+    /// Pinned in its conversation, for a while.
+    #[serde(default)]
+    pub pinned: Option<Pin>,
+}
+
+/// A message pinned: till when (milliseconds since 1970), by whom (their id).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Pin {
+    pub until: i64,
+    pub by: String,
 }
 
 /// A message quoted by the one answering it.
@@ -205,6 +215,9 @@ struct WireRoom {
     members: Vec<Member>,
     #[serde(default)]
     messages: Option<Vec<Message>>,
+    /// Its messages pinned (an older floor sends none).
+    #[serde(default)]
+    pins: Option<Vec<Message>>,
 }
 
 /// A conversation.
@@ -223,6 +236,8 @@ pub struct Room {
     pub loading: bool,
     /// Who is typing in it, and when they last were.
     pub typing: Vec<(Member, Instant)>,
+    /// Its messages pinned, the latest pin first (each till its time).
+    pub pins: Vec<Message>,
 }
 
 impl Room {
@@ -256,7 +271,7 @@ impl Room {
 
     fn from_wire(w: WireRoom) -> Self {
         let messages = w.messages.unwrap_or_default();
-        Room { id: w.id, kind: w.kind, name: w.name, members: w.members, done: messages.len() < 60, messages, loading: false, typing: Vec::new() }
+        Room { id: w.id, kind: w.kind, name: w.name, members: w.members, done: messages.len() < 60, messages, loading: false, typing: Vec::new(), pins: w.pins.unwrap_or_default() }
     }
 
     fn add(&mut self, m: Message) {
@@ -299,6 +314,9 @@ enum Wire {
     History { room: String, messages: Vec<Message>, done: bool },
     #[serde(rename = "reactions")]
     Reactions { room: String, message: i64, reactions: Vec<Reaction> },
+    /// A conversation's messages pinned, the latest pin first.
+    #[serde(rename = "pins")]
+    Pins { room: String, pins: Vec<Message> },
     /// The messages found in a conversation, the most recent first.
     #[serde(rename = "found")]
     Found { room: String, q: String, messages: Vec<Message> },
@@ -574,6 +592,9 @@ impl Talk {
                         r.kind = room.kind;
                         r.name = room.name;
                         r.members = room.members;
+                        if let Some(pins) = room.pins {
+                            r.pins = pins;
+                        }
                         // A pseudo changed: the messages already here take it too.
                         for m in &mut r.messages {
                             if let Some(x) = r.members.iter().find(|x| x.id == m.from) {
@@ -624,6 +645,15 @@ impl Talk {
             Wire::Reactions { room, message, reactions } => {
                 if let Some(m) = self.rooms.iter_mut().find(|r| r.id == room).and_then(|r| r.messages.iter_mut().find(|m| m.id == message)) {
                     m.reactions = reactions;
+                }
+            }
+            Wire::Pins { room, pins } => {
+                if let Some(r) = self.rooms.iter_mut().find(|r| r.id == room) {
+                    // The messages here say it too.
+                    for m in &mut r.messages {
+                        m.pinned = pins.iter().find(|p| p.id == m.id).and_then(|p| p.pinned.clone());
+                    }
+                    r.pins = pins;
                 }
             }
             Wire::Found { room, q, messages } => self.found = Some((room, q, messages)),
@@ -731,6 +761,11 @@ impl Talk {
     /// One of the player's messages, its text changed (floor sends it back to everyone: `changed`).
     pub fn edit(&mut self, room: &str, message: i64, text: &str) {
         self.send(json!({ "t": "edit", "room": room, "message": message, "text": text }));
+    }
+
+    /// A message pinned for so many hours (1, 3, 24, 168), or unpinned (0).
+    pub fn pin(&mut self, room: &str, message: i64, hours: u32) {
+        self.send(json!({ "t": "pin", "room": room, "message": message, "hours": hours }));
     }
 
     /// The messages of a conversation holding this text (floor sends them: `found`).
@@ -1019,7 +1054,7 @@ mod tests {
     }
 
     fn msg(id: i64, from: &str, text: &str) -> Message {
-        Message { id, from: from.into(), name: Some(from.into()), text: text.into(), at: 0, event: None, file: None, reactions: Vec::new(), reply: None, edited: None, deleted: false }
+        Message { id, from: from.into(), name: Some(from.into()), text: text.into(), at: 0, event: None, file: None, reactions: Vec::new(), reply: None, edited: None, deleted: false, pinned: None }
     }
 
     #[test]
@@ -1053,6 +1088,9 @@ mod tests {
         assert_eq!(talk.media["g:1"][0].file.name, "a.png");
         talk.take(serde_json::from_str(r#"{"t":"found","room":"g:1","q":"ace","messages":[{"id":2,"from":"l","name":"Lemmy","text":"Ace","at":6}]}"#).unwrap(), &mut news);
         assert!(talk.found.as_ref().is_some_and(|(r, q, m)| r == "g:1" && q == "ace" && m[0].id == 2));
+        talk.take(serde_json::from_str(r#"{"t":"pins","room":"g:1","pins":[{"id":2,"from":"l","name":"Lemmy","text":"Ace","at":6,"pinned":{"until":99,"by":"d"}}]}"#).unwrap(), &mut news);
+        assert_eq!(talk.rooms[0].pins.len(), 1);
+        assert_eq!(talk.rooms[0].messages[0].pinned.as_ref().map(|p| p.until), Some(99));
 
         // An answer quoting one; that one changed, then taken back: the quote follows.
         talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:1","m":{"id":4,"from":"l","name":"Lemmy","text":"Yes","at":8,"reply":{"id":3,"from":"d","name":"Dio","text":"of Spades"}}}"#).unwrap(), &mut news);

@@ -812,7 +812,7 @@ impl App {
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
                     *lit = (*lit + found.len() - 1) % found.len();
                 }
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                if !i.modifiers.shift && (i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
                     put = Some(*lit);
                 }
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
@@ -830,8 +830,9 @@ impl App {
         {
             self.start_edit(ui.ctx(), &room.id, m);
         }
-        // Enter sends (Shift + Enter: a new line): taken before the field sees it.
-        let send = put.is_none() && focused_before && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        // Enter sends (Shift + Enter: a new line): taken before the field sees it. (egui's keys
+        // without modifiers match them with Shift too: Shift is looked at first.)
+        let send = put.is_none() && focused_before && ui.input_mut(|i| !i.modifiers.shift && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         // ⌘ V with files or an image on the clipboard: sent (their name, a link, kept out of the field).
         // With text, egui says so on the press; with none, only the key let go does.
         let mut pasted_files: Vec<std::path::PathBuf> = Vec::new();
