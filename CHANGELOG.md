@@ -10,6 +10,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Nettoyer une note avec Claude** : le bouton Claude de la barre d'outils des notes corrige les fautes et les tournures, et lui donne une jolie mise en page, si Claude Code est installé. Une flèche permet de revenir au texte d'avant.
 - **Les boutons Claude se débloquent au Puissance 4** : corriger un message du tchat et nettoyer une note demandent d'avoir joué une partie en ligne contre un collègue, jusqu'au bout.
 - **Ce qu'un jeu permet de débloquer**, sur sa page : une pastille en bas à gauche, et au survol, chaque déblocage avec sa condition et où tu en es (le thème Ronnie Métal à Speed Metal, Jurassic Park à Ronnie.io, le wizz au démineur, les boutons Claude au Puissance 4).
+- **Cacher une catégorie d'un clic droit** sur son icône, dans la colonne de gauche. Elle se réaffiche dans Paramètres › Apparence.
 - **Claude peut modifier une note** depuis son terminal (`ronnie note --edit` ou `--append`), et plus seulement en créer.
 
 ## [0.41.0] - 2026-11-03

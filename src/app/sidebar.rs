@@ -321,7 +321,8 @@ impl App {
         let mut hovered = None;
         let mut y = top;
         let shown_list = self.categories();
-        let (mut moved, mut new_window) = (None, None);
+        let (mut moved, mut new_window, mut hide) = (None, None, None);
+        let categories_shown = shown_list.len();
         for &category in &shown_list {
             let slot = Rect::from_center_size(Pos2::new(strip.center().x, y + 20.0), Vec2::splat(40.0));
             y += 46.0;
@@ -385,8 +386,15 @@ impl App {
                     ui.painter().galley(pill.center() - galley.size() / 2.0, galley, self.theme.bg);
                 }
             }
-            // A right click: the category's screen in a new window.
-            resp.context_menu(|ui| menu_item(ui, &format!("⧉  {}", t.new_window_open), category, &mut new_window));
+            // A right click: the category's screen in a new window, or the category hidden (the last
+            // one shown stays).
+            let alone = categories_shown <= 1;
+            resp.context_menu(|ui| {
+                menu_item(ui, &format!("⧉  {}", t.new_window_open), category, &mut new_window);
+                if !alone {
+                    menu_item(ui, &format!("🚫  {}", t.category_hide), category, &mut hide);
+                }
+            });
             if rail {
                 // The flyout shows its name.
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -418,6 +426,12 @@ impl App {
             }
         }
         // The local terminals: a new one, as ⌘ N.
+        if let Some(category) = hide {
+            self.config.settings.hidden_categories.push(category);
+            self.save_config();
+            let t = self.t();
+            self.push_toast(super::Toast { ok: true, title: t.category_hidden.replace("{n}", category_name(t, category)), body: t.category_hidden_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
         if let Some(category) = new_window {
             let ctx = ui.ctx().clone();
             self.new_window(|app| if category == Category::Local { app.new_tab(&ctx) } else { app.show_category(category) });
