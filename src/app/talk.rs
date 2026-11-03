@@ -908,7 +908,7 @@ impl App {
         // Its reactions, under it on its side: each emoji and how many; a click adds or takes back one's own.
         if !m.reactions.is_empty() {
             ui.add_space(3.0);
-            let side = if mine { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+            let side = if mine { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::left_to_right(egui::Align::Min) };
             ui.with_layout(side, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                 for r in &m.reactions {
