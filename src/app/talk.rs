@@ -2002,7 +2002,9 @@ impl App {
                     ui.add_space(4.0);
                     return;
                 }
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                // As high as its results, 420 px at most (then it scrolls).
+                let high = (found.len() as f32 * (46.0 + ui.spacing().item_spacing.y)).min(420.0);
+                egui::ScrollArea::vertical().max_height(high).min_scrolled_height(high).auto_shrink([false, true]).show(ui, |ui| {
                     for m in found {
                         let who = if m.from == me { t.talk_you.to_owned() } else { m.name.clone().unwrap_or_default() };
                         let text = if m.text.is_empty() { m.file.as_ref().map(|f| format!("📎 {}", f.name)).unwrap_or_default() } else { m.text.replace('\n', " ") };
