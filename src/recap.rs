@@ -1309,6 +1309,18 @@ fn ecb_rate() -> Option<f64> {
     rate.parse::<f64>().ok().filter(|r| *r > 0.0)
 }
 
+/// Whether Claude Code is installed: where its installer puts it, or on the PATH (or where Homebrew
+/// and npm put programs, a window launched from the Dock not having the shell's PATH).
+pub fn claude_installed() -> bool {
+    let name = if cfg!(windows) { "claude.exe" } else { "claude" };
+    if claude_program().is_absolute() {
+        return true;
+    }
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    dirs.iter().any(|d| d.join(name).is_file())
+}
+
 /// Claude Code, as installed: on the PATH, or where its installer puts it.
 fn claude_program() -> PathBuf {
     let name = if cfg!(windows) { "claude.exe" } else { "claude" };
@@ -1361,7 +1373,7 @@ fn numbered(text: &str, n: usize) -> Vec<Option<String>> {
 
 /// Claude's answer to `prompt` (Haiku, through Claude Code: the user's own account); None when it
 /// can't be run or takes too long.
-fn ask_claude(prompt: &str) -> Option<String> {
+pub fn ask_claude(prompt: &str) -> Option<String> {
     // Without any tool (nothing is to be done, only answered), nor a session kept, from a
     // folder of no project all the same: it counts in no day's figures.
     let mut cmd = Command::new(claude_program());

@@ -3,6 +3,7 @@
 //! conversation with them; a group is made with the people picked.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use super::sidebar::{lerp_color, paint_panel_title, paint_row_bg};
 use super::*;
@@ -164,6 +165,10 @@ pub(super) struct TalkUi {
     deleting: Option<(String, i64)>,
     /// A quote clicked: the message to bring on screen (once), lit a moment.
     jump: Option<(i64, Instant, bool)>,
+    /// Claude Code installed, and when it was last looked for.
+    claude: Option<(bool, Instant)>,
+    /// A message being fixed by Claude: its conversation, its text as sent, the answer once come.
+    fixing: Option<(String, String, FixAnswer)>,
     /// Someone's face shown large (their id).
     avatar_open: Option<String>,
     /// The conversation whose files are shown, all of them.
@@ -194,6 +199,9 @@ pub(super) struct SearchBar {
     /// Its results shown (hidden once one is picked, back with the typing).
     results: bool,
 }
+
+/// Claude's answer to a fix, once come (None inside: it couldn't answer).
+type FixAnswer = Arc<Mutex<Option<Option<String>>>>;
 
 /// What a message's hover bar does besides reacting.
 #[derive(Clone, Copy, PartialEq)]
@@ -915,7 +923,7 @@ impl App {
         let draft = self.talk_ui.drafts.entry(room.id.clone()).or_default();
         // Inside the frame drawn around it (a field without a frame of its own has no margin), the
         // emoji button on its right.
-        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(80.0, 9.0));
+        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(112.0, 9.0));
         let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
         painter.rect(field, 10.0, theme.chrome_bg, Stroke::new(1.0, if focused_before { theme.accent.gamma_multiply(0.6) } else { theme.tab_hover }), egui::StrokeKind::Inside);
         let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
@@ -993,6 +1001,9 @@ impl App {
             resp.request_focus();
         }
         let text = draft.trim().to_owned();
+        // Claude's button, before the GIF one: the message's spelling and phrasing fixed (greyed without Claude Code).
+        let fix_button = Rect::from_min_size(Pos2::new(field.max.x - 106.0, field.max.y - 33.0), Vec2::new(28.0, 24.0));
+        self.talk_fix_button(ui, &room.id, fix_button, t, &theme);
         if resp.changed() && !text.is_empty() {
             self.talk.typing(&room.id);
         }
@@ -1735,6 +1746,77 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Claude's button: a sparkle; a click sends the draft to Claude Code (Haiku), its fixed text
+    /// put in its place when it comes (unless the draft changed meanwhile). Without Claude Code,
+    /// greyed, its tooltip saying what it would do.
+    fn talk_fix_button(&mut self, ui: &mut Ui, room: &str, rect: Rect, t: &'static Strings, theme: &Theme) {
+        // Looked for again now and then (it may be installed meanwhile).
+        let installed = match self.talk_ui.claude {
+            Some((found, at)) if at.elapsed() < Duration::from_secs(60) => found,
+            _ => {
+                let found = crate::recap::claude_installed();
+                self.talk_ui.claude = Some((found, Instant::now()));
+                found
+            }
+        };
+        // Its answer, come.
+        if let Some((r, sent, answer)) = &self.talk_ui.fixing
+            && let Some(got) = answer.lock().ok().and_then(|mut a| a.take())
+        {
+            let (r, sent) = (r.clone(), sent.clone());
+            self.talk_ui.fixing = None;
+            match got.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+                Some(fixed) => {
+                    if let Some(draft) = self.talk_ui.drafts.get_mut(&r)
+                        && draft.trim() == sent
+                    {
+                        *draft = fixed;
+                        let id = egui::Id::new(("talk-field", r.as_str()));
+                        let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(draft.chars().count()))));
+                        state.store(ui.ctx(), id);
+                        self.talk_ui.focus = true;
+                    }
+                }
+                None => self.talk_ui.refused = Some((t.talk_fix_failed.to_owned(), Instant::now())),
+            }
+        }
+        let busy = self.talk_ui.fixing.as_ref().is_some_and(|(r, ..)| r == room);
+        let text = self.talk_ui.drafts.get(room).map(|d| d.trim().to_owned()).unwrap_or_default();
+        let usable = installed && self.talk.ready() && !text.is_empty() && self.talk_ui.fixing.is_none();
+        let resp = ui.interact(rect, ui.id().with(("talk-fix", room)), if installed { Sense::click() } else { Sense::hover() }).on_hover_text(if installed { t.talk_fix } else { t.talk_fix_missing });
+        let painter = ui.painter();
+        if busy {
+            egui::Spinner::new().size(14.0).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(14.0)));
+            return;
+        }
+        let lit = installed && resp.hovered();
+        if lit {
+            painter.rect_filled(rect, 6.0, theme.tab_hover);
+        }
+        // A sparkle: four long rays and four short ones.
+        let color = if !installed { theme.text_muted.gamma_multiply(0.35) } else if lit { Color32::from_rgb(0xd9, 0x77, 0x57) } else { theme.text_muted };
+        let c = rect.center();
+        for k in 0..8 {
+            let angle = k as f32 * std::f32::consts::FRAC_PI_4;
+            let length = if k % 2 == 0 { 7.0 } else { 4.5 };
+            let dir = Vec2::angled(angle);
+            painter.line_segment([c + dir * 1.5, c + dir * length], Stroke::new(1.6, color));
+        }
+        if usable && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            let answer = Arc::new(Mutex::new(None));
+            self.talk_ui.fixing = Some((room.to_owned(), text.clone(), answer.clone()));
+            let (prompt, ctx) = (format!("{}\n\n{text}", t.talk_fix_prompt), ui.ctx().clone());
+            std::thread::spawn(move || {
+                let fixed = crate::recap::ask_claude(&prompt);
+                if let Ok(mut a) = answer.lock() {
+                    *a = Some(fixed);
+                }
+                ctx.request_repaint();
+            });
+        }
     }
 
     /// Someone's face, large, with their name (and their pseudo, when given another name).
