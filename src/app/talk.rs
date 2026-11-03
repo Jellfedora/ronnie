@@ -2059,7 +2059,7 @@ impl App {
     /// A conversation's files, all of them: the images in a grid (a click opens one large), the
     /// others in a list (to save). Fetched as they come on screen.
     fn talk_media_window(&mut self, ctx: &egui::Context, me: &str, t: &'static Strings, theme: &Theme) {
-        const THUMB: f32 = 118.0;
+        const THUMB: f32 = 160.0;
         const GAP: f32 = 8.0;
         const WIDTH: f32 = THUMB * 5.0 + GAP * 4.0;
         let Some(room) = self.talk_ui.media_open.clone() else { return };
@@ -2091,7 +2091,11 @@ impl App {
                 return;
             }
             let (images, others): (Vec<_>, Vec<_>) = list.iter().partition(|x| x.file.image());
-            egui::ScrollArea::vertical().max_height((screen.height() - 220.0).max(200.0)).auto_shrink([false, true]).show(ui, |ui| {
+            // As high as what it shows, the screen's height at most (then it scrolls).
+            let rows = images.len().div_ceil(5) as f32;
+            let content = if images.is_empty() { 0.0 } else { 30.0 + rows * (THUMB + GAP) + 8.0 } + if others.is_empty() { 0.0 } else { 30.0 + others.len() as f32 * 52.0 };
+            let high = content.min((screen.height() - 220.0).max(200.0));
+            egui::ScrollArea::vertical().max_height(high).min_scrolled_height(high).auto_shrink([false, true]).show(ui, |ui| {
                 if !images.is_empty() {
                     ui.label(egui::RichText::new(format!("{}  ·  {}", t.talk_media_images, images.len())).size(12.0).color(theme.text_muted));
                     ui.add_space(6.0);
