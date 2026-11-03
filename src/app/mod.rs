@@ -4465,6 +4465,7 @@ impl App {
                     self.fold_for_game(false);
                     let strings = self.t();
                     let mode_key = self.config.settings.shortcuts.toggle_files.label();
+                    self.notes.claude_unlocked = self.config.settings.four_online_played;
                     if matches!(self.notes.ui(ui, rect, &theme, strings, &mode_key), Some(notes::Action::Close)) {
                         self.close_notes();
                     }

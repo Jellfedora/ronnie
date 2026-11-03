@@ -1926,8 +1926,11 @@ impl App {
         }
         let busy = self.talk_ui.fixing.as_ref().is_some_and(|(r, ..)| r == room);
         let text = self.talk_ui.drafts.get(room).map(|d| d.trim().to_owned()).unwrap_or_default();
+        let unlocked = self.config.settings.four_online_played;
+        let tip = if !unlocked { t.claude_locked } else if installed { t.talk_fix } else { t.talk_fix_missing };
+        let installed = installed && unlocked;
         let usable = installed && self.talk.ready() && !text.is_empty() && self.talk_ui.fixing.is_none();
-        let resp = ui.interact(rect, ui.id().with(("talk-fix", room)), if installed { Sense::click() } else { Sense::hover() }).on_hover_text(if installed { t.talk_fix } else { t.talk_fix_missing });
+        let resp = ui.interact(rect, ui.id().with(("talk-fix", room)), if installed { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
         let painter = ui.painter();
         if busy {
             egui::Spinner::new().size(14.0).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(14.0)));

@@ -8,6 +8,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 - **Une notification quand Claude a écrit le récap d'une journée** dans la note de la semaine : un clic l'ouvre.
 - **Nettoyer une note avec Claude** : le bouton Claude de la barre d'outils des notes corrige les fautes et les tournures, et lui donne une jolie mise en page, si Claude Code est installé. Une flèche permet de revenir au texte d'avant.
+- **Les boutons Claude se débloquent au Puissance 4** : corriger un message du tchat et nettoyer une note demandent d'avoir joué une partie en ligne contre un collègue, jusqu'au bout.
 - **Claude peut modifier une note** depuis son terminal (`ronnie note --edit` ou `--append`), et plus seulement en créer.
 
 ## [0.41.0] - 2026-11-03

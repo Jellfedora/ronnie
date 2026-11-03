@@ -186,6 +186,8 @@ pub(super) struct Notes {
     cleaned: Option<(Uuid, String, String)>,
     /// Claude couldn't clean up a note: when (said a moment).
     clean_failed: Option<std::time::Instant>,
+    /// Claude's button unlocked (a game of Puissance 4 played online: set by the app).
+    pub(super) claude_unlocked: bool,
 }
 
 /// A table's cell edited in its own field (rows count without the |---| line, the headings 0).
@@ -246,7 +248,7 @@ const CELL: &str = "notes-cell";
 
 impl Notes {
     fn with(store: Store, path: Option<PathBuf>, error: Option<String>) -> Self {
-        Self { store, path, dirty: None, error, place: Place::Folder(None), selected: None, search: String::new(), rename: None, rendered: true, focus_search: false, focus_editor: false, layout: None, images: HashMap::new(), pending: None, notice: None, cell_edit: None, claude: None, cleaning: None, cleaned: None, clean_failed: None }
+        Self { store, path, dirty: None, error, place: Place::Folder(None), selected: None, search: String::new(), rename: None, rendered: true, focus_search: false, focus_editor: false, layout: None, images: HashMap::new(), pending: None, notice: None, cell_edit: None, claude: None, cleaning: None, cleaned: None, clean_failed: None, claude_unlocked: false }
     }
 
     pub(super) fn load() -> Self {
@@ -306,7 +308,8 @@ impl Notes {
         }
         let text = self.note(id).map(|n| n.text.clone()).unwrap_or_default();
         let failed = self.clean_failed.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(8));
-        let tip = if !installed { t.notes_clean_missing } else if failed { t.notes_clean_failed } else { t.notes_clean };
+        let installed = installed && self.claude_unlocked;
+        let tip = if !self.claude_unlocked { t.claude_locked } else if !installed { t.notes_clean_missing } else if failed { t.notes_clean_failed } else { t.notes_clean };
         let resp = ui.interact(rect, Id::new("notes-clean"), if installed { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
         let usable = installed && !text.trim().is_empty() && self.cleaning.is_none();
         if usable && resp.hovered() {

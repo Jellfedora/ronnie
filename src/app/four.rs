@@ -588,6 +588,11 @@ impl App {
         let cleared = self.four.clearing.as_ref().is_none_or(|(_, at)| now - at > CLEAR);
         let can_play = cleared && !game.over && game.turn == game.you;
         let turn = (!game.over).then_some(game.turn);
+        // A game played to its end against someone (each played): Claude's buttons unlocked.
+        if game.over && game.moves >= 2 && !self.config.settings.four_online_played {
+            self.config.settings.four_online_played = true;
+            self.save_config();
+        }
         // The chat on the right, the game in what's left.
         let chat_w = (body.width() * 0.3).clamp(200.0, 300.0);
         let chat_area = Rect::from_min_max(Pos2::new(body.max.x - chat_w, body.min.y + 64.0), Pos2::new(body.max.x, body.max.y - 16.0));
