@@ -147,6 +147,7 @@ impl App {
         self.games_hub = false;
         self.dev_page = false;
         self.modules_page = false;
+        self.talk_page = false;
         self.procs_page = false;
         self.home_which = super::four::HomeGame::SpeedMetal;
         self.music_page = false;
@@ -180,6 +181,8 @@ impl App {
             Category::Dev
         } else if self.modules_page {
             Category::Modules
+        } else if self.talk_page {
+            Category::Talk
         } else if self.home.is_some() {
             if !self.home_game {
                 return self.category_screen(category);
@@ -197,7 +200,7 @@ impl App {
     fn category_screen(&self, category: Category) -> bool {
         match category {
             Category::Local | Category::Ssh | Category::Db => self.last_tab_of(category).is_some(),
-            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules => true,
+            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules | Category::Talk => true,
             Category::Files => false,
         }
     }
@@ -215,6 +218,7 @@ impl App {
             Category::Games => self.open_arcade(),
             Category::Dev => self.open_dev_page(),
             Category::Modules => self.open_modules_page(),
+            Category::Talk => self.open_talk_page(),
             Category::Files => {}
         }
     }
@@ -255,7 +259,7 @@ impl App {
     /// category; the home page leaves it as it is.
     fn follow_shown(&mut self) {
         let game = self.home.is_some() && self.home_game;
-        let seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page);
+        let seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, self.talk_page);
         if seen == self.sidebar_seen {
             return;
         }
@@ -268,6 +272,8 @@ impl App {
             Category::Dev
         } else if self.modules_page {
             Category::Modules
+        } else if self.talk_page {
+            Category::Talk
         } else if game {
             Category::Games
         } else if let Some(i) = seen.0 {
@@ -344,6 +350,17 @@ impl App {
                 ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
                 ui.painter().circle_filled(dot, 3.0, self.theme.accent);
             }
+            // The chat: the messages not read.
+            if category == Category::Talk {
+                let unread = self.talk_unread();
+                if unread > 0 {
+                    let galley = ui.painter().layout_no_wrap(if unread > 99 { "99+".to_owned() } else { unread.to_string() }, FontId::proportional(9.5), self.theme.bg);
+                    let pill = Rect::from_center_size(slot.right_top() + Vec2::new(-8.0, 8.0), Vec2::new((galley.size().x + 7.0).max(15.0), 15.0));
+                    ui.painter().rect_filled(pill.expand(1.5), 9.0, self.theme.chrome_bg);
+                    ui.painter().rect_filled(pill, 7.5, self.theme.accent);
+                    ui.painter().galley(pill.center() - galley.size() / 2.0, galley, self.theme.bg);
+                }
+            }
             // A right click: the category's screen in a new window.
             resp.context_menu(|ui| menu_item(ui, &format!("⧉  {}", t.new_window_open), category, &mut new_window));
             if rail {
@@ -371,7 +388,7 @@ impl App {
                         self.show_category(category);
                         // Seen: the sidebar stays on the category clicked (the home page belongs to none).
                         let game = self.home.is_some() && self.home_game;
-                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page);
+                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, self.talk_page);
                     }
                 }
             }
@@ -1703,6 +1720,7 @@ impl App {
             Category::Games => self.games_section(ui, left, row_w, y),
             Category::Dev => self.dev_section(ui, left, row_w, y),
             Category::Modules => self.modules_section(ui, left, row_w, y),
+            Category::Talk => self.talk_section(ui, left, row_w, y),
         }
     }
 
@@ -2042,6 +2060,7 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
         Category::Games => t.cat_games,
         Category::Dev => t.cat_dev,
         Category::Modules => t.cat_modules,
+        Category::Talk => t.cat_talk,
     }
 }
 
@@ -2057,6 +2076,7 @@ pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Ca
         Category::Games => paint_gamepad_icon(painter, c, color),
         Category::Dev => super::dev::paint_dev_icon(painter, c, color),
         Category::Modules => super::modules::paint_modules_icon(painter, c, color),
+        Category::Talk => super::talk::paint_talk_icon(painter, c, color),
     }
 }
 

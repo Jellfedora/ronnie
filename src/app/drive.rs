@@ -23,6 +23,8 @@ pub(super) enum Lead {
     Profile(Uuid),
     Notes,
     Dev,
+    /// A conversation of the chat.
+    Talk(String),
 }
 
 /// The pane `id` in `tabs`: its tab's index.
@@ -169,6 +171,11 @@ impl App {
                 self.home = None;
                 self.notes_page = false;
                 self.open_dev_page();
+            }
+            Lead::Talk(room) => {
+                self.home = None;
+                self.notes_page = false;
+                self.open_talk_room(&room);
             }
         }
     }

@@ -687,6 +687,12 @@ pub struct Settings {
     /// The player's account on floor, the leaderboards' server (see floor.rs): made with the first round sent.
     #[serde(default)]
     pub floor: Option<FloorAccount>,
+    /// The last message read in each conversation (its id), by conversation.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub talk_read: std::collections::HashMap<String, i64>,
+    /// The pseudo was asked at launch, for the chat (once; it can be picked later in the chat).
+    #[serde(default)]
+    pub talk_pseudo_asked: bool,
     /// The activity simulator (see awake.rs).
     #[serde(default)]
     pub keep_active: KeepActive,
@@ -777,10 +783,12 @@ pub enum Category {
     Dev,
     /// The modules to download (Serj…): apps of their own, see `crate::modules`.
     Modules,
+    /// The chat with the other users of Ronnie (see `crate::talk`).
+    Talk,
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [Category::Local, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Games, Category::Modules];
+    pub const ALL: [Category; 9] = [Category::Local, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Talk, Category::Games, Category::Modules];
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
     /// their usual place.
@@ -1245,7 +1253,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, auto_backup: AutoBackup::default(), recap: Recap::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, jurassic_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_pseudo_asked: false, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, auto_backup: AutoBackup::default(), recap: Recap::default() }
     }
 }
 

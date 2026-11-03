@@ -88,7 +88,7 @@ impl App {
         if self.home.is_some() {
             return self.home_game.then_some(Place::Games);
         }
-        if self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page {
+        if self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.talk_page {
             return None;
         }
         let tab = self.tabs.get(self.active)?;

@@ -66,6 +66,7 @@ mod viewer;
 mod settings;
 mod scorecard;
 mod sidebar;
+mod talk;
 mod tour;
 mod tree;
 mod workspace;
@@ -337,6 +338,7 @@ struct WindowSlot {
     modules_page: bool,
     procs_page: bool,
     notes_page: bool,
+    talk_page: bool,
 }
 
 pub struct App {
@@ -466,13 +468,18 @@ pub struct App {
     modules_page: bool,
     /// The machine's processes (opened from the resources' gauges): shown instead of the tabs.
     procs_page: bool,
+    /// The chat's page (a conversation): shown instead of the tabs.
+    talk_page: bool,
+    /// The chat: the connection to floor and the conversations (for all windows).
+    talk: crate::talk::Talk,
+    talk_ui: talk::TalkUi,
     modules: modules::Modules,
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
     notes_page: bool,
     /// What was shown when the sidebar last looked (tab, notes, music, game): when it changes, the
     /// sidebar shows the category of the new one.
-    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool),
+    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool, bool),
     /// The notes, the same in every window.
     notes: notes::Notes,
     /// The sidebar's file tree.
@@ -1280,10 +1287,13 @@ impl App {
             music_page: false,
             dev_page: false,
             modules_page: false,
+            talk_page: false,
+            talk: crate::talk::Talk::default(),
+            talk_ui: talk::TalkUi::default(),
             procs_page: false,
             modules: modules::Modules::default(),
             notes_page: false,
-            sidebar_seen: (None, false, false, false, false, false),
+            sidebar_seen: (None, false, false, false, false, false, false),
             notes: notes::Notes::load(),
             tree: tree::FileTree::default(),
             rail_flyout: None,
@@ -2006,6 +2016,7 @@ impl App {
         swap(&mut self.dev_page, &mut slot.dev_page);
         swap(&mut self.modules_page, &mut slot.modules_page);
         swap(&mut self.procs_page, &mut slot.procs_page);
+        swap(&mut self.talk_page, &mut slot.talk_page);
         swap(&mut self.notes_page, &mut slot.notes_page);
     }
 
@@ -2222,7 +2233,7 @@ impl App {
         }
         let t = self.t();
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page;
+        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page && !app.talk_page;
         let mut notified = false;
         for (event, i) in mine {
             let shown = tab_shown(self, i);
@@ -2609,6 +2620,7 @@ impl App {
             self.music_page = false;
             self.dev_page = false;
             self.modules_page = false;
+            self.talk_page = false;
             self.procs_page = false;
             self.notes_page = false;
             self.focus_terminal = true;
@@ -2632,6 +2644,7 @@ impl App {
         self.music_page = false;
         self.dev_page = false;
         self.modules_page = false;
+        self.talk_page = false;
         self.procs_page = false;
         self.notes_page = false;
         // The keys go to the game, not to a terminal no longer shown.
@@ -2690,6 +2703,7 @@ impl App {
         self.music_page = false;
         self.dev_page = false;
         self.modules_page = false;
+        self.talk_page = false;
         self.procs_page = false;
         self.home_game = false;
     }
@@ -2785,7 +2799,7 @@ impl App {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The Dev, Downloads and processes pages, likewise.
-        if self.dev_page || self.modules_page || self.procs_page {
+        if self.dev_page || self.modules_page || self.procs_page || self.talk_page {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The music page, likewise; its search takes ⌘ F.
@@ -2850,7 +2864,7 @@ impl App {
             });
         }
         // A file open beside the terminals (VS Code layout), likewise.
-        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page).and_then(|t| t.docs.get_mut(t.doc?)) {
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !self.talk_page).and_then(|t| t.docs.get_mut(t.doc?)) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
                     if ui.input(|i| i.modifiers.alt) {
@@ -4260,7 +4274,7 @@ impl App {
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
             // Its last tab closed, out of a game, the notes and the music: the window goes too.
-            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page;
+            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.talk_page;
             let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {
                 while !self.tabs.is_empty() {
@@ -4434,6 +4448,12 @@ impl App {
                     self.game.leave();
                     self.fold_for_game(false);
                     self.procs_page_ui(ui, rect);
+                    return;
+                }
+                if self.talk_page {
+                    self.game.leave();
+                    self.fold_for_game(false);
+                    self.talk_page_ui(ui, rect);
                     return;
                 }
                 if self.shown_tab().is_none() {
@@ -5226,6 +5246,7 @@ impl App {
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
             self.live_frame(ui.ctx());
+            self.talk_frame(ui.ctx());
             self.blob_frame(ui.ctx());
             self.riff_frame(ui.ctx());
             self.pseudo_window(ui.ctx());
@@ -5239,6 +5260,9 @@ impl App {
                 self.worklog_ask_window(ui.ctx());
                 if !self.worklog_ask {
                     self.backup_ask_window(ui.ctx());
+                    if self.backup_ask.is_none() {
+                        self.launch_pseudo_ask();
+                    }
                 }
             }
         }

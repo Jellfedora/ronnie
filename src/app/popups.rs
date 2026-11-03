@@ -1081,8 +1081,23 @@ impl App {
             return;
         }
         let settings = &self.config.settings;
-        let text = crate::floor::pseudo(settings.floor.as_ref()).unwrap_or(&settings.player_name).to_owned();
+        // This floor's pseudo; else the one taken on floor's former address (to find it again in a click);
+        // else the name typed in the games.
+        let former = settings.floor.as_ref().and_then(|a| a.name.as_deref());
+        let text = crate::floor::pseudo(settings.floor.as_ref()).or(former).unwrap_or(&settings.player_name).to_owned();
         self.pseudo_prompt = Some(PseudoPrompt { text, error: None, focus: true, typed_at: 0.0, checked: None });
+    }
+
+    /// The pseudo asked once at launch, for the chat, when there is none yet.
+    pub(super) fn launch_pseudo_ask(&mut self) {
+        if self.config.settings.talk_pseudo_asked || self.read_only || crate::floor::url().is_none() {
+            return;
+        }
+        self.config.settings.talk_pseudo_asked = true;
+        self.save_config();
+        if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_none() {
+            self.ask_pseudo();
+        }
     }
 
     /// What floor answered: the account to save (made, renamed or forgotten), or why the pseudo wasn't taken.

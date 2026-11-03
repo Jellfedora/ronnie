@@ -221,6 +221,7 @@ impl App {
         self.procs_page = true;
         self.dev_page = false;
         self.modules_page = false;
+        self.talk_page = false;
         self.music_page = false;
         self.notes_page = false;
         self.home_game = false;

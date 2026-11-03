@@ -23,8 +23,9 @@ pub const BOARD: usize = 10;
 /// The names floor takes, at most.
 const NAME_MAX: usize = 24;
 
-/// Where floor runs (on Beemo).
-const URL: &str = "https://fedoheim.hopto.org/floor";
+/// Where floor runs (its own VM: no domain name, a Let's Encrypt certificate for the IP). An account
+/// made on another address (the Beemo's, before) doesn't count here: the pseudo is asked again.
+const URL: &str = "https://185.245.143.130/floor";
 
 /// floor's address: RONNIE_FLOOR_URL when given (at run time, or when built); a dev build, a local floor.
 pub fn url() -> Option<String> {

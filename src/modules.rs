@@ -261,7 +261,7 @@ mod tests {
         // SAFETY: set before any thread reads it, in a test run on its own.
         unsafe {
             std::env::set_var("RONNIE_CONFIG_DIR", &dir);
-            std::env::set_var("RONNIE_FLOOR_URL", "https://fedoheim.hopto.org/floor");
+            std::env::set_var("RONNIE_FLOOR_URL", "https://185.245.143.130/floor");
         }
         let serj = catalog().unwrap().into_iter().find(|m| m.id == "serj").expect("serj in the catalog");
         let latest = latest(&serj).unwrap().expect("a release with this system's archive");
