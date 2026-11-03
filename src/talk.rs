@@ -403,7 +403,7 @@ pub struct News {
     pub invited: Vec<(String, Message)>,
     /// Someone left a group of the player's (room id, the message saying so).
     pub departed: Vec<(String, Message)>,
-    /// Someone sent the player a wizz (room id, the message saying so): the window shakes.
+    /// A wizz in a conversation, sent by someone or by the player (room id, the message saying so): the window shakes.
     pub wizzed: Vec<(String, Message)>,
     /// floor refused something (its word).
     pub refused: Option<String>,
@@ -677,7 +677,7 @@ impl Talk {
                 if matches!(m.event.as_deref(), Some("created" | "added")) && self.joining.remove(&room) && !mine {
                     news.invited.push((room.clone(), m.clone()));
                 }
-                if m.event.as_deref() == Some("wizz") && !mine {
+                if m.event.as_deref() == Some("wizz") {
                     news.wizzed.push((room.clone(), m.clone()));
                 }
                 if m.event.as_deref() == Some("left") && !mine {
@@ -875,6 +875,11 @@ impl Talk {
     /// One of the player's messages, its text changed (floor sends it back to everyone: `changed`).
     pub fn edit(&mut self, room: &str, message: i64, text: &str) {
         self.send(json!({ "t": "edit", "room": room, "message": message, "text": text }));
+    }
+
+    /// A conversation for two erased, for both (floor sends `gone` to each).
+    pub fn drop_room(&self, room: &str) {
+        self.send(json!({ "t": "drop", "room": room }));
     }
 
     /// A wizz to a conversation: the others' window shakes (floor sends it back as a `wizz` event).

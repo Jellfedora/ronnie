@@ -131,6 +131,8 @@ pub(super) struct TalkUi {
     renaming: Option<(String, String)>,
     /// A group to leave, asked first.
     leaving: Option<String>,
+    /// A conversation for two to erase, asked first.
+    dropping: Option<String>,
     /// floor refused something: its word, shown a moment.
     pub refused: Option<(String, Instant)>,
     /// The conversation on screen, and for how many frames: older messages are asked only once it
@@ -399,9 +401,13 @@ impl App {
             self.talk_notify(ctx, focused, room.clone(), title, body);
         }
         // A wizz: told of, and the window shakes.
+        // (One's own shakes one's window too, as it did on MSN, but isn't told of.)
         for (room, m) in &news.wizzed {
-            let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
-            self.talk_notify(ctx, focused, room.clone(), t.talk_wizzed.replace("{n}", &who), String::new());
+            let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
+            if !mine {
+                let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
+                self.talk_notify(ctx, focused, room.clone(), t.talk_wizzed.replace("{n}", &who), String::new());
+            }
             if let Some(outer) = ctx.input(|i| i.viewport().outer_rect).filter(|_| !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false) || i.viewport().maximized.unwrap_or(false))) {
                 let origin = self.talk_ui.shake.map_or(outer.min, |(_, o)| o);
                 self.talk_ui.shake = Some((Instant::now(), origin));
@@ -742,6 +748,9 @@ impl App {
             }
             if button(t.talk_wizz, "wizz") {
                 self.send_wizz(&room.id, t);
+            }
+            if button(t.talk_erase, "erase") {
+                self.talk_ui.dropping = Some(room.id.clone());
             }
         }
         if room.kind == Kind::Group {
@@ -1176,7 +1185,9 @@ impl App {
             if m.event.is_some() {
                 ui.add_space(4.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(format!("{}  ·  {}", event_text(t, m), clock(m.at))).size(12.0).italics().color(theme.text_muted.gamma_multiply(0.85)));
+                    // A wizz stands out: in the accent, bold.
+                    let text = egui::RichText::new(format!("{}  ·  {}", event_text(t, m), clock(m.at))).size(12.0).italics();
+                    ui.label(if m.event.as_deref() == Some("wizz") { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
                 });
                 ui.add_space(4.0);
                 prev = None;
@@ -2436,6 +2447,32 @@ impl App {
                 self.talk_ui.room = None;
             } else if close || modal.should_close() {
                 self.talk_ui.leaving = None;
+            }
+        }
+
+        if let Some(room) = self.talk_ui.dropping.clone() {
+            let title = self.talk.room(&room).map(|r| shown_title(t, r, &me)).unwrap_or_default();
+            let (mut done, mut close) = (false, false);
+            let modal = egui::Modal::new(egui::Id::new("talk-drop")).frame(frame).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(egui::RichText::new(t.talk_erase).size(18.0).strong());
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.talk_erase_ask.replace("{n}", &title)).size(13.0).color(theme.text_muted)).wrap());
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new(t.talk_erase).size(13.5).color(theme.bg)).fill(theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0))).clicked() {
+                        done = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if done {
+                self.talk.drop_room(&room);
+                self.talk_ui.dropping = None;
+            } else if close || modal.should_close() {
+                self.talk_ui.dropping = None;
             }
         }
 
