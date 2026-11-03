@@ -1180,7 +1180,7 @@ impl App {
                     .inner
                 }
             });
-            let head = row.inner;
+            let (head, column) = row.inner;
             // Under one's last message, who saw it.
             if mine && k + 1 == room.messages.len() {
                 let seen: Vec<String> = room.reads.iter().filter(|(id, at)| *id != me && **at >= m.id).map(|(id, _)| self.talk.name_of(id).unwrap_or_else(|| "?".into())).collect();
@@ -1211,8 +1211,9 @@ impl App {
             if self.talk.ready() && self.talk_ui.emoji_open.is_none() && self.talk_ui.gif_open.is_none() && self.talk_ui.pin_menu.is_none() && !m.deleted && hovered {
                 let acts: Vec<Act> = if mine && editable(m) { vec![Act::Pin, Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Pin, Act::Reply, Act::Delete] } else { vec![Act::Pin, Act::Reply] };
                 let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
-                // On the other side than the bubble, inside the page.
-                let at = if mine { Pos2::new(band.min.x + margin, band.min.y - 6.0) } else { Pos2::new(band.max.x - margin - bar.x, band.min.y - 6.0) };
+                // Beside the bubble, on its free side (mine on its left, the others' on its right), inside the page.
+                let x = if mine { (column.min.x - 8.0 - bar.x).max(band.min.x + margin) } else { (column.max.x + 8.0).min(band.max.x - margin - bar.x) };
+                let at = Pos2::new(x, band.min.y - 6.0);
                 let mut open_picker = false;
                 let mut chosen: Option<Act> = None;
                 let shown = egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).constrain(true).show(ui.ctx(), |ui| {
@@ -1301,8 +1302,9 @@ impl App {
     /// group, the time), its file, its text in a bubble (big emojis without one), its reactions.
     /// `series`: whether it follows one of the same author's, and whether one follows it.
     #[allow(clippy::too_many_arguments)]
-    /// Returns the height of its head (the name, the time): the message itself is under it.
-    fn talk_bubble(&mut self, ui: &mut Ui, room: &Room, m: &Message, me: &str, series: (bool, bool), sheet: Option<&crate::emoji::Faces>, t: &'static Strings, theme: &Theme) -> f32 {
+    /// Returns the height of its head (the name, the time): the message itself is under it; and
+    /// the room it all took (the bubble, its file, its reactions).
+    fn talk_bubble(&mut self, ui: &mut Ui, room: &Room, m: &Message, me: &str, series: (bool, bool), sheet: Option<&crate::emoji::Faces>, t: &'static Strings, theme: &Theme) -> (f32, Rect) {
         let (grouped, continues) = series;
         let top = ui.cursor().min.y;
         let mine = m.from == me;
@@ -1330,7 +1332,7 @@ impl App {
                 .show(ui, |ui| ui.label(egui::RichText::new(t.talk_deleted).size(13.5).italics().color(theme.text_muted)))
                 .response
                 .on_hover_text(clock(m.at));
-            return head;
+            return (head, ui.min_rect());
         }
         // The message it answers, over it (a click brings it on screen).
         if let Some(q) = &m.reply {
@@ -1399,7 +1401,7 @@ impl App {
                 }
             });
         }
-        head
+        (head, ui.min_rect())
     }
 
     /// A link's card: its picture, site, title, description (as floor read them); a click opens it.
