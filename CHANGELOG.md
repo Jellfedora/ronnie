@@ -12,11 +12,13 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Les images et les fichiers** dans le tchat : le bouton +, un glisser-déposer ou ⌘ V pour une capture d'écran. Seuls les images, PDF, textes et documents Office passent, contrôlés par le serveur ; ils sont gardés 3 mois.
 - **De vrais comptes** : un pseudo et un mot de passe, une connexion qui reste sur chaque machine tant que tu t'en sers, un avatar à toi. Ton compte, dans Paramètres › Compte ou en bas de la colonne du tchat et des jeux. Ronnie te le propose au premier lancement.
 - **La page de téléchargement** de Ronnie, pour macOS, Windows et Linux, à donner aux collègues : Paramètres › À propos.
+- **Mes projets, pour remplacer WAMP** : une nouvelle catégorie où chaque site PHP est servi par Ronnie à l'adresse `http://<nom>.localhost:8080`, avec sa propre version de PHP et son serveur de base de données. PHP, nginx, MySQL et MariaDB s'installent dans la catégorie Dev, sans rien toucher au système sous Windows. Plusieurs projets tournent en même temps, chacun sur son PHP. WAMP s'importe en un clic depuis les bases de données : les mêmes versions de MySQL et MariaDB, ses réglages, ses données, et chaque projet relié à sa base. Testé sous Windows ; macOS et Linux restent à essayer. Merci à Jonathan !
 
 ### Changements
 
 - **Ronnie et ses services déménagent sur un nouveau serveur.** Les comptes, les pseudos et les classements repartent de zéro : choisis ton pseudo à nouveau au premier lancement.
 - **Les mises à jour viennent de ce serveur**, et chaque version est signée : Ronnie refuse d'installer une archive qui ne l'est pas.
+- **Le récap de la semaine** complète le lendemain une journée écrite trop tôt (le travail avec Claude ailleurs et les commits du soir y entrent), nomme les sous-dossiers avec leur projet (**monsite/Backend**), et prend des consignes pour Claude dans Paramètres › Claude Code (renommer un projet, en ignorer un). Merci à Jonathan !
 
 ## [0.39.0] - 2026-10-30
 
