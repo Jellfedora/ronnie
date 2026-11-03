@@ -195,12 +195,29 @@ impl App {
         if let Some(done) = done {
             if done.section {
                 self.recap.journal.sections.insert(day_key, report.section);
+                self.recap_notify(id, report.date, &title);
             }
             if done.total {
                 self.recap.journal.totals.insert(week_key, total);
             }
         }
         self.recap_save();
+    }
+
+    /// A day's section written by Claude: told of (as the user likes notifications), a click
+    /// opening the week's note.
+    fn recap_notify(&mut self, note: uuid::Uuid, date: chrono::NaiveDate, week: &str) {
+        let t = self.t();
+        let title = t.recap_notified.to_owned();
+        let body = t.recap_notified_body.replace("{d}", &date.format("%d/%m").to_string()).replace("{w}", week);
+        let focused = self.ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let style = self.config.settings.notify_style;
+        if !focused || style.system() {
+            crate::notify::send(&title, &body);
+        }
+        if style.in_app() {
+            self.push_toast(Toast { ok: true, title, body, tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: Some(drive::Lead::Note(note)) });
+        }
     }
 
     pub(super) fn recap_save(&mut self) {

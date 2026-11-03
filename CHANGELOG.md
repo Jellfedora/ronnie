@@ -2,6 +2,12 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [Unreleased]
+
+### Nouveautés
+
+- **Une notification quand Claude a écrit le récap d'une journée** dans la note de la semaine : un clic l'ouvre.
+
 ## [0.41.0] - 2026-11-03
 
 ### Nouveautés
