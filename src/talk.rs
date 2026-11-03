@@ -171,6 +171,9 @@ struct WirePreview {
     image: Option<String>,
 }
 
+/// A preview come from floor in the background: its link, and what it shows.
+type PreviewCame = (String, Option<Preview>);
+
 /// A link's preview: asked, or come (None: nothing to show).
 pub enum PreviewLoad {
     Loading,
@@ -438,7 +441,7 @@ pub struct Talk {
     pub found: Option<(String, String, Vec<Message>)>,
     /// The links' previews, by address.
     pub previews: HashMap<String, PreviewLoad>,
-    previews_came: Arc<Mutex<Vec<(String, Option<Preview>)>>>,
+    previews_came: Arc<Mutex<Vec<PreviewCame>>>,
     /// How far the player said they read, by conversation (this session).
     told_read: HashMap<String, i64>,
     /// The files of the conversations asked for (`ask_media`), the most recent first.
