@@ -31,10 +31,11 @@ enum Media {
     Image(Vec<u8>),
 }
 
-/// The clipboard's files (copied in the Finder, the Explorer), or its image when it comes alone or
-/// with a mere link or image name (copied from a browser). `text`: what egui would paste (None: it
-/// pastes nothing, the clipboard having no text: there is nothing else to take).
-fn clipboard_media(text: Option<&str>) -> Option<Media> {
+/// The clipboard's files (copied in the Finder, the Explorer), or its image; and whether its text
+/// still goes in the field (not a mere link or image name, as a browser copies with an image).
+/// Office's copies (Excel cells, Word text) come with a picture of them: only their text goes.
+/// `text`: what egui would paste (None: it pastes nothing, the clipboard having no text).
+fn clipboard_media(text: Option<&str>) -> Option<(Media, bool)> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     if text.is_none() && clipboard.get_text().is_ok_and(|s| !s.is_empty()) {
         return None;
@@ -42,20 +43,24 @@ fn clipboard_media(text: Option<&str>) -> Option<Media> {
     if let Ok(files) = clipboard.get().file_list()
         && !files.is_empty()
     {
-        return Some(Media::Files(files));
+        return Some((Media::Files(files), false));
     }
-    if let Some(text) = text.map(str::trim) {
-        let lower = text.to_lowercase();
-        let link = !text.contains(char::is_whitespace) && (lower.starts_with("http://") || lower.starts_with("https://") || [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| lower.ends_with(e)));
-        if !link {
-            return None;
+    let keep_text = match text.map(str::trim) {
+        Some(text) => {
+            if clipboard.get().html().is_ok_and(|h| h.contains("urn:schemas-microsoft-com:office")) {
+                return None;
+            }
+            let lower = text.to_lowercase();
+            let link = !text.contains(char::is_whitespace) && (lower.starts_with("http://") || lower.starts_with("https://") || [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| lower.ends_with(e)));
+            !link
         }
-    }
+        None => false,
+    };
     let image = clipboard.get_image().ok()?;
     let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())?;
     let mut png = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut png, image::ImageFormat::Png).ok()?;
-    Some(Media::Image(png.into_inner()))
+    Some((Media::Image(png.into_inner()), keep_text))
 }
 
 /// A message its author can change: a text, still there.
@@ -748,9 +753,11 @@ impl App {
             let text = ui.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }));
             let let_go = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)));
             if (text.is_some() || let_go)
-                && let Some(media) = clipboard_media(text.as_deref())
+                && let Some((media, keep_text)) = clipboard_media(text.as_deref())
             {
-                ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
+                if !keep_text {
+                    ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
+                }
                 match media {
                     Media::Files(files) => pasted_files = files,
                     Media::Image(png) => {
