@@ -405,7 +405,8 @@ impl App {
         // (One's own shakes one's window too, as it did on MSN, but isn't told of.)
         for (room, m) in &news.wizzed {
             let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
-            // Someone else's: Ronnie brought to the front (out of the Dock if it was there).
+            // Someone else's: Ronnie brought to the front (out of the Dock if it was there), its
+            // conversation shown.
             let mut wait = Duration::ZERO;
             if !mine {
                 let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
@@ -416,6 +417,9 @@ impl App {
                     wait = Duration::from_millis(600);
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                // The conversation it came from, on screen: who it is from.
+                self.talk_ui.room = Some(room.clone());
+                self.open_talk_page();
             }
             let fixed = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false) || i.viewport().maximized.unwrap_or(false));
             let outer = ctx.input(|i| i.viewport().outer_rect).filter(|_| !fixed).map(|r| r.min);
