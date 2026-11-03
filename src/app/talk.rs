@@ -169,6 +169,8 @@ pub(super) struct TalkUi {
     claude: Option<(bool, Instant)>,
     /// A message being fixed by Claude: its conversation, its text as sent, the answer once come.
     fixing: Option<(String, String, FixAnswer)>,
+    /// The window shaking (a wizz came): since when, from where.
+    shake: Option<(Instant, Pos2)>,
     /// Someone's face shown large (their id).
     avatar_open: Option<String>,
     /// The conversation whose files are shown, all of them.
@@ -350,6 +352,7 @@ fn event_text(t: &Strings, m: &Message) -> String {
         Some("left") => t.talk_event_left,
         Some("renamed") if m.text.is_empty() => t.talk_event_unnamed,
         Some("renamed") => t.talk_event_renamed,
+        Some("wizz") => t.talk_event_wizz,
         _ => "{a}",
     };
     text.replace("{a}", who).replace("{b}", &m.text)
@@ -395,6 +398,16 @@ impl App {
             let body = r.members.iter().filter(|x| x.id != me).map(|x| x.name.as_str()).collect::<Vec<_>>().join(", ");
             self.talk_notify(ctx, focused, room.clone(), title, body);
         }
+        // A wizz: told of, and the window shakes.
+        for (room, m) in &news.wizzed {
+            let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
+            self.talk_notify(ctx, focused, room.clone(), t.talk_wizzed.replace("{n}", &who), String::new());
+            if let Some(outer) = ctx.input(|i| i.viewport().outer_rect).filter(|_| !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false) || i.viewport().maximized.unwrap_or(false))) {
+                let origin = self.talk_ui.shake.map_or(outer.min, |(_, o)| o);
+                self.talk_ui.shake = Some((Instant::now(), origin));
+            }
+        }
+        self.talk_shake(ctx);
         // Someone left a group: told of, with those still in it.
         for (room, m) in &news.departed {
             let me = self.talk.me.as_ref().map_or("", |m| m.id.as_str());
@@ -420,6 +433,31 @@ impl App {
         let body: String = if arrived.len() > 1 { arrived.iter().rev().take(3).rev().map(|(_, m)| line(m)).collect::<Vec<_>>().join("\n") } else if last.file.is_some() { line(&last) } else { last.text.clone() };
         let body: String = body.chars().take(240).collect();
         self.talk_notify(ctx, focused, room, title, body);
+    }
+
+    /// A wizz sent, once a minesweeper game is won (floor checks it, and says when the next one may go).
+    fn send_wizz(&mut self, room: &str, t: &'static Strings) {
+        if self.config.settings.mines_best == 0 {
+            self.talk_ui.refused = Some((t.talk_wizz_locked.to_owned(), Instant::now()));
+            return;
+        }
+        self.talk.wizz(room);
+    }
+
+    /// The window shaken for 2 seconds after a wizz, harder at first, then put back where it was.
+    fn talk_shake(&mut self, ctx: &egui::Context) {
+        const SECONDS: f32 = 2.0;
+        let Some((since, origin)) = self.talk_ui.shake else { return };
+        let t = since.elapsed().as_secs_f32();
+        if t >= SECONDS {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
+            self.talk_ui.shake = None;
+            return;
+        }
+        let strength = 14.0 * (1.0 - t / SECONDS);
+        let offset = Vec2::new((t * 61.0).sin() * strength, (t * 47.0).cos() * strength * 0.6);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin + offset));
+        ctx.request_repaint();
     }
 
     /// Told of, as the user likes (the system's notifications, Ronnie's own), a click leading there.
@@ -702,6 +740,9 @@ impl App {
             if button(t.talk_search, "search") {
                 self.toggle_search(&room.id);
             }
+            if button(t.talk_wizz, "wizz") {
+                self.send_wizz(&room.id, t);
+            }
         }
         if room.kind == Kind::Group {
             let names: Vec<String> = room.members.iter().map(|m| if self.talk.is_online(&m.id) { format!("● {}", m.name) } else { format!("○ {}", m.name) }).collect();
@@ -732,6 +773,9 @@ impl App {
             }
             if button(t.talk_search, "search") {
                 self.toggle_search(&room.id);
+            }
+            if button(t.talk_wizz, "wizz") {
+                self.send_wizz(&room.id, t);
             }
         }
 
