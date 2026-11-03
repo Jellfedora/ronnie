@@ -150,6 +150,8 @@ Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
                                         \"panes\": [{\"cwd\", \"name\"?, \"startup\"?, \"node\"?}]}
   ronnie profile open <name>            open a saved profile (in the background)
   ronnie note [--folder F] [file]       add a Markdown note (else from stdin)
+  ronnie note --edit <id> [file]        replace a note's Markdown (else from stdin)
+  ronnie note --append <id> [file]      add Markdown at a note's end (else from stdin)
   ronnie notes [words…]                 the notes (matching all the words): id, folder, date, title
   ronnie notes show <id>                a note's Markdown
   ronnie mails [words…] [--limit N]     the mails caught (Dev > test mailbox), newest first
@@ -377,6 +379,21 @@ struct NoteEntry {
     text: String,
     updated: i64,
     trashed: Option<i64>,
+}
+
+/// The full id of the note (not in the bin) whose id starts with `prefix`.
+pub fn note_id(prefix: &str) -> Result<String, String> {
+    let path = crate::config::config_dir().ok_or("no config folder")?.join("notes.json");
+    let file: NotesFile = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+        Err(_) => NotesFile::default(),
+    };
+    let found: Vec<&NoteEntry> = file.notes.iter().filter(|n| n.trashed.is_none() && !prefix.is_empty() && n.id.starts_with(prefix)).collect();
+    match found.as_slice() {
+        [note] => Ok(note.id.clone()),
+        [] => Err(format!("no note {prefix}")),
+        _ => Err(format!("{prefix}: several notes, give more of the id")),
+    }
 }
 
 fn notes(rest: &[&str]) -> Result<String, String> {

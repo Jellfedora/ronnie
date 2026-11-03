@@ -502,6 +502,18 @@ impl Notes {
         id
     }
 
+    /// A note's text changed whole (by Claude, see `claude::NewNote`): replaced, or (`append`) the new
+    /// text added at its end; saved now. Whether it was there (out of the bin).
+    pub(super) fn set_text(&mut self, id: Uuid, text: &str, append: bool) -> bool {
+        let now = now_ms();
+        let Some(note) = self.note_mut(id).filter(|n| n.trashed.is_none()) else { return false };
+        note.text = if append { format!("{}\n\n{}", note.text.trim_end(), text) } else { text.to_owned() };
+        note.updated = now;
+        self.dirty = Some(0.0);
+        self.flush();
+        true
+    }
+
     /// The note whose id starts with `prefix` (not in the bin), and its title.
     pub(super) fn find(&self, prefix: &str) -> Option<(Uuid, String)> {
         let mut found = self.store.notes.iter().filter(|n| n.trashed.is_none() && n.id.to_string().starts_with(prefix));

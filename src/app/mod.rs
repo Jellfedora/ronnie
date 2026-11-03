@@ -2306,6 +2306,15 @@ impl App {
     fn claude_notes(&mut self) {
         let notes = std::mem::take(&mut *self.claude_notes.lock().unwrap());
         for note in notes {
+            // An existing note changed.
+            if let Some(id) = note.edit.as_deref().and_then(|id| uuid::Uuid::parse_str(id).ok()) {
+                if self.notes.set_text(id, &note.text, note.append) {
+                    let t = self.t();
+                    let title = self.notes.find(&id.to_string()).map(|(_, title)| title).unwrap_or_default();
+                    self.push_toast(Toast { ok: true, title: t.claude_note_edited.to_owned(), body: title, tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: Some(drive::Lead::Note(id)) });
+                }
+                continue;
+            }
             let id = self.notes.add(&note.text, note.folder.as_deref());
             let title = notes::title_of(&note.text).unwrap_or_default();
             let body = match &note.folder {

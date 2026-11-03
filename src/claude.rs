@@ -471,7 +471,8 @@ running it: a dev server, a watcher… rather than in the background of your own
 shows), `tab`, `type <pane> <text>`, `cd <pane> <dir>`, `node <pane> <version|system>`, \
 `node available`, `node install <latest|lts|22|vX.Y.Z>`, `rename`, `close`, `profile` (save one, its JSON on \
 stdin; `profile open <name>`), `notes` / `notes show <id>` (read \
-the user's notes), `note` (add one), `mails` / `mails show <id|last>` (the mails caught by the mail catcher: check a \
+the user's notes), `note` (add one; `note --edit <id>` replaces a note's text, `note --append <id>` adds at its \
+end), `mails` / `mails show <id|last>` (the mails caught by the mail catcher: check a \
 project's mails yourself), `open <file>` and `show <pane|notes|mails|dev…>`. When the user asks for a note \
 (\"crée-moi une note\"…), pipe its Markdown (first line `# Title`) to `{ronnie} note`, `--folder \"<name>\"` to file it \
 (else it goes in \"{notes_default}\"); never write notes.json (Ronnie keeps the notes in memory). What would change \
@@ -626,12 +627,17 @@ pub fn watch_events(ctx: egui::Context, queue: std::sync::Arc<std::sync::Mutex<V
 }
 
 /// A note Claude leaves for Ronnie (`ronnie note`): Markdown, its first line the title, and the folder
-/// to put it in (by name; None: "Notes").
+/// to put it in (by name; None: "Notes"). With `edit`, an existing note's id: its text replaced by
+/// this one, or (`append`) this one added at its end.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct NewNote {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub append: bool,
 }
 
 /// Where notes wait for Ronnie: one folder for every Ronnie on this config, kept while none runs (the
@@ -640,16 +646,26 @@ fn notes_inbox() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join("notes-inbox"))
 }
 
-/// `ronnie note [--folder <name>] [file]`: the note's Markdown from the file, or stdin.
+const NOTE_USAGE: &str = "Usage: ronnie note [--folder <name>] [file]      a new note\n       ronnie note --edit <id> [file]               a note's text replaced\n       ronnie note --append <id> [file]             added at a note's end\n(Markdown from the file, else from stdin; ids: `ronnie notes`)";
+
+/// `ronnie note [--folder <name> | --edit <id> | --append <id>] [file]`: the note's Markdown from
+/// the file, or stdin; a new note, or an existing one changed.
 pub fn run_note() -> Result<(), String> {
     let mut args = std::env::args().skip(2);
-    let (mut folder, mut file) = (None, None);
+    let (mut folder, mut file, mut edit, mut append) = (None, None, None, false);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--folder" => folder = Some(args.next().ok_or("--folder: which folder?")?),
-            _ if arg.starts_with('-') && arg != "-" => return Err(format!("unknown option {arg}\nUsage: ronnie note [--folder <name>] [file]   (Markdown, else from stdin)")),
+            "--edit" | "--append" => {
+                append = arg == "--append";
+                edit = Some(crate::drive::note_id(&args.next().ok_or(format!("{arg}: which note? (its id: `ronnie notes`)"))?)?);
+            }
+            _ if arg.starts_with('-') && arg != "-" => return Err(format!("unknown option {arg}\n{NOTE_USAGE}")),
             _ => file = Some(arg),
         }
+    }
+    if edit.is_some() && folder.is_some() {
+        return Err(format!("--folder is for a new note\n{NOTE_USAGE}"));
     }
     let text = match file.filter(|f| f != "-") {
         Some(file) => std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?,
@@ -663,12 +679,17 @@ pub fn run_note() -> Result<(), String> {
     if text.is_empty() {
         return Err("empty note".into());
     }
-    let note = NewNote { text, folder: folder.map(|f| f.trim().to_owned()).filter(|f| !f.is_empty()) };
+    let changed = edit.is_some();
+    let note = NewNote { text, folder: folder.map(|f| f.trim().to_owned()).filter(|f| !f.is_empty()), edit, append };
     let dir = notes_inbox().ok_or("no config folder")?;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let json = serde_json::to_string(&note).map_err(|e| e.to_string())?;
     write_atomic(&dir.join(format!("{nanos}-{}.json", std::process::id())), &json).map_err(|e| e.to_string())?;
-    println!("Note left for Ronnie (it adds it within a second, or when it next starts).");
+    if changed {
+        println!("Change left for Ronnie (it makes it within a second, or when it next starts).");
+    } else {
+        println!("Note left for Ronnie (it adds it within a second, or when it next starts).");
+    }
     Ok(())
 }
 
