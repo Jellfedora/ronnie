@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use super::sidebar::{paint_panel_title, paint_row_bg};
+use super::sidebar::{lerp_color, paint_panel_title, paint_row_bg};
 use super::*;
 use crate::talk::{Fetched, FileInfo, FileRefusal, Kind, Member, Message, Room, Status};
 
@@ -40,6 +40,12 @@ pub(super) struct TalkUi {
     settled: Option<(String, u8)>,
     /// The images shown, by file id.
     textures: HashMap<String, egui::TextureHandle>,
+    /// The animated GIFs shown, by file id.
+    animations: HashMap<String, crate::gif::Animation>,
+    /// The GIF picker, open (for a conversation's field), its search, its previews made textures.
+    gif_open: Option<GifOpen>,
+    gif_search: crate::gif::Search,
+    gif_previews: HashMap<String, crate::gif::Animation>,
     /// An image open large (its file id).
     viewing: Option<FileInfo>,
     /// A file to save once fetched.
@@ -51,6 +57,19 @@ pub(super) struct TalkUi {
     /// The `:name` completion: the name it was for, the line lit, and a name it was closed for (Esc).
     completing: (String, usize),
     completion_closed: Option<String>,
+}
+
+/// The GIF picker, open for a conversation.
+pub(super) struct GifOpen {
+    room: String,
+    /// Where it hangs (its bottom right).
+    at: Pos2,
+    query: String,
+    /// When the search was last typed (it goes a moment after), and the last one asked.
+    typed_at: f64,
+    searched: Option<String>,
+    focus: bool,
+    opened: f64,
 }
 
 /// What the emoji picker puts its emoji in.
@@ -398,6 +417,15 @@ impl App {
             return;
         };
         let margin = if rect.width() > 760.0 { 28.0 } else { 14.0 };
+        // Another conversation shown: the pickers open for the previous one close.
+        if self.talk_ui.gif_open.as_ref().is_some_and(|o| o.room != room.id) {
+            self.close_gifs();
+        }
+        if let Some(o) = &self.talk_ui.emoji_open
+            && !matches!(&o.target, EmojiTarget::Draft(r) | EmojiTarget::React(r, _) if *r == room.id)
+        {
+            self.talk_ui.emoji_open = None;
+        }
 
         // The head: who it is with, and a group's actions.
         let head = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 58.0));
@@ -549,7 +577,7 @@ impl App {
         let draft = self.talk_ui.drafts.entry(room.id.clone()).or_default();
         // Inside the frame drawn around it (a field without a frame of its own has no margin), the
         // emoji button on its right.
-        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(44.0, 9.0));
+        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(80.0, 9.0));
         let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
         painter.rect(field, 10.0, theme.chrome_bg, Stroke::new(1.0, if focused_before { theme.accent.gamma_multiply(0.6) } else { theme.tab_hover }), egui::StrokeKind::Inside);
         let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
@@ -582,6 +610,27 @@ impl App {
                 Some(o) if o.target == EmojiTarget::Draft(room.id.clone()) => None,
                 _ => Some(EmojiOpen { target: EmojiTarget::Draft(room.id.clone()), at: Pos2::new(field.max.x, field.min.y - 6.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now }),
             };
+            // (The GIF picker closed: written out, the draft being borrowed here.)
+            self.talk_ui.gif_open = None;
+            self.talk_ui.gif_search.clear();
+            self.talk_ui.gif_previews.clear();
+        }
+        // The GIF button, before it: the GIF picker.
+        let gif_button = Rect::from_min_size(Pos2::new(field.max.x - 74.0, field.max.y - 33.0), Vec2::new(34.0, 24.0));
+        let gif_resp = ui.interact(gif_button, ui.id().with(("talk-gif", room.id.as_str())), if ready { Sense::click() } else { Sense::hover() }).on_hover_text(t.talk_gif);
+        let lit = gif_resp.hovered() || self.talk_ui.gif_open.as_ref().is_some_and(|o| o.room == room.id);
+        painter.rect(gif_button, 6.0, if lit { theme.tab_hover } else { Color32::TRANSPARENT }, Stroke::new(1.3, if lit { theme.accent } else { theme.text_muted.gamma_multiply(0.7) }), egui::StrokeKind::Inside);
+        painter.text(gif_button.center(), Align2::CENTER_CENTER, "GIF", FontId::proportional(11.5), if lit { theme.accent } else { theme.text_muted });
+        if ready && gif_resp.clicked() {
+            if self.talk_ui.gif_open.as_ref().is_some_and(|o| o.room == room.id) {
+                self.talk_ui.gif_open = None;
+                self.talk_ui.gif_search.clear();
+                self.talk_ui.gif_previews.clear();
+            } else {
+                let now = ui.input(|i| i.time);
+                self.talk_ui.emoji_open = None;
+                self.talk_ui.gif_open = Some(GifOpen { room: room.id.clone(), at: Pos2::new(field.max.x, field.min.y - 6.0), query: String::new(), typed_at: 0.0, searched: None, focus: true, opened: now });
+            }
         }
         // The completion's list, and the emoji chosen in it put in place of the name (once the field
         // is done with the draft).
@@ -681,8 +730,9 @@ impl App {
             uploads.retain(|u| u.done.is_none());
         }
 
-        // The emoji picker, open (for the field or a reaction).
+        // The emoji picker, open (for the field or a reaction), and the GIF picker.
         self.talk_emoji_picker(ui.ctx(), t, &theme);
+        self.talk_gif_picker(ui.ctx(), t, &theme);
 
         // Under it: how to send, that no secret goes here; or what floor refused.
         let note_y = field.max.y + 12.0;
@@ -715,7 +765,7 @@ impl App {
         let width = ui.available_width() - margin * 2.0;
         let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
         let mut prev: Option<&Message> = None;
-        for m in &room.messages {
+        for (k, m) in room.messages.iter().enumerate() {
             let day = day_of(m.at);
             if day.is_some() && prev.and_then(|p| day_of(p.at)) != day {
                 ui.add_space(10.0);
@@ -733,69 +783,45 @@ impl App {
                 continue;
             }
             let grouped = prev.is_some_and(|p| p.from == m.from && m.at - p.at < GROUPED_MS);
-            let name = m.name.clone().unwrap_or_default();
+            // The next one of the same series: this bubble's corner on its author's side, below, stays tight.
+            let continues = room.messages.get(k + 1).is_some_and(|n| n.event.is_none() && n.from == m.from && n.at - m.at < GROUPED_MS && day_of(n.at) == day);
             let mine = m.from == me;
-            if !grouped {
-                ui.add_space(10.0);
-            }
+            ui.add_space(if grouped { 2.0 } else { 12.0 });
+            let bubble_max = (width * 0.72).max(240.0);
             let row = ui.horizontal_top(|ui| {
                 ui.add_space(margin);
-                // The round of the first of a series; room kept for the others.
-                let (avatar, _) = ui.allocate_exact_size(Vec2::new(30.0, if grouped { 1.0 } else { 30.0 }), Sense::hover());
-                if !grouped {
-                    let v = self.talk.avatar_of(&m.from);
-                    let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.from, v.as_deref());
-                    paint_avatar(ui.painter(), avatar.center(), 14.0, &name, false, face.as_ref(), theme);
-                }
-                ui.add_space(10.0);
-                ui.vertical(|ui| {
-                    ui.set_max_width(width - 40.0);
+                if mine {
+                    // Mine on the right.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ui.add_space(margin);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                            ui.set_max_width(bubble_max);
+                            self.talk_bubble(ui, room, m, me, (grouped, continues), sheet.as_ref(), t, theme);
+                        });
+                    });
+                } else {
+                    // The others' on the left, their face at the first of a series (room kept for the others).
+                    let (avatar, _) = ui.allocate_exact_size(Vec2::new(30.0, if grouped { 1.0 } else { 30.0 }), Sense::hover());
                     if !grouped {
-                        ui.horizontal(|ui| {
-                            let who = if mine { t.talk_you.to_owned() } else { name.clone() };
-                            ui.label(egui::RichText::new(who).size(13.0).strong().color(if mine { theme.accent } else { tint(theme, &name) }));
-                            ui.label(egui::RichText::new(clock(m.at)).size(11.0).color(theme.text_muted.gamma_multiply(0.75)));
-                        });
+                        let name = m.name.clone().unwrap_or_default();
+                        let v = self.talk.avatar_of(&m.from);
+                        let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.from, v.as_deref());
+                        paint_avatar(ui.painter(), avatar.center() + Vec2::new(0.0, if room.kind == Kind::Group { 16.0 } else { 12.0 }), 14.0, &name, false, face.as_ref(), theme);
                     }
-                    if let Some(file) = &m.file {
-                        self.talk_file(ui, file, t, theme);
-                    }
-                    if !m.text.is_empty() {
-                        let resp = super::emojis::emoji_label(ui, sheet.as_ref(), &m.text, 14.0, theme.text);
-                        if grouped {
-                            resp.on_hover_text(clock(m.at));
-                        }
-                    }
-                    // Its reactions: each emoji and how many; a click adds or takes back one's own.
-                    if !m.reactions.is_empty() {
-                        ui.add_space(3.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                            for r in &m.reactions {
-                                let own = r.ids.iter().any(|id| id == me);
-                                let count = r.ids.len().to_string();
-                                let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0 + 7.5 * count.len() as f32, 24.0), Sense::click());
-                                let (fill, edge) = if own { (theme.accent.gamma_multiply(0.18), theme.accent.gamma_multiply(0.7)) } else { (theme.tab_hover.gamma_multiply(if resp.hovered() { 1.0 } else { 0.55 }), theme.tab_hover) };
-                                ui.painter().rect(rect, 12.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-                                if let (Some(sheet), Some(cell)) = (&sheet, crate::emoji::cell(&r.emoji)) {
-                                    sheet.paint(ui.painter(), cell, Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), Vec2::splat(16.0)));
-                                }
-                                ui.painter().text(Pos2::new(rect.max.x - 9.0, rect.center().y), Align2::RIGHT_CENTER, &count, FontId::proportional(12.0), if own { theme.accent } else { theme.text_muted });
-                                let who: Vec<String> = r.ids.iter().map(|id| if id == me { t.talk_you.to_owned() } else { self.talk.name_of(id).unwrap_or_else(|| "?".into()) }).collect();
-                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(who.join(", ")).clicked() {
-                                    self.talk.react(&room.id, m.id, &r.emoji, !own);
-                                }
-                            }
-                        });
-                    }
-                });
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_max_width(bubble_max);
+                        self.talk_bubble(ui, room, m, me, (grouped, continues), sheet.as_ref(), t, theme);
+                    });
+                }
             });
             // Hovered: its bar, to react at once (the usual ones, or any from the picker).
             let row = row.response.rect;
             let pointer = ui.input(|i| i.pointer.hover_pos());
             if self.talk.ready() && self.talk_ui.emoji_open.is_none() && pointer.is_some_and(|p| row.contains(p) && ui.clip_rect().contains(p)) {
                 let bar = Vec2::new(7.0 * 30.0 + 10.0, 36.0);
-                let at = Pos2::new(row.max.x - margin - bar.x, row.min.y - 2.0);
+                // On the other side than the bubble.
+                let at = if mine { Pos2::new(row.min.x + margin, row.min.y - 2.0) } else { Pos2::new(row.max.x - margin - bar.x, row.min.y - 2.0) };
                 let mut open_picker = false;
                 egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).inner_margin(egui::Margin::symmetric(5, 3)).corner_radius(18.0).show(ui, |ui| {
@@ -837,6 +863,73 @@ impl App {
         }
     }
 
+    /// A message's column, aligned on its author's side by the caller: the series' head (the name in a
+    /// group, the time), its file, its text in a bubble (big emojis without one), its reactions.
+    /// `series`: whether it follows one of the same author's, and whether one follows it.
+    #[allow(clippy::too_many_arguments)]
+    fn talk_bubble(&mut self, ui: &mut Ui, room: &Room, m: &Message, me: &str, series: (bool, bool), sheet: Option<&crate::emoji::Faces>, t: &'static Strings, theme: &Theme) {
+        let (grouped, continues) = series;
+        let mine = m.from == me;
+        let name = m.name.clone().unwrap_or_default();
+        if !grouped {
+            if mine {
+                ui.label(egui::RichText::new(clock(m.at)).size(11.0).color(theme.text_muted.gamma_multiply(0.75)));
+            } else {
+                ui.horizontal(|ui| {
+                    if room.kind == Kind::Group {
+                        ui.label(egui::RichText::new(&name).size(12.5).strong().color(tint(theme, &name)));
+                    }
+                    ui.label(egui::RichText::new(clock(m.at)).size(11.0).color(theme.text_muted.gamma_multiply(0.75)));
+                });
+            }
+            ui.add_space(2.0);
+        }
+        if let Some(file) = &m.file {
+            self.talk_file(ui, file, t, theme);
+        }
+        if !m.text.is_empty() {
+            if crate::emoji::only_emojis(&m.text).is_some() {
+                super::emojis::emoji_label(ui, sheet, &m.text, 14.0, theme.text).on_hover_text(clock(m.at));
+            } else {
+                // Round, tighter on its author's side where its series goes on.
+                let (round, tight) = (16, 5);
+                let (top, bottom) = (if grouped { tight } else { round }, if continues { tight } else { round });
+                let corners = if mine { egui::CornerRadius { nw: round, ne: top, sw: round, se: bottom } } else { egui::CornerRadius { nw: top, ne: round, sw: bottom, se: round } };
+                let (fill, ink) = if mine { (theme.accent, Color32::WHITE) } else { (lerp_color(theme.bg, theme.text, 0.10), theme.text) };
+                egui::Frame::new()
+                    .fill(fill)
+                    .corner_radius(corners)
+                    .inner_margin(egui::Margin::symmetric(12, 7))
+                    .show(ui, |ui| ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| super::emojis::emoji_label(ui, sheet, &m.text, 14.0, ink)))
+                    .response
+                    .on_hover_text(clock(m.at));
+            }
+        }
+        // Its reactions, under it on its side: each emoji and how many; a click adds or takes back one's own.
+        if !m.reactions.is_empty() {
+            ui.add_space(3.0);
+            let side = if mine { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+            ui.with_layout(side, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                for r in &m.reactions {
+                    let own = r.ids.iter().any(|id| id == me);
+                    let count = r.ids.len().to_string();
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0 + 7.5 * count.len() as f32, 24.0), Sense::click());
+                    let (fill, edge) = if own { (theme.accent.gamma_multiply(0.18), theme.accent.gamma_multiply(0.7)) } else { (theme.tab_hover.gamma_multiply(if resp.hovered() { 1.0 } else { 0.55 }), theme.tab_hover) };
+                    ui.painter().rect(rect, 12.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+                    if let (Some(sheet), Some(cell)) = (sheet, crate::emoji::cell(&r.emoji)) {
+                        sheet.paint(ui.painter(), cell, Rect::from_center_size(Pos2::new(rect.min.x + 16.0, rect.center().y), Vec2::splat(16.0)));
+                    }
+                    ui.painter().text(Pos2::new(rect.max.x - 9.0, rect.center().y), Align2::RIGHT_CENTER, &count, FontId::proportional(12.0), if own { theme.accent } else { theme.text_muted });
+                    let who: Vec<String> = r.ids.iter().map(|id| if id == me { t.talk_you.to_owned() } else { self.talk.name_of(id).unwrap_or_else(|| "?".into()) }).collect();
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(who.join(", ")).clicked() {
+                        self.talk.react(&room.id, m.id, &r.emoji, !own);
+                    }
+                }
+            });
+        }
+    }
+
     /// An emoji put in a conversation's field: at its cursor (at the end without one), or in place of
     /// the `:name` typed (`range`, char indexes). It goes to the recent ones.
     fn put_emoji(&mut self, ctx: &egui::Context, room: &str, chars: &str, range: Option<(usize, usize)>) {
@@ -855,6 +948,149 @@ impl App {
         super::emojis::remember(&mut self.config.settings.emoji_recent, chars);
         self.save_config();
         self.talk_ui.focus = true;
+    }
+
+    /// The GIF picker closed: its search and previews forgotten (their memory freed).
+    fn close_gifs(&mut self) {
+        self.talk_ui.gif_open = None;
+        self.talk_ui.gif_search.clear();
+        self.talk_ui.gif_previews.clear();
+    }
+
+    /// The GIF picker, open: the trending GIFs, or those found (the search goes once the typing
+    /// pauses), in three columns of animated previews, more coming at the bottom; the one clicked is
+    /// sent (floor copies it). A click elsewhere or Esc closes it.
+    fn talk_gif_picker(&mut self, ctx: &egui::Context, t: &'static Strings, theme: &Theme) {
+        const COLS: usize = 3;
+        const WIDTH: f32 = 408.0;
+        const GAP: f32 = 6.0;
+        let Some(key) = self.talk.key() else { return };
+        let Some(open) = &mut self.talk_ui.gif_open else { return };
+        let now = ctx.input(|i| i.time);
+        // The search, once the typing pauses (at once when opened: the trending ones).
+        let wanted = open.query.trim().to_owned();
+        if open.searched.as_deref() != Some(wanted.as_str()) {
+            if open.searched.is_none() || now - open.typed_at > 0.4 {
+                self.talk_ui.gif_search.search(ctx, &key, &wanted);
+                open.searched = Some(wanted.clone());
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(120));
+            }
+        }
+        let Some(shown) = self.talk_ui.gif_search.shown() else { return };
+        let column = (WIDTH - GAP * (COLS as f32 - 1.0)) / COLS as f32;
+        let mut chosen: Option<crate::gif::Gif> = None;
+        let mut more = false;
+        let search = &self.talk_ui.gif_search;
+        let previews = &mut self.talk_ui.gif_previews;
+        let area = egui::Area::new(egui::Id::new("gif-picker")).order(egui::Order::Foreground).fixed_pos(open.at).pivot(Align2::RIGHT_BOTTOM).constrain(true).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).inner_margin(10.0).corner_radius(12.0).show(ui, |ui| {
+                ui.set_width(WIDTH);
+                let resp = ui.add(egui::TextEdit::singleline(&mut open.query).hint_text(t.gif_search).desired_width(WIDTH).margin(Vec2::new(8.0, 6.0)));
+                if std::mem::take(&mut open.focus) {
+                    resp.request_focus();
+                }
+                if resp.changed() {
+                    open.typed_at = now;
+                }
+                ui.add_space(6.0);
+                if shown.query.is_empty() {
+                    ui.label(egui::RichText::new(t.gif_trending).size(11.5).color(theme.text_muted));
+                    ui.add_space(4.0);
+                }
+                let scroll = egui::ScrollArea::vertical().id_salt(("gif-grid", shown.query.as_str())).max_height(360.0).min_scrolled_height(360.0).auto_shrink([false, false]).show(ui, |ui| {
+                    if shown.results.is_empty() {
+                        ui.add_space(40.0);
+                        ui.vertical_centered(|ui| {
+                            if shown.loading {
+                                ui.spinner();
+                            } else if let Some(e) = &shown.error {
+                                ui.label(egui::RichText::new(t.gif_unavailable).size(12.5).color(theme.ansi[1])).on_hover_text(e);
+                            } else {
+                                ui.label(egui::RichText::new(t.gif_none).size(12.5).color(theme.text_muted));
+                            }
+                        });
+                        return;
+                    }
+                    // Three columns, each GIF in the shortest one (its height by its shape).
+                    let mut heights = [0.0f32; COLS];
+                    let mut places = Vec::with_capacity(shown.results.len());
+                    for gif in &shown.results {
+                        let (w, h) = (gif.preview.width.max(1) as f32, gif.preview.height.max(1) as f32);
+                        let height = (column * h / w).clamp(60.0, 260.0);
+                        let c = (0..COLS).min_by(|a, b| heights[*a].total_cmp(&heights[*b])).unwrap_or(0);
+                        places.push((c, heights[c], height));
+                        heights[c] += height + GAP;
+                    }
+                    let total = heights.iter().copied().fold(0.0, f32::max);
+                    let (grid, _) = ui.allocate_exact_size(Vec2::new(WIDTH, total), Sense::hover());
+                    let visible = ui.clip_rect();
+                    let time = (ui.input(|i| i.time) * 1000.0) as u64;
+                    for (gif, (c, y, height)) in shown.results.iter().zip(places) {
+                        let rect = Rect::from_min_size(Pos2::new(grid.min.x + c as f32 * (column + GAP), grid.min.y + y), Vec2::new(column, height));
+                        // Only those near the screen are fetched and played.
+                        if !rect.intersects(visible.expand(300.0)) {
+                            continue;
+                        }
+                        if !previews.contains_key(&gif.id)
+                            && let Some(frames) = search.preview(ui.ctx(), &key, gif)
+                        {
+                            previews.insert(gif.id.clone(), crate::gif::Animation::new(ui.ctx(), &format!("gif-preview-{}", gif.id), frames));
+                        }
+                        let resp = ui.interact(rect, ui.id().with(("gif", gif.id.as_str())), Sense::click());
+                        match previews.get(&gif.id) {
+                            Some(animation) => {
+                                let (texture, wait) = animation.at(time);
+                                if rect.intersects(visible) {
+                                    ui.ctx().request_repaint_after(wait);
+                                }
+                                ui.painter().add(egui::epaint::RectShape::filled(rect, 8.0, Color32::WHITE).with_texture(texture.id(), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))));
+                            }
+                            None => {
+                                ui.painter().rect_filled(rect, 8.0, theme.tab_hover.gamma_multiply(0.6));
+                            }
+                        }
+                        if resp.hovered() {
+                            ui.painter().rect_stroke(rect, 8.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
+                        }
+                        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let resp = if gif.title.is_empty() { resp } else { resp.on_hover_text(&gif.title) };
+                        if resp.clicked() {
+                            chosen = Some(gif.clone());
+                        }
+                    }
+                    if shown.loading {
+                        ui.add_space(8.0);
+                        ui.vertical_centered(|ui| ui.spinner());
+                    }
+                });
+                // Near the bottom: the next page.
+                let state = scroll.state;
+                if shown.more && !shown.loading && state.offset.y + scroll.inner_rect.height() > scroll.content_size.y - 300.0 {
+                    more = true;
+                }
+                ui.add_space(6.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(t.gif_powered).size(10.5).color(theme.text_muted.gamma_multiply(0.8)));
+                });
+            });
+        });
+        let rect = area.response.rect;
+        if more {
+            self.talk_ui.gif_search.more(ctx, &key);
+        }
+        let since = now - self.talk_ui.gif_open.as_ref().map_or(now, |o| o.opened);
+        let outside = since > 0.2 && ctx.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p)));
+        let escape = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if let Some(gif) = chosen {
+            if let Some(open) = &self.talk_ui.gif_open {
+                let (room, query) = (open.room.clone(), shown.query.clone());
+                self.talk.send_gif(ctx, &room, &gif, &query);
+            }
+            self.close_gifs();
+        } else if outside || escape {
+            self.close_gifs();
+        }
     }
 
     /// The emoji picker, open: the emoji clicked goes in the field (the picker stays) or reacts to the
@@ -907,10 +1143,24 @@ impl App {
         if file.image() {
             match self.talk.files.get(&file.id) {
                 Some(Fetched::Done { image: Some(picture), .. }) => {
-                    let texture = self.talk_ui.textures.entry(file.id.clone()).or_insert_with(|| ctx.load_texture(format!("talk-{}", file.id), (**picture).clone(), egui::TextureOptions::LINEAR));
-                    let size = texture.size_vec2();
+                    // An animated GIF: its frames made textures once, the one of the moment shown.
+                    if let Some(frames) = self.talk.frames.remove(&file.id) {
+                        self.talk_ui.animations.insert(file.id.clone(), crate::gif::Animation::new(&ctx, &format!("talk-{}", file.id), frames));
+                    }
+                    let shown = match self.talk_ui.animations.get(&file.id) {
+                        Some(animation) => {
+                            let (texture, wait) = animation.at((ctx.input(|i| i.time) * 1000.0) as u64);
+                            ctx.request_repaint_after(wait);
+                            (texture.id(), animation.size())
+                        }
+                        None => {
+                            let texture = self.talk_ui.textures.entry(file.id.clone()).or_insert_with(|| ctx.load_texture(format!("talk-{}", file.id), (**picture).clone(), egui::TextureOptions::LINEAR));
+                            (texture.id(), texture.size_vec2())
+                        }
+                    };
+                    let (id, size) = shown;
                     let scale = (360.0 / size.x).min(260.0 / size.y).min(1.0);
-                    let resp = ui.add(egui::Image::new((texture.id(), size * scale)).corner_radius(8.0).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(&file.name);
+                    let resp = ui.add(egui::Image::new((id, size * scale)).corner_radius(10.0).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(&file.name);
                     if resp.clicked() {
                         self.talk_ui.viewing = Some(file.clone());
                     }

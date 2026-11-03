@@ -31,6 +31,7 @@ mod mssql;
 mod subsonic;
 mod sysmon;
 mod emoji;
+mod gif;
 mod talk;
 mod pane;
 mod putty;

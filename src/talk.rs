@@ -103,6 +103,9 @@ pub enum Fetched {
     Failed(String),
 }
 
+/// A file fetched in the background: its id, what came, an animated GIF's frames.
+type Came = (String, Fetched, Option<crate::gif::Frames>);
+
 /// A file being sent.
 #[derive(Clone, Debug)]
 pub struct Upload {
@@ -314,7 +317,9 @@ pub struct Talk {
     pub rooms: Vec<Room>,
     /// The files fetched (or being), by id.
     pub files: HashMap<String, Fetched>,
-    fetched: Arc<Mutex<Vec<(String, Fetched)>>>,
+    /// An animated GIF's frames, by file id, until the window makes them textures (it takes them).
+    pub frames: HashMap<String, crate::gif::Frames>,
+    fetched: Arc<Mutex<Vec<Came>>>,
     /// The files being sent, and those just sent or refused (until seen).
     pub uploads: Arc<Mutex<Vec<Upload>>>,
 }
@@ -597,11 +602,38 @@ impl Talk {
         });
     }
 
+    /// A GIF found by the search, sent to a conversation (floor copies it): shown as being sent, like a file.
+    pub fn send_gif(&self, ctx: &egui::Context, room: &str, gif: &crate::gif::Gif, query: &str) {
+        let Some(key) = self.key.clone() else { return };
+        let name = format!("{}.gif", if gif.title.is_empty() { "GIF" } else { gif.title.as_str() });
+        if let Ok(mut list) = self.uploads.lock() {
+            list.push(Upload { room: room.to_owned(), name: name.clone(), done: None });
+        }
+        let (uploads, ctx, room, gif, query) = (self.uploads.clone(), ctx.clone(), room.to_owned(), gif.clone(), query.to_owned());
+        std::thread::spawn(move || {
+            let done = crate::gif::send(&key, &room, &gif, &query);
+            if let Ok(mut list) = uploads.lock()
+                && let Some(u) = list.iter_mut().find(|u| u.room == room && u.name == name && u.done.is_none())
+            {
+                u.done = Some(done);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// floor's address and the session's token, for the GIF search.
+    pub fn key(&self) -> Option<crate::gif::Key> {
+        self.key.clone()
+    }
+
     /// A file of a message, fetched from floor if it isn't yet (see `files`).
     pub fn fetch(&mut self, ctx: &egui::Context, file: &FileInfo) {
         // What came in the background.
         if let Ok(mut came) = self.fetched.lock() {
-            for (id, f) in came.drain(..) {
+            for (id, f, frames) in came.drain(..) {
+                if let Some(frames) = frames {
+                    self.frames.insert(id.clone(), frames);
+                }
                 self.files.insert(id, f);
             }
         }
@@ -610,17 +642,22 @@ impl Talk {
         }
         let Some((url, token)) = self.key.clone() else { return };
         self.files.insert(file.id.clone(), Fetched::Loading);
-        let (fetched, ctx, id, image) = (self.fetched.clone(), ctx.clone(), file.id.clone(), file.image());
+        let (fetched, ctx, id, image, gif) = (self.fetched.clone(), ctx.clone(), file.id.clone(), file.image(), file.mime == "image/gif");
         std::thread::spawn(move || {
+            let mut frames = None;
             let got = match fetch_file(&url, &token, &id) {
                 Ok(bytes) => {
                     let picture = if image { decode(&bytes).map(Arc::new) } else { None };
+                    // An animated GIF: its frames too (shown at 360 px at most; 480 for a sharp screen).
+                    if gif {
+                        frames = crate::gif::frames(&bytes, 480, 12_000_000);
+                    }
                     Fetched::Done { bytes: Arc::new(bytes), image: picture }
                 }
                 Err(e) => Fetched::Failed(e),
             };
             if let Ok(mut came) = fetched.lock() {
-                came.push((id, got));
+                came.push((id, got, frames));
             }
             ctx.request_repaint();
         });
