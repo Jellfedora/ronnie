@@ -542,6 +542,17 @@ impl Talk {
                         r.kind = room.kind;
                         r.name = room.name;
                         r.members = room.members;
+                        // A pseudo changed: the messages already here take it too.
+                        for m in &mut r.messages {
+                            if let Some(x) = r.members.iter().find(|x| x.id == m.from) {
+                                m.name = Some(x.name.clone());
+                            }
+                            if let Some(q) = &mut m.reply
+                                && let Some(x) = r.members.iter().find(|x| Some(&x.id) == q.from.as_ref())
+                            {
+                                q.name = Some(x.name.clone());
+                            }
+                        }
                         if let Some(messages) = room.messages {
                             for m in messages {
                                 r.add(m);
@@ -1007,8 +1018,9 @@ mod tests {
         // Older ones put before; the group renamed; left.
         talk.take(Wire::History { room: "g:1".into(), messages: vec![msg(1, "o", "old"), msg(2, "l", "dup")], done: true }, &mut news);
         assert_eq!(talk.rooms[0].messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["old", "Ace", ""]);
-        talk.take(serde_json::from_str(r#"{"t":"room","room":{"id":"g:1","kind":"group","name":"Motörhead","members":[{"id":"d","name":"Dio"}]}}"#).unwrap(), &mut news);
+        talk.take(serde_json::from_str(r#"{"t":"room","room":{"id":"g:1","kind":"group","name":"Motörhead","members":[{"id":"d","name":"Ronnie James"}]}}"#).unwrap(), &mut news);
         assert_eq!(talk.rooms[0].title("d"), "Motörhead");
+        assert_eq!(talk.rooms[0].messages[2].name.as_deref(), Some("Ronnie James"));
         assert_eq!(talk.rooms[0].messages.len(), 3);
         talk.take(serde_json::from_str(r#"{"t":"room","room":{"id":"g:2","kind":"group","members":[]},"opened":true}"#).unwrap(), &mut news);
         assert_eq!(news.opened.as_deref(), Some("g:2"));

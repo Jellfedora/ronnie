@@ -24,6 +24,40 @@ fn quote_text(t: &Strings, q: &Quote) -> String {
     }
 }
 
+/// What a paste sends rather than puts in the field.
+enum Media {
+    Files(Vec<std::path::PathBuf>),
+    /// An image, as a PNG.
+    Image(Vec<u8>),
+}
+
+/// The clipboard's files (copied in the Finder, the Explorer), or its image when it comes alone or
+/// with a mere link or image name (copied from a browser). `text`: what egui would paste (None: it
+/// pastes nothing, the clipboard having no text: there is nothing else to take).
+fn clipboard_media(text: Option<&str>) -> Option<Media> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    if text.is_none() && clipboard.get_text().is_ok_and(|s| !s.is_empty()) {
+        return None;
+    }
+    if let Ok(files) = clipboard.get().file_list()
+        && !files.is_empty()
+    {
+        return Some(Media::Files(files));
+    }
+    if let Some(text) = text.map(str::trim) {
+        let lower = text.to_lowercase();
+        let link = !text.contains(char::is_whitespace) && (lower.starts_with("http://") || lower.starts_with("https://") || [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|e| lower.ends_with(e)));
+        if !link {
+            return None;
+        }
+    }
+    let image = clipboard.get_image().ok()?;
+    let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    rgba.write_to(&mut png, image::ImageFormat::Png).ok()?;
+    Some(Media::Image(png.into_inner()))
+}
+
 /// A message its author can change: a text, still there.
 fn editable(m: &Message) -> bool {
     !m.deleted && m.event.is_none() && m.file.is_none() && !m.text.is_empty()
@@ -707,6 +741,25 @@ impl App {
         }
         // Enter sends (Shift + Enter: a new line): taken before the field sees it.
         let send = put.is_none() && focused_before && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        // ⌘ V with files or an image on the clipboard: sent (their name, a link, kept out of the field).
+        // With text, egui says so on the press; with none, only the key let go does.
+        let mut pasted_files: Vec<std::path::PathBuf> = Vec::new();
+        if self.talk.ready() && focused_before {
+            let text = ui.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }));
+            let let_go = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)));
+            if (text.is_some() || let_go)
+                && let Some(media) = clipboard_media(text.as_deref())
+            {
+                ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
+                match media {
+                    Media::Files(files) => pasted_files = files,
+                    Media::Image(png) => {
+                        let name = format!("capture-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+                        self.talk.upload(ui.ctx(), &room.id, &name, png);
+                    }
+                }
+            }
+        }
         let ready = self.talk.ready();
         let hint = if room.kind == Kind::Group { t.talk_hint_group } else { t.talk_hint }.replace("{n}", &title);
         let draft = self.talk_ui.drafts.entry(room.id.clone()).or_default();
@@ -819,7 +872,7 @@ impl App {
         let plus = if ready && attach_resp.hovered() { theme.accent } else { theme.text_muted };
         painter.line_segment([attach.center() - Vec2::new(7.0, 0.0), attach.center() + Vec2::new(7.0, 0.0)], Stroke::new(1.8, plus));
         painter.line_segment([attach.center() - Vec2::new(0.0, 7.0), attach.center() + Vec2::new(0.0, 7.0)], Stroke::new(1.8, plus));
-        let mut chosen: Vec<std::path::PathBuf> = Vec::new();
+        let mut chosen: Vec<std::path::PathBuf> = pasted_files;
         if ready && attach_resp.clicked() {
             let picked = rfd::FileDialog::new().add_filter(t.talk_file_types, &crate::talk::FILE_TYPES).pick_files();
             chosen.extend(picked.unwrap_or_default());
@@ -854,20 +907,6 @@ impl App {
                     FileRefusal::Unreadable => t.talk_refused_unreadable,
                 };
                 self.talk_ui.refused = Some((text.replace("{n}", &name), Instant::now()));
-            }
-        }
-        // ⌘ V with an image and no text on the clipboard (a screenshot): sent as a PNG.
-        let pasted = ready && resp.has_focus() && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)));
-        if pasted
-            && let Ok(mut clipboard) = arboard::Clipboard::new()
-            && clipboard.get_text().map_or(true, |s| s.is_empty())
-            && let Ok(image) = clipboard.get_image()
-            && let Some(rgba) = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())
-        {
-            let mut png = std::io::Cursor::new(Vec::new());
-            if rgba.write_to(&mut png, image::ImageFormat::Png).is_ok() {
-                let name = format!("capture-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-                self.talk.upload(ui.ctx(), &room.id, &name, png.into_inner());
             }
         }
         // The files sent: those done go; one refused says why.
@@ -983,7 +1022,7 @@ impl App {
             let bar_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("react-bar", m.id)));
             let on_top = |p: Pos2| ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id() || l == bar_layer);
             let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p) && on_top(p));
-            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && !m.deleted && hovered {
+            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && self.talk_ui.gif_open.is_none() && !m.deleted && hovered {
                 let acts: Vec<Act> = if mine && editable(m) { vec![Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Reply, Act::Delete] } else { vec![Act::Reply] };
                 let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
                 // On the other side than the bubble, inside the page.
