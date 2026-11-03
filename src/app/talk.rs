@@ -6,10 +6,28 @@ use std::collections::HashMap;
 
 use super::sidebar::{lerp_color, paint_panel_title, paint_row_bg};
 use super::*;
-use crate::talk::{Fetched, FileInfo, FileRefusal, Kind, Member, Message, Room, Status};
+use crate::talk::{Fetched, FileInfo, FileRefusal, Kind, Member, Message, Quote, Room, Status};
 
 /// Messages from the same person this close (ms) go under one name.
 const GROUPED_MS: i64 = 5 * 60 * 1000;
+/// A message reached from a quote stays lit this long (s).
+const JUMP_LIT: f32 = 1.6;
+
+/// What a quote says of its message: its text, its file, or that it was taken back.
+fn quote_text(t: &Strings, q: &Quote) -> String {
+    if q.deleted {
+        t.talk_deleted.to_owned()
+    } else if q.text.is_empty() {
+        format!("📎 {}", q.file.as_deref().unwrap_or_default())
+    } else {
+        q.text.clone()
+    }
+}
+
+/// A message its author can change: a text, still there.
+fn editable(m: &Message) -> bool {
+    !m.deleted && m.event.is_none() && m.file.is_none() && !m.text.is_empty()
+}
 
 /// The people picked for a new group, or to add to one.
 pub(super) struct Picker {
@@ -57,6 +75,48 @@ pub(super) struct TalkUi {
     /// The `:name` completion: the name it was for, the line lit, and a name it was closed for (Esc).
     completing: (String, usize),
     completion_closed: Option<String>,
+    /// The message being answered, by conversation (quoted over the field).
+    replying: HashMap<String, Quote>,
+    /// A message being changed: its conversation, its id, and the draft put aside meanwhile.
+    editing: Option<(String, i64, String)>,
+    /// A message to take back, asked first: its conversation and id.
+    deleting: Option<(String, i64)>,
+    /// A quote clicked: the message to bring on screen (once), lit a moment.
+    jump: Option<(i64, Instant, bool)>,
+    /// Someone being given a name for oneself: their id, the name typed.
+    nicknaming: Option<(String, String)>,
+    /// The names given were handed to the chat (once, at the first frame).
+    nicknamed: bool,
+    /// The hover bar shown, for which message, where (it stays while the pointer is on it).
+    bar: Option<(i64, Rect)>,
+}
+
+/// What a message's hover bar does besides reacting.
+#[derive(Clone, Copy, PartialEq)]
+enum Act {
+    Reply,
+    Edit,
+    Delete,
+}
+
+/// A small icon for a message's action, drawn around `c`.
+fn paint_act(painter: &egui::Painter, c: Pos2, act: Act, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let at = |x: f32, y: f32| c + Vec2::new(x, y);
+    match act {
+        Act::Reply => {
+            painter.add(egui::Shape::line(vec![at(6.0, 6.0), at(6.0, 2.0), at(3.0, -1.0), at(-6.0, -1.0)], stroke));
+            painter.add(egui::Shape::line(vec![at(-2.0, -5.0), at(-6.0, -1.0), at(-2.0, 3.0)], stroke));
+        }
+        Act::Edit => {
+            painter.add(egui::Shape::closed_line(vec![at(-5.0, 3.0), at(3.0, -5.0), at(5.0, -3.0), at(-3.0, 5.0), at(-6.0, 6.0)], stroke));
+        }
+        Act::Delete => {
+            painter.line_segment([at(-6.0, -4.0), at(6.0, -4.0)], stroke);
+            painter.add(egui::Shape::line(vec![at(-2.0, -4.0), at(-2.0, -6.0), at(2.0, -6.0), at(2.0, -4.0)], stroke));
+            painter.add(egui::Shape::line(vec![at(-4.5, -4.0), at(-3.5, 6.0), at(3.5, 6.0), at(4.5, -4.0)], stroke));
+        }
+    }
 }
 
 /// The GIF picker, open for a conversation.
@@ -182,6 +242,10 @@ impl App {
     /// come in, those of a conversation not on screen told of.
     pub(super) fn talk_frame(&mut self, ctx: &egui::Context) {
         let on = !self.config.settings.hidden_categories.contains(&Category::Talk) && !self.read_only;
+        if !self.talk_ui.nicknamed {
+            self.talk_ui.nicknamed = true;
+            self.talk.set_nicknames(&self.config.settings.talk_nicknames);
+        }
         let news = self.talk.frame(ctx, self.config.settings.floor.as_ref(), on);
         if news.forgotten {
             if let Some(account) = &mut self.config.settings.floor {
@@ -453,6 +517,26 @@ impl App {
         let sub_galley = painter.layout_no_wrap(sub.0, FontId::proportional(12.0), sub.1);
         let sub_rect = Rect::from_min_size(Pos2::new(text_x, head.center().y + 2.0), sub_galley.size());
         painter.galley(sub_rect.min, sub_galley, sub.1);
+        // A name given: their pseudo beside it.
+        if let Some(pseudo) = room.peer(&me).filter(|_| room.kind == Kind::Dm).and_then(|p| self.talk.pseudo_of(&p.id)) {
+            let w = painter.layout_no_wrap(title.clone(), FontId::proportional(16.0), theme.text).size().x;
+            painter.text(Pos2::new(text_x + w + 8.0, head.center().y - 7.0), Align2::LEFT_CENTER, t.talk_nickname_pseudo.replace("{n}", pseudo), FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
+        }
+        // With one person: a name of one's own for them.
+        if room.kind == Kind::Dm
+            && let Some(peer) = room.peer(&me)
+        {
+            let galley = painter.layout_no_wrap(t.talk_nickname.to_owned(), FontId::proportional(12.5), theme.text);
+            let w = galley.size().x + 22.0;
+            let r = Rect::from_min_size(Pos2::new(head.max.x - margin - w, head.center().y - 14.0), Vec2::new(w, 28.0));
+            let resp = ui.interact(r, ui.id().with(("talk-act", "nickname")), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            painter.rect_filled(r, 6.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg });
+            painter.galley(r.center() - galley.size() / 2.0, galley, theme.text);
+            if resp.clicked() {
+                let given = self.config.settings.talk_nicknames.get(&peer.id).cloned().unwrap_or_default();
+                self.talk_ui.nicknaming = Some((peer.id.clone(), given));
+            }
+        }
         if room.kind == Kind::Group {
             let names: Vec<String> = room.members.iter().map(|m| if self.talk.is_online(&m.id) { format!("● {}", m.name) } else { format!("○ {}", m.name) }).collect();
             ui.interact(sub_rect, ui.id().with("talk-members"), Sense::hover()).on_hover_text(names.join("\n"));
@@ -487,7 +571,11 @@ impl App {
         let shown_lines = if draft.is_empty() { 1 } else { ui.ctx().data(|d| d.get_temp::<usize>(rows_id)).unwrap_or(1) };
         let lines = typed_lines.max(shown_lines);
         let field_h = 20.0 + 19.0 * lines.min(6) as f32;
-        let foot = Rect::from_min_max(Pos2::new(rect.min.x + margin, rect.max.y - field_h - 44.0), Pos2::new(rect.max.x - margin, rect.max.y));
+        // Over it, the message answered or being changed.
+        let editing = self.talk_ui.editing.as_ref().filter(|(r, ..)| *r == room.id).map(|(_, id, _)| *id);
+        let replying = if editing.is_some() { None } else { self.talk_ui.replying.get(&room.id).cloned() };
+        let banner_h = if editing.is_some() || replying.is_some() { 40.0 } else { 0.0 };
+        let foot = Rect::from_min_max(Pos2::new(rect.min.x + margin, rect.max.y - field_h - 44.0 - banner_h), Pos2::new(rect.max.x - margin, rect.max.y));
         let list = Rect::from_min_max(Pos2::new(rect.min.x, head.max.y + 1.0), Pos2::new(rect.max.x, foot.min.y - 4.0));
 
         // The messages, the newest at the bottom; scrolled to the top, older ones come.
@@ -537,7 +625,41 @@ impl App {
             let text = if typing.len() == 1 { t.talk_typing_one.replace("{n}", typing[0]) } else { t.talk_typing_many.replace("{n}", &typing.join(", ")) };
             painter.text(Pos2::new(foot.min.x + 4.0, foot.min.y + 8.0), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme.text_muted);
         }
-        let full = Rect::from_min_max(Pos2::new(foot.min.x, foot.min.y + 16.0), Pos2::new(foot.max.x, foot.min.y + 16.0 + field_h));
+        let full = Rect::from_min_max(Pos2::new(foot.min.x, foot.min.y + 16.0 + banner_h), Pos2::new(foot.max.x, foot.min.y + 16.0 + banner_h + field_h));
+        if banner_h > 0.0 {
+            let band = Rect::from_min_max(Pos2::new(full.min.x + 44.0, foot.min.y + 16.0), Pos2::new(full.max.x, full.min.y - 4.0));
+            painter.rect_filled(band, 8.0, theme.chrome_bg);
+            painter.rect_filled(Rect::from_min_size(band.min + Vec2::new(8.0, 7.0), Vec2::new(3.0, band.height() - 14.0)), 1.5, theme.accent);
+            let (head, body) = match &replying {
+                Some(q) => {
+                    let who = if q.from.as_deref() == Some(me.as_str()) { t.talk_you.to_owned() } else { q.name.clone().unwrap_or_default() };
+                    (t.talk_replying.replace("{n}", &who), quote_text(t, q))
+                }
+                None => (t.talk_editing.to_owned(), String::new()),
+            };
+            let text_w = band.width() - 60.0;
+            let head_g = painter.layout(head, FontId::proportional(11.5), theme.accent, f32::INFINITY);
+            let one_line = if body.is_empty() { 0.0 } else { 8.0 };
+            painter.galley(Pos2::new(band.min.x + 20.0, band.center().y - head_g.size().y / 2.0 - one_line), head_g, theme.accent);
+            if !body.is_empty() {
+                let mut job = egui::text::LayoutJob::simple_singleline(body.replace('\n', " "), FontId::proportional(12.5), theme.text_muted);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
+                let g = painter.layout_job(job);
+                painter.galley(Pos2::new(band.min.x + 20.0, band.center().y), g, theme.text_muted);
+            }
+            // × closes it.
+            let close = Rect::from_center_size(Pos2::new(band.max.x - 18.0, band.center().y), Vec2::splat(24.0));
+            let resp = ui.interact(close, ui.id().with(("talk-banner-close", room.id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.hovered() {
+                painter.circle_filled(close.center(), 12.0, theme.tab_hover);
+            }
+            let c = if resp.hovered() { theme.text } else { theme.text_muted };
+            painter.line_segment([close.center() - Vec2::splat(4.5), close.center() + Vec2::splat(4.5)], Stroke::new(1.5, c));
+            painter.line_segment([close.center() + Vec2::new(-4.5, 4.5), close.center() + Vec2::new(4.5, -4.5)], Stroke::new(1.5, c));
+            if resp.clicked() {
+                self.stop_answering(&room.id);
+            }
+        }
         // On its left, the button to send an image or a file.
         let attach = Rect::from_min_size(Pos2::new(full.min.x, full.max.y - 38.0), Vec2::splat(38.0));
         let field = Rect::from_min_max(Pos2::new(full.min.x + 44.0, full.min.y), full.max);
@@ -573,6 +695,15 @@ impl App {
                 }
             });
             *lit = (*lit).min(found.len() - 1);
+        }
+        // Esc: the answer or the change given up; ↑ in an empty field: one's last message changed.
+        if put.is_none() && focused_before && (editing.is_some() || replying.is_some()) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.stop_answering(&room.id);
+        }
+        if put.is_none() && focused_before && editing.is_none() && typed.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp))
+            && let Some(m) = room.messages.iter().rev().find(|m| m.from == me && editable(m))
+        {
+            self.start_edit(ui.ctx(), &room.id, m);
         }
         // Enter sends (Shift + Enter: a new line): taken before the field sees it.
         let send = put.is_none() && focused_before && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
@@ -663,9 +794,19 @@ impl App {
             self.talk.typing(&room.id);
         }
         if send && !text.is_empty() {
-            self.talk.say(&room.id, &text);
-            if let Some(d) = self.talk_ui.drafts.get_mut(&room.id) {
-                d.clear();
+            match self.talk_ui.editing.take() {
+                Some((r, id, aside)) if r == room.id => {
+                    self.talk.edit(&room.id, id, &text);
+                    self.talk_ui.drafts.insert(room.id.clone(), aside);
+                }
+                other => {
+                    self.talk_ui.editing = other;
+                    let reply = self.talk_ui.replying.remove(&room.id).map(|q| q.id);
+                    self.talk.say(&room.id, &text, reply);
+                    if let Some(d) = self.talk_ui.drafts.get_mut(&room.id) {
+                        d.clear();
+                    }
+                }
             }
             resp.request_focus();
         }
@@ -773,6 +914,10 @@ impl App {
     fn talk_messages(&mut self, ui: &mut Ui, room: &Room, me: &str, margin: f32, t: &'static Strings, theme: &Theme) {
         let width = ui.available_width() - margin * 2.0;
         let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
+        // A quote's message not here (gone with the older ones): nothing to light.
+        if self.talk_ui.jump.is_some_and(|(_, at, _)| at.elapsed().as_secs_f32() > JUMP_LIT) {
+            self.talk_ui.jump = None;
+        }
         let mut prev: Option<&Message> = None;
         for (k, m) in room.messages.iter().enumerate() {
             let day = day_of(m.at);
@@ -824,15 +969,25 @@ impl App {
                     });
                 }
             });
-            // Hovered: its bar, to react at once (the usual ones, or any from the picker).
+            // Hovered (anywhere across its line): its bar, to react at once (the usual ones, or any from
+            // the picker), to answer it, and one's own to change or take back. It stays while the pointer
+            // is on it.
             let row = row.response.rect;
+            let band = Rect::from_x_y_ranges(ui.max_rect().x_range(), row.y_range());
+            if self.talk_ui.jump.is_some_and(|(id, ..)| id == m.id) {
+                self.light_jump(ui, row, theme);
+            }
             let pointer = ui.input(|i| i.pointer.hover_pos());
-            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && pointer.is_some_and(|p| row.contains(p) && ui.clip_rect().contains(p)) {
-                let bar = Vec2::new(7.0 * 30.0 + 10.0, 36.0);
-                // On the other side than the bubble.
-                let at = if mine { Pos2::new(row.min.x + margin, row.min.y - 2.0) } else { Pos2::new(row.max.x - margin - bar.x, row.min.y - 2.0) };
+            let on_bar = self.talk_ui.bar.is_some_and(|(id, r)| id == m.id && pointer.is_some_and(|p| r.expand(2.0).contains(p)));
+            let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p));
+            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && !m.deleted && hovered {
+                let acts: Vec<Act> = if mine && editable(m) { vec![Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Reply, Act::Delete] } else { vec![Act::Reply] };
+                let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
+                // On the other side than the bubble, inside the page.
+                let at = if mine { Pos2::new(band.min.x + margin, row.min.y - 2.0) } else { Pos2::new(band.max.x - margin - bar.x, row.min.y - 2.0) };
                 let mut open_picker = false;
-                egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
+                let mut chosen: Option<Act> = None;
+                let shown = egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).constrain(true).show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).inner_margin(egui::Margin::symmetric(5, 3)).corner_radius(18.0).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
@@ -860,13 +1015,49 @@ impl App {
                             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.talk_react).clicked() {
                                 open_picker = true;
                             }
+                            // A thin line, then the actions.
+                            let (sep, _) = ui.allocate_exact_size(Vec2::new(5.0, 28.0), Sense::hover());
+                            ui.painter().line_segment([sep.center_top() + Vec2::new(0.0, 6.0), sep.center_bottom() - Vec2::new(0.0, 6.0)], Stroke::new(1.0, theme.tab_hover));
+                            for act in &acts {
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+                                if resp.hovered() {
+                                    ui.painter().circle_filled(rect.center(), 14.0, theme.tab_hover);
+                                }
+                                let c = match (act, resp.hovered()) {
+                                    (Act::Delete, true) => theme.ansi[1],
+                                    (_, true) => theme.accent,
+                                    _ => theme.text_muted,
+                                };
+                                paint_act(ui.painter(), rect.center(), *act, c);
+                                let tip = match act {
+                                    Act::Reply => t.talk_reply,
+                                    Act::Edit => t.talk_edit,
+                                    Act::Delete => t.talk_delete,
+                                };
+                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+                                    chosen = Some(*act);
+                                }
+                            }
                         });
                     });
                 });
+                self.talk_ui.bar = Some((m.id, shown.response.rect));
+                match chosen {
+                    Some(Act::Reply) => {
+                        self.stop_answering(&room.id);
+                        self.talk_ui.replying.insert(room.id.clone(), Quote::of(m));
+                        self.talk_ui.focus = true;
+                    }
+                    Some(Act::Edit) => self.start_edit(ui.ctx(), &room.id, m),
+                    Some(Act::Delete) => self.talk_ui.deleting = Some((room.id.clone(), m.id)),
+                    None => {}
+                }
                 if open_picker {
                     let now = ui.input(|i| i.time);
-                    self.talk_ui.emoji_open = Some(EmojiOpen { target: EmojiTarget::React(room.id.clone(), m.id), at: Pos2::new(row.max.x - margin, row.min.y + 34.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now });
+                    self.talk_ui.emoji_open = Some(EmojiOpen { target: EmojiTarget::React(room.id.clone(), m.id), at: Pos2::new(at.x + 7.0 * 30.0, row.min.y + 34.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now });
                 }
+            } else if self.talk_ui.bar.is_some_and(|(id, _)| id == m.id) {
+                self.talk_ui.bar = None;
             }
             prev = Some(m);
         }
@@ -893,6 +1084,22 @@ impl App {
             }
             ui.add_space(2.0);
         }
+        // Taken back: only its place left.
+        if m.deleted {
+            egui::Frame::new()
+                .stroke(Stroke::new(1.0, theme.tab_hover))
+                .corner_radius(16)
+                .inner_margin(egui::Margin::symmetric(12, 7))
+                .show(ui, |ui| ui.label(egui::RichText::new(t.talk_deleted).size(13.5).italics().color(theme.text_muted)))
+                .response
+                .on_hover_text(clock(m.at));
+            return;
+        }
+        // The message it answers, over it (a click brings it on screen).
+        if let Some(q) = &m.reply {
+            self.talk_quote(ui, m.id, q, me, t, theme);
+            ui.add_space(2.0);
+        }
         if let Some(file) = &m.file {
             self.talk_file(ui, file, t, theme);
         }
@@ -913,6 +1120,9 @@ impl App {
                     .response
                     .on_hover_text(clock(m.at));
             }
+        }
+        if let Some(at) = m.edited {
+            ui.label(egui::RichText::new(t.talk_edited).size(10.5).italics().color(theme.text_muted.gamma_multiply(0.75))).on_hover_text(clock(at));
         }
         // Its reactions, under it on its side: each emoji and how many; a click adds or takes back one's own.
         if !m.reactions.is_empty() {
@@ -936,6 +1146,63 @@ impl App {
                     }
                 }
             });
+        }
+    }
+
+    /// A message quoted over the one answering it: who wrote it, its text on one line.
+    fn talk_quote(&mut self, ui: &mut Ui, of: i64, q: &Quote, me: &str, t: &'static Strings, theme: &Theme) {
+        let who = if q.from.as_deref() == Some(me) { t.talk_you.to_owned() } else { q.from.as_deref().and_then(|id| self.talk.name_of(id)).or_else(|| q.name.clone()).unwrap_or_default() };
+        let frame = egui::Frame::new().fill(lerp_color(theme.bg, theme.text, 0.05)).corner_radius(12).inner_margin(egui::Margin { left: 16, right: 12, top: 5, bottom: 6 }).show(ui, |ui| {
+            ui.label(egui::RichText::new(&who).size(11.5).strong().color(theme.text_muted));
+            let text = egui::RichText::new(quote_text(t, q).replace('\n', " ")).size(12.5).color(theme.text_muted);
+            ui.add(egui::Label::new(if q.deleted { text.italics() } else { text }).truncate().selectable(false));
+        });
+        let rect = frame.response.rect;
+        ui.painter().rect_filled(Rect::from_min_size(rect.min + Vec2::new(7.0, 6.0), Vec2::new(2.5, rect.height() - 12.0)), 1.25, theme.accent.gamma_multiply(0.7));
+        if !q.deleted {
+            let resp = ui.interact(rect, ui.id().with(("talk-quote", of)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.clicked() {
+                self.talk_ui.jump = Some((q.id, Instant::now(), false));
+            }
+        }
+    }
+
+    /// A quote clicked: its message brought on screen (once), lit a moment.
+    fn light_jump(&mut self, ui: &mut Ui, row: Rect, theme: &Theme) {
+        let Some((_, at, scrolled)) = &mut self.talk_ui.jump else { return };
+        if !*scrolled {
+            ui.scroll_to_rect(row, Some(egui::Align::Center));
+            *scrolled = true;
+        }
+        let left = 1.0 - at.elapsed().as_secs_f32() / JUMP_LIT;
+        if left <= 0.0 {
+            self.talk_ui.jump = None;
+            return;
+        }
+        ui.painter().rect_filled(row.expand2(Vec2::new(0.0, 3.0)), 8.0, theme.accent.gamma_multiply(0.18 * left));
+        ui.ctx().request_repaint();
+    }
+
+    /// One's message put in the field to be changed (the draft put aside till then).
+    fn start_edit(&mut self, ctx: &egui::Context, room: &str, m: &Message) {
+        self.stop_answering(room);
+        let aside = self.talk_ui.drafts.remove(room).unwrap_or_default();
+        self.talk_ui.drafts.insert(room.to_owned(), m.text.clone());
+        self.talk_ui.editing = Some((room.to_owned(), m.id, aside));
+        let id = egui::Id::new(("talk-field", room));
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(m.text.chars().count()))));
+        state.store(ctx, id);
+        self.talk_ui.focus = true;
+    }
+
+    /// The answer or the change given up in a conversation (the draft put aside comes back).
+    fn stop_answering(&mut self, room: &str) {
+        self.talk_ui.replying.remove(room);
+        if self.talk_ui.editing.as_ref().is_some_and(|(r, ..)| r == room)
+            && let Some((_, _, aside)) = self.talk_ui.editing.take()
+        {
+            self.talk_ui.drafts.insert(room.to_owned(), aside);
         }
     }
 
@@ -1343,6 +1610,45 @@ impl App {
             }
         }
 
+        if let Some((id, name)) = &mut self.talk_ui.nicknaming {
+            let pseudo = self.talk.pseudo_of(id).map(str::to_owned).or_else(|| self.talk.name_of(id)).unwrap_or_default();
+            let (mut done, mut close) = (false, false);
+            let modal = egui::Modal::new(egui::Id::new("talk-nickname")).frame(frame).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(egui::RichText::new(t.talk_nickname).size(18.0).strong());
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.talk_nickname_help.replace("{n}", &pseudo)).size(13.0).color(theme.text_muted)).wrap());
+                ui.add_space(12.0);
+                let resp = ui.add(egui::TextEdit::singleline(name).char_limit(crate::talk::NAME_MAX).hint_text(&pseudo).desired_width(f32::INFINITY).margin(Vec2::new(10.0, 7.0)));
+                resp.request_focus();
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = true;
+                }
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new(t.save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0))).clicked() {
+                        done = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if done {
+                let (id, name) = (id.clone(), name.trim().to_owned());
+                if name.is_empty() || name == pseudo {
+                    self.config.settings.talk_nicknames.remove(&id);
+                } else {
+                    self.config.settings.talk_nicknames.insert(id, name);
+                }
+                self.save_config();
+                self.talk.set_nicknames(&self.config.settings.talk_nicknames);
+                self.talk_ui.nicknaming = None;
+            } else if close || modal.should_close() {
+                self.talk_ui.nicknaming = None;
+            }
+        }
+
         if let Some((room, name)) = &mut self.talk_ui.renaming {
             let (mut done, mut close) = (false, false);
             let modal = egui::Modal::new(egui::Id::new("talk-rename")).frame(frame).show(ctx, |ui| {
@@ -1396,6 +1702,34 @@ impl App {
                 self.talk_ui.room = None;
             } else if close || modal.should_close() {
                 self.talk_ui.leaving = None;
+            }
+        }
+
+        if let Some((room, id)) = self.talk_ui.deleting.clone() {
+            let (mut done, mut close) = (false, false);
+            let modal = egui::Modal::new(egui::Id::new("talk-delete")).frame(frame).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(egui::RichText::new(t.talk_delete).size(18.0).strong());
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.talk_delete_ask).size(13.0).color(theme.text_muted)).wrap());
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new(t.talk_delete).size(13.5).color(theme.bg)).fill(theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0))).clicked() {
+                        done = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if done {
+                self.talk.delete(&room, id);
+                if self.talk_ui.editing.as_ref().is_some_and(|(r, e, _)| *r == room && *e == id) {
+                    self.stop_answering(&room);
+                }
+                self.talk_ui.deleting = None;
+            } else if close || modal.should_close() {
+                self.talk_ui.deleting = None;
             }
         }
     }

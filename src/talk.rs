@@ -75,6 +75,39 @@ pub struct Message {
     /// The reactions to it: each emoji, with who reacted so (in order).
     #[serde(default)]
     pub reactions: Vec<Reaction>,
+    /// The message it answers, quoted over it.
+    #[serde(default)]
+    pub reply: Option<Quote>,
+    /// When its author changed it (milliseconds since 1970).
+    #[serde(default)]
+    pub edited: Option<i64>,
+    /// Its author took it back: empty, it stays in its place.
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// A message quoted by the one answering it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Quote {
+    pub id: i64,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub text: String,
+    /// Its file's name (a message of a file only).
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+impl Quote {
+    /// A message, quoted.
+    pub fn of(m: &Message) -> Self {
+        Quote { id: m.id, from: Some(m.from.clone()), name: m.name.clone(), text: m.text.clone(), file: m.file.as_ref().map(|f| f.name.clone()), deleted: m.deleted }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -255,6 +288,9 @@ enum Wire {
     History { room: String, messages: Vec<Message>, done: bool },
     #[serde(rename = "reactions")]
     Reactions { room: String, message: i64, reactions: Vec<Reaction> },
+    /// A message changed (edited, taken back), as it is now.
+    #[serde(rename = "changed")]
+    Changed { room: String, m: Message },
     #[serde(rename = "pong")]
     Pong {},
     #[serde(rename = "error")]
@@ -322,6 +358,33 @@ pub struct Talk {
     fetched: Arc<Mutex<Vec<Came>>>,
     /// The files being sent, and those just sent or refused (until seen).
     pub uploads: Arc<Mutex<Vec<Upload>>>,
+    /// The names the player gave others, for themself only (by id): shown in place of their pseudos.
+    nicknames: HashMap<String, String>,
+    /// The pseudos so replaced, by id.
+    pseudos: HashMap<String, String>,
+}
+
+/// Each name shown of someone (their id, the name): in the lists, the conversations, the messages,
+/// those quoted, those typing.
+fn each_name(online: &mut [Member], everyone: &mut [Member], rooms: &mut [Room], mut f: impl FnMut(&str, &mut String)) {
+    for m in online.iter_mut().chain(everyone.iter_mut()) {
+        f(&m.id, &mut m.name);
+    }
+    for r in rooms {
+        for m in r.members.iter_mut().chain(r.typing.iter_mut().map(|(m, _)| m)) {
+            f(&m.id, &mut m.name);
+        }
+        for m in &mut r.messages {
+            if let Some(name) = &mut m.name {
+                f(&m.from, name);
+            }
+            if let Some(q) = &mut m.reply
+                && let (Some(from), Some(name)) = (&q.from, &mut q.name)
+            {
+                f(from, name);
+            }
+        }
+    }
 }
 
 /// floor's WebSocket address, from its HTTP one.
@@ -387,9 +450,18 @@ impl Talk {
                 }
             }
         }
+        let came = !messages.is_empty();
         for wire in messages {
             self.last_heard = Some(Instant::now());
             self.take(wire, &mut news);
+        }
+        if came && !self.nicknames.is_empty() {
+            self.apply_nicknames();
+            for (_, m) in &mut news.arrived {
+                if let Some(nick) = self.nicknames.get(&m.from) {
+                    m.name = Some(nick.clone());
+                }
+            }
         }
         if let Some(why) = closed {
             if why.as_deref() == Some("Joueur inconnu") || why.as_deref().is_some_and(|w| w.contains("pseudo")) {
@@ -506,6 +578,19 @@ impl Talk {
                     m.reactions = reactions;
                 }
             }
+            Wire::Changed { room, m } => {
+                if let Some(r) = self.rooms.iter_mut().find(|r| r.id == room) {
+                    // Those quoting it too.
+                    for other in r.messages.iter_mut() {
+                        if let Some(q) = other.reply.as_mut().filter(|q| q.id == m.id) {
+                            *q = Quote::of(&m);
+                        }
+                    }
+                    if let Some(old) = r.messages.iter_mut().find(|x| x.id == m.id) {
+                        *old = m;
+                    }
+                }
+            }
             Wire::Pong {} => {}
             Wire::Error { error } => news.refused = Some(error),
         }
@@ -535,6 +620,35 @@ impl Talk {
         self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).map(|m| m.name.clone())
     }
 
+    /// The names given to others (by id), for the player only: shown in place of their pseudos.
+    pub fn set_nicknames(&mut self, all: &HashMap<String, String>) {
+        // Back to the pseudos, then the new names.
+        let pseudos = std::mem::take(&mut self.pseudos);
+        each_name(&mut self.online, &mut self.everyone, &mut self.rooms, |id, name| {
+            if let Some(p) = pseudos.get(id) {
+                *name = p.clone();
+            }
+        });
+        self.nicknames = all.clone();
+        self.apply_nicknames();
+    }
+
+    fn apply_nicknames(&mut self) {
+        let (nicknames, pseudos) = (&self.nicknames, &mut self.pseudos);
+        each_name(&mut self.online, &mut self.everyone, &mut self.rooms, |id, name| {
+            if let Some(nick) = nicknames.get(id)
+                && name != nick
+            {
+                pseudos.insert(id.to_owned(), std::mem::replace(name, nick.clone()));
+            }
+        });
+    }
+
+    /// Someone's own pseudo, when the player gave them another name.
+    pub fn pseudo_of(&self, id: &str) -> Option<&str> {
+        self.nicknames.contains_key(id).then(|| self.pseudos.get(id).map(String::as_str)).flatten()
+    }
+
     /// A player's avatar version, from what floor sent last (everyone, those online, the conversations).
     pub fn avatar_of(&self, id: &str) -> Option<String> {
         let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
@@ -547,9 +661,23 @@ impl Talk {
         self.send(json!({ "t": "react", "room": room, "message": message, "emoji": emoji, "on": on }));
     }
 
-    pub fn say(&mut self, room: &str, text: &str) {
+    /// `reply`: the message it answers, in the same conversation.
+    pub fn say(&mut self, room: &str, text: &str, reply: Option<i64>) {
         self.last_typing = None;
-        self.send(json!({ "t": "say", "room": room, "text": text }));
+        match reply {
+            Some(id) => self.send(json!({ "t": "say", "room": room, "text": text, "reply": id })),
+            None => self.send(json!({ "t": "say", "room": room, "text": text })),
+        }
+    }
+
+    /// One of the player's messages, its text changed (floor sends it back to everyone: `changed`).
+    pub fn edit(&mut self, room: &str, message: i64, text: &str) {
+        self.send(json!({ "t": "edit", "room": room, "message": message, "text": text }));
+    }
+
+    /// One of the player's messages, taken back.
+    pub fn delete(&mut self, room: &str, message: i64) {
+        self.send(json!({ "t": "delete", "room": room, "message": message }));
     }
 
     /// The others told the player is typing (not too often).
@@ -822,7 +950,7 @@ mod tests {
     }
 
     fn msg(id: i64, from: &str, text: &str) -> Message {
-        Message { id, from: from.into(), name: Some(from.into()), text: text.into(), at: 0, event: None, file: None, reactions: Vec::new() }
+        Message { id, from: from.into(), name: Some(from.into()), text: text.into(), at: 0, event: None, file: None, reactions: Vec::new(), reply: None, edited: None, deleted: false }
     }
 
     #[test]
@@ -851,9 +979,34 @@ mod tests {
         assert_eq!(news.arrived.len(), 1);
         assert_eq!(talk.rooms[0].unread("d", 0), 1);
 
+        // An answer quoting one; that one changed, then taken back: the quote follows.
+        talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:1","m":{"id":4,"from":"l","name":"Lemmy","text":"Yes","at":8,"reply":{"id":3,"from":"d","name":"Dio","text":"of Spades"}}}"#).unwrap(), &mut news);
+        assert_eq!(talk.rooms[0].messages[2].reply.as_ref().map(|q| q.text.as_str()), Some("of Spades"));
+        talk.take(serde_json::from_str(r#"{"t":"changed","room":"g:1","m":{"id":3,"from":"d","name":"Dio","text":"of Hearts","at":7,"edited":9}}"#).unwrap(), &mut news);
+        assert_eq!(talk.rooms[0].messages[1].text, "of Hearts");
+        assert_eq!(talk.rooms[0].messages[1].edited, Some(9));
+        assert_eq!(talk.rooms[0].messages[2].reply.as_ref().map(|q| q.text.as_str()), Some("of Hearts"));
+        talk.take(serde_json::from_str(r#"{"t":"changed","room":"g:1","m":{"id":3,"from":"d","name":"Dio","text":"","at":7,"deleted":true}}"#).unwrap(), &mut news);
+        assert!(talk.rooms[0].messages[1].deleted);
+        assert!(talk.rooms[0].messages[2].reply.as_ref().is_some_and(|q| q.deleted));
+        talk.rooms[0].messages.pop();
+
+        // A name given to Lemmy, for oneself: everywhere, then taken back.
+        talk.set_nicknames(&HashMap::from([("l".to_owned(), "Kilmister".to_owned())]));
+        assert_eq!(talk.rooms[0].messages[0].name.as_deref(), Some("Kilmister"));
+        assert_eq!(talk.rooms[0].title("d"), "Ozzy, Kilmister");
+        assert_eq!(talk.pseudo_of("l"), Some("Lemmy"));
+        talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:1","m":{"id":5,"from":"l","name":"Lemmy","text":"!","at":9}}"#).unwrap(), &mut news);
+        talk.apply_nicknames();
+        assert_eq!(talk.rooms[0].messages[2].name.as_deref(), Some("Kilmister"));
+        talk.rooms[0].messages.pop();
+        talk.set_nicknames(&HashMap::new());
+        assert_eq!(talk.rooms[0].title("d"), "Ozzy, Lemmy");
+        assert_eq!(talk.pseudo_of("l"), None);
+
         // Older ones put before; the group renamed; left.
         talk.take(Wire::History { room: "g:1".into(), messages: vec![msg(1, "o", "old"), msg(2, "l", "dup")], done: true }, &mut news);
-        assert_eq!(talk.rooms[0].messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["old", "Ace", "of Spades"]);
+        assert_eq!(talk.rooms[0].messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["old", "Ace", ""]);
         talk.take(serde_json::from_str(r#"{"t":"room","room":{"id":"g:1","kind":"group","name":"Motörhead","members":[{"id":"d","name":"Dio"}]}}"#).unwrap(), &mut news);
         assert_eq!(talk.rooms[0].title("d"), "Motörhead");
         assert_eq!(talk.rooms[0].messages.len(), 3);
@@ -901,7 +1054,7 @@ mod tests {
         until("the conversation opened", &mut talks, &mut news, &|t| !t[0].rooms.is_empty());
         assert!(news[0].iter().any(|n| n.opened.is_some()));
         let dm = talks[0].rooms[0].id.clone();
-        talks[0].say(&dm, "Holy Diver");
+        talks[0].say(&dm, "Holy Diver", None);
         until("the message at Ozzy's", &mut talks, &mut news, &|t| t[1].room(&dm).is_some_and(|r| r.messages.len() == 1));
         assert!(news[1].iter().any(|n| n.arrived.iter().any(|(r, m)| *r == dm && m.text == "Holy Diver")));
         assert!(!news[0].iter().any(|n| !n.arrived.is_empty()), "one's own message isn't told of");
@@ -911,7 +1064,7 @@ mod tests {
         talks[1].group("Heaven & Hell", &[accounts[0].id.clone(), lemmy]);
         until("the group everywhere", &mut talks, &mut news, &|t| t.iter().all(|t| t.rooms.iter().any(|r| r.kind == Kind::Group)));
         let group = talks[2].rooms.iter().find(|r| r.kind == Kind::Group).unwrap().id.clone();
-        talks[2].say(&group, "Ace of Spades");
+        talks[2].say(&group, "Ace of Spades", None);
         until("the message in the group", &mut talks, &mut news, &|t| t[0].room(&group).is_some_and(|r| r.messages.iter().any(|m| m.text == "Ace of Spades")));
         talks[0].rename(&group, "Black Sabbath");
         until("renamed", &mut talks, &mut news, &|t| t[2].room(&group).is_some_and(|r| r.name.as_deref() == Some("Black Sabbath")));
