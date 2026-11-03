@@ -2,6 +2,31 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.41.0] - 2026-11-03
+
+### Nouveautés
+
+- **Répondre à un message** : il est cité au-dessus de ta réponse, et un clic sur la citation y ramène.
+- **Modifier et supprimer tes messages** : depuis la barre qui apparaît au survol, ou ↑ dans le champ vide pour reprendre le dernier. Un message modifié le dit ; un message supprimé laisse « Message supprimé » à sa place, chez tout le monde.
+- **Épingler un message** pour 1 heure, 3 heures, 24 heures ou une semaine : les messages épinglés s'affichent en haut de la conversation, avec qui les a épinglés et pour combien de temps encore.
+- **Rechercher dans une conversation**, dans tout son historique (les noms de fichiers aussi) : un clic sur un résultat y mène.
+- **« Vu »** sous ton dernier message quand l'autre l'a lu (dans un groupe : par qui).
+- **Les liens cliquables, avec leur aperçu** : le titre, la description et l'image de la page sous le message. C'est le serveur qui lit la page, pas l'ordinateur de chacun.
+- **Les médias d'une conversation** : toutes ses images et tous ses fichiers dans une fenêtre, depuis le bouton Médias.
+- **Un surnom pour un collègue**, rien que pour toi : il remplace son pseudo partout chez toi, et lui n'en sait rien.
+- **Corriger un message avec Claude** : le bouton ✳ du champ corrige les fautes et les tournures de phrase avant l'envoi, si Claude Code est installé.
+- **L'avatar d'un collègue en grand**, en cliquant dessus.
+- **Une notification** quand quelqu'un t'ajoute à un groupe ou quitte l'un des tiens.
+
+### Corrections
+
+- ⇧ Entrée va bien à la ligne au lieu d'envoyer le message.
+- Le champ grandit avec les longues lignes, pas seulement avec les retours à la ligne.
+- Une bulle a la largeur de son texte ; les réactions ne laissent plus de grand vide sous un message.
+- ⌘ V envoie l'image du presse-papier même quand du texte l'accompagne, et les fichiers copiés dans le Finder.
+- Un pseudo changé s'affiche aussitôt chez les autres.
+- La barre des réactions ne passe plus par-dessus les fenêtres (compte, GIF) et ne se ferme plus quand on va dessus.
+
 ## [0.40.0] - 2026-11-03
 
 ### Nouveautés
