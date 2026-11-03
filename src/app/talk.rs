@@ -775,7 +775,7 @@ impl App {
         if let Some(peer) = room.peer(&me) {
             let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with("talk-head-face"), Sense::click());
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                self.talk_ui.avatar_open = Some(peer.id.clone());
+                self.open_face(&peer.id);
             }
         }
         let text_x = c.x + 26.0;
@@ -798,10 +798,8 @@ impl App {
             let w = painter.layout_no_wrap(title.clone(), FontId::proportional(16.0), theme.text).size().x;
             painter.text(Pos2::new(text_x + w + 8.0, head.center().y - 7.0), Align2::LEFT_CENTER, t.talk_nickname_pseudo.replace("{n}", pseudo), FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
         }
-        // With one person: a name of one's own for them, the files.
-        if room.kind == Kind::Dm
-            && let Some(peer) = room.peer(&me)
-        {
+        // With one person: its actions.
+        if room.kind == Kind::Dm && room.peer(&me).is_some() {
             let mut x = head.max.x - margin;
             let mut button = |icon: HeadIcon, tip: &str| {
                 let r = Rect::from_center_size(Pos2::new(x - 16.0, head.center().y), Vec2::splat(32.0));
@@ -818,16 +816,12 @@ impl App {
                 paint_head_icon(&painter, r.center(), icon, color);
                 resp.clicked()
             };
-            // From the right: erase, wizz, nickname, media, search.
+            // From the right: erase, wizz, media, search (a nickname: a click on their face).
             if button(HeadIcon::Erase, t.talk_erase) {
                 self.talk_ui.dropping = Some(room.id.clone());
             }
             if button(HeadIcon::Wizz, t.talk_wizz) {
                 self.send_wizz(&room.id);
-            }
-            if button(HeadIcon::Pencil, t.talk_nickname) {
-                let given = self.config.settings.talk_nicknames.get(&peer.id).cloned().unwrap_or_default();
-                self.talk_ui.nicknaming = Some((peer.id.clone(), given));
             }
             if button(HeadIcon::Media, t.talk_media) {
                 self.open_media(&room.id);
@@ -1312,7 +1306,7 @@ impl App {
                         // A click shows it large.
                         let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with(("talk-face", m.id)), Sense::click());
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            self.talk_ui.avatar_open = Some(m.from.clone());
+                            self.open_face(&m.from);
                         }
                     }
                     ui.add_space(8.0);
@@ -1960,16 +1954,28 @@ impl App {
         }
     }
 
-    /// Someone's face, large, with their name (and their pseudo, when given another name).
+    /// Someone's card opened: their face large, and (someone else) the name one gives them.
+    fn open_face(&mut self, id: &str) {
+        self.talk_ui.avatar_open = Some(id.to_owned());
+        let me = self.talk.me.as_ref().is_some_and(|m| m.id == id);
+        self.talk_ui.nicknaming = (!me).then(|| (id.to_owned(), self.config.settings.talk_nicknames.get(id).cloned().unwrap_or_default()));
+    }
+
+    /// Someone's card: their face, large, their name (and their pseudo, when given another name),
+    /// and for someone else, the field to give them a name of one's own (empty: their pseudo back).
     fn talk_face_window(&mut self, ctx: &egui::Context, t: &'static Strings, theme: &Theme) {
         const SIDE: f32 = 256.0;
         let Some(id) = self.talk_ui.avatar_open.clone() else { return };
         let name = self.talk.name_of(&id).unwrap_or_default();
         let pseudo = self.talk.pseudo_of(&id).map(str::to_owned);
+        let real = pseudo.clone().unwrap_or_else(|| name.clone());
         let v = self.talk.avatar_of(&id);
         let face = self.avatars.get(ctx, self.config.settings.floor.as_ref(), &id, v.as_deref());
+        let mut nick = self.talk_ui.nicknaming.take().filter(|(n, _)| *n == id);
+        let (mut save, mut close) = (false, false);
         let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover));
         let modal = egui::Modal::new(egui::Id::new("talk-face")).frame(frame).show(ctx, |ui| {
+            ui.set_width(SIDE + 60.0);
             ui.vertical_centered(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(SIDE), Sense::hover());
                 match &face {
@@ -1980,13 +1986,46 @@ impl App {
                 }
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new(&name).size(18.0).strong());
-                if let Some(p) = pseudo {
-                    ui.label(egui::RichText::new(t.talk_nickname_pseudo.replace("{n}", &p)).size(12.5).color(theme.text_muted));
+                if let Some(p) = &pseudo {
+                    ui.label(egui::RichText::new(t.talk_nickname_pseudo.replace("{n}", p)).size(12.5).color(theme.text_muted));
                 }
             });
+            if let Some((_, buf)) = &mut nick {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(t.talk_nickname).size(12.5).color(theme.text_muted));
+                ui.add_space(4.0);
+                let resp = ui.add(egui::TextEdit::singleline(buf).char_limit(crate::talk::NAME_MAX).hint_text(&real).desired_width(f32::INFINITY).margin(Vec2::new(10.0, 7.0)));
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    save = true;
+                }
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.talk_nickname_help.replace("{n}", &real)).size(11.5).color(theme.text_muted)).wrap());
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new(t.save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0))).clicked() {
+                        save = true;
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.close).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
+                        close = true;
+                    }
+                });
+            }
         });
-        if modal.should_close() || ctx.input(|i| i.pointer.any_click()) && modal.response.clicked_elsewhere() {
+        if save && let Some((id, buf)) = &nick {
+            let given = buf.trim().to_owned();
+            if given.is_empty() || given == real {
+                self.config.settings.talk_nicknames.remove(id);
+            } else {
+                self.config.settings.talk_nicknames.insert(id.clone(), given);
+            }
+            self.save_config();
+            self.talk.set_nicknames(&self.config.settings.talk_nicknames);
+            close = true;
+        }
+        if close || modal.should_close() {
             self.talk_ui.avatar_open = None;
+        } else {
+            self.talk_ui.nicknaming = nick;
         }
     }
 
@@ -2440,45 +2479,6 @@ impl App {
                 self.talk_ui.picker = None;
             } else if close {
                 self.talk_ui.picker = None;
-            }
-        }
-
-        if let Some((id, name)) = &mut self.talk_ui.nicknaming {
-            let pseudo = self.talk.pseudo_of(id).map(str::to_owned).or_else(|| self.talk.name_of(id)).unwrap_or_default();
-            let (mut done, mut close) = (false, false);
-            let modal = egui::Modal::new(egui::Id::new("talk-nickname")).frame(frame).show(ctx, |ui| {
-                ui.set_width(360.0);
-                ui.label(egui::RichText::new(t.talk_nickname).size(18.0).strong());
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(egui::RichText::new(t.talk_nickname_help.replace("{n}", &pseudo)).size(13.0).color(theme.text_muted)).wrap());
-                ui.add_space(12.0);
-                let resp = ui.add(egui::TextEdit::singleline(name).char_limit(crate::talk::NAME_MAX).hint_text(&pseudo).desired_width(f32::INFINITY).margin(Vec2::new(10.0, 7.0)));
-                resp.request_focus();
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    done = true;
-                }
-                ui.add_space(14.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(egui::RichText::new(t.save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0))).clicked() {
-                        done = true;
-                    }
-                    if ui.add(egui::Button::new(egui::RichText::new(t.cancel).size(13.5)).corner_radius(6.0).min_size(Vec2::new(90.0, 30.0))).clicked() {
-                        close = true;
-                    }
-                });
-            });
-            if done {
-                let (id, name) = (id.clone(), name.trim().to_owned());
-                if name.is_empty() || name == pseudo {
-                    self.config.settings.talk_nicknames.remove(&id);
-                } else {
-                    self.config.settings.talk_nicknames.insert(id, name);
-                }
-                self.save_config();
-                self.talk.set_nicknames(&self.config.settings.talk_nicknames);
-                self.talk_ui.nicknaming = None;
-            } else if close || modal.should_close() {
-                self.talk_ui.nicknaming = None;
             }
         }
 
