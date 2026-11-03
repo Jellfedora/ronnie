@@ -1,5 +1,5 @@
 # Pushing a vX.Y.Z tag (scripts/release.sh) builds Ronnie for macOS, Linux and Windows, then publishes
-# a GitHub release with the archives. The release is only created once every build has succeeded, so
+# the archives, signed, on floor (where Ronnie updates from) and as a GitHub release. The release is only created once every build has succeeded, so
 # the in-app updater never sees a release missing its platform's archive.
 name: Release
 
@@ -150,6 +150,30 @@ jobs:
           ' src/CHANGELOG.md > notes.md
           if [ -s notes.md ]; then echo "notes=--notes-file notes.md" >> "$GITHUB_ENV"; else echo "notes=--generate-notes" >> "$GITHUB_ENV"; fi
           cat notes.md
+
+      # The archives on floor (Ronnie updates from there, and its download page offers them), each signed
+      # with the release key: its private half stays in this secret, Ronnie checks the signature with
+      # the public half it carries (src/update.rs), so floor only carries them.
+      - name: Publish on floor
+        env:
+          RONNIE_UPDATE_KEY: ${{ secrets.RONNIE_UPDATE_KEY }}
+          FLOOR_TOKEN: ${{ secrets.FLOOR_PUBLISH_TOKEN }}
+          FLOOR_URL: https://185.245.143.130/floor
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          umask 077
+          printf '%s\n' "$RONNIE_UPDATE_KEY" > update-key.pem
+          trap 'rm -f update-key.pem' EXIT
+          for f in dist/*; do
+            name=$(basename "$f")
+            sig=$(openssl pkeyutl -sign -inkey update-key.pem -rawin -in "$f" | base64 -w0)
+            curl --fail-with-body -sS --retry 3 -T "$f" -H "Authorization: Bearer $FLOOR_TOKEN" -H "X-Signature: $sig" \
+              -H "Content-Type: application/octet-stream" "$FLOOR_URL/v1/ronnie/releases/$version/files/$name"
+            echo
+          done
+          # Every archive is there: the version becomes the latest, with its notes.
+          jq -n --rawfile notes notes.md '{notes: $notes}' | curl --fail-with-body -sS --retry 3 -X PUT \
+            -H "Authorization: Bearer $FLOOR_TOKEN" -H "Content-Type: application/json" --data-binary @- "$FLOOR_URL/v1/ronnie/releases/$version"
 
       - name: Create release
         env:

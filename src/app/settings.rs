@@ -2119,20 +2119,17 @@ impl App {
                 toggle(ui, &theme, &mut picked.auto_update);
             });
         });
-        let icon = self.github_icon.get_or_insert_with(|| load_png(ctx, "github-mark", include_bytes!("../../assets/icon/github-mark.png"))).clone();
-        card(ui, &theme, Some(t.project), |ui| {
-            setting_row(ui, &theme, update::REPO, None, |ui| {
-                let releases = egui::Button::new(egui::RichText::new(t.all_releases).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                if ui.add(releases).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    crate::terminal::open_url(&format!("https://github.com/{}/releases", update::REPO));
-                }
-                let logo = egui::Image::new(&icon).fit_to_exact_size(Vec2::splat(16.0)).tint(theme.text);
-                let github = egui::Button::image_and_text(logo, egui::RichText::new("GitHub").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                if ui.add(github).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    crate::terminal::open_url(&format!("https://github.com/{}", update::REPO));
-                }
+        // The download page on floor's server: the latest version for every system, to pass on.
+        if let Some(site) = crate::floor::site() {
+            card(ui, &theme, Some(t.project), |ui| {
+                setting_row(ui, &theme, t.download_page, Some(t.download_page_desc), |ui| {
+                    let open = egui::Button::new(egui::RichText::new(t.all_releases).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                    if ui.add(open).on_hover_text(&site).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        crate::terminal::open_url(&site);
+                    }
+                });
             });
-        });
+        }
         contributors_card(ui, t, &theme);
         card(ui, &theme, Some(t.credits), |ui| {
             setting_row(ui, &theme, t.credits_music, Some(t.game_music_credit), |ui| {

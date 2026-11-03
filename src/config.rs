@@ -556,7 +556,7 @@ pub struct Settings {
     /// Show each local pane's working directory in a strip above it.
     #[serde(default = "default_true")]
     pub show_cwd: bool,
-    /// Look for a new release on GitHub at startup and every 10 minutes.
+    /// Look for a new release (on floor) at startup and every 10 minutes.
     #[serde(default = "default_true")]
     pub auto_update: bool,
     #[serde(default)]

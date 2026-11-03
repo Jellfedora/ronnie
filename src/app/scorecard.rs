@@ -196,5 +196,7 @@ fn paint_card(painter: &egui::Painter, rect: Rect, theme: &Theme, t: &Strings, c
         painter.text(Pos2::new(x, y), Align2::RIGHT_TOP, value, FontId::monospace(22.0), theme.text);
         painter.text(Pos2::new(x, y + 25.0), Align2::RIGHT_TOP, *label, FontId::proportional(11.5), theme.text_muted);
     }
-    painter.text(Pos2::new(x, rect.max.y - 18.0), Align2::RIGHT_BOTTOM, "github.com/Jellfedora/ronnie", FontId::proportional(11.0), theme.text_muted.gamma_multiply(0.8));
+    // Where to get Ronnie: its download page, without the scheme.
+    let site = crate::floor::site().map(|s| s.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_owned()).unwrap_or_default();
+    painter.text(Pos2::new(x, rect.max.y - 18.0), Align2::RIGHT_BOTTOM, site, FontId::proportional(11.0), theme.text_muted.gamma_multiply(0.8));
 }

@@ -36,6 +36,16 @@ pub fn url() -> Option<String> {
     (!url.is_empty()).then(|| url.to_owned())
 }
 
+/// The download page on floor's server (its root, floor being served under /floor), or floor's own
+/// page (a floor without the prefix, as in development).
+pub fn site() -> Option<String> {
+    let url = url()?;
+    Some(match url.strip_suffix("/floor") {
+        Some(root) => format!("{root}/"),
+        None => format!("{url}/download"),
+    })
+}
+
 /// A line of the board.
 #[derive(Clone, Debug)]
 pub struct Entry {

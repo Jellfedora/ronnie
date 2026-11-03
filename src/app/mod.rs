@@ -524,8 +524,7 @@ pub struct App {
     menu: Option<crate::menu::MenuBar>,
     /// Shortcut being recorded in the settings: the next key combination replaces it.
     shortcut_capture: Option<ShortcutAction>,
-    /// GitHub logo and sign of the horns for the About page, loaded on first use.
-    github_icon: Option<egui::TextureHandle>,
+    /// The sign of the horns for the About page, loaded on first use.
     metal_hand: Option<egui::TextureHandle>,
     /// Profile being edited.
     profile_editor: Option<ProfileEditor>,
@@ -1363,7 +1362,6 @@ impl App {
             history_search: None,
             commands_menu: None,
             profile_editor: None,
-            github_icon: None,
             metal_hand: None,
             shortcut_capture: None,
             #[cfg(target_os = "macos")]

@@ -3649,6 +3649,7 @@ dependencies = [
  "portable-pty",
  "raw-window-handle",
  "rfd",
+ "ring",
  "rodio",
  "russh-sftp",
  "rustls",

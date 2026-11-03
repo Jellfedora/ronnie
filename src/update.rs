@@ -1,6 +1,8 @@
-//! Updates from GitHub releases. A background check finds a newer release; once the user accepts, the
-//! archive built for this platform is downloaded, checked against the digest GitHub publishes, and
-//! swapped in place of the running app, which then restarts.
+//! Updates from floor (the releases Ronnie's CI sends there, see floor's src/releases.js). A background
+//! check finds a newer release; once the user accepts, the archive built for this platform is
+//! downloaded, checked against its SHA-256 digest and its Ed25519 signature (made by the CI with a key
+//! floor never sees: floor only carries the archives), and swapped in place of the running app, which
+//! then restarts.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,35 +14,50 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-pub const REPO: &str = "Jellfedora/ronnie";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Target in the release archive names. macOS: Apple Silicon since 0.9.1 (up to 0.9.0, a universal
 /// app, whose archive name the releases still carry for those versions).
 pub(crate) const TARGET: &str = if cfg!(target_os = "macos") { "aarch64-apple-darwin" } else { env!("TARGET") };
 pub(crate) const ARCHIVE_EXT: &str = if cfg!(windows) { "zip" } else { "tar.gz" };
+/// The key the release archives are signed with (Ed25519, raw, base64); its private half is a secret of
+/// Ronnie's CI (RONNIE_UPDATE_KEY), kept in ~/.ronnie-signing/update-ed25519.pem.
+const UPDATE_KEY: &str = "nH6V6OBML6aG9YXBSyUH8hxvaWRzK0CjgvF0TA+f/jw=";
 /// Refuse absurd downloads (the archive is a few tens of MB).
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
 
+/// floor's latest release (GET /v1/ronnie/release).
 #[derive(Deserialize)]
 struct Release {
-    tag_name: String,
-    html_url: String,
-    assets: Vec<Asset>,
+    version: String,
+    assets: Vec<HostedAsset>,
+}
+
+#[derive(Deserialize)]
+struct HostedAsset {
+    name: String,
+    /// Its path on floor.
+    file: String,
+    sha256: String,
+    /// Ed25519, base64.
+    signature: String,
 }
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct Asset {
     pub name: String,
     browser_download_url: String,
-    /// "sha256:<hex>", computed by GitHub on upload.
+    /// "sha256:<hex>", computed by GitHub on upload (a module's) or by floor (Ronnie's).
     #[serde(default)]
     digest: Option<String>,
+    /// Ronnie's archives: their Ed25519 signature (base64), checked before installing.
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct Available {
     pub version: String,
-    /// Release page, with the changelog.
+    /// The download page, with the release's news.
     pub url: String,
     asset: Asset,
 }
@@ -251,21 +268,30 @@ pub(crate) fn agent(total: Duration) -> ureq::Agent {
 /// The latest release, if it is newer than this build. A release without an archive for this platform
 /// is an error (reported) rather than "up to date".
 fn latest(appimage: bool) -> Result<Option<Available>> {
+    let base = crate::floor::url().context("no floor to update from")?;
     let release: Release = agent(Duration::from_secs(30))
-        .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
-        .header("Accept", "application/vnd.github+json")
+        .get(format!("{base}/v1/ronnie/release"))
         .header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION")))
         .call()
-        .context("GitHub unreachable")?
+        .context("floor unreachable")?
         .body_mut()
         .read_json()?;
-    let version = release.tag_name.trim_start_matches('v').to_owned();
+    let version = release.version.trim_start_matches('v').to_owned();
     if !is_newer(&version, VERSION) {
         return Ok(None);
     }
     let name = asset_name(appimage);
-    let asset = release.assets.into_iter().find(|a| a.name == name).with_context(|| format!("version {version} has no {name} archive"))?;
-    Ok(Some(Available { version, url: release.html_url, asset }))
+    let hosted = release.assets.into_iter().find(|a| a.name == name).with_context(|| format!("version {version} has no {name} archive"))?;
+    let asset = Asset { name: hosted.name, browser_download_url: format!("{base}/{}", hosted.file.trim_start_matches('/')), digest: Some(format!("sha256:{}", hosted.sha256)), signature: Some(hosted.signature) };
+    Ok(Some(Available { version, url: crate::floor::site().unwrap_or(base), asset }))
+}
+
+/// Whether `bytes` carry this signature (base64) by Ronnie's release key.
+fn signed(bytes: &[u8], signature: &str) -> bool {
+    use base64::Engine as _;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let (Ok(key), Ok(signature)) = (engine.decode(UPDATE_KEY), engine.decode(signature.trim())) else { return false };
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key).verify(bytes, &signature).is_ok()
 }
 
 /// (major, minor, patch, is a pre-release such as "1.2.0-beta").
@@ -328,6 +354,11 @@ pub(crate) fn download(asset: &Asset, progress: &Progress) -> Result<Vec<u8>> {
 
 fn install(exe: &Path, asset: &Asset, progress: &Progress) -> Result<()> {
     let archive = download(asset, progress)?;
+    // Signed by Ronnie's CI, or not installed (whoever serves the archive).
+    let signature = asset.signature.as_deref().context("the release has no signature for its archive")?;
+    if !signed(&archive, signature) {
+        bail!("the archive's signature is not Ronnie's: not installed");
+    }
     #[cfg(target_os = "macos")]
     if let Some(bundle) = app_bundle(exe) {
         return replace_bundle(&bundle, &archive);
@@ -432,6 +463,30 @@ fn replace_bundle(bundle: &Path, archive: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A signature made by the release key (openssl pkeyutl -sign -rawin, as the CI does): good for
+    /// these bytes only.
+    #[test]
+    fn checks_the_signature() {
+        let sig = "ZqJjpCCzVHq6qH9cAzP6P1PsG6Zu5xLwEkEk1Wh0raoqP+RJQ/cnDX2etEfZeIBaefpT5WH80LKFgdzZgluEDg==";
+        assert!(signed(b"ronnie update test", sig));
+        assert!(!signed(b"ronnie update tesT", sig));
+        assert!(!signed(b"ronnie update test", "pas du base64 !"));
+        assert!(!signed(b"ronnie update test", &sig.replace('A', "B")));
+    }
+
+    /// The whole way, on a floor running (RONNIE_FLOOR_URL) where a release 99.0.0 for this system
+    /// was published, signed: found, downloaded, its digest and signature checked.
+    #[test]
+    #[ignore = "needs a floor running, at RONNIE_FLOOR_URL, with a signed release 99.0.0"]
+    fn updates_from_floor() {
+        let available = latest(false).unwrap().expect("a newer release");
+        assert_eq!(available.version, "99.0.0");
+        let progress = Progress { shared: Arc::new(Mutex::new((0, 0))), ctx: egui::Context::default() };
+        let bytes = download(&available.asset, &progress).unwrap();
+        assert!(signed(&bytes, available.asset.signature.as_deref().unwrap()));
+        assert!(available.url.ends_with("/download"));
+    }
 
     #[test]
     fn compares_versions() {
