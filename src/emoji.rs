@@ -262,8 +262,11 @@ fn places() -> &'static HashMap<(u16, u16), (usize, usize)> {
 #[derive(Clone)]
 pub struct Faces {
     ctx: egui::Context,
-    loaded: std::sync::Arc<std::sync::Mutex<HashMap<(u16, u16), Option<egui::TextureHandle>>>>,
+    loaded: std::sync::Arc<std::sync::Mutex<Loaded>>,
 }
+
+/// Each cell's texture once made (None: its image couldn't be read).
+type Loaded = HashMap<(u16, u16), Option<egui::TextureHandle>>;
 
 impl Faces {
     /// This cell's texture (None: not in the pack, or not readable).
