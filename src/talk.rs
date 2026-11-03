@@ -129,6 +129,17 @@ impl FileInfo {
     }
 }
 
+/// A file of a conversation, in the list of all of them.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Media {
+    #[serde(flatten)]
+    pub file: FileInfo,
+    pub at: i64,
+    pub from: String,
+    /// The message carrying it.
+    pub message: i64,
+}
+
 /// A file fetched from floor: its bytes, and for an image, the picture (made smaller if it is big).
 pub enum Fetched {
     Loading,
@@ -288,6 +299,9 @@ enum Wire {
     History { room: String, messages: Vec<Message>, done: bool },
     #[serde(rename = "reactions")]
     Reactions { room: String, message: i64, reactions: Vec<Reaction> },
+    /// A conversation's files, the most recent first.
+    #[serde(rename = "media")]
+    Media { room: String, files: Vec<Media> },
     /// A message changed (edited, taken back), as it is now.
     #[serde(rename = "changed")]
     Changed { room: String, m: Message },
@@ -326,6 +340,8 @@ pub struct News {
     pub arrived: Vec<(String, Message)>,
     /// A conversation the player opened (or created): to show.
     pub opened: Option<String>,
+    /// Groups the player was put in by someone (room id, the message saying so).
+    pub invited: Vec<(String, Message)>,
     /// floor refused something (its word).
     pub refused: Option<String>,
     /// floor doesn't know the account: the pseudo is to pick again.
@@ -358,6 +374,10 @@ pub struct Talk {
     fetched: Arc<Mutex<Vec<Came>>>,
     /// The files being sent, and those just sent or refused (until seen).
     pub uploads: Arc<Mutex<Vec<Upload>>>,
+    /// Groups just come, put in by someone else: their first event (`created`, `added`) is told of.
+    joining: std::collections::HashSet<String>,
+    /// The files of the conversations asked for (`ask_media`), the most recent first.
+    pub media: HashMap<String, Vec<Media>>,
     /// The names the player gave others, for themself only (by id): shown in place of their pseudos.
     nicknames: HashMap<String, String>,
     /// The pseudos so replaced, by id.
@@ -524,9 +544,16 @@ impl Talk {
                 self.everyone = players;
             }
             Wire::Msg { room, m } => {
+                // A file: at the head of the list, if it is shown.
+                if let (Some(file), Some(list)) = (&m.file, self.media.get_mut(&room)) {
+                    list.insert(0, Media { file: file.clone(), at: m.at, from: m.from.clone(), message: m.id });
+                }
                 let mine = self.me.as_ref().is_some_and(|me| me.id == m.from);
                 if !mine && m.event.is_none() {
                     news.arrived.push((room.clone(), m.clone()));
+                }
+                if matches!(m.event.as_deref(), Some("created" | "added")) && self.joining.remove(&room) && !mine {
+                    news.invited.push((room.clone(), m.clone()));
                 }
                 if let Some(k) = self.rooms.iter().position(|r| r.id == room) {
                     let mut r = self.rooms.remove(k);
@@ -559,7 +586,12 @@ impl Talk {
                             }
                         }
                     }
-                    None => self.rooms.insert(0, Room::from_wire(room)),
+                    None => {
+                        if room.kind == Kind::Group && !opened {
+                            self.joining.insert(id.clone());
+                        }
+                        self.rooms.insert(0, Room::from_wire(room));
+                    }
                 }
                 if opened {
                     news.opened = Some(id);
@@ -589,7 +621,16 @@ impl Talk {
                     m.reactions = reactions;
                 }
             }
+            Wire::Media { room, files } => {
+                self.media.insert(room, files);
+            }
             Wire::Changed { room, m } => {
+                // Taken back: its file goes from the list.
+                if m.deleted
+                    && let Some(list) = self.media.get_mut(&room)
+                {
+                    list.retain(|x| x.message != m.id);
+                }
                 if let Some(r) = self.rooms.iter_mut().find(|r| r.id == room) {
                     // Those quoting it too.
                     for other in r.messages.iter_mut() {
@@ -684,6 +725,12 @@ impl Talk {
     /// One of the player's messages, its text changed (floor sends it back to everyone: `changed`).
     pub fn edit(&mut self, room: &str, message: i64, text: &str) {
         self.send(json!({ "t": "edit", "room": room, "message": message, "text": text }));
+    }
+
+    /// A conversation's files, all of them (floor sends them: `media`).
+    pub fn ask_media(&mut self, room: &str) {
+        self.media.remove(room);
+        self.send(json!({ "t": "media", "room": room }));
     }
 
     /// One of the player's messages, taken back.
@@ -990,6 +1037,10 @@ mod tests {
         assert_eq!(news.arrived.len(), 1);
         assert_eq!(talk.rooms[0].unread("d", 0), 1);
 
+        // A conversation's files.
+        talk.take(serde_json::from_str(r#"{"t":"media","room":"g:1","files":[{"id":"f1","name":"a.png","mime":"image/png","kind":"image","size":3,"at":4,"from":"l","message":1}]}"#).unwrap(), &mut news);
+        assert_eq!(talk.media["g:1"][0].file.name, "a.png");
+
         // An answer quoting one; that one changed, then taken back: the quote follows.
         talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:1","m":{"id":4,"from":"l","name":"Lemmy","text":"Yes","at":8,"reply":{"id":3,"from":"d","name":"Dio","text":"of Spades"}}}"#).unwrap(), &mut news);
         assert_eq!(talk.rooms[0].messages[2].reply.as_ref().map(|q| q.text.as_str()), Some("of Spades"));
@@ -1014,6 +1065,14 @@ mod tests {
         talk.set_nicknames(&HashMap::new());
         assert_eq!(talk.rooms[0].title("d"), "Ozzy, Lemmy");
         assert_eq!(talk.pseudo_of("l"), None);
+
+        // Put in a group by someone: told of once.
+        talk.take(serde_json::from_str(r#"{"t":"room","room":{"id":"g:9","kind":"group","name":"Rainbow","members":[{"id":"d","name":"Dio"},{"id":"r","name":"Ritchie"}]}}"#).unwrap(), &mut news);
+        talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:9","m":{"id":50,"from":"r","name":"Ritchie","text":"Dio","at":9,"event":"created"}}"#).unwrap(), &mut news);
+        assert_eq!(news.invited.iter().map(|(r, m)| (r.as_str(), m.name.as_deref())).collect::<Vec<_>>(), [("g:9", Some("Ritchie"))]);
+        talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:9","m":{"id":51,"from":"r","name":"Ritchie","text":"Cozy","at":9,"event":"added"}}"#).unwrap(), &mut news);
+        assert_eq!(news.invited.len(), 1);
+        talk.rooms.retain(|r| r.id != "g:9");
 
         // Older ones put before; the group renamed; left.
         talk.take(Wire::History { room: "g:1".into(), messages: vec![msg(1, "o", "old"), msg(2, "l", "dup")], done: true }, &mut news);

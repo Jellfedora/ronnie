@@ -122,6 +122,8 @@ pub(super) struct TalkUi {
     deleting: Option<(String, i64)>,
     /// A quote clicked: the message to bring on screen (once), lit a moment.
     jump: Option<(i64, Instant, bool)>,
+    /// The conversation whose files are shown, all of them.
+    media_open: Option<String>,
     /// Someone being given a name for oneself: their id, the name typed.
     nicknaming: Option<(String, String)>,
     /// The names given were handed to the chat (once, at the first frame).
@@ -233,6 +235,11 @@ fn clock(at: i64) -> String {
     chrono::DateTime::from_timestamp_millis(at).map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default()
 }
 
+/// "03/11/2026 14:05".
+fn clock_day(at: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(at).map(|d| d.with_timezone(&chrono::Local).format("%d/%m/%Y %H:%M").to_string()).unwrap_or_default()
+}
+
 fn day_of(at: i64) -> Option<chrono::NaiveDate> {
     chrono::DateTime::from_timestamp_millis(at).map(|d| d.with_timezone(&chrono::Local).date_naive())
 }
@@ -301,10 +308,18 @@ impl App {
             self.talk_ui.refused = Some((e, Instant::now()));
         }
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let t = self.t();
+        // Put in a group: told of, with its members.
+        for (room, m) in &news.invited {
+            let me = self.talk.me.as_ref().map_or("", |m| m.id.as_str());
+            let Some(r) = self.talk.room(room) else { continue };
+            let title = t.talk_invited.replace("{n}", m.name.as_deref().unwrap_or("?")).replace("{g}", &shown_title(t, r, me));
+            let body = r.members.iter().filter(|x| x.id != me).map(|x| x.name.as_str()).collect::<Vec<_>>().join(", ");
+            self.talk_notify(ctx, focused, room.clone(), title, body);
+        }
         let shown = |app: &Self, room: &str| app.talk_page && focused && app.talk_ui.room.as_deref() == Some(room);
         let arrived: Vec<(String, Message)> = news.arrived.into_iter().filter(|(room, _)| !shown(self, room)).collect();
         let Some((room, last)) = arrived.last().cloned() else { return };
-        let t = self.t();
         let me = self.talk.me.as_ref().map_or("", |m| m.id.as_str());
         let from = last.name.clone().unwrap_or_default();
         let title = match self.talk.room(&room) {
@@ -317,6 +332,11 @@ impl App {
         };
         let body: String = if arrived.len() > 1 { arrived.iter().rev().take(3).rev().map(|(_, m)| line(m)).collect::<Vec<_>>().join("\n") } else if last.file.is_some() { line(&last) } else { last.text.clone() };
         let body: String = body.chars().take(240).collect();
+        self.talk_notify(ctx, focused, room, title, body);
+    }
+
+    /// Told of, as the user likes (the system's notifications, Ronnie's own), a click leading there.
+    fn talk_notify(&mut self, ctx: &egui::Context, focused: bool, room: String, title: String, body: String) {
         let style = self.config.settings.notify_style;
         if !focused || style.system() {
             crate::notify::send(&title, &body);
@@ -508,6 +528,8 @@ impl App {
         let theme = self.theme.clone();
         ui.painter().rect_filled(rect, 0.0, theme.bg);
         self.talk_windows(ui.ctx(), t, &theme);
+        let me_id = self.talk.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        self.talk_media_window(ui.ctx(), &me_id, t, &theme);
         self.talk_viewer(ui.ctx(), t, &theme);
         self.talk_save(t);
         let me = self.talk.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
@@ -561,19 +583,27 @@ impl App {
             let w = painter.layout_no_wrap(title.clone(), FontId::proportional(16.0), theme.text).size().x;
             painter.text(Pos2::new(text_x + w + 8.0, head.center().y - 7.0), Align2::LEFT_CENTER, t.talk_nickname_pseudo.replace("{n}", pseudo), FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
         }
-        // With one person: a name of one's own for them.
+        // With one person: a name of one's own for them, the files.
         if room.kind == Kind::Dm
             && let Some(peer) = room.peer(&me)
         {
-            let galley = painter.layout_no_wrap(t.talk_nickname.to_owned(), FontId::proportional(12.5), theme.text);
-            let w = galley.size().x + 22.0;
-            let r = Rect::from_min_size(Pos2::new(head.max.x - margin - w, head.center().y - 14.0), Vec2::new(w, 28.0));
-            let resp = ui.interact(r, ui.id().with(("talk-act", "nickname")), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            painter.rect_filled(r, 6.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg });
-            painter.galley(r.center() - galley.size() / 2.0, galley, theme.text);
-            if resp.clicked() {
+            let mut x = head.max.x - margin;
+            let mut button = |label: &str, key: &str| {
+                let galley = painter.layout_no_wrap(label.to_owned(), FontId::proportional(12.5), theme.text);
+                let w = galley.size().x + 22.0;
+                let r = Rect::from_min_size(Pos2::new(x - w, head.center().y - 14.0), Vec2::new(w, 28.0));
+                x -= w + 8.0;
+                let resp = ui.interact(r, ui.id().with(("talk-act", key)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                painter.rect_filled(r, 6.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg });
+                painter.galley(r.center() - galley.size() / 2.0, galley, theme.text);
+                resp.clicked()
+            };
+            if button(t.talk_nickname, "nickname") {
                 let given = self.config.settings.talk_nicknames.get(&peer.id).cloned().unwrap_or_default();
                 self.talk_ui.nicknaming = Some((peer.id.clone(), given));
+            }
+            if button(t.talk_media, "media") {
+                self.open_media(&room.id);
             }
         }
         if room.kind == Kind::Group {
@@ -599,6 +629,9 @@ impl App {
             }
             if button(t.talk_add, "add") {
                 self.talk_ui.picker = Some(Picker { room: Some(room.id.clone()), name: String::new(), chosen: Vec::new(), focus: false });
+            }
+            if button(t.talk_media, "media") {
+                self.open_media(&room.id);
             }
         }
 
@@ -662,7 +695,8 @@ impl App {
         let typing = room.typing_now();
         if !typing.is_empty() {
             let text = if typing.len() == 1 { t.talk_typing_one.replace("{n}", typing[0]) } else { t.talk_typing_many.replace("{n}", &typing.join(", ")) };
-            painter.text(Pos2::new(foot.min.x + 4.0, foot.min.y + 8.0), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme.text_muted);
+            // Over the field's text (the field starts after the attach button).
+            painter.text(Pos2::new(foot.min.x + 44.0 + 12.0, foot.min.y + 7.0), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme.text_muted);
         }
         let full = Rect::from_min_max(Pos2::new(foot.min.x, foot.min.y + 16.0 + banner_h), Pos2::new(foot.max.x, foot.min.y + 16.0 + banner_h + field_h));
         if banner_h > 0.0 {
@@ -996,9 +1030,11 @@ impl App {
                         ui.add_space(margin);
                         ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                             ui.set_max_width(bubble_max);
-                            self.talk_bubble(ui, room, m, me, (grouped, continues), sheet.as_ref(), t, theme);
-                        });
-                    });
+                            self.talk_bubble(ui, room, m, me, (grouped, continues), sheet.as_ref(), t, theme)
+                        })
+                        .inner
+                    })
+                    .inner
                 } else {
                     // The others' on the left, their face at the first of a series (room kept for the others).
                     let (avatar, _) = ui.allocate_exact_size(Vec2::new(30.0, if grouped { 1.0 } else { 30.0 }), Sense::hover());
@@ -1011,15 +1047,17 @@ impl App {
                     ui.add_space(8.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_max_width(bubble_max);
-                        self.talk_bubble(ui, room, m, me, (grouped, continues), sheet.as_ref(), t, theme);
-                    });
+                        self.talk_bubble(ui, room, m, me, (grouped, continues), sheet.as_ref(), t, theme)
+                    })
+                    .inner
                 }
             });
-            // Hovered (anywhere across its line): its bar, to react at once (the usual ones, or any from
+            let head = row.inner;
+            // Hovered (across its line, under its name and time): its bar, to react at once (the usual ones, or any from
             // the picker), to answer it, and one's own to change or take back. It stays while the pointer
             // is on it.
             let row = row.response.rect;
-            let band = Rect::from_x_y_ranges(ui.max_rect().x_range(), row.y_range());
+            let band = Rect::from_x_y_ranges(ui.max_rect().x_range(), (row.min.y + head)..=row.max.y);
             if self.talk_ui.jump.is_some_and(|(id, ..)| id == m.id) {
                 self.light_jump(ui, row, theme);
             }
@@ -1033,7 +1071,7 @@ impl App {
                 let acts: Vec<Act> = if mine && editable(m) { vec![Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Reply, Act::Delete] } else { vec![Act::Reply] };
                 let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
                 // On the other side than the bubble, inside the page.
-                let at = if mine { Pos2::new(band.min.x + margin, row.min.y - 2.0) } else { Pos2::new(band.max.x - margin - bar.x, row.min.y - 2.0) };
+                let at = if mine { Pos2::new(band.min.x + margin, band.min.y - 6.0) } else { Pos2::new(band.max.x - margin - bar.x, band.min.y - 6.0) };
                 let mut open_picker = false;
                 let mut chosen: Option<Act> = None;
                 let shown = egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).constrain(true).show(ui.ctx(), |ui| {
@@ -1103,7 +1141,7 @@ impl App {
                 }
                 if open_picker {
                     let now = ui.input(|i| i.time);
-                    self.talk_ui.emoji_open = Some(EmojiOpen { target: EmojiTarget::React(room.id.clone(), m.id), at: Pos2::new(at.x + 7.0 * 30.0, row.min.y + 34.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now });
+                    self.talk_ui.emoji_open = Some(EmojiOpen { target: EmojiTarget::React(room.id.clone(), m.id), at: Pos2::new(at.x + 7.0 * 30.0, band.min.y + 30.0), picker: super::emojis::Picker { focus: true, ..Default::default() }, opened: now });
                 }
             } else if self.talk_ui.bar.is_some_and(|(id, _)| id == m.id) {
                 self.talk_ui.bar = None;
@@ -1116,8 +1154,10 @@ impl App {
     /// group, the time), its file, its text in a bubble (big emojis without one), its reactions.
     /// `series`: whether it follows one of the same author's, and whether one follows it.
     #[allow(clippy::too_many_arguments)]
-    fn talk_bubble(&mut self, ui: &mut Ui, room: &Room, m: &Message, me: &str, series: (bool, bool), sheet: Option<&crate::emoji::Faces>, t: &'static Strings, theme: &Theme) {
+    /// Returns the height of its head (the name, the time): the message itself is under it.
+    fn talk_bubble(&mut self, ui: &mut Ui, room: &Room, m: &Message, me: &str, series: (bool, bool), sheet: Option<&crate::emoji::Faces>, t: &'static Strings, theme: &Theme) -> f32 {
         let (grouped, continues) = series;
+        let top = ui.cursor().min.y;
         let mine = m.from == me;
         let name = m.name.clone().unwrap_or_default();
         if !grouped {
@@ -1133,6 +1173,7 @@ impl App {
             }
             ui.add_space(2.0);
         }
+        let head = ui.cursor().min.y - top;
         // Taken back: only its place left.
         if m.deleted {
             egui::Frame::new()
@@ -1142,7 +1183,7 @@ impl App {
                 .show(ui, |ui| ui.label(egui::RichText::new(t.talk_deleted).size(13.5).italics().color(theme.text_muted)))
                 .response
                 .on_hover_text(clock(m.at));
-            return;
+            return head;
         }
         // The message it answers, over it (a click brings it on screen).
         if let Some(q) = &m.reply {
@@ -1161,13 +1202,23 @@ impl App {
                 let (top, bottom) = (if grouped { tight } else { round }, if continues { tight } else { round });
                 let corners = if mine { egui::CornerRadius { nw: round, ne: top, sw: round, se: bottom } } else { egui::CornerRadius { nw: top, ne: round, sw: bottom, se: round } };
                 let (fill, ink) = if mine { (theme.accent, Color32::WHITE) } else { (lerp_color(theme.bg, theme.text, 0.10), theme.text) };
-                egui::Frame::new()
-                    .fill(fill)
-                    .corner_radius(corners)
-                    .inner_margin(egui::Margin::symmetric(12, 7))
-                    .show(ui, |ui| ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| super::emojis::emoji_label(ui, sheet, &m.text, 14.0, ink)))
-                    .response
-                    .on_hover_text(clock(m.at));
+                // As wide as its longest line (no wider than the room left), its text on the left: a
+                // region of that width, laid out from the left, wherever the column puts it.
+                let font = FontId::proportional(14.0);
+                let longest = m.text.lines().map(|l| ui.painter().layout_no_wrap(l.to_owned(), font.clone(), ink).size().x).fold(0.0, f32::max);
+                let inner = (longest + 6.0).min(ui.available_width() - 24.0).max(8.0);
+                ui.allocate_ui_with_layout(Vec2::new(inner + 24.0, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    egui::Frame::new()
+                        .fill(fill)
+                        .corner_radius(corners)
+                        .inner_margin(egui::Margin::symmetric(12, 7))
+                        .show(ui, |ui| {
+                            ui.set_max_width(inner);
+                            super::emojis::emoji_label(ui, sheet, &m.text, 14.0, ink)
+                        })
+                        .response
+                        .on_hover_text(clock(m.at));
+                });
             }
         }
         if let Some(at) = m.edited {
@@ -1196,6 +1247,7 @@ impl App {
                 }
             });
         }
+        head
     }
 
     /// A message quoted over the one answering it: who wrote it, its text on one line.
@@ -1467,23 +1519,8 @@ impl App {
         self.talk.fetch(&ctx, file);
         if file.image() {
             match self.talk.files.get(&file.id) {
-                Some(Fetched::Done { image: Some(picture), .. }) => {
-                    // An animated GIF: its frames made textures once, the one of the moment shown.
-                    if let Some(frames) = self.talk.frames.remove(&file.id) {
-                        self.talk_ui.animations.insert(file.id.clone(), crate::gif::Animation::new(&ctx, &format!("talk-{}", file.id), frames));
-                    }
-                    let shown = match self.talk_ui.animations.get(&file.id) {
-                        Some(animation) => {
-                            let (texture, wait) = animation.at((ctx.input(|i| i.time) * 1000.0) as u64);
-                            ctx.request_repaint_after(wait);
-                            (texture.id(), animation.size())
-                        }
-                        None => {
-                            let texture = self.talk_ui.textures.entry(file.id.clone()).or_insert_with(|| ctx.load_texture(format!("talk-{}", file.id), (**picture).clone(), egui::TextureOptions::LINEAR));
-                            (texture.id(), texture.size_vec2())
-                        }
-                    };
-                    let (id, size) = shown;
+                Some(Fetched::Done { image: Some(_), .. }) => {
+                    let Some((id, size)) = self.talk_picture(&ctx, file) else { return };
                     let scale = (360.0 / size.x).min(260.0 / size.y).min(1.0);
                     let resp = ui.add(egui::Image::new((id, size * scale)).corner_radius(10.0).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(&file.name);
                     if resp.clicked() {
@@ -1520,6 +1557,135 @@ impl App {
                 }
             });
         });
+    }
+
+    /// An image fetched, made a texture (an animated GIF: the frame of the moment), and its size.
+    fn talk_picture(&mut self, ctx: &egui::Context, file: &FileInfo) -> Option<(egui::TextureId, Vec2)> {
+        let Some(Fetched::Done { image: Some(picture), .. }) = self.talk.files.get(&file.id) else { return None };
+        // An animated GIF: its frames made textures once, the one of the moment shown.
+        if let Some(frames) = self.talk.frames.remove(&file.id) {
+            self.talk_ui.animations.insert(file.id.clone(), crate::gif::Animation::new(ctx, &format!("talk-{}", file.id), frames));
+        }
+        Some(match self.talk_ui.animations.get(&file.id) {
+            Some(animation) => {
+                let (texture, wait) = animation.at((ctx.input(|i| i.time) * 1000.0) as u64);
+                ctx.request_repaint_after(wait);
+                (texture.id(), animation.size())
+            }
+            None => {
+                let texture = self.talk_ui.textures.entry(file.id.clone()).or_insert_with(|| ctx.load_texture(format!("talk-{}", file.id), (**picture).clone(), egui::TextureOptions::LINEAR));
+                (texture.id(), texture.size_vec2())
+            }
+        })
+    }
+
+    /// The window of a conversation's files, its list asked of floor.
+    fn open_media(&mut self, room: &str) {
+        self.talk.ask_media(room);
+        self.talk_ui.media_open = Some(room.to_owned());
+    }
+
+    /// A conversation's files, all of them: the images in a grid (a click opens one large), the
+    /// others in a list (to save). Fetched as they come on screen.
+    fn talk_media_window(&mut self, ctx: &egui::Context, me: &str, t: &'static Strings, theme: &Theme) {
+        const THUMB: f32 = 118.0;
+        const GAP: f32 = 8.0;
+        const WIDTH: f32 = THUMB * 5.0 + GAP * 4.0;
+        let Some(room) = self.talk_ui.media_open.clone() else { return };
+        let Some(title) = self.talk.room(&room).map(|r| shown_title(t, r, me)) else {
+            self.talk_ui.media_open = None;
+            return;
+        };
+        let list = self.talk.media.get(&room).cloned();
+        let screen = ctx.content_rect();
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover));
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("talk-media")).frame(frame).show(ctx, |ui| {
+            ui.set_width(WIDTH);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.talk_media_title.replace("{n}", &title)).size(18.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new(t.close).size(13.0)).corner_radius(6.0)).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(12.0);
+            let Some(list) = &list else {
+                ui.vertical_centered(|ui| ui.spinner());
+                return;
+            };
+            if list.is_empty() {
+                ui.label(egui::RichText::new(t.talk_media_none).size(13.0).color(theme.text_muted));
+                return;
+            }
+            let (images, others): (Vec<_>, Vec<_>) = list.iter().partition(|x| x.file.image());
+            egui::ScrollArea::vertical().max_height((screen.height() - 220.0).max(200.0)).auto_shrink([false, true]).show(ui, |ui| {
+                if !images.is_empty() {
+                    ui.label(egui::RichText::new(format!("{}  ·  {}", t.talk_media_images, images.len())).size(12.0).color(theme.text_muted));
+                    ui.add_space(6.0);
+                    for row in images.chunks(5) {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = GAP;
+                            for x in row {
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(THUMB), Sense::click());
+                                let resp = resp.on_hover_cursor(egui::CursorIcon::ZoomIn).on_hover_text(format!("{}\n{}", x.file.name, clock_day(x.at)));
+                                if !ui.is_rect_visible(rect) {
+                                    continue;
+                                }
+                                self.talk.fetch(ctx, &x.file);
+                                match self.talk_picture(ctx, &x.file) {
+                                    Some((id, size)) => {
+                                        // Cut to a square, from its middle.
+                                        let side = size.x.min(size.y);
+                                        let uv = Rect::from_center_size(Pos2::new(0.5, 0.5), Vec2::new(side / size.x, side / size.y));
+                                        egui::Image::new((id, Vec2::splat(THUMB))).uv(uv).corner_radius(8.0).paint_at(ui, rect);
+                                        if resp.hovered() {
+                                            ui.painter().rect_stroke(rect, 8.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
+                                        }
+                                        if resp.clicked() && self.talk_ui.textures.contains_key(&x.file.id) {
+                                            self.talk_ui.viewing = Some(x.file.clone());
+                                        }
+                                    }
+                                    None => {
+                                        ui.painter().rect_filled(rect, 8.0, theme.bg);
+                                        if matches!(self.talk.files.get(&x.file.id), Some(Fetched::Loading) | None) {
+                                            egui::Spinner::new().paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(16.0)));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        ui.add_space(GAP);
+                    }
+                    ui.add_space(8.0);
+                }
+                if !others.is_empty() {
+                    ui.label(egui::RichText::new(format!("{}  ·  {}", t.talk_media_files, others.len())).size(12.0).color(theme.text_muted));
+                    ui.add_space(6.0);
+                    for x in others {
+                        let who = if x.from == me { t.talk_you.to_owned() } else { self.talk.name_of(&x.from).unwrap_or_else(|| "?".into()) };
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("📄").size(18.0));
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(&x.file.name).size(13.5).color(theme.text));
+                                ui.label(egui::RichText::new(format!("{}  ·  {}  ·  {}", super::files::format_size(x.file.size, t), who, clock_day(x.at))).size(11.5).color(theme.text_muted));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(egui::Button::new(egui::RichText::new(t.talk_save).size(12.5)).corner_radius(6.0)).clicked() {
+                                    self.talk.fetch(ctx, &x.file);
+                                    self.talk_ui.saving = Some(x.file.clone());
+                                }
+                            });
+                        });
+                        ui.add_space(6.0);
+                    }
+                }
+            });
+        });
+        if close || modal.should_close() {
+            self.talk_ui.media_open = None;
+        }
     }
 
     /// A file saved where the user picks (asked once it is fetched).
