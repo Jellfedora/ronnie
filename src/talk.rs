@@ -299,6 +299,9 @@ enum Wire {
     History { room: String, messages: Vec<Message>, done: bool },
     #[serde(rename = "reactions")]
     Reactions { room: String, message: i64, reactions: Vec<Reaction> },
+    /// The messages found in a conversation, the most recent first.
+    #[serde(rename = "found")]
+    Found { room: String, q: String, messages: Vec<Message> },
     /// A conversation's files, the most recent first.
     #[serde(rename = "media")]
     Media { room: String, files: Vec<Media> },
@@ -376,6 +379,8 @@ pub struct Talk {
     pub uploads: Arc<Mutex<Vec<Upload>>>,
     /// Groups just come, put in by someone else: their first event (`created`, `added`) is told of.
     joining: std::collections::HashSet<String>,
+    /// The last search's answer: its conversation, what was looked for, the messages found.
+    pub found: Option<(String, String, Vec<Message>)>,
     /// The files of the conversations asked for (`ask_media`), the most recent first.
     pub media: HashMap<String, Vec<Media>>,
     /// The names the player gave others, for themself only (by id): shown in place of their pseudos.
@@ -621,6 +626,7 @@ impl Talk {
                     m.reactions = reactions;
                 }
             }
+            Wire::Found { room, q, messages } => self.found = Some((room, q, messages)),
             Wire::Media { room, files } => {
                 self.media.insert(room, files);
             }
@@ -725,6 +731,11 @@ impl Talk {
     /// One of the player's messages, its text changed (floor sends it back to everyone: `changed`).
     pub fn edit(&mut self, room: &str, message: i64, text: &str) {
         self.send(json!({ "t": "edit", "room": room, "message": message, "text": text }));
+    }
+
+    /// The messages of a conversation holding this text (floor sends them: `found`).
+    pub fn search(&mut self, room: &str, q: &str) {
+        self.send(json!({ "t": "search", "room": room, "q": q }));
     }
 
     /// A conversation's files, all of them (floor sends them: `media`).
@@ -1040,6 +1051,8 @@ mod tests {
         // A conversation's files.
         talk.take(serde_json::from_str(r#"{"t":"media","room":"g:1","files":[{"id":"f1","name":"a.png","mime":"image/png","kind":"image","size":3,"at":4,"from":"l","message":1}]}"#).unwrap(), &mut news);
         assert_eq!(talk.media["g:1"][0].file.name, "a.png");
+        talk.take(serde_json::from_str(r#"{"t":"found","room":"g:1","q":"ace","messages":[{"id":2,"from":"l","name":"Lemmy","text":"Ace","at":6}]}"#).unwrap(), &mut news);
+        assert!(talk.found.as_ref().is_some_and(|(r, q, m)| r == "g:1" && q == "ace" && m[0].id == 2));
 
         // An answer quoting one; that one changed, then taken back: the quote follows.
         talk.take(serde_json::from_str(r#"{"t":"msg","room":"g:1","m":{"id":4,"from":"l","name":"Lemmy","text":"Yes","at":8,"reply":{"id":3,"from":"d","name":"Dio","text":"of Spades"}}}"#).unwrap(), &mut news);

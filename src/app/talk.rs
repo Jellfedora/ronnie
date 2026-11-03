@@ -63,6 +63,29 @@ fn clipboard_media(text: Option<&str>) -> Option<(Media, bool)> {
     Some((Media::Image(png.into_inner()), keep_text))
 }
 
+/// A message found, on one line: from a little before the words looked for, those lit.
+fn lit_snippet(text: &str, q: &str, theme: &Theme) -> egui::text::LayoutJob {
+    let font = FontId::proportional(13.0);
+    let plain = egui::TextFormat { font_id: font.clone(), color: theme.text_muted, ..Default::default() };
+    let lit = egui::TextFormat { font_id: font, color: theme.text, background: theme.accent.gamma_multiply(0.35), ..Default::default() };
+    let mut job = egui::text::LayoutJob::default();
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let needle: Vec<char> = q.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+    let at = (!needle.is_empty()).then(|| lower.windows(needle.len()).position(|w| w == needle.as_slice())).flatten();
+    match at {
+        Some(at) => {
+            let from = at.saturating_sub(30);
+            let before: String = chars[from..at].iter().collect();
+            job.append(&if from > 0 { format!("…{before}") } else { before }, 0.0, plain.clone());
+            job.append(&chars[at..at + needle.len()].iter().collect::<String>(), 0.0, lit);
+            job.append(&chars[at + needle.len()..].iter().collect::<String>(), 0.0, plain);
+        }
+        None => job.append(text, 0.0, plain),
+    }
+    job
+}
+
 /// A message its author can change: a text, still there.
 fn editable(m: &Message) -> bool {
     !m.deleted && m.event.is_none() && m.file.is_none() && !m.text.is_empty()
@@ -124,12 +147,27 @@ pub(super) struct TalkUi {
     jump: Option<(i64, Instant, bool)>,
     /// The conversation whose files are shown, all of them.
     media_open: Option<String>,
+    /// The search bar, open under a conversation's head.
+    search: Option<SearchBar>,
+    /// A message found, being brought on screen (older ones asked till it comes): its conversation, its id.
+    seeking: Option<(String, i64)>,
     /// Someone being given a name for oneself: their id, the name typed.
     nicknaming: Option<(String, String)>,
     /// The names given were handed to the chat (once, at the first frame).
     nicknamed: bool,
     /// The hover bar shown, for which message, where (it stays while the pointer is on it).
     bar: Option<(i64, Rect)>,
+}
+
+/// The search bar of a conversation: what is typed, when, what was asked of floor.
+pub(super) struct SearchBar {
+    room: String,
+    q: String,
+    typed_at: f64,
+    asked: String,
+    focus: bool,
+    /// Its results shown (hidden once one is picked, back with the typing).
+    results: bool,
 }
 
 /// What a message's hover bar does besides reacting.
@@ -605,6 +643,9 @@ impl App {
             if button(t.talk_media, "media") {
                 self.open_media(&room.id);
             }
+            if button(t.talk_search, "search") {
+                self.toggle_search(&room.id);
+            }
         }
         if room.kind == Kind::Group {
             let names: Vec<String> = room.members.iter().map(|m| if self.talk.is_online(&m.id) { format!("● {}", m.name) } else { format!("○ {}", m.name) }).collect();
@@ -633,6 +674,9 @@ impl App {
             if button(t.talk_media, "media") {
                 self.open_media(&room.id);
             }
+            if button(t.talk_search, "search") {
+                self.toggle_search(&room.id);
+            }
         }
 
         // The field, at the bottom: as high as its lines (six at most).
@@ -648,7 +692,15 @@ impl App {
         let replying = if editing.is_some() { None } else { self.talk_ui.replying.get(&room.id).cloned() };
         let banner_h = if editing.is_some() || replying.is_some() { 40.0 } else { 0.0 };
         let foot = Rect::from_min_max(Pos2::new(rect.min.x + margin, rect.max.y - field_h - 44.0 - banner_h), Pos2::new(rect.max.x - margin, rect.max.y));
-        let list = Rect::from_min_max(Pos2::new(rect.min.x, head.max.y + 1.0), Pos2::new(rect.max.x, foot.min.y - 4.0));
+        // The search bar, under the head.
+        let searching = self.talk_ui.search.as_ref().is_some_and(|s| s.room == room.id);
+        let bar_h = if searching { 48.0 } else { 0.0 };
+        let list = Rect::from_min_max(Pos2::new(rect.min.x, head.max.y + 1.0 + bar_h), Pos2::new(rect.max.x, foot.min.y - 4.0));
+        if searching {
+            let bar = Rect::from_min_max(Pos2::new(rect.min.x + margin, head.max.y + 8.0), Pos2::new(rect.max.x - margin, head.max.y + bar_h - 2.0));
+            self.talk_search_bar(ui, &room, &title, bar, t, &theme);
+        }
+        self.talk_seek(&room);
 
         // The messages, the newest at the bottom; scrolled to the top, older ones come.
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list));
@@ -1577,6 +1629,115 @@ impl App {
                 (texture.id(), texture.size_vec2())
             }
         })
+    }
+
+    /// The search bar opened (its field focused) or closed.
+    fn toggle_search(&mut self, room: &str) {
+        self.talk_ui.search = match &self.talk_ui.search {
+            Some(s) if s.room == room => None,
+            _ => Some(SearchBar { room: room.to_owned(), q: String::new(), typed_at: 0.0, asked: String::new(), focus: true, results: true }),
+        };
+    }
+
+    /// The search bar: its field (floor asked once the typing pauses), its results under it, the
+    /// words found lit; one picked is brought on screen. Esc closes it.
+    fn talk_search_bar(&mut self, ui: &mut Ui, room: &Room, title: &str, bar: Rect, t: &'static Strings, theme: &Theme) {
+        let now = ui.input(|i| i.time);
+        let me = self.talk.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        let Some(search) = &mut self.talk_ui.search else { return };
+        let painter = ui.painter().clone();
+        painter.rect(bar, 10.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+        // A magnifying glass.
+        let c = Pos2::new(bar.min.x + 20.0, bar.center().y);
+        painter.circle_stroke(c - Vec2::new(1.5, 1.5), 5.5, Stroke::new(1.5, theme.text_muted));
+        painter.line_segment([c + Vec2::new(2.5, 2.5), c + Vec2::new(6.5, 6.5)], Stroke::new(1.8, theme.text_muted));
+        let field = Rect::from_min_max(Pos2::new(bar.min.x + 36.0, bar.min.y + 8.0), Pos2::new(bar.max.x - 12.0, bar.max.y - 8.0));
+        let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(field));
+        let resp = field_ui.add(egui::TextEdit::singleline(&mut search.q).hint_text(t.talk_search_hint.replace("{n}", title)).frame(egui::Frame::NONE).margin(Vec2::ZERO).font(FontId::proportional(14.0)).desired_width(field.width()));
+        if std::mem::take(&mut search.focus) {
+            resp.request_focus();
+        }
+        if resp.changed() {
+            search.typed_at = now;
+            search.results = true;
+        }
+        if resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.talk_ui.search = None;
+            return;
+        }
+        // Asked once the typing pauses.
+        let q = search.q.trim().to_owned();
+        if q.chars().count() >= 2 && q != search.asked {
+            if now - search.typed_at > 0.3 {
+                search.asked = q.clone();
+                self.talk.search(&room.id, &q);
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
+        }
+        if q.chars().count() < 2 || !search.results {
+            return;
+        }
+        let asked = search.asked.clone();
+        let found = self.talk.found.as_ref().filter(|(r, fq, _)| *r == room.id && *fq == asked).map(|(_, _, m)| m.clone());
+        let mut picked: Option<i64> = None;
+        egui::Area::new(egui::Id::new(("talk-found", room.id.as_str()))).order(egui::Order::Foreground).fixed_pos(Pos2::new(bar.min.x, bar.max.y + 4.0)).show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(10.0).inner_margin(6.0).show(ui, |ui| {
+                ui.set_width(bar.width() - 12.0);
+                let Some(found) = &found else {
+                    ui.vertical_centered(|ui| ui.spinner());
+                    return;
+                };
+                if found.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(t.talk_search_none).size(13.0).color(theme.text_muted));
+                    ui.add_space(4.0);
+                    return;
+                }
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for m in found {
+                        let who = if m.from == me { t.talk_you.to_owned() } else { m.name.clone().unwrap_or_default() };
+                        let text = if m.text.is_empty() { m.file.as_ref().map(|f| format!("📎 {}", f.name)).unwrap_or_default() } else { m.text.replace('\n', " ") };
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, 6.0, theme.tab_hover);
+                        }
+                        let p = ui.painter();
+                        p.text(Pos2::new(rect.min.x + 10.0, rect.min.y + 13.0), Align2::LEFT_CENTER, &who, FontId::proportional(12.5), tint(theme, &who));
+                        p.text(Pos2::new(rect.max.x - 10.0, rect.min.y + 13.0), Align2::RIGHT_CENTER, clock_day(m.at), FontId::proportional(11.0), theme.text_muted);
+                        let mut job = lit_snippet(&text, &asked, theme);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 20.0);
+                        let g = ui.painter().layout_job(job);
+                        ui.painter().galley(Pos2::new(rect.min.x + 10.0, rect.min.y + 24.0), g, theme.text);
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            picked = Some(m.id);
+                        }
+                    }
+                });
+            });
+        });
+        if let Some(id) = picked {
+            if let Some(s) = &mut self.talk_ui.search {
+                s.results = false;
+            }
+            self.talk_ui.seeking = Some((room.id.clone(), id));
+        }
+    }
+
+    /// A message found being brought on screen: lit once it is here, older ones asked till then.
+    fn talk_seek(&mut self, room: &Room) {
+        let Some((r, id)) = self.talk_ui.seeking.clone() else { return };
+        if r != room.id {
+            return;
+        }
+        if room.messages.iter().any(|m| m.id == id) {
+            self.talk_ui.jump = Some((id, Instant::now(), false));
+            self.talk_ui.seeking = None;
+        } else if room.done || room.messages.is_empty() {
+            self.talk_ui.seeking = None;
+        } else {
+            self.talk.more(&room.id);
+        }
     }
 
     /// The window of a conversation's files, its list asked of floor.
