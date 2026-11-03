@@ -171,8 +171,9 @@ pub(super) struct TalkUi {
     claude: Option<(bool, Instant)>,
     /// A message being fixed by Claude: its conversation, its text as sent, the answer once come.
     fixing: Option<(String, String, FixAnswer)>,
-    /// The window shaking (a wizz came): since when, from where.
-    shake: Option<(Instant, Pos2)>,
+    /// The window shaking (a wizz came): since when, and where it was (None: maximized or full
+    /// screen, its content shakes instead).
+    shake: Option<(Instant, Option<Pos2>)>,
     /// Someone's face shown large (their id).
     avatar_open: Option<String>,
     /// The conversation whose files are shown, all of them.
@@ -408,10 +409,14 @@ impl App {
                 let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
                 self.talk_notify(ctx, focused, room.clone(), t.talk_wizzed.replace("{n}", &who), String::new());
             }
-            if let Some(outer) = ctx.input(|i| i.viewport().outer_rect).filter(|_| !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false) || i.viewport().maximized.unwrap_or(false))) {
-                let origin = self.talk_ui.shake.map_or(outer.min, |(_, o)| o);
-                self.talk_ui.shake = Some((Instant::now(), origin));
-            }
+            let fixed = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false) || i.viewport().maximized.unwrap_or(false));
+            let outer = ctx.input(|i| i.viewport().outer_rect).filter(|_| !fixed).map(|r| r.min);
+            // Shaking already: from where it was before.
+            let origin = match self.talk_ui.shake {
+                Some((_, o)) => o,
+                None => outer,
+            };
+            self.talk_ui.shake = Some((Instant::now(), origin));
         }
         self.talk_shake(ctx);
         // Someone left a group: told of, with those still in it.
@@ -447,20 +452,29 @@ impl App {
         self.talk.wizz(room);
     }
 
-    /// The window shaken for 2 seconds after a wizz, harder at first, then put back where it was.
+    /// The window shaken for 2 seconds after a wizz, harder at first, then put back where it was;
+    /// maximized or full screen (it can't move), its content shaken instead.
     fn talk_shake(&mut self, ctx: &egui::Context) {
         const SECONDS: f32 = 2.0;
         let Some((since, origin)) = self.talk_ui.shake else { return };
         let t = since.elapsed().as_secs_f32();
-        if t >= SECONDS {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
+        let offset = if t >= SECONDS {
             self.talk_ui.shake = None;
-            return;
+            Vec2::ZERO
+        } else {
+            let strength = 14.0 * (1.0 - t / SECONDS);
+            ctx.request_repaint();
+            Vec2::new((t * 61.0).sin() * strength, (t * 47.0).cos() * strength * 0.6)
+        };
+        match origin {
+            Some(origin) => ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin + offset)),
+            None => {
+                let layers: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+                for layer in layers.into_iter().chain([egui::LayerId::background()]) {
+                    ctx.set_transform_layer(layer, egui::emath::TSTransform::from_translation(offset));
+                }
+            }
         }
-        let strength = 14.0 * (1.0 - t / SECONDS);
-        let offset = Vec2::new((t * 61.0).sin() * strength, (t * 47.0).cos() * strength * 0.6);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin + offset));
-        ctx.request_repaint();
     }
 
     /// Told of, as the user likes (the system's notifications, Ronnie's own), a click leading there.
