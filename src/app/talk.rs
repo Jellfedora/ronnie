@@ -1071,6 +1071,8 @@ impl App {
         // Read: the window is in front, the conversation on screen.
         if ui.input(|i| i.viewport().focused.unwrap_or(true)) {
             let last = room.last_id();
+            // The others told (floor shows them "Seen").
+            self.talk.read(&room.id, last);
             let read = self.config.settings.talk_read.entry(room.id.clone()).or_insert(0);
             if last > *read {
                 *read = last;
@@ -1142,6 +1144,19 @@ impl App {
                 }
             });
             let head = row.inner;
+            // Under one's last message, who saw it.
+            if mine && k + 1 == room.messages.len() {
+                let seen: Vec<String> = room.reads.iter().filter(|(id, at)| *id != me && **at >= m.id).map(|(id, _)| self.talk.name_of(id).unwrap_or_else(|| "?".into())).collect();
+                if !seen.is_empty() {
+                    let others = room.members.iter().filter(|x| x.id != me).count();
+                    let text = if room.kind == Kind::Dm || seen.len() >= others { t.talk_seen.to_owned() } else { t.talk_seen_by.replace("{n}", &seen.join(", ")) };
+                    ui.add_space(2.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ui.add_space(margin + 4.0);
+                        ui.label(egui::RichText::new(text).size(10.5).color(theme.text_muted.gamma_multiply(0.8)));
+                    });
+                }
+            }
             // Hovered (across its line, under its name and time): its bar, to react at once (the usual ones, or any from
             // the picker), to answer it, and one's own to change or take back. It stays while the pointer
             // is on it.
