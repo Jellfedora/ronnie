@@ -473,6 +473,8 @@ pub struct App {
     /// The chat: the connection to floor and the conversations (for all windows).
     talk: crate::talk::Talk,
     talk_ui: talk::TalkUi,
+    /// The players' avatars, fetched from floor when shown (chat, account).
+    avatars: crate::floor::Avatars,
     modules: modules::Modules,
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
@@ -1290,6 +1292,7 @@ impl App {
             talk_page: false,
             talk: crate::talk::Talk::default(),
             talk_ui: talk::TalkUi::default(),
+            avatars: crate::floor::Avatars::default(),
             procs_page: false,
             modules: modules::Modules::default(),
             notes_page: false,

@@ -550,11 +550,11 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), name: Some(name) }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
         };
         let (a, b) = (account(format!("Dio{stamp}")), account(format!("Ozzy{stamp}")));
         let (mut dio, mut ozzy) = (Live::default(), Live::default());
-        let mut until = |what: &str, dio: &mut Live, ozzy: &mut Live, done: &dyn Fn(&Live, &Live) -> bool| {
+        let until = |what: &str, dio: &mut Live, ozzy: &mut Live, done: &dyn Fn(&Live, &Live) -> bool| {
             let start = Instant::now();
             while !done(dio, ozzy) {
                 assert!(start.elapsed() < Duration::from_secs(20), "waiting for: {what}");

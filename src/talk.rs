@@ -42,6 +42,9 @@ const TYPING_EVERY: Duration = Duration::from_secs(3);
 pub struct Member {
     pub id: String,
     pub name: String,
+    /// Its avatar's version on floor (none: its initial).
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -504,6 +507,12 @@ impl Talk {
         self.online.iter().any(|m| m.id == id)
     }
 
+    /// A player's avatar version, from what floor sent last (everyone, those online, the conversations).
+    pub fn avatar_of(&self, id: &str) -> Option<String> {
+        let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
+        self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).and_then(|m| m.avatar.clone())
+    }
+
     /// Said in a conversation (floor sends it back to everyone in it, the player included).
     pub fn say(&mut self, room: &str, text: &str) {
         self.last_typing = None;
@@ -804,7 +813,7 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: serde_json::Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), name: Some(name) }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
         };
         let accounts = [account(format!("Dio{stamp}")), account(format!("Ozzy{stamp}")), account(format!("Lemmy{stamp}"))];
         let mut talks = [Talk::default(), Talk::default(), Talk::default()];

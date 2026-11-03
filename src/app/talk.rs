@@ -53,7 +53,14 @@ fn tint(theme: &Theme, name: &str) -> Color32 {
 }
 
 /// A round with the pseudo's first letter (a group: two little rounds).
-fn paint_avatar(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, theme: &Theme) {
+pub(super) fn paint_avatar(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, face: Option<&egui::TextureHandle>, theme: &Theme) {
+    // Its picture (round), when it has one.
+    if let (Some(face), false) = (face, group) {
+        let rect = Rect::from_center_size(c, Vec2::splat(r * 2.0));
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        painter.add(egui::epaint::RectShape::filled(rect, r, Color32::WHITE).with_texture(face.id(), uv));
+        return;
+    }
     if group {
         painter.circle_filled(c + Vec2::new(-r * 0.35, -r * 0.2), r * 0.62, theme.text_muted.gamma_multiply(0.55));
         painter.circle_filled(c + Vec2::new(r * 0.38, r * 0.25), r * 0.62, theme.text_muted.gamma_multiply(0.8));
@@ -232,24 +239,26 @@ impl App {
         let mut open = None;
         let mut dm = None;
         // The conversations, the most recent first.
-        let rooms: Vec<(String, String, bool, usize, bool)> = self
+        let rooms: Vec<_> = self
             .talk
             .rooms
             .iter()
             .map(|r| {
                 let read = self.config.settings.talk_read.get(&r.id).copied().unwrap_or(0);
                 let online = r.peer(&me).is_some_and(|p| self.talk.is_online(&p.id));
-                (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online)
+                let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id)));
+                (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer)
             })
             .collect();
-        for (id, title, group, unread, online) in &rooms {
+        for (id, title, group, unread, online, peer) in &rooms {
+            let face = peer.as_ref().and_then(|(pid, v)| self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()));
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 4.0));
             *y += slot.height() + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("talk-room", id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
             let active = self.talk_page && self.talk_ui.room.as_deref() == Some(id.as_str());
             paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
             let c = Pos2::new(slot.min.x + 17.0, slot.center().y);
-            paint_avatar(&painter, c, 10.0, title, *group, &theme);
+            paint_avatar(&painter, c, 10.0, title, *group, face.as_ref(), &theme);
             if *online {
                 painter.circle_filled(c + Vec2::new(7.5, 7.5), 4.0, theme.chrome_bg);
                 painter.circle_filled(c + Vec2::new(7.5, 7.5), 2.8, theme.ansi[2]);
@@ -317,7 +326,8 @@ impl App {
             let resp = ui.interact(slot, ui.id().with(("talk-online", m.id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.talk_write_to.replace("{n}", &m.name));
             paint_row_bg(&painter, slot, false, resp.hovered(), &theme);
             let c = Pos2::new(slot.min.x + 17.0, slot.center().y);
-            paint_avatar(&painter, c, 9.0, &m.name, false, &theme);
+            let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.id, m.avatar.as_deref());
+            paint_avatar(&painter, c, 9.0, &m.name, false, face.as_ref(), &theme);
             if *online {
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 3.8, theme.chrome_bg);
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 2.6, theme.ansi[2]);
@@ -370,7 +380,11 @@ impl App {
         painter.line_segment([Pos2::new(head.min.x, head.max.y), Pos2::new(head.max.x, head.max.y)], Stroke::new(1.0, theme.tab_hover));
         let title = shown_title(t, &room, &me);
         let c = Pos2::new(head.min.x + margin + 14.0, head.center().y);
-        paint_avatar(&painter, c, 14.0, &title, room.kind == Kind::Group, &theme);
+        let face = room.peer(&me).and_then(|p| {
+            let v = self.talk.avatar_of(&p.id);
+            self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &p.id, v.as_deref())
+        });
+        paint_avatar(&painter, c, 14.0, &title, room.kind == Kind::Group, face.as_ref(), &theme);
         let text_x = c.x + 26.0;
         painter.text(Pos2::new(text_x, head.center().y - 8.0), Align2::LEFT_CENTER, &title, FontId::proportional(16.0), theme.text);
         let sub = match room.kind {
@@ -623,7 +637,9 @@ impl App {
                 // The round of the first of a series; room kept for the others.
                 let (avatar, _) = ui.allocate_exact_size(Vec2::new(30.0, if grouped { 1.0 } else { 30.0 }), Sense::hover());
                 if !grouped {
-                    paint_avatar(ui.painter(), avatar.center(), 14.0, &name, false, theme);
+                    let v = self.talk.avatar_of(&m.from);
+                    let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.from, v.as_deref());
+                    paint_avatar(ui.painter(), avatar.center(), 14.0, &name, false, face.as_ref(), theme);
                 }
                 ui.add_space(10.0);
                 ui.vertical(|ui| {

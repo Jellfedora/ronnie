@@ -1064,31 +1064,92 @@ pub(super) fn dictate(pane: PaneId, language: Lang, ctx: &egui::Context) -> (Pan
     (pane, crate::voice::Dictation::start(language, std::sync::Arc::new(move || ctx.request_repaint())))
 }
 
-/// The window asking the player's pseudo: the name typed, and why floor didn't take the last one.
+/// What the account window shows: signing in, signing up, or the account (when signed in).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum AccountMode {
+    SignIn,
+    SignUp,
+    Account,
+}
+
+/// What the window asked floor last (its answer is awaited).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Asked {
+    Sign,
+    Rename,
+    Password,
+    Avatar,
+    SignOut,
+}
+
+/// The account window: sign in or up (pseudo and password), or, signed in, the account (avatar,
+/// pseudo, password, signing out).
 pub(super) struct PseudoPrompt {
+    mode: AccountMode,
     text: String,
+    password: String,
+    confirm: String,
+    /// Changing the password: the current one (the new one is in `password`, again in `confirm`).
+    current: String,
+    changing_password: bool,
     error: Option<crate::floor::ClaimError>,
+    /// What went well last (in green).
+    notice: Option<&'static str>,
+    asked: Option<Asked>,
     focus: bool,
-    /// When the text last changed (it is checked a moment after), and the pseudo last checked.
+    /// When the pseudo last changed (it is checked a moment after), and the pseudo last checked.
     typed_at: f64,
     checked: Option<String>,
 }
 
+impl PseudoPrompt {
+    fn new(mode: AccountMode, text: String) -> Self {
+        Self { mode, text, password: String::new(), confirm: String::new(), current: String::new(), changing_password: false, error: None, notice: None, asked: None, focus: true, typed_at: 0.0, checked: None }
+    }
+}
+
+/// What to tell when floor said no.
+fn account_error(t: &Strings, e: &crate::floor::ClaimError) -> String {
+    use crate::floor::ClaimError as E;
+    match e {
+        E::Taken => t.pseudo_taken.to_owned(),
+        E::Unreachable => t.pseudo_unreachable.to_owned(),
+        E::Refused(message) => t.account_refused.replace("{e}", message),
+        E::WrongPassword => t.account_wrong.to_owned(),
+        E::Blocked => t.account_blocked.to_owned(),
+        E::TooMany => t.account_too_many.to_owned(),
+        E::WrongCurrent => t.account_wrong_current.to_owned(),
+        E::Expired => t.account_expired.to_owned(),
+        E::Unreadable => t.account_avatar_unreadable.to_owned(),
+    }
+}
+
+/// A field of the account window (`secret`: a password, its letters hidden).
+fn field<'a>(text: &'a mut String, hint: &str, secret: bool, limit: usize) -> egui::TextEdit<'a> {
+    egui::TextEdit::singleline(text).password(secret).char_limit(limit).hint_text(hint.to_owned()).font(FontId::proportional(15.0)).desired_width(f32::INFINITY).margin(Vec2::new(10.0, 7.0))
+}
+
+/// floor's passwords: this many characters at least.
+const PASSWORD_MIN: usize = 8;
+
 impl App {
-    /// The pseudo asked (the one kept, to change it); not without floor.
+    /// The account window: signed in, the account; else signing up (the former pseudo offered), or in.
     pub(super) fn ask_pseudo(&mut self) {
         if crate::floor::url().is_none() || self.pseudo_prompt.is_some() {
             return;
         }
         let settings = &self.config.settings;
-        // This floor's pseudo; else the one taken on floor's former address (to find it again in a click);
-        // else the name typed in the games.
-        let former = settings.floor.as_ref().and_then(|a| a.name.as_deref());
-        let text = crate::floor::pseudo(settings.floor.as_ref()).or(former).unwrap_or(&settings.player_name).to_owned();
-        self.pseudo_prompt = Some(PseudoPrompt { text, error: None, focus: true, typed_at: 0.0, checked: None });
+        self.pseudo_prompt = Some(match crate::floor::pseudo(settings.floor.as_ref()) {
+            Some(name) => PseudoPrompt::new(AccountMode::Account, name.to_owned()),
+            None => {
+                // The pseudo taken on floor's former address, else the name typed in the games.
+                let former = settings.floor.as_ref().and_then(|a| a.name.as_deref()).unwrap_or(&settings.player_name);
+                PseudoPrompt::new(AccountMode::SignUp, former.to_owned())
+            }
+        });
     }
 
-    /// The pseudo asked once at launch, for the chat, when there is none yet.
+    /// The account asked once at launch, for the chat, when not signed in.
     pub(super) fn launch_pseudo_ask(&mut self) {
         if self.config.settings.talk_pseudo_asked || self.read_only || crate::floor::url().is_none() {
             return;
@@ -1100,122 +1161,302 @@ impl App {
         }
     }
 
-    /// What floor answered: the account to save (made, renamed or forgotten), or why the pseudo wasn't taken.
+    /// What floor answered: the account to save (signed in, renamed, forgotten…), or why not.
     pub(super) fn poll_floor(&mut self) {
+        use crate::floor::{AccountDone, ClaimError};
         if let Some(account) = self.floor.poll() {
             self.config.settings.floor = account;
             self.save_config();
         }
-        match self.floor.claimed() {
-            Some(Ok(account)) => {
+        let Some(answer) = self.floor.claimed() else { return };
+        let t = self.t();
+        let asked = self.pseudo_prompt.as_mut().and_then(|p| p.asked.take());
+        match answer {
+            Ok(AccountDone::Account(account)) => {
                 self.config.settings.player_name = account.name.clone().unwrap_or_default();
                 self.config.settings.floor = Some(account);
                 self.save_config();
-                self.pseudo_prompt = None;
-            }
-            Some(Err(e)) => {
-                if let Some(prompt) = &mut self.pseudo_prompt {
-                    prompt.error = Some(e);
-                    prompt.focus = true;
+                match (asked, &mut self.pseudo_prompt) {
+                    (Some(Asked::Avatar), Some(p)) => p.notice = Some(t.account_avatar_saved),
+                    (Some(Asked::Rename), Some(p)) => p.notice = Some(t.account_saved),
+                    // Signed in or up: done.
+                    _ => self.pseudo_prompt = None,
                 }
             }
-            None => {}
+            Ok(AccountDone::SignedOut) => {
+                self.config.settings.floor = None;
+                self.save_config();
+                self.pseudo_prompt = None;
+            }
+            Ok(AccountDone::PasswordChanged) => {
+                if let Some(p) = &mut self.pseudo_prompt {
+                    p.notice = Some(t.account_password_changed);
+                    p.changing_password = false;
+                    p.current.clear();
+                    p.password.clear();
+                    p.confirm.clear();
+                }
+            }
+            // The session is over: signed in again.
+            Err(ClaimError::Expired) => {
+                self.config.settings.floor = None;
+                self.save_config();
+                let mut p = PseudoPrompt::new(AccountMode::SignIn, self.config.settings.player_name.clone());
+                p.error = Some(ClaimError::Expired);
+                self.pseudo_prompt = Some(p);
+            }
+            Err(e) => {
+                if let Some(p) = &mut self.pseudo_prompt {
+                    p.error = Some(e);
+                    p.focus = true;
+                }
+            }
         }
     }
 
     pub(super) fn pseudo_window(&mut self, ctx: &egui::Context) {
+        use crate::floor::AccountAsk;
         self.poll_floor();
         if self.pseudo_prompt.is_none() {
             return;
         }
         let t = self.t();
         let theme = self.theme.clone();
-        let claiming = self.floor.claiming();
-        let own = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
-        let has_pseudo = own.is_some();
+        let busy = self.floor.claiming();
+        let account = self.config.settings.floor.clone().filter(|a| crate::floor::pseudo(Some(a)).is_some());
+        let own = account.as_ref().and_then(|a| a.name.clone());
+        let face = account.as_ref().and_then(|a| self.avatars.get(ctx, Some(a), &a.id, a.avatar.as_deref()));
         let now = ctx.input(|i| i.time);
         let Some(prompt) = &mut self.pseudo_prompt else { return };
-        // Whether it is free, asked once the typing pauses (not for the player's own).
+        let mode = prompt.mode;
+        // Whether the pseudo is free (signing up, renaming), asked once the typing pauses (not one's own).
         let clean = crate::floor::floor_name(&prompt.text);
         let mine = clean.is_some() && clean.as_deref().map(str::to_lowercase) == own.as_deref().map(str::to_lowercase);
-        if clean.is_some() && !mine && prompt.checked != clean && !claiming {
+        let checks = mode != AccountMode::SignIn;
+        if checks && clean.is_some() && !mine && prompt.checked != clean && !busy {
             if now - prompt.typed_at >= 0.35 {
                 prompt.checked = clean.clone();
-                let account = self.config.settings.floor.clone();
                 self.floor.check(ctx, account.as_ref(), &prompt.text);
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(120));
             }
         }
-        let answer = if mine || clean.is_none() { None } else { self.floor.checked(&prompt.text).filter(|_| prompt.checked == clean) };
+        let answer = if !checks || mine || clean.is_none() { None } else { self.floor.checked(&prompt.text).filter(|_| prompt.checked == clean) };
         let free = answer.flatten();
-        // No answer yet (floor not answering: nothing shown, Save tells).
-        let checking = !mine && clean.is_some() && answer.is_none();
-        let (mut save, mut close) = (false, false);
+        let checking = checks && !mine && clean.is_some() && answer.is_none();
+        let long_enough = |s: &str| s.chars().count() >= PASSWORD_MIN;
+        let (mut go, mut asked): (Option<AccountAsk>, Option<Asked>) = (None, None);
+        let (mut close, mut pick_avatar, mut switch) = (false, false, None);
+        let caption = |ui: &mut egui::Ui, text: &str| {
+            ui.label(egui::RichText::new(text).size(12.0).color(theme.text_muted));
+        };
         let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent));
         let modal = egui::Modal::new(egui::Id::new("pseudo")).frame(frame).show(ctx, |ui| {
             ui.set_width(420.0);
-            ui.label(egui::RichText::new(t.pseudo_title).size(18.0).strong());
+            let title = match mode {
+                AccountMode::SignUp => t.account_signup_title,
+                AccountMode::SignIn => t.account_signin_title,
+                AccountMode::Account => t.account_title,
+            };
+            ui.label(egui::RichText::new(title).size(18.0).strong());
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(t.pseudo_desc).size(13.0).color(theme.text_muted));
-            ui.add_space(14.0);
-            let edit = egui::TextEdit::singleline(&mut prompt.text).char_limit(24).hint_text(t.pseudo_hint).font(FontId::proportional(16.0)).desired_width(f32::INFINITY).margin(Vec2::new(10.0, 8.0));
-            let resp = ui.add_enabled(!claiming, edit);
+            if mode == AccountMode::Account {
+                // The avatar: one's picture, chosen here, kept on floor.
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), egui::Sense::hover());
+                    super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, own.as_deref().unwrap_or("?"), false, face.as_ref(), &theme);
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        if ui.add_enabled(!busy, egui::Button::new(t.account_avatar_pick)).clicked() {
+                            pick_avatar = true;
+                        }
+                        if account.as_ref().is_some_and(|a| a.avatar.is_some()) && ui.add_enabled(!busy, egui::Button::new(t.account_avatar_remove)).clicked() {
+                            go = Some(AccountAsk::Avatar(None));
+                            asked = Some(Asked::Avatar);
+                        }
+                    });
+                });
+                ui.add_space(14.0);
+            } else {
+                ui.label(egui::RichText::new(t.account_desc).size(13.0).color(theme.text_muted));
+                ui.add_space(14.0);
+            }
+
+            caption(ui, t.account_pseudo);
+            let resp = ui.add_enabled(!busy, field(&mut prompt.text, t.pseudo_hint, false, 24));
             if std::mem::take(&mut prompt.focus) {
                 resp.request_focus();
             }
             if resp.changed() {
                 prompt.error = None;
+                prompt.notice = None;
                 prompt.typed_at = now;
             }
-            let valid = clean.is_some() && free != Some(false);
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && valid {
-                save = true;
+            let pressed_enter = |ui: &egui::Ui, r: &egui::Response| r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let mut enter = pressed_enter(ui, &resp);
+            if free == Some(false) {
+                ui.label(egui::RichText::new(format!("✗  {}", t.pseudo_taken)).size(12.0).color(theme.ansi[1]));
+            } else if free == Some(true) {
+                ui.label(egui::RichText::new(format!("✓  {}", t.pseudo_free)).size(12.0).color(theme.ansi[2]));
+            } else if checking {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(t.pseudo_checking).size(12.0).color(theme.text_muted));
+                });
             }
-            ui.add_space(8.0);
-            if claiming {
+
+            match mode {
+                AccountMode::SignIn | AccountMode::SignUp => {
+                    ui.add_space(10.0);
+                    caption(ui, t.account_password);
+                    let r = ui.add_enabled(!busy, field(&mut prompt.password, t.account_password_hint, true, 200));
+                    enter |= pressed_enter(ui, &r);
+                    if r.changed() {
+                        prompt.error = None;
+                    }
+                    if mode == AccountMode::SignUp {
+                        ui.add_space(8.0);
+                        caption(ui, t.account_confirm);
+                        let r = ui.add_enabled(!busy, field(&mut prompt.confirm, "", true, 200));
+                        enter |= pressed_enter(ui, &r);
+                        if !prompt.confirm.is_empty() && prompt.confirm != prompt.password {
+                            ui.label(egui::RichText::new(t.account_mismatch).size(12.0).color(theme.ansi[1]));
+                        }
+                    }
+                }
+                AccountMode::Account => {
+                    // Renamed: saved with its button (or Enter).
+                    if clean.is_some() && !mine {
+                        ui.add_space(6.0);
+                        let ok = clean.is_some() && free != Some(false) && !busy;
+                        if (ui.add_enabled(ok, egui::Button::new(t.account_save)).clicked() || enter && ok) && let Some(name) = clean.clone() {
+                            go = Some(AccountAsk::Rename { name });
+                            asked = Some(Asked::Rename);
+                        }
+                    }
+                    ui.add_space(14.0);
+                    if !prompt.changing_password {
+                        if ui.add_enabled(!busy, egui::Button::new(t.account_change_password)).clicked() {
+                            prompt.changing_password = true;
+                            prompt.error = None;
+                            prompt.notice = None;
+                        }
+                    } else {
+                        caption(ui, t.account_current);
+                        let r = ui.add_enabled(!busy, field(&mut prompt.current, "", true, 200));
+                        let mut enter = pressed_enter(ui, &r);
+                        ui.add_space(6.0);
+                        caption(ui, t.account_new);
+                        let r = ui.add_enabled(!busy, field(&mut prompt.password, t.account_password_hint, true, 200));
+                        enter |= pressed_enter(ui, &r);
+                        ui.add_space(6.0);
+                        caption(ui, t.account_confirm);
+                        let r = ui.add_enabled(!busy, field(&mut prompt.confirm, "", true, 200));
+                        enter |= pressed_enter(ui, &r);
+                        if !prompt.confirm.is_empty() && prompt.confirm != prompt.password {
+                            ui.label(egui::RichText::new(t.account_mismatch).size(12.0).color(theme.ansi[1]));
+                        }
+                        ui.add_space(6.0);
+                        let ok = !busy && !prompt.current.is_empty() && long_enough(&prompt.password) && prompt.password == prompt.confirm;
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(ok, egui::Button::new(t.account_change)).clicked() || enter && ok {
+                                go = Some(AccountAsk::Password { current: prompt.current.clone(), new: prompt.password.clone() });
+                                asked = Some(Asked::Password);
+                            }
+                            if ui.add_enabled(!busy, egui::Button::new(t.cancel)).clicked() {
+                                prompt.changing_password = false;
+                                prompt.current.clear();
+                                prompt.password.clear();
+                                prompt.confirm.clear();
+                            }
+                        });
+                    }
+                }
+            }
+
+            ui.add_space(10.0);
+            if busy {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(egui::RichText::new(t.pseudo_checking).size(12.5).color(theme.text_muted));
                 });
             } else if let Some(e) = &prompt.error {
-                let text = match e {
-                    crate::floor::ClaimError::Taken => t.pseudo_taken.to_owned(),
-                    crate::floor::ClaimError::Unreachable => t.pseudo_unreachable.to_owned(),
-                    crate::floor::ClaimError::Refused(code) => t.pseudo_refused.replace("{e}", code),
-                };
-                ui.label(egui::RichText::new(text).size(12.5).color(theme.ansi[1]));
-            } else if free == Some(false) {
-                ui.label(egui::RichText::new(format!("✗  {}", t.pseudo_taken)).size(12.5).color(theme.ansi[1]));
-            } else if free == Some(true) {
-                ui.label(egui::RichText::new(format!("✓  {}", t.pseudo_free)).size(12.5).color(theme.ansi[2]));
-            } else if checking {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(egui::RichText::new(t.pseudo_checking).size(12.5).color(theme.text_muted));
-                });
-            } else if !has_pseudo {
+                ui.label(egui::RichText::new(account_error(t, e)).size(12.5).color(theme.ansi[1]));
+            } else if let Some(notice) = prompt.notice {
+                ui.label(egui::RichText::new(format!("✓  {notice}")).size(12.5).color(theme.ansi[2]));
+            } else if mode == AccountMode::SignIn {
+                ui.label(egui::RichText::new(t.account_forgot).size(12.0).color(theme.text_muted));
+            } else if mode == AccountMode::SignUp {
                 ui.label(egui::RichText::new(t.pseudo_without).size(12.0).color(theme.text_muted));
             }
             ui.add_space(14.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let ok = egui::Button::new(egui::RichText::new(t.pseudo_save).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(110.0, 30.0));
-                if ui.add_enabled(valid && !claiming, ok).clicked() {
-                    save = true;
+
+            ui.horizontal(|ui| {
+                match mode {
+                    AccountMode::SignUp => {
+                        if ui.add_enabled(!busy, egui::Button::new(t.account_to_signin).frame(false)).clicked() {
+                            switch = Some(AccountMode::SignIn);
+                        }
+                    }
+                    AccountMode::SignIn => {
+                        if ui.add_enabled(!busy, egui::Button::new(t.account_to_signup).frame(false)).clicked() {
+                            switch = Some(AccountMode::SignUp);
+                        }
+                    }
+                    AccountMode::Account => {
+                        if ui.add_enabled(!busy, egui::Button::new(egui::RichText::new(t.account_sign_out).color(theme.ansi[1])).corner_radius(6.0)).clicked() {
+                            go = Some(AccountAsk::SignOut);
+                            asked = Some(Asked::SignOut);
+                        }
+                    }
                 }
-                let later = if has_pseudo { t.cancel } else { t.pseudo_later };
-                if ui.add(egui::Button::new(egui::RichText::new(later).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
-                    close = true;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if mode == AccountMode::Account {
+                        if ui.add(egui::Button::new(egui::RichText::new(t.account_close).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
+                            close = true;
+                        }
+                        return;
+                    }
+                    let ready = !busy && clean.is_some() && !prompt.password.is_empty() && (mode == AccountMode::SignIn || (long_enough(&prompt.password) && prompt.confirm == prompt.password && free != Some(false)));
+                    let label = if mode == AccountMode::SignIn { t.account_signin } else { t.account_signup };
+                    let ok = egui::Button::new(egui::RichText::new(label).size(13.5).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(130.0, 30.0));
+                    if (ui.add_enabled(ready, ok).clicked() || enter && ready) && let Some(name) = clean.clone() {
+                        let password = prompt.password.clone();
+                        go = Some(if mode == AccountMode::SignIn { AccountAsk::SignIn { name, password } } else { AccountAsk::SignUp { name, password } });
+                        asked = Some(Asked::Sign);
+                    }
+                    if ui.add(egui::Button::new(egui::RichText::new(t.pseudo_later).size(13.5)).corner_radius(6.0).min_size(Vec2::new(96.0, 30.0))).clicked() {
+                        close = true;
+                    }
+                });
             });
         });
-        if modal.should_close() && !claiming {
+        if modal.should_close() && !busy {
             close = true;
         }
-        if save {
-            let text = prompt.text.clone();
-            let account = self.config.settings.floor.clone();
-            self.floor.claim(ctx, account.as_ref(), &text);
+        if let Some(m) = switch {
+            prompt.mode = m;
+            prompt.error = None;
+            prompt.confirm.clear();
+            prompt.checked = None;
+            prompt.focus = true;
+        }
+        if let Some(ask) = go {
+            prompt.asked = asked;
+            prompt.error = None;
+            prompt.notice = None;
+            self.floor.ask(ctx, account.as_ref(), ask);
+        } else if pick_avatar {
+            // The image chosen: made small (a square) and sent, in the background.
+            let types = ["png", "jpg", "jpeg", "webp", "gif"];
+            if let Some(bytes) = rfd::FileDialog::new().add_filter(t.account_avatar_types, &types).pick_file().and_then(|path| std::fs::read(path).ok()) {
+                prompt.asked = Some(Asked::Avatar);
+                prompt.error = None;
+                prompt.notice = None;
+                self.floor.ask(ctx, account.as_ref(), AccountAsk::Avatar(Some(bytes)));
+            }
         } else if close {
             self.pseudo_prompt = None;
         }

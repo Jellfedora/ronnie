@@ -928,6 +928,12 @@ pub struct FloorAccount {
     /// The pseudo floor keeps for it (none: an account made before pseudos, to pick one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// An administrator of floor (for a later administration page).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin: bool,
+    /// Its avatar's version on floor (none: its initial is drawn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// Places kept on the leaderboard.
