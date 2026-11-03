@@ -441,12 +441,9 @@ impl App {
         self.talk_notify(ctx, focused, room, title, body);
     }
 
-    /// A wizz sent, once a minesweeper game is won (floor checks it, and says when the next one may go).
-    fn send_wizz(&mut self, room: &str, t: &'static Strings) {
-        if self.config.settings.mines_best == 0 {
-            self.talk_ui.refused = Some((t.talk_wizz_locked.to_owned(), Instant::now()));
-            return;
-        }
+    /// A wizz sent: floor checks it is unlocked (a minesweeper game won with this account) and says
+    /// why not, or when the next one may go.
+    fn send_wizz(&mut self, room: &str) {
         self.talk.wizz(room);
     }
 
@@ -747,7 +744,7 @@ impl App {
                 self.toggle_search(&room.id);
             }
             if button(t.talk_wizz, "wizz") {
-                self.send_wizz(&room.id, t);
+                self.send_wizz(&room.id);
             }
             if button(t.talk_erase, "erase") {
                 self.talk_ui.dropping = Some(room.id.clone());
@@ -784,7 +781,7 @@ impl App {
                 self.toggle_search(&room.id);
             }
             if button(t.talk_wizz, "wizz") {
-                self.send_wizz(&room.id, t);
+                self.send_wizz(&room.id);
             }
         }
 
