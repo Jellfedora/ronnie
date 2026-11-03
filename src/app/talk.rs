@@ -13,6 +13,23 @@ const GROUPED_MS: i64 = 5 * 60 * 1000;
 /// A message reached from a quote stays lit this long (s).
 const JUMP_LIT: f32 = 1.6;
 
+/// Now, in milliseconds since 1970 (as floor counts).
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// How long yet: "40 min", "5 h", "3 j".
+fn time_left(t: &Strings, ms: i64) -> String {
+    let min = (ms / 60_000).max(1);
+    if min < 60 {
+        format!("{min} min")
+    } else if min < 48 * 60 {
+        format!("{} h", min / 60)
+    } else {
+        format!("{} {}", min / (24 * 60), t.talk_days_short)
+    }
+}
+
 /// What a quote says of its message: its text, its file, or that it was taken back.
 fn quote_text(t: &Strings, q: &Quote) -> String {
     if q.deleted {
@@ -147,6 +164,10 @@ pub(super) struct TalkUi {
     jump: Option<(i64, Instant, bool)>,
     /// The conversation whose files are shown, all of them.
     media_open: Option<String>,
+    /// The menu to pin a message (how long), where it was asked: its conversation, its id, pinned yet.
+    pin_menu: Option<(String, i64, Pos2, bool)>,
+    /// The pinned message shown in a conversation's band, by conversation (a click goes to the next).
+    pin_shown: HashMap<String, usize>,
     /// The search bar, open under a conversation's head.
     search: Option<SearchBar>,
     /// A message found, being brought on screen (older ones asked till it comes): its conversation, its id.
@@ -173,6 +194,7 @@ pub(super) struct SearchBar {
 /// What a message's hover bar does besides reacting.
 #[derive(Clone, Copy, PartialEq)]
 enum Act {
+    Pin,
     Reply,
     Edit,
     Delete,
@@ -183,6 +205,12 @@ fn paint_act(painter: &egui::Painter, c: Pos2, act: Act, color: Color32) {
     let stroke = Stroke::new(1.6, color);
     let at = |x: f32, y: f32| c + Vec2::new(x, y);
     match act {
+        Act::Pin => {
+            // A thumbtack, leaning.
+            painter.circle_stroke(at(2.5, -3.5), 3.5, stroke);
+            painter.line_segment([at(0.0, -1.0), at(-5.5, 6.0)], stroke);
+            painter.line_segment([at(-0.5, -6.5), at(5.5, -0.5)], stroke);
+        }
         Act::Reply => {
             painter.add(egui::Shape::line(vec![at(6.0, 6.0), at(6.0, 2.0), at(3.0, -1.0), at(-6.0, -1.0)], stroke));
             painter.add(egui::Shape::line(vec![at(-2.0, -5.0), at(-6.0, -1.0), at(-2.0, 3.0)], stroke));
@@ -695,11 +723,19 @@ impl App {
         // The search bar, under the head.
         let searching = self.talk_ui.search.as_ref().is_some_and(|s| s.room == room.id);
         let bar_h = if searching { 48.0 } else { 0.0 };
-        let list = Rect::from_min_max(Pos2::new(rect.min.x, head.max.y + 1.0 + bar_h), Pos2::new(rect.max.x, foot.min.y - 4.0));
+        // The messages pinned (still), in a band over it.
+        let pins: Vec<Message> = room.pins.iter().filter(|p| p.pinned.as_ref().is_some_and(|x| x.until > now_ms())).cloned().collect();
+        let pins_h = if pins.is_empty() { 0.0 } else { 48.0 };
+        let list = Rect::from_min_max(Pos2::new(rect.min.x, head.max.y + 1.0 + pins_h + bar_h), Pos2::new(rect.max.x, foot.min.y - 4.0));
+        if !pins.is_empty() {
+            let band = Rect::from_min_max(Pos2::new(rect.min.x + margin, head.max.y + 8.0), Pos2::new(rect.max.x - margin, head.max.y + pins_h - 2.0));
+            self.talk_pins_band(ui, &room, &pins, band, &me, t, &theme);
+        }
         if searching {
-            let bar = Rect::from_min_max(Pos2::new(rect.min.x + margin, head.max.y + 8.0), Pos2::new(rect.max.x - margin, head.max.y + bar_h - 2.0));
+            let bar = Rect::from_min_max(Pos2::new(rect.min.x + margin, head.max.y + pins_h + 8.0), Pos2::new(rect.max.x - margin, head.max.y + pins_h + bar_h - 2.0));
             self.talk_search_bar(ui, &room, &title, bar, t, &theme);
         }
+        self.talk_pin_menu(ui.ctx(), t, &theme);
         self.talk_seek(&room);
 
         // The messages, the newest at the bottom; scrolled to the top, older ones come.
@@ -1120,8 +1156,8 @@ impl App {
             let bar_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("react-bar", m.id)));
             let on_top = |p: Pos2| ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id() || l == bar_layer);
             let hovered = pointer.is_some_and(|p| (band.contains(p) || on_bar) && ui.clip_rect().contains(p) && on_top(p));
-            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && self.talk_ui.gif_open.is_none() && !m.deleted && hovered {
-                let acts: Vec<Act> = if mine && editable(m) { vec![Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Reply, Act::Delete] } else { vec![Act::Reply] };
+            if self.talk.ready() && self.talk_ui.emoji_open.is_none() && self.talk_ui.gif_open.is_none() && self.talk_ui.pin_menu.is_none() && !m.deleted && hovered {
+                let acts: Vec<Act> = if mine && editable(m) { vec![Act::Pin, Act::Reply, Act::Edit, Act::Delete] } else if mine { vec![Act::Pin, Act::Reply, Act::Delete] } else { vec![Act::Pin, Act::Reply] };
                 let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0, 36.0);
                 // On the other side than the bubble, inside the page.
                 let at = if mine { Pos2::new(band.min.x + margin, band.min.y - 6.0) } else { Pos2::new(band.max.x - margin - bar.x, band.min.y - 6.0) };
@@ -1170,6 +1206,8 @@ impl App {
                                 };
                                 paint_act(ui.painter(), rect.center(), *act, c);
                                 let tip = match act {
+                                    Act::Pin if m.pinned.is_some() => t.talk_unpin,
+                                    Act::Pin => t.talk_pin,
                                     Act::Reply => t.talk_reply,
                                     Act::Edit => t.talk_edit,
                                     Act::Delete => t.talk_delete,
@@ -1183,6 +1221,10 @@ impl App {
                 });
                 self.talk_ui.bar = Some((m.id, shown.response.rect));
                 match chosen {
+                    Some(Act::Pin) => {
+                        let at = ui.input(|i| i.pointer.interact_pos()).unwrap_or(at);
+                        self.talk_ui.pin_menu = Some((room.id.clone(), m.id, at, m.pinned.is_some()));
+                    }
                     Some(Act::Reply) => {
                         self.stop_answering(&room.id);
                         self.talk_ui.replying.insert(room.id.clone(), Quote::of(m));
@@ -1274,8 +1316,9 @@ impl App {
                 });
             }
         }
-        if let Some(at) = m.edited {
-            ui.label(egui::RichText::new(t.talk_edited).size(10.5).italics().color(theme.text_muted.gamma_multiply(0.75))).on_hover_text(clock(at));
+        let marks: Vec<&str> = [m.edited.map(|_| t.talk_edited), m.pinned.as_ref().filter(|p| p.until > now_ms()).map(|_| t.talk_pinned)].into_iter().flatten().collect();
+        if !marks.is_empty() {
+            ui.label(egui::RichText::new(marks.join(" · ")).size(10.5).italics().color(theme.text_muted.gamma_multiply(0.75))).on_hover_text(m.edited.map(clock).unwrap_or_default());
         }
         // Its reactions, under it on its side: each emoji and how many; a click adds or takes back one's own.
         if !m.reactions.is_empty() {
@@ -1630,6 +1673,78 @@ impl App {
                 (texture.id(), texture.size_vec2())
             }
         })
+    }
+
+    /// The band of the messages pinned: one at a time (a click brings it on screen and shows the
+    /// next), who pinned it and for how long yet; × unpins it.
+    #[allow(clippy::too_many_arguments)]
+    fn talk_pins_band(&mut self, ui: &mut Ui, room: &Room, pins: &[Message], band: Rect, me: &str, t: &'static Strings, theme: &Theme) {
+        let k = self.talk_ui.pin_shown.get(&room.id).copied().unwrap_or(0) % pins.len();
+        let m = &pins[k];
+        let Some(pin) = &m.pinned else { return };
+        let painter = ui.painter().clone();
+        let resp = ui.interact(band, ui.id().with(("talk-pins", room.id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        painter.rect(band, 10.0, if resp.hovered() { theme.tab_hover } else { theme.chrome_bg }, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+        paint_act(&painter, Pos2::new(band.min.x + 20.0, band.center().y), Act::Pin, theme.accent);
+        let by = if pin.by == me { t.talk_you.to_owned() } else { self.talk.name_of(&pin.by).unwrap_or_else(|| "?".into()) };
+        let mut head = t.talk_pinned_by.replace("{n}", &by).replace("{d}", &time_left(t, pin.until - now_ms()));
+        if pins.len() > 1 {
+            head = format!("{}/{}  ·  {head}", k + 1, pins.len());
+        }
+        let x = band.min.x + 38.0;
+        painter.text(Pos2::new(x, band.min.y + 13.0), Align2::LEFT_CENTER, head, FontId::proportional(11.0), theme.accent);
+        let text = if m.text.is_empty() { m.file.as_ref().map(|f| format!("📎 {}", f.name)).unwrap_or_default() } else { m.text.replace('\n', " ") };
+        let who = m.name.clone().unwrap_or_default();
+        let mut job = egui::text::LayoutJob::simple_singleline(format!("{who} : {text}"), FontId::proportional(13.0), theme.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(band.width() - 38.0 - 44.0);
+        painter.galley(Pos2::new(x, band.min.y + 21.0), painter.layout_job(job), theme.text);
+        // × unpins it.
+        let close = Rect::from_center_size(Pos2::new(band.max.x - 20.0, band.center().y), Vec2::splat(24.0));
+        let close_resp = ui.interact(close, ui.id().with(("talk-unpin", room.id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.talk_unpin);
+        if close_resp.hovered() {
+            painter.circle_filled(close.center(), 12.0, theme.bg);
+        }
+        let c = if close_resp.hovered() { theme.text } else { theme.text_muted };
+        painter.line_segment([close.center() - Vec2::splat(4.5), close.center() + Vec2::splat(4.5)], Stroke::new(1.5, c));
+        painter.line_segment([close.center() + Vec2::new(-4.5, 4.5), close.center() + Vec2::new(4.5, -4.5)], Stroke::new(1.5, c));
+        if close_resp.clicked() {
+            self.talk.pin(&room.id, m.id, 0);
+        } else if resp.clicked() {
+            self.talk_ui.seeking = Some((room.id.clone(), m.id));
+            self.talk_ui.pin_shown.insert(room.id.clone(), k + 1);
+        }
+        // Its time left told again, and the pin gone at its time.
+        ui.ctx().request_repaint_after(Duration::from_secs(30));
+    }
+
+    /// The menu to pin a message: for how long (or unpinned). A click elsewhere closes it.
+    fn talk_pin_menu(&mut self, ctx: &egui::Context, t: &'static Strings, theme: &Theme) {
+        let Some((room, id, at, pinned)) = self.talk_ui.pin_menu.clone() else { return };
+        const HOURS: [u32; 4] = [1, 3, 24, 168];
+        let mut chosen: Option<u32> = None;
+        let shown = egui::Area::new(egui::Id::new("talk-pin-menu")).order(egui::Order::Foreground).fixed_pos(at).constrain(true).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(10.0).inner_margin(6.0).show(ui, |ui| {
+                ui.set_min_width(170.0);
+                ui.label(egui::RichText::new(t.talk_pin).size(11.5).color(theme.text_muted));
+                for (k, label) in t.talk_pin_for.iter().enumerate() {
+                    if ui.add(egui::Button::new(egui::RichText::new(*label).size(13.0)).frame(false).min_size(Vec2::new(158.0, 26.0))).clicked() {
+                        chosen = Some(HOURS[k]);
+                    }
+                }
+                if pinned {
+                    ui.separator();
+                    if ui.add(egui::Button::new(egui::RichText::new(t.talk_unpin).size(13.0).color(theme.ansi[1])).frame(false).min_size(Vec2::new(158.0, 26.0))).clicked() {
+                        chosen = Some(0);
+                    }
+                }
+            });
+        });
+        if let Some(hours) = chosen {
+            self.talk.pin(&room, id, hours);
+            self.talk_ui.pin_menu = None;
+        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || (shown.response.clicked_elsewhere() && ctx.input(|i| i.pointer.any_pressed())) {
+            self.talk_ui.pin_menu = None;
+        }
     }
 
     /// The search bar opened (its field focused) or closed.
