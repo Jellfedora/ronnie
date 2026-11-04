@@ -1,10 +1,13 @@
-# Builds and tests every push on the three platforms Ronnie ships for.
+# Builds and tests Ronnie on the three platforms it ships for. Not on every push: the repository is
+# private, its Actions minutes are counted (a macOS minute for ten). It runs with each release tag
+# (release.yml publishes only once it has passed on the tagged commit), and by hand before one, or to
+# check Windows: `gh workflow run ci.yml` (`--ref <branch>` for a branch), or "Run workflow" on GitHub.
 name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,7 +36,7 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
-      # The AppImage is built on every push: a broken one shows here, not at release time.
+      # The AppImage is built here too: a broken one shows on a run by hand, before the release.
       - name: AppImage
         if: runner.os == 'Linux'
         run: |

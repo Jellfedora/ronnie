@@ -112,8 +112,8 @@ jobs:
       contents: write
       actions: read
     steps:
-      # The tests aren't run again here: CI runs them on the same commit (pushed with the tag, so
-      # it runs alongside the builds). The release is only published once it has passed.
+      # The tests aren't run again here: CI runs them on the same commit (triggered by the same tag,
+      # so it runs alongside the builds). The release is only published once it has passed.
       - name: CI passed on this commit
         env:
           GH_TOKEN: ${{ github.token }}
