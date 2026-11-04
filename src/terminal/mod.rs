@@ -727,6 +727,8 @@ impl Terminal {
                 TermEvent::Bell if theme.metal => self.flash(theme.accent),
                 // Jurassic Park: the alarm, in red.
                 TermEvent::Bell if theme.jurassic => self.flash(theme.ansi[1]),
+                // Hyperspace: a red blade.
+                TermEvent::Bell if theme.hyperspace => self.flash(theme.ansi[1]),
                 _ => {}
             }
         }

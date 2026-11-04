@@ -22,6 +22,8 @@ pub struct Theme {
     pub metal: bool,
     /// Jurassic Park: safety stripes, the park's logo, ferns (see `app::jurassic`).
     pub jurassic: bool,
+    /// Hyperspace: laser beams, a blade around the focused pane, stars (see `app::hyperspace`).
+    pub hyperspace: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -70,6 +72,8 @@ pub const METAL_THEME: &str = "ronnie-metal";
 pub const JURASSIC_THEME: &str = "jurassic-park";
 /// Mass to reach in a round of Ronnie.io to unlock it.
 pub const JURASSIC_UNLOCK: u32 = 5000;
+/// The space theme, unlocked at Larsen: beating the computer at its hardest, or someone online.
+pub const HYPERSPACE_THEME: &str = "hyperspace";
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -258,6 +262,23 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // Star Wars: deep space, starlight text, a Jedi's blue blade for the accent, a Sith's red one for
+    // the cursor and the alerts, the title's yellow.
+    Preset {
+        id: HYPERSPACE_THEME,
+        name: "Star Wars",
+        bg: 0x05070d,
+        fg: 0xdfe7f2,
+        cursor: 0xff2d2d,
+        chrome: 0x020308,
+        surface: 0x151b2c,
+        accent: 0x3fa9ff,
+        ansi: [
+            0x101626, 0xff3b3b, 0x5ee36b, 0xffe81f, 0x3fa9ff, 0xb07cff, 0x5fe0ff, 0xc9d3e3, //
+            0x3a4560, 0xff6b6b, 0x8cf595, 0xffe27a, 0x7cc4ff, 0xcfa6ff, 0x9aeeff, 0xffffff,
+        ],
+        dark: true,
+    },
     Preset {
         id: "catppuccin-latte",
         name: "Catppuccin Latte",
@@ -323,13 +344,14 @@ impl Preset {
             dark: self.dark,
             metal: self.id == METAL_THEME,
             jurassic: self.id == JURASSIC_THEME,
+            hyperspace: self.id == HYPERSPACE_THEME,
         }
     }
 
     /// Still locked, with this best score at the typing game, and whether a round of Ronnie.io unlocked
-    /// the park (never in a dev build, to try them).
-    pub fn locked(&self, best: u32, jurassic: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic))
+    /// the park, and whether Larsen unlocked hyperspace (never in a dev build, to try them).
+    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace))
     }
 
     /// The preset with this id, or the default one.

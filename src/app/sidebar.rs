@@ -51,6 +51,9 @@ impl App {
                 self.unlocks_pill(ui, rect, super::four::HomeGame::Mines);
             } else if self.home_game && self.home_which == super::four::HomeGame::Larsen {
                 self.larsen_page(ui, rect);
+                if !self.larsen_playing() {
+                    self.unlocks_pill(ui, rect, super::four::HomeGame::Larsen);
+                }
             } else if self.home_game {
                 self.four_page(ui, rect);
                 if !self.four_playing() {
@@ -1725,6 +1728,15 @@ impl App {
         let card_top = self.music_card(ui, left, row_w, card_top);
         // The account's card: in the games and the chat (a click: the account window).
         let card_top = if matches!(self.category(), Category::Games | Category::Talk) { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
+        if self.theme.hyperspace {
+            // Star Wars: the starfield, the Death Star, the droid (who beeps when hovered), the chase, just
+            // above the cards (the list goes over them).
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 116.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let now = ui.input(|i| i.time);
+            let again = super::hyperspace::starfield(ui.painter(), field, &self.theme, now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+            ui.interact(super::hyperspace::droid_rect(field), ui.id().with("droid"), Sense::hover()).on_hover_text("Bip-bou-bip ! Bou-diiip !");
+        }
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).
@@ -1740,6 +1752,10 @@ impl App {
         if self.theme.jurassic {
             // Jurassic Park: safety stripes above the settings (the ferns are under the cards).
             super::jurassic::hazard(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else if self.theme.hyperspace {
+            // Star Wars: a duel above the settings.
+            let now = ui.input(|i| i.time);
+            super::hyperspace::duel(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 4.0), Pos2::new(bar.max.x - 1.0, footer_top + 4.0)), now, &self.theme);
         } else {
             ui.painter().hline(bar.min.x + 12.0..=bar.max.x - 12.0, footer_top, Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.8)));
         }

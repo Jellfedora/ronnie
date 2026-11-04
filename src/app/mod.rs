@@ -38,6 +38,7 @@ mod guard;
 mod history;
 mod issues;
 mod jurassic;
+mod hyperspace;
 mod library;
 mod mail;
 mod procs;
@@ -584,6 +585,8 @@ pub struct App {
     close_confirmed: bool,
     /// App time when the startup splash began; None once it is over.
     splash: Option<f64>,
+    /// Star Wars: app time when the jump to hyperspace began (the theme picked or unlocked).
+    jump: Option<f64>,
     /// The tour of the features: at the first launch, or asked again from the settings.
     tour: Option<tour::Tour>,
     /// Whether to turn on the shared memory of projects (see `crate::worklog`): asked once, after the tour.
@@ -1389,6 +1392,7 @@ impl App {
             confirm_close: None,
             close_confirmed: false,
             splash: Some(f64::NAN),
+            jump: None,
             tour: None,
             worklog_ask: false,
             ctx: cc.egui_ctx.clone(),
@@ -2109,6 +2113,9 @@ impl App {
         if config.settings.theme != self.config.settings.theme {
             self.theme = Preset::find(&config.settings.theme).theme();
             self.theme.apply(&self.ctx);
+            if config.settings.theme == crate::theme::HYPERSPACE_THEME {
+                self.jump = Some(f64::NAN);
+            }
         }
         self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
         if config.settings.ui_zoom != self.config.settings.ui_zoom {
@@ -3217,6 +3224,9 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     if theme.jurassic {
         return jurassic::logo(painter, rect, theme);
     }
+    if theme.hyperspace {
+        return hyperspace::logo(painter, rect, theme);
+    }
     paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
@@ -3709,6 +3719,13 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     if focused && theme.jurassic {
         // Jurassic Park: safety stripes under the bar.
         jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+    }
+    if theme.hyperspace {
+        // Star Wars: a lightsaber under the bar, lit when the pane takes the focus.
+        let lit = ui.ctx().animate_bool_with_time(egui::Id::new(("saber", id)), focused, 0.35);
+        if lit > 0.0 {
+            hyperspace::saber_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), lit, theme.accent);
+        }
     }
     let resp = ui.interact(rect, egui::Id::new(("pane-header", id)), Sense::click_and_drag());
     let font = FontId::monospace(12.0);
@@ -4993,6 +5010,8 @@ impl App {
                         }
                     } else if split && self.theme.jurassic {
                         jurassic::fence(ui.painter(), r, &self.theme);
+                    } else if split && self.theme.hyperspace {
+                        hyperspace::blade(ui.painter(), r, &self.theme);
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     }
@@ -5330,6 +5349,19 @@ impl App {
             ui.ctx().request_repaint();
         }
 
+        // Star Wars: the jump to hyperspace; a click or a key skips it.
+        if let Some(start) = self.jump.filter(|_| main_window) {
+            let now = ui.input(|i| i.time);
+            let start = if start.is_nan() { now } else { start };
+            self.jump = Some(start);
+            let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("jump")));
+            if skip || !hyperspace::jump(&painter, ui.ctx().content_rect(), (now - start) as f32, self.t().hyperspace_intro) {
+                self.jump = None;
+            }
+            ui.ctx().request_repaint();
+        }
+
         // Keep the window title in sync (visible in the OS task switcher).
         {
             let title = self.tabs.get(self.active).map_or_else(|| APP_TITLE.to_owned(), |t| format!("{} — {APP_TITLE}", t.title()));
@@ -5340,6 +5372,9 @@ impl App {
         }
         if self.theme.metal {
             paint_metal_pointer(ui.ctx(), &self.theme);
+        }
+        if self.theme.hyperspace {
+            hyperspace::pointer(ui.ctx(), &self.theme);
         }
     }
 }

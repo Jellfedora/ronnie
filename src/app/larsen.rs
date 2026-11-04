@@ -409,6 +409,24 @@ pub(super) fn paint_larsen_icon(painter: &egui::Painter, c: Pos2, theme: &Theme,
 
 impl App {
     /// Larsen, on the home page.
+    /// The Hyperspace theme, for a win at Larsen worth it (the computer on Hard, someone online): once,
+    /// announced.
+    fn unlock_hyperspace(&mut self) {
+        if self.config.settings.hyperspace_unlocked {
+            return;
+        }
+        self.config.settings.hyperspace_unlocked = true;
+        self.save_config();
+        self.jump = Some(f64::NAN);
+        let t = self.t();
+        self.push_toast(super::Toast { ok: true, title: t.hyperspace_unlocked.to_owned(), body: t.hyperspace_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+    }
+
+    /// In a game (against the computer or online), not in the lobby.
+    pub(super) fn larsen_playing(&self) -> bool {
+        !matches!(self.larsen.mode, Mode::Lobby)
+    }
+
     pub(super) fn open_larsen(&mut self) {
         self.open_game();
         self.home_which = HomeGame::Larsen;
@@ -586,6 +604,10 @@ impl App {
         }
         let stage = game.stage();
         let (level, your_turn, winner) = (game.level, game.your_turn, game.winner);
+        // The computer beaten at its hardest: the Hyperspace theme (once).
+        if winner == Some(true) && level == Level::Hard {
+            self.unlock_hyperspace();
+        }
         let computer = t.four_computer;
         let (last_mine, fried_now) = last_shot(&self.larsen.spark, &stage, now);
         let (status, color) = match winner {
@@ -663,7 +685,10 @@ impl App {
         let (last_mine, fried_now) = last_shot(&self.larsen.spark, &stage, now);
         let (status, color) = match game.winner {
             Some(w) if w == game.you && game.reason.as_deref() == Some("forfeit") => (t.four_forfeit_them.replace("{n}", &them), theme.ansi[2]),
-            Some(w) if w == game.you => (t.larsen_won.to_owned(), theme.ansi[2]),
+            Some(w) if w == game.you => {
+                self.unlock_hyperspace();
+                (t.larsen_won.to_owned(), theme.ansi[2])
+            }
             Some(_) if game.reason.as_deref() == Some("forfeit") => (t.four_forfeit_you.to_owned(), theme.text_muted),
             Some(_) => (t.larsen_lost.to_owned(), theme.ansi[1]),
             None if !stage.placed.you => (t.larsen_setup.to_owned(), theme.text),

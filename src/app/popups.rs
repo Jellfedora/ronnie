@@ -617,9 +617,27 @@ impl App {
                 super::jurassic::hazard(ui.painter(), band);
                 ui.add_space(10.0);
             }
-            let title = if self.theme.jurassic { super::jurassic::MAGIC_WORD } else { t.guard_title };
+            // Hyperspace: a red beam on top, the alert.
+            if self.theme.hyperspace {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                super::hyperspace::saber_along(ui.painter(), band, 1.0, self.theme.ansi[1]);
+                ui.add_space(10.0);
+            }
+            let title = if self.theme.jurassic {
+                super::jurassic::MAGIC_WORD
+            } else if self.theme.hyperspace {
+                super::hyperspace::ALERT
+            } else {
+                t.guard_title
+            };
             ui.horizontal(|ui| {
-                ui.add(egui::Image::new(&hand).fit_to_exact_size(Vec2::splat(34.0)).tint(self.theme.ansi[1]));
+                if self.theme.hyperspace {
+                    // Star Wars: the Dark Lord's helmet.
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                    super::hyperspace::helmet(ui.painter(), r);
+                } else {
+                    ui.add(egui::Image::new(&hand).fit_to_exact_size(Vec2::splat(34.0)).tint(self.theme.ansi[1]));
+                }
                 ui.add(egui::Label::new(egui::RichText::new(title).size(19.0).strong().color(self.theme.ansi[1])).wrap());
             });
             ui.add_space(10.0);
