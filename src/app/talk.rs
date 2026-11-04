@@ -1339,10 +1339,10 @@ impl App {
             if self.talk_ui.jump.is_some_and(|(id, ..)| id == m.id) {
                 self.light_jump(ui, row, theme);
             }
-            // Only the message's own side wakes it (its avatar, its bubble, the gap to the bar), not the empty rest of the line.
-            let reach = if mine { Rect::from_x_y_ranges((column.min.x - 10.0)..=band.max.x, band.y_range()) } else { Rect::from_x_y_ranges(band.min.x..=(column.max.x + 10.0), band.y_range()) };
+            // Only the message's own side wakes it (its avatar, its bubble), not the empty rest of the line.
+            let reach = if mine { Rect::from_x_y_ranges(column.min.x..=band.max.x, band.y_range()) } else { Rect::from_x_y_ranges(band.min.x..=column.max.x, band.y_range()) };
             let pointer = ui.input(|i| i.pointer.hover_pos());
-            let on_bar =self.talk_ui.bar.is_some_and(|(id, r)| id == m.id && pointer.is_some_and(|p| r.expand(2.0).contains(p)));
+            let on_bar = self.talk_ui.bar.is_some_and(|(id, r)| id == m.id && pointer.is_some_and(|p| r.expand(2.0).contains(p)));
             // Nothing over it there (a window, a menu): the conversation's layer, or the bar's own.
             let bar_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("react-bar", m.id)));
             let on_top = |p: Pos2| ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id() || l == bar_layer);
@@ -1352,9 +1352,10 @@ impl App {
                 let when = if day_of(m.at) == Some(chrono::Local::now().date_naive()) { clock(m.at) } else { clock_day(m.at) };
                 let when_w = ui.painter().layout_no_wrap(when.clone(), FontId::proportional(11.5), theme.text_muted).size().x + 14.0;
                 let bar = Vec2::new(7.0 * 30.0 + 10.0 + 9.0 + acts.len() as f32 * 30.0 + when_w, 36.0);
-                // Beside the bubble, on its free side (mine on its left, the others' on its right), inside the page.
-                let x = if mine { (column.min.x - 8.0 - bar.x).max(band.min.x + margin) } else { (column.max.x + 8.0).min(band.max.x - margin - bar.x) };
-                let at = Pos2::new(x, band.min.y - 6.0);
+                // Just over the bubble, on its edge (mine on its right, the others' on its left), a little on it so
+                // the pointer goes from one to the other without a gap; inside the page, under the conversation's top.
+                let x = if mine { (column.max.x - bar.x).max(band.min.x + margin) } else { column.min.x.min(band.max.x - margin - bar.x) };
+                let at = Pos2::new(x, (band.min.y + 6.0 - bar.y).max(ui.clip_rect().min.y));
                 let mut open_picker = false;
                 let mut chosen: Option<Act> = None;
                 let shown = egui::Area::new(egui::Id::new(("react-bar", m.id))).order(egui::Order::Foreground).fixed_pos(at).constrain(true).show(ui.ctx(), |ui| {
