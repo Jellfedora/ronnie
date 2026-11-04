@@ -742,6 +742,15 @@ impl App {
         self.talk_viewer(ui.ctx(), t, &theme);
         self.talk_save(t);
         let me = self.talk.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        // None picked (Ronnie just opened, or the one shown left): the last one shown, else the most recent.
+        if !self.talk.rooms.is_empty() && self.talk_ui.room.as_ref().is_none_or(|id| self.talk.room(id).is_none()) {
+            let last = self.config.settings.talk_last.clone().filter(|id| self.talk.room(id).is_some());
+            self.talk_ui.room = last.or_else(|| self.talk.rooms.first().map(|r| r.id.clone()));
+        }
+        if self.talk_ui.room.is_some() && self.talk_ui.room != self.config.settings.talk_last && self.talk_ui.room.as_ref().is_some_and(|id| self.talk.room(id).is_some()) {
+            self.config.settings.talk_last = self.talk_ui.room.clone();
+            self.save_config();
+        }
         let room = self.talk_ui.room.as_ref().and_then(|id| self.talk.room(id)).cloned();
         let Some(room) = room else {
             let text = if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_none() { t.talk_need_pseudo } else { t.talk_empty };
