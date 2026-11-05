@@ -531,10 +531,11 @@ impl App {
             }
         };
         let live = &self.versus;
+        let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
         let mut action = None;
         let mut players = |ui: &mut Ui| {
-            action = players_ui(ui, live, t.larsen_vs_player, pseudo.as_deref(), t, &theme);
-            wins_ui(ui, live, "larsen", t.four_wins, pseudo.as_deref(), t, &theme);
+            action = players_ui(ui, live, &faces, t.larsen_vs_player, pseudo.as_deref(), t, &theme);
+            wins_ui(ui, live, &faces, "larsen", t.four_wins, pseudo.as_deref(), t, &theme);
         };
         egui::ScrollArea::vertical().id_salt("larsen-lobby").auto_shrink([false, false]).show(&mut child, |ui| {
             if wide {

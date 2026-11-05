@@ -114,7 +114,8 @@ fn invite_texts(t: &Strings, game: Option<&str>) -> (&'static str, &'static str)
 /// The lobby's card of the players online (`title` above them): without a pseudo, a button to pick
 /// one; floor not reached yet, or not at all; each player with a button to invite them; the invitation
 /// sent and how it went. What was clicked.
-pub(super) fn players_ui(ui: &mut Ui, live: &crate::live::Live, title: &str, pseudo: Option<&str>, t: &Strings, theme: &Theme) -> Option<LobbyAction> {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn players_ui(ui: &mut Ui, live: &crate::live::Live, faces: &super::frames::Faces, title: &str, pseudo: Option<&str>, t: &Strings, theme: &Theme) -> Option<LobbyAction> {
     let mut action = None;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(title).size(16.0).strong());
@@ -155,7 +156,7 @@ pub(super) fn players_ui(ui: &mut Ui, live: &crate::live::Live, title: &str, pse
         for player in &live.online {
             ui.horizontal(|ui| {
                 ui.set_min_height(30.0);
-                ui.label(egui::RichText::new("●").size(10.0).color(theme.ansi[2]));
+                super::frames::row_avatar(ui, 10.0, &player.name, player.id.as_deref(), player.avatar.as_deref(), player.frame.as_deref(), faces, theme);
                 ui.label(egui::RichText::new(&player.name).size(13.5));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if player.busy {
@@ -193,7 +194,8 @@ pub(super) fn players_ui(ui: &mut Ui, live: &crate::live::Live, title: &str, pse
 }
 
 /// The board of online wins of `game` (`title` above it), under the players online.
-pub(super) fn wins_ui(ui: &mut Ui, live: &crate::live::Live, game: &str, title: &str, pseudo: Option<&str>, t: &Strings, theme: &Theme) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn wins_ui(ui: &mut Ui, live: &crate::live::Live, faces: &super::frames::Faces, game: &str, title: &str, pseudo: Option<&str>, t: &Strings, theme: &Theme) {
     if pseudo.is_none() || live.reachable != Some(true) {
         return;
     }
@@ -201,13 +203,15 @@ pub(super) fn wins_ui(ui: &mut Ui, live: &crate::live::Live, game: &str, title: 
     ui.add_space(12.0);
     ui.separator();
     ui.label(egui::RichText::new(title).size(12.5).strong().color(theme.text_muted));
-    for (k, (name, wins)) in board.iter().take(5).enumerate() {
+    for (k, line) in board.iter().take(5).enumerate() {
         ui.horizontal(|ui| {
-            let me = pseudo == Some(name.as_str());
+            let name = line.name.as_deref().unwrap_or(t.game_anonymous);
+            let me = pseudo == Some(name);
             ui.label(egui::RichText::new(format!("{}.", k + 1)).size(12.5).color(theme.text_muted));
-            ui.label(egui::RichText::new(if name.is_empty() { t.game_anonymous } else { name }).size(12.5).color(if me { theme.accent } else { theme.text }));
+            super::frames::row_avatar(ui, 8.0, name, line.id.as_deref(), line.avatar.as_deref(), line.frame.as_deref(), faces, theme);
+            ui.label(egui::RichText::new(name).size(12.5).color(if me { theme.accent } else { theme.text }));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(wins.to_string()).size(12.5).monospace());
+                ui.label(egui::RichText::new(line.wins.to_string()).size(12.5).monospace());
             });
         });
     }
@@ -467,9 +471,10 @@ impl App {
             }
         };
         let live = &self.versus;
+        let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
         let mut players = |ui: &mut Ui| {
-            action = players_ui(ui, live, t.four_vs_player, pseudo.as_deref(), t, &theme);
-            wins_ui(ui, live, "puissance-4", t.four_wins, pseudo.as_deref(), t, &theme);
+            action = players_ui(ui, live, &faces, t.four_vs_player, pseudo.as_deref(), t, &theme);
+            wins_ui(ui, live, &faces, "puissance-4", t.four_wins, pseudo.as_deref(), t, &theme);
         };
         if wide {
             child.horizontal_top(|ui| {

@@ -833,9 +833,14 @@ pub(super) fn paint_board(painter: &egui::Painter, rect: Rect, scores: &[Entry],
             }
         }
         let name = entry.name.as_deref().unwrap_or(if entry.me { t.game_you } else { t.game_anonymous });
-        let name: String = if name.chars().count() > 12 { name.chars().take(11).chain(['…']).collect() } else { name.to_owned() };
+        // Their avatar and frame, on floor's board.
+        let named = world && entry.name.is_some();
+        if named {
+            super::talk::paint_avatar(painter, Pos2::new(name_x + 8.0, y), 8.0, name, false, entry.face.as_ref().map(|f| &f.0), entry.frame.as_deref(), theme);
+        }
+        let name: String = if name.chars().count() > 10 { name.chars().take(9).chain(['…']).collect() } else { name.to_owned() };
         let name_color = if entry.me && world { theme.accent } else if entry.name.is_some() { theme.text } else { theme.text_muted };
-        painter.text(Pos2::new(name_x, y), Align2::LEFT_CENTER, name, FontId::proportional(12.5), fade(name_color));
+        painter.text(Pos2::new(name_x + if named { 22.0 } else { 0.0 }, y), Align2::LEFT_CENTER, name, FontId::proportional(12.5), fade(name_color));
         painter.text(Pos2::new(cols[1], y), Align2::LEFT_CENTER, s.letters.to_string(), FontId::monospace(15.0), fade(medal.unwrap_or(theme.text)));
         painter.text(Pos2::new(cols[2], y), Align2::CENTER_CENTER, s.wpm.to_string(), FontId::monospace(12.5), fade(theme.fg));
         painter.text(Pos2::new(cols[3], y), Align2::CENTER_CENTER, format!("{} %", s.accuracy), FontId::monospace(12.5), fade(theme.fg));

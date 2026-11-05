@@ -110,6 +110,7 @@ impl App {
             Some(g) => g.over && self.bughunt.ended.is_some_and(|at| now - at > OVER_SHOWN),
         };
         if welcome {
+            self.unlocks_pill(ui, rect, HomeGame::BugHunt);
             let body = Rect::from_min_max(Pos2::new(rect.min.x + 24.0, rect.min.y + 80.0), Pos2::new(rect.max.x - 24.0, rect.max.y - 16.0));
             // A new game: Space, or the button; away from the last one's end for a moment (a key still
             // held doesn't start one).
@@ -218,8 +219,15 @@ impl App {
             return;
         }
         self.bughunt.record = score > self.config.settings.bughunt_best;
-        // The highest wave reached, whatever the score: what floor shows beside it.
-        let wave = wave.max(self.config.settings.bughunt_best_wave);
+        // The highest wave reached, whatever the score: what floor shows beside it. A frame it unlocks:
+        // said.
+        let before = self.config.settings.bughunt_best_wave;
+        let wave = wave.max(before);
+        let t = self.t();
+        for f in super::frames::FRAMES.iter().filter(|f| before < f.wave && wave >= f.wave) {
+            let title = t.frame_unlocked.replace("{n}", super::frames::frame_name(t, f.id));
+            self.push_toast(super::Toast { ok: true, title, body: t.frame_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
         if self.bughunt.record || wave > self.config.settings.bughunt_best_wave {
             self.config.settings.bughunt_best = self.config.settings.bughunt_best.max(score);
             self.config.settings.bughunt_best_wave = wave;

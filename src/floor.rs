@@ -54,6 +54,22 @@ pub struct Entry {
     pub score: TypingScore,
     /// The line of this player.
     pub me: bool,
+    /// The player's id, avatar version and frame (an older floor, a round played here: none).
+    pub id: Option<String>,
+    pub avatar: Option<String>,
+    pub frame: Option<String>,
+    /// Their face, once fetched (`App::faced`), to draw on the board.
+    pub face: Option<Face>,
+}
+
+/// A face fetched, on a line of a board.
+#[derive(Clone)]
+pub struct Face(pub egui::TextureHandle);
+
+impl std::fmt::Debug for Face {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Face")
+    }
 }
 
 #[derive(Deserialize)]
@@ -69,6 +85,12 @@ struct WireEntry {
     /// Milliseconds since 1970.
     at: i64,
     me: bool,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    avatar: Option<String>,
+    #[serde(default)]
+    frame: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -119,6 +141,8 @@ pub enum AccountAsk {
     SignOut,
     /// The avatar: an image file's bytes (made small before it goes), or none.
     Avatar(Option<Vec<u8>>),
+    /// The frame around it (`app::frames`), or none.
+    Frame(Option<String>),
 }
 
 /// What floor did.
@@ -342,7 +366,7 @@ fn board(agent: &ureq::Agent, url: &str, account: Option<&FloorAccount>) -> Resu
 
 fn entry(e: WireEntry) -> Entry {
     let d = e.details;
-    Entry { name: e.name, me: e.me, score: TypingScore { letters: e.score, words: d.words, wpm: d.wpm, accuracy: d.accuracy, combo: d.combo, at: e.at / 1000 } }
+    Entry { name: e.name, me: e.me, id: e.id, avatar: e.avatar, frame: e.frame, face: None, score: TypingScore { letters: e.score, words: d.words, wpm: d.wpm, accuracy: d.accuracy, combo: d.combo, at: e.at / 1000 } }
 }
 
 fn sync(url: &str, account: Option<FloorAccount>, round: Option<TypingScore>) -> Result<Synced, ureq::Error> {
@@ -413,10 +437,16 @@ fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Re
         admin: bool,
         #[serde(default)]
         avatar: Option<String>,
+        #[serde(default)]
+        frame: Option<String>,
     }
     #[derive(Deserialize)]
     struct Avatar {
         avatar: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Framed {
+        frame: Option<String>,
     }
     let agent = account_agent();
     let bad = |e: ureq::Error| {
@@ -426,7 +456,7 @@ fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Re
     let signed = |res: ureq::http::Response<ureq::Body>| -> Result<AccountDone, ClaimError> {
         let mut res = res;
         let s: Signed = res.body_mut().read_json().map_err(bad)?;
-        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar }))
+        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, frame: s.frame }))
     };
     // A request with the session's token: none, or floor no longer knows it, and it is over.
     let token = || account.map(|a| format!("Bearer {}", a.token)).ok_or(ClaimError::Expired);
@@ -487,6 +517,14 @@ fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Re
             a.avatar = answer.avatar;
             Ok(AccountDone::Account(a))
         }
+        AccountAsk::Frame(frame) => {
+            let res = agent.put(format!("{url}/v1/players/me/frame")).header("User-Agent", USER_AGENT).header("Authorization", token()?).send_json(serde_json::json!({ "frame": frame }));
+            let mut res = answered(res, expired)?;
+            let answer: Framed = res.body_mut().read_json().map_err(bad)?;
+            let mut a = account.cloned().ok_or(ClaimError::Expired)?;
+            a.frame = answer.frame;
+            Ok(AccountDone::Account(a))
+        }
     }
 }
 
@@ -522,14 +560,15 @@ enum Load {
 #[derive(Default)]
 pub struct Avatars {
     loads: Arc<Mutex<HashMap<String, (String, Load)>>>,
-    textures: HashMap<String, (String, egui::TextureHandle)>,
+    /// Behind a lock: fetched from anywhere a face shows, borrowed or not.
+    textures: Mutex<HashMap<String, (String, egui::TextureHandle)>>,
 }
 
 impl Avatars {
     /// This player's avatar at this version, once fetched (meanwhile, and without one, None: the initial).
-    pub fn get(&mut self, ctx: &egui::Context, account: Option<&FloorAccount>, id: &str, version: Option<&str>) -> Option<egui::TextureHandle> {
+    pub fn get(&self, ctx: &egui::Context, account: Option<&FloorAccount>, id: &str, version: Option<&str>) -> Option<egui::TextureHandle> {
         let version = version?;
-        if let Some((v, texture)) = self.textures.get(id)
+        if let Some((v, texture)) = self.textures.lock().ok()?.get(id)
             && v == version
         {
             return Some(texture.clone());
@@ -542,7 +581,7 @@ impl Avatars {
                 if let Load::Ready(_) = load {
                     let Load::Ready(image) = std::mem::replace(load, Load::Done) else { unreachable!() };
                     let texture = ctx.load_texture(format!("avatar-{id}-{version}"), image, egui::TextureOptions::LINEAR);
-                    self.textures.insert(id.to_owned(), (version.to_owned(), texture.clone()));
+                    self.textures.lock().ok()?.insert(id.to_owned(), (version.to_owned(), texture.clone()));
                     return Some(texture);
                 }
                 None
@@ -579,7 +618,7 @@ pub fn fetch_avatar(url: &str, token: &str, id: &str, version: &str) -> Option<e
 pub fn shown(floor: Option<&[Entry]>, local: &[TypingScore], pseudo: Option<&str>) -> Vec<Entry> {
     let name = pseudo.map(str::to_owned);
     let Some(floor) = floor.filter(|_| pseudo.is_some()) else {
-        return local.iter().map(|s| Entry { name: name.clone(), score: s.clone(), me: true }).collect();
+        return local.iter().map(|s| Entry { name: name.clone(), score: s.clone(), me: true, id: None, avatar: None, frame: None, face: None }).collect();
     };
     let mut rows: Vec<Entry> = floor.to_vec();
     if let Some(best) = local.first() {
@@ -590,7 +629,7 @@ pub fn shown(floor: Option<&[Entry]>, local: &[TypingScore], pseudo: Option<&str
             }
             // Below the rounds it ties with.
             let place = rows.iter().filter(|r| r.score.letters >= best.letters).count();
-            rows.insert(place, Entry { name: name.clone(), score: best.clone(), me: true });
+            rows.insert(place, Entry { name: name.clone(), score: best.clone(), me: true, id: None, avatar: None, frame: None, face: None });
         }
     }
     for r in rows.iter_mut().filter(|r| r.me) {
@@ -629,6 +668,10 @@ pub struct GameEntry {
     pub me: bool,
     /// What floor keeps with the score (Bug Hunt's wave...).
     pub details: serde_json::Value,
+    /// The player's id, avatar version and frame (an older floor: none).
+    pub id: Option<String>,
+    pub avatar: Option<String>,
+    pub frame: Option<String>,
 }
 
 #[derive(Default)]
@@ -712,6 +755,12 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         me: bool,
         #[serde(default)]
         details: serde_json::Value,
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        avatar: Option<String>,
+        #[serde(default)]
+        frame: Option<String>,
     }
     #[derive(Deserialize)]
     struct Answer {
@@ -727,7 +776,7 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         request = request.header("Authorization", format!("Bearer {}", a.token));
     }
     let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details }).collect())
+    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame }).collect())
 }
 
 #[cfg(test)]
@@ -782,7 +831,7 @@ mod tests {
     }
 
     fn row(name: &str, letters: u32, me: bool) -> Entry {
-        Entry { name: Some(name.into()), score: round(letters, 0), me }
+        Entry { name: Some(name.into()), score: round(letters, 0), me, id: None, avatar: None, frame: None, face: None }
     }
 
     #[test]

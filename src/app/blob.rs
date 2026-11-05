@@ -1327,6 +1327,7 @@ impl App {
         let inner = Rect::from_min_max(Pos2::new(area.min.x + 14.0, area.min.y + 42.0), Pos2::new(area.max.x - 14.0, area.max.y - 12.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
         let live = &self.versus;
+        let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
         let mut invite = None;
         if live.online.is_empty() {
             child.label(egui::RichText::new(t.four_nobody).size(12.5).color(theme.text_muted));
@@ -1336,7 +1337,7 @@ impl App {
             for player in &live.online {
                 ui.horizontal(|ui| {
                     ui.set_min_height(28.0);
-                    ui.label(egui::RichText::new("●").size(10.0).color(theme.ansi[2]));
+                    super::frames::row_avatar(ui, 9.0, &player.name, player.id.as_deref(), player.avatar.as_deref(), player.frame.as_deref(), &faces, theme);
                     ui.label(egui::RichText::new(&player.name).size(13.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add_enabled(pending.is_none(), egui::Button::new(egui::RichText::new(t.four_invite).size(12.0)).corner_radius(6.0)).clicked() {

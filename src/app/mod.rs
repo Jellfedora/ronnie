@@ -34,6 +34,8 @@ mod larsen;
 mod president;
 mod bughunt;
 mod fishing;
+mod frames;
+mod trail;
 mod game;
 mod git;
 mod home;
@@ -400,6 +402,8 @@ pub struct App {
     president: president::President,
     bughunt: bughunt::BugHunt,
     fishing: fishing::Fishing,
+    /// The pointer's trail (unlocked at Ronnie Run).
+    trail: trail::Trail,
     /// The minesweeper's page.
     mines: mines::Mines,
     /// Ronnie Run's page.
@@ -1276,6 +1280,7 @@ impl App {
             president: president::President::default(),
             bughunt: bughunt::BugHunt::default(),
             fishing: fishing::Fishing::default(),
+            trail: trail::Trail::default(),
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),
@@ -5396,6 +5401,9 @@ impl App {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Title(title.clone()));
                 self.window_title = title;
             }
+        }
+        if self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best) {
+            self.trail.frame(ui.ctx(), &self.theme);
         }
         if self.theme.metal {
             paint_metal_pointer(ui.ctx(), &self.theme);

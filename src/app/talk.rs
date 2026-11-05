@@ -330,8 +330,17 @@ fn tint(theme: &Theme, name: &str) -> Color32 {
     [theme.ansi[1], theme.ansi[2], theme.ansi[3], theme.ansi[4], theme.ansi[5], theme.ansi[6]][h as usize % 6]
 }
 
-/// A round with the pseudo's first letter (a group: two little rounds).
-pub(super) fn paint_avatar(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, face: Option<&egui::TextureHandle>, theme: &Theme) {
+/// A player's avatar: their picture, else a round with the pseudo's first letter (a group: two little
+/// rounds); the frame they wear around it (`super::frames`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_avatar(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, face: Option<&egui::TextureHandle>, frame: Option<&str>, theme: &Theme) {
+    paint_face(painter, c, r, name, group, face, theme);
+    if !group {
+        super::frames::paint_frame(painter, c, r, frame, theme);
+    }
+}
+
+fn paint_face(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, face: Option<&egui::TextureHandle>, theme: &Theme) {
     // Its picture (round), when it has one.
     if let (Some(face), false) = (face, group) {
         let rect = Rect::from_center_size(c, Vec2::splat(r * 2.0));
@@ -621,19 +630,20 @@ impl App {
             .map(|r| {
                 let read = self.config.settings.talk_read.get(&r.id).copied().unwrap_or(0);
                 let online = r.peer(&me).is_some_and(|p| self.talk.is_online(&p.id));
-                let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id)));
+                let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id), self.talk.frame_of(&p.id)));
                 (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer)
             })
             .collect();
         for (id, title, group, unread, online, peer) in &rooms {
-            let face = peer.as_ref().and_then(|(pid, v)| self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()));
+            let face = peer.as_ref().and_then(|(pid, v, _)| self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()));
+            let worn = peer.as_ref().and_then(|(_, _, f)| f.as_deref());
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 4.0));
             *y += slot.height() + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("talk-room", id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
             let active = self.talk_page && self.talk_ui.room.as_deref() == Some(id.as_str());
             paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
             let c = Pos2::new(slot.min.x + 17.0, slot.center().y);
-            paint_avatar(&painter, c, 10.0, title, *group, face.as_ref(), &theme);
+            paint_avatar(&painter, c, 10.0, title, *group, face.as_ref(), worn, &theme);
             if *online {
                 painter.circle_filled(c + Vec2::new(7.5, 7.5), 4.0, theme.chrome_bg);
                 painter.circle_filled(c + Vec2::new(7.5, 7.5), 2.8, theme.ansi[2]);
@@ -702,7 +712,7 @@ impl App {
             paint_row_bg(&painter, slot, false, resp.hovered(), &theme);
             let c = Pos2::new(slot.min.x + 17.0, slot.center().y);
             let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.id, m.avatar.as_deref());
-            paint_avatar(&painter, c, 9.0, &m.name, false, face.as_ref(), &theme);
+            paint_avatar(&painter, c, 9.0, &m.name, false, face.as_ref(), m.frame.as_deref(), &theme);
             if *online {
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 3.8, theme.chrome_bg);
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 2.6, theme.ansi[2]);
@@ -780,7 +790,8 @@ impl App {
             let v = self.talk.avatar_of(&p.id);
             self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &p.id, v.as_deref())
         });
-        paint_avatar(&painter, c, 14.0, &title, room.kind == Kind::Group, face.as_ref(), &theme);
+        let worn = room.peer(&me).and_then(|p| self.talk.frame_of(&p.id));
+        paint_avatar(&painter, c, 14.0, &title, room.kind == Kind::Group, face.as_ref(), worn.as_deref(), &theme);
         if let Some(peer) = room.peer(&me) {
             let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with("talk-head-face"), Sense::click());
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -1311,7 +1322,8 @@ impl App {
                         let v = self.talk.avatar_of(&m.from);
                         let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.from, v.as_deref());
                         let c = avatar.center() + Vec2::new(0.0, if room.kind == Kind::Group { 16.0 } else { 12.0 });
-                        paint_avatar(ui.painter(), c, 14.0, &name, false, face.as_ref(), theme);
+                        let worn = self.talk.frame_of(&m.from);
+                        paint_avatar(ui.painter(), c, 14.0, &name, false, face.as_ref(), worn.as_deref(), theme);
                         // A click shows it large.
                         let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with(("talk-face", m.id)), Sense::click());
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -1988,6 +2000,7 @@ impl App {
         let real = pseudo.clone().unwrap_or_else(|| name.clone());
         let v = self.talk.avatar_of(&id);
         let face = self.avatars.get(ctx, self.config.settings.floor.as_ref(), &id, v.as_deref());
+        let worn = self.talk.frame_of(&id);
         let mut nick = self.talk_ui.nicknaming.take().filter(|(n, _)| *n == id);
         let (mut save, mut close) = (false, false);
         let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover));
@@ -1999,8 +2012,9 @@ impl App {
                     Some(face) => {
                         egui::Image::new((face.id(), Vec2::splat(SIDE))).corner_radius(SIDE / 2.0).paint_at(ui, rect);
                     }
-                    None => paint_avatar(ui.painter(), rect.center(), SIDE / 2.0, &name, false, None, theme),
+                    None => paint_face(ui.painter(), rect.center(), SIDE / 2.0, &name, false, None, theme),
                 }
+                super::frames::paint_frame(ui.painter(), rect.center(), SIDE / 2.0, worn.as_deref(), theme);
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new(&name).size(18.0).strong());
                 if let Some(p) = &pseudo {
