@@ -296,17 +296,17 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
-    // Gryffindor: the common room by the fire, a deep warm red for the sidebar and the bars, a dark
-    // reddish wood behind the text, parchment text, amber gold for the accent.
+    // Gryffindor: the house's maroon (a burgundy leaning to purple) for the sidebar and the bars, a
+    // darker one behind the text, cream text, mustard gold for the accent.
     Preset {
         id: WIZARD_THEME,
         name: "Gryffondor",
-        bg: 0x2f1a18,
-        fg: 0xf4e4c8,
-        cursor: 0xe9b04c,
-        chrome: 0x55201f,
-        surface: 0x74302a,
-        accent: 0xe9b04c,
+        bg: 0x34101d,
+        fg: 0xf6e8cc,
+        cursor: 0xf2a933,
+        chrome: 0x5c1a2b,
+        surface: 0x7c2a3c,
+        accent: 0xf2a933,
         ansi: [
             0x4a1c24, 0xff3b47, 0x7fc25a, 0xf2c232, 0x6f93e0, 0xd46aa0, 0x5fc4bc, 0xefe2c6, //
             0x7a4048, 0xff6b72, 0xa2dc7c, 0xffd860, 0x95b3f0, 0xe692bf, 0x8adcd4, 0xfffaee,

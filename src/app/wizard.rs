@@ -11,8 +11,8 @@ use std::f32::consts::TAU;
 /// What the guard's window says instead of its title.
 pub(super) const ALERT: &str = "Expelliarmus !";
 
-pub(super) const SCARLET: Color32 = Color32::from_rgb(0xc8, 0x10, 0x20);
-pub(super) const GOLD: Color32 = Color32::from_rgb(0xee, 0xba, 0x30);
+pub(super) const SCARLET: Color32 = Color32::from_rgb(0x8e, 0x1c, 0x34);
+pub(super) const GOLD: Color32 = Color32::from_rgb(0xf2, 0xa9, 0x33);
 const GOLD_DARK: Color32 = Color32::from_rgb(0xa8, 0x7a, 0x1a);
 const NIGHT: Color32 = Color32::from_rgb(0x0c, 0x0a, 0x1e);
 const STONE: Color32 = Color32::from_rgb(0x1a, 0x16, 0x26);
@@ -812,7 +812,7 @@ pub(super) fn footprints(ctx: &egui::Context, area: Rect, name: &str) {
 /// The strip of categories (or the folded rail) in `r`: a deep red fading darker downward, warm light
 /// at the top, a gold rule on its right edge with diamonds along it, a glint running down now and then.
 pub(super) fn strip_bg(painter: &egui::Painter, r: Rect) {
-    vgrad(painter, r, Color32::from_rgb(0x4a, 0x1a, 0x1a), Color32::from_rgb(0x24, 0x0e, 0x10));
+    vgrad(painter, r, Color32::from_rgb(0x52, 0x16, 0x27), Color32::from_rgb(0x2a, 0x0b, 0x16));
     vgrad(painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 140.0)), GOLD.gamma_multiply(0.07), Color32::TRANSPARENT);
     let x = r.max.x - 1.5;
     painter.vline(x, r.y_range(), Stroke::new(3.0, GOLD.gamma_multiply(0.12)));
