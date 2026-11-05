@@ -19,13 +19,21 @@ type Done = Arc<Mutex<Option<Result<Option<u16>, String>>>>;
 /// The end of an import (the project's new folder), in the background.
 type Imported = Arc<Mutex<Option<Result<PathBuf, String>>>>;
 
+/// A project being copied into the folder of the projects: its name, how far, how it ended.
+struct Importing {
+    name: String,
+    copied: Arc<projects::Copied>,
+    done: Imported,
+    eta: crate::eta::Eta,
+}
+
 const RUNNING: Color32 = Color32::from_rgb(0x4c, 0xc2, 0x6a);
 const STARTING: Color32 = Color32::from_rgb(0xe0, 0xa8, 0x3c);
 
 /// What runs the projects, and what the interface knows of it (the stack is busy while a project
 /// starts: the interface never waits for it).
 pub(super) struct Projects {
-    stack: Arc<Mutex<Stack>>,
+    pub(super) stack: Arc<Mutex<Stack>>,
     /// The project whose page is shown.
     pub selected: Option<Uuid>,
     running: HashSet<Uuid>,
@@ -37,7 +45,7 @@ pub(super) struct Projects {
     /// Stopping to be started again (its settings changed while it ran).
     restart_after: HashSet<Uuid>,
     /// The projects being copied into the folder of the projects, by name.
-    importing: Vec<(String, Imported)>,
+    importing: Vec<Importing>,
     /// A new WordPress being set (its form shown).
     new_wp: Option<NewWordPress>,
     /// The new WordPress sites being made: their name, PHP version and database server.
@@ -56,6 +64,18 @@ pub(super) struct Projects {
     db_to_show: Option<(Uuid, String)>,
     /// The projects whose address in their database a start made Ronnie's, to tell.
     fixed: Arc<Mutex<Vec<Uuid>>>,
+    /// Local's sites and .sql files being brought in (imports.rs).
+    pub(super) imports: super::imports::Imports,
+    /// What the page's search field holds.
+    search: String,
+    /// A project whose new group is being named, and the name so far.
+    new_group: Option<(Uuid, String)>,
+    /// The window of a project's logs (projlogs.rs), and when each project's were last shown.
+    pub(super) logs: Option<super::projlogs::LogsView>,
+    pub(super) logs_seen: HashMap<Uuid, std::time::SystemTime>,
+    pub(super) logs_since: std::time::SystemTime,
+    /// Xdebug being downloaded for a project (xdebug.rs).
+    pub(super) xdebug: Option<super::xdebug::XdebugInstall>,
 }
 
 /// WordPress's versions to install, once fetched (or why they couldn't be).
@@ -95,6 +115,13 @@ impl Projects {
             db_jobs: Vec::new(),
             db_to_show: None,
             fixed: Arc::new(Mutex::new(Vec::new())),
+            imports: Default::default(),
+            search: String::new(),
+            new_group: None,
+            logs: None,
+            logs_seen: HashMap::new(),
+            logs_since: std::time::SystemTime::now(),
+            xdebug: None,
         }
     }
 
@@ -133,7 +160,7 @@ impl App {
         }
     }
 
-    fn project(&self, id: Uuid) -> Option<&Project> {
+    pub(super) fn project(&self, id: Uuid) -> Option<&Project> {
         self.config.projects.iter().find(|p| p.id == id)
     }
 
@@ -158,6 +185,10 @@ impl App {
                 None => self.projects.starting.push((id, open, done)),
                 Some(Ok(db_port)) => {
                     self.projects.running.insert(id);
+                    if let Some(project) = self.config.projects.iter_mut().find(|p| p.id == id) {
+                        project.started = Some(chrono::Utc::now().timestamp());
+                        self.save_config();
+                    }
                     if let Some(port) = db_port {
                         self.projects.db_ports.insert(id, port);
                     }
@@ -181,10 +212,12 @@ impl App {
                 self.projects.stopping.push((id, done));
             }
         }
-        for (name, done) in std::mem::take(&mut self.projects.importing) {
-            let result = done.lock().unwrap().take();
+        self.project_xdebug_poll();
+        for job in std::mem::take(&mut self.projects.importing) {
+            let result = job.done.lock().unwrap().take();
+            let name = job.name.clone();
             match result {
-                None => self.projects.importing.push((name, done)),
+                None => self.projects.importing.push(job),
                 Some(Ok(folder)) => {
                     self.projects.scanned = None;
                     self.projects_scan();
@@ -456,7 +489,7 @@ impl App {
     }
 
     /// Started again (its settings changed while it ran).
-    fn project_restart(&mut self, id: Uuid) {
+    pub(super) fn project_restart(&mut self, id: Uuid) {
         if !self.projects.running.contains(&id) || self.projects.busy(id) {
             return;
         }
@@ -508,12 +541,13 @@ impl App {
             let _ = std::fs::create_dir_all(&dir);
             let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let done: Imported = Arc::new(Mutex::new(None));
-            let (slot, ctx) = (done.clone(), self.ctx.clone());
+            let copied = Arc::new(projects::Copied::default());
+            let (slot, count, ctx) = (done.clone(), copied.clone(), self.ctx.clone());
             std::thread::spawn(move || {
-                *slot.lock().unwrap() = Some(projects::import(&folder, &dir).map_err(|e| format!("{e:#}")));
+                *slot.lock().unwrap() = Some(projects::import(&folder, &dir, &count).map_err(|e| format!("{e:#}")));
                 ctx.request_repaint();
             });
-            self.projects.importing.push((name, done));
+            self.projects.importing.push(Importing { name, copied, done, eta: Default::default() });
         }
         self.open_projects_page();
     }
@@ -559,6 +593,149 @@ impl App {
             self.config.projects.sort_by_key(|p| p.name.to_lowercase());
             self.save_config();
         }
+    }
+
+    /// The user's groups of projects, by name.
+    fn project_groups(&self) -> Vec<String> {
+        let mut groups: Vec<String> = self.config.projects.iter().map(|p| p.group.trim().to_owned()).filter(|g| !g.is_empty()).collect();
+        groups.sort_by_key(|g| g.to_lowercase());
+        groups.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        groups
+    }
+
+    /// The projects as shown, sorted (the favorites first) under their titles (none when they aren't
+    /// grouped); `search`: only those matching the page's search field.
+    fn projects_shown(&self, search: bool) -> Vec<(Option<String>, Vec<Project>)> {
+        let t = self.t();
+        let query = if search { self.projects.search.trim().to_lowercase() } else { String::new() };
+        let matches = |p: &Project| {
+            query.is_empty() || {
+                let label = self.projects.found.get(&p.id).and_then(|f| f.label.clone()).unwrap_or_default();
+                [p.name.as_str(), &p.slug(), p.kind.name(), &label, &p.group].iter().any(|text| text.to_lowercase().contains(&query))
+            }
+        };
+        let mut list: Vec<Project> = self.config.projects.iter().filter(|p| matches(p)).cloned().collect();
+        let kind_rank = |p: &Project| projects::Kind::ALL.iter().position(|k| *k == p.kind).unwrap_or(9);
+        let running = |p: &Project| !(self.projects.running.contains(&p.id) || self.projects.busy(p.id));
+        list.sort_by(|a, b| {
+            let then = match self.config.settings.projects_sort {
+                projects::Sort::Name => std::cmp::Ordering::Equal,
+                projects::Sort::Kind => kind_rank(a).cmp(&kind_rank(b)),
+                projects::Sort::Recent => b.started.cmp(&a.started),
+                projects::Sort::Running => running(a).cmp(&running(b)),
+            };
+            b.favorite.cmp(&a.favorite).then(then).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        match self.config.settings.projects_grouping {
+            projects::Grouping::None => vec![(None, list)],
+            projects::Grouping::Kind => projects::Kind::ALL
+                .iter()
+                .map(|kind| (Some(kind.name().to_owned()), list.iter().filter(|p| p.kind == *kind).cloned().collect::<Vec<_>>()))
+                .filter(|(_, l)| !l.is_empty())
+                .collect(),
+            projects::Grouping::Mine => {
+                let mut sections: Vec<(Option<String>, Vec<Project>)> = self
+                    .project_groups()
+                    .into_iter()
+                    .map(|g| {
+                        let inside = list.iter().filter(|p| p.group.trim().eq_ignore_ascii_case(&g)).cloned().collect::<Vec<_>>();
+                        (Some(g), inside)
+                    })
+                    .filter(|(_, l)| !l.is_empty())
+                    .collect();
+                let rest: Vec<Project> = list.iter().filter(|p| p.group.trim().is_empty()).cloned().collect();
+                if !rest.is_empty() {
+                    sections.push((Some(t.projects_no_group.to_owned()), rest));
+                }
+                sections
+            }
+        }
+    }
+
+    fn project_set_favorite(&mut self, id: Uuid, favorite: bool) {
+        if let Some(project) = self.config.projects.iter_mut().find(|p| p.id == id) {
+            project.favorite = favorite;
+            self.save_config();
+        }
+    }
+
+    /// A project put in group `group` ("": none); shown grouped by the user's groups once it has one.
+    fn project_set_group(&mut self, id: Uuid, group: &str) {
+        if let Some(project) = self.config.projects.iter_mut().find(|p| p.id == id) {
+            project.group = group.trim().to_owned();
+            if !project.group.is_empty() {
+                self.config.settings.projects_grouping = projects::Grouping::Mine;
+            }
+            self.save_config();
+        }
+    }
+
+    /// The window naming a project's new group.
+    pub(super) fn project_group_window(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let Some((id, name)) = &mut self.projects.new_group else { return };
+        let id = *id;
+        let (mut create, mut close) = (false, false);
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
+        let modal = egui::Modal::new(egui::Id::new("project-new-group")).frame(frame).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(egui::RichText::new(t.projects_group_new_title).size(17.0).strong().color(theme.text));
+            ui.add_space(10.0);
+            let resp = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text(t.projects_group_name_hint));
+            resp.request_focus();
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                create = true;
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!name.trim().is_empty(), egui::Button::new(t.projects_group_create).corner_radius(6.0)).clicked() {
+                    create = true;
+                }
+                if ui.button(t.cancel).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if modal.should_close() {
+            close = true;
+        }
+        if create && !name.trim().is_empty() {
+            let name = name.clone();
+            self.projects.new_group = None;
+            self.project_set_group(id, &name);
+        } else if close {
+            self.projects.new_group = None;
+        }
+    }
+
+    /// The favorite and group items of a project's menu.
+    fn project_menu_extra(&mut self, ui: &mut Ui, project: &Project, groups: &[String]) {
+        let t = self.t();
+        let star = if project.favorite { t.projects_unfavorite } else { t.projects_favorite };
+        if ui.button(star).clicked() {
+            self.project_set_favorite(project.id, !project.favorite);
+            ui.close();
+        }
+        ui.menu_button(t.projects_group, |ui| {
+            for group in groups {
+                if ui.selectable_label(project.group.trim().eq_ignore_ascii_case(group), group).clicked() {
+                    self.project_set_group(project.id, group);
+                    ui.close();
+                }
+            }
+            if !project.group.is_empty() && ui.button(t.projects_no_group).clicked() {
+                self.project_set_group(project.id, "");
+                ui.close();
+            }
+            if !groups.is_empty() {
+                ui.separator();
+            }
+            if ui.button(t.projects_group_new).clicked() {
+                self.projects.new_group = Some((project.id, String::new()));
+                ui.close();
+            }
+        });
     }
 
     /// The page of the project selected (or of the first one), in place of the tabs.
@@ -622,7 +799,17 @@ impl App {
         }
         let shown_page = self.dev_page && self.dev.tool == DevTool::Project;
         let (mut clicked, mut menu_action) = (None, None);
-        for project in self.config.projects.clone() {
+        let groups = self.project_groups();
+        let rows: Vec<(Option<String>, Project)> = self
+            .projects_shown(false)
+            .into_iter()
+            .flat_map(|(title, list)| list.into_iter().enumerate().map(move |(k, p)| (if k == 0 { title.clone() } else { None }, p)))
+            .collect();
+        for (title, project) in rows {
+            if let Some(title) = title {
+                painter.text(Pos2::new(left + 10.0, *y + 10.0), Align2::LEFT_CENTER, title.to_uppercase(), FontId::proportional(10.5), theme.text_muted.gamma_multiply(0.8));
+                *y += 20.0;
+            }
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
             *y += slot.height() + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("project", project.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(project.url(self.config.settings.projects_port));
@@ -644,11 +831,18 @@ impl App {
                 projects::Kind::Php => project.php_version().map(|v| format!("PHP {}", envs::line(&v))).unwrap_or_default(),
                 kind => kind.name().to_owned(),
             };
-            painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.0), theme.text_muted.gamma_multiply(0.8));
+            let mut note_x = slot.max.x - 10.0;
+            if project.favorite {
+                paint_star(&painter, Pos2::new(note_x - 5.0, slot.center().y), 5.0, true, STAR);
+                note_x -= 16.0;
+            }
+            painter.text(Pos2::new(note_x, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.0), theme.text_muted.gamma_multiply(0.8));
             if resp.clicked() {
                 clicked = Some(project.id);
             }
             resp.context_menu(|ui| {
+                self.project_menu_extra(ui, &project, &groups);
+                ui.separator();
                 let running = state == State::Running;
                 menu_item(ui, t.projects_open_site, (project.id, Menu::Open), &mut menu_action);
                 if running {
@@ -695,8 +889,9 @@ impl App {
                 self.open_projects_page();
             }
             Menu::Database => self.project_open_db(id),
+            Menu::Logs => self.project_logs_open(id),
             // Only the page asks these, and handles them itself.
-            Menu::Php | Menu::Db | Menu::Logs | Menu::Restart => {}
+            Menu::Php | Menu::Db | Menu::Restart | Menu::ImportSql => {}
         }
     }
 
@@ -705,6 +900,7 @@ impl App {
     pub(super) fn project_page_ui(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
         let dir = self.projects_dir();
         let (mut action, mut import, mut pick_dir, mut new_wp, mut open_wp, mut wp_more) = (None, false, false, None, false, None);
+        let groups = self.project_groups();
         egui::ScrollArea::vertical().id_salt("project-page").auto_shrink([false, false]).show(ui, |ui| {
             // Title, the folder of the projects (picked, opened); projects imported into it.
             ui.horizontal(|ui| {
@@ -822,11 +1018,26 @@ impl App {
                     ui.label(egui::RichText::new(t.projects_wp_creating.replace("{name}", name)).size(12.0).color(theme.text_muted));
                 });
             }
-            for (name, _) in &self.projects.importing {
+            if !self.projects.importing.is_empty() {
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
+            for job in &mut self.projects.importing {
+                let fraction = job.copied.fraction();
+                let left = fraction.map(|f| job.eta.said(f, t)).unwrap_or_default();
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new().size(12.0));
-                    ui.label(egui::RichText::new(t.projects_importing.replace("{name}", name)).size(12.0).color(theme.text_muted));
+                    let mut text = t.projects_importing.replace("{name}", &job.name);
+                    if let Some(f) = fraction {
+                        text += &format!("  ·  {:.0} %", f * 100.0);
+                    }
+                    if !left.is_empty() {
+                        text += &format!("  ·  {left}");
+                    }
+                    ui.label(egui::RichText::new(text).size(12.0).color(theme.text_muted));
                 });
+                if let Some(f) = fraction {
+                    ui.add(egui::ProgressBar::new(f).desired_width(320.0).desired_height(5.0).fill(theme.accent));
+                }
             }
             ui.add_space(14.0);
             if self.config.projects.is_empty() {
@@ -834,19 +1045,66 @@ impl App {
                 return;
             }
 
-            // The cards, as many a row as fit.
+            // Search, sort, grouping.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.add(egui::TextEdit::singleline(&mut self.projects.search).desired_width(220.0).hint_text(format!("🔍  {}", t.projects_search_hint)));
+                if !self.projects.search.is_empty() && ui.small_button("✕").clicked() {
+                    self.projects.search.clear();
+                }
+                ui.add_space(8.0);
+                let (mut sort, mut grouping) = (self.config.settings.projects_sort, self.config.settings.projects_grouping);
+                ui.label(egui::RichText::new(t.projects_sort).size(12.5).color(theme.text_muted));
+                egui::ComboBox::from_id_salt("projects-sort").selected_text(sort_name(sort, t)).show_ui(ui, |ui| {
+                    for s in projects::Sort::ALL {
+                        ui.selectable_value(&mut sort, s, sort_name(s, t));
+                    }
+                });
+                ui.label(egui::RichText::new(t.projects_grouping).size(12.5).color(theme.text_muted));
+                egui::ComboBox::from_id_salt("projects-grouping").selected_text(grouping_name(grouping, t)).show_ui(ui, |ui| {
+                    for g in projects::Grouping::ALL {
+                        ui.selectable_value(&mut grouping, g, grouping_name(g, t));
+                    }
+                });
+                if (sort, grouping) != (self.config.settings.projects_sort, self.config.settings.projects_grouping) {
+                    self.config.settings.projects_sort = sort;
+                    self.config.settings.projects_grouping = grouping;
+                    self.save_config();
+                }
+            });
+            if self.config.settings.projects_grouping == projects::Grouping::Mine && groups.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(t.projects_groups_hint).size(12.0).color(theme.text_muted));
+            }
+            ui.add_space(12.0);
+
+            // The cards, as many a row as fit, under their titles.
             const GAP: f32 = 12.0;
             let width = ui.available_width();
             let columns = ((width + GAP) / (280.0 + GAP)).floor().max(1.0) as usize;
             let card_w = (width - GAP * (columns as f32 - 1.0)) / columns as f32;
-            for row in self.config.projects.clone().chunks(columns) {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = GAP;
-                    for project in row {
-                        self.project_card(ui, project, card_w, t, theme, &mut action);
-                    }
-                });
-                ui.add_space(GAP);
+            let sections = self.projects_shown(true);
+            if sections.iter().all(|(_, l)| l.is_empty()) {
+                ui.label(egui::RichText::new(t.projects_no_match.replace("{q}", self.projects.search.trim())).size(13.0).color(theme.text_muted));
+            }
+            for (title, list) in sections {
+                if let Some(title) = title {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&title).size(14.5).strong().color(theme.text));
+                        ui.label(egui::RichText::new(list.len().to_string()).size(12.0).color(theme.text_muted));
+                    });
+                    ui.add_space(6.0);
+                }
+                for row in list.chunks(columns) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = GAP;
+                        for project in row {
+                            self.project_card(ui, project, card_w, t, theme, &groups, &mut action);
+                        }
+                    });
+                    ui.add_space(GAP);
+                }
             }
 
             // The project picked: its settings.
@@ -874,20 +1132,21 @@ impl App {
         match action {
             Menu::Php => self.open_env_page(DevTool::Php),
             Menu::Db => self.open_env_page(DevTool::Mysql),
-            Menu::Logs => {
-                if let Ok(logs) = projects::logs_dir() {
-                    let _ = std::fs::create_dir_all(&logs);
-                    config::open_folder(&logs);
+            Menu::Restart => self.project_restart(id),
+            Menu::ImportSql => {
+                if let Some(project) = self.project(id).cloned() {
+                    let name = self.project_found(&project).database.clone().unwrap_or_else(|| projects::database_name(&project.name));
+                    self.sql_import_open(Some((project.db.clone(), name, id)));
                 }
             }
-            Menu::Restart => self.project_restart(id),
             other => self.project_menu(id, other),
         }
     }
 
     /// A project's card: its state and name, what it is, its address, its environment (PHP, nginx,
     /// its database); a click picks it, the one picked starts, opens or stops from it.
-    fn project_card(&mut self, ui: &mut Ui, project: &Project, width: f32, t: &'static Strings, theme: &Theme, action: &mut Option<(Uuid, Menu)>) {
+    #[allow(clippy::too_many_arguments)]
+    fn project_card(&mut self, ui: &mut Ui, project: &Project, width: f32, t: &'static Strings, theme: &Theme, groups: &[String], action: &mut Option<(Uuid, Menu)>) {
         let id = project.id;
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 138.0), Sense::click());
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -913,8 +1172,21 @@ impl App {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
         painter.text(Pos2::new(inner.min.x + 16.0, dot.y), Align2::LEFT_CENTER, &project.name, FontId::proportional(15.0), theme.text);
+        // The star (a favorite stays at the head of the list), shown on hover unless it is one.
+        let star = Rect::from_center_size(Pos2::new(inner.max.x - 7.0, dot.y), Vec2::splat(20.0));
+        let star_resp = ui.interact(star, ui.id().with(("project-star", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if project.favorite { t.projects_unfavorite } else { t.projects_favorite_tip });
+        if project.favorite || resp.hovered() || star_resp.hovered() {
+            let color = if project.favorite { STAR } else if star_resp.hovered() { theme.text } else { theme.text_muted.gamma_multiply(0.7) };
+            paint_star(&painter, star.center(), 6.5, project.favorite, color);
+        }
+        if star_resp.clicked() {
+            self.project_set_favorite(id, !project.favorite);
+        }
         let what = label.unwrap_or_else(|| project.kind.name().to_owned());
-        painter.text(Pos2::new(inner.max.x, dot.y), Align2::RIGHT_CENTER, what, FontId::proportional(11.0), theme.text_muted);
+        painter.text(Pos2::new(inner.max.x - 22.0, dot.y), Align2::RIGHT_CENTER, what, FontId::proportional(11.0), theme.text_muted);
+        if !project.group.is_empty() && self.config.settings.projects_grouping != projects::Grouping::Mine {
+            painter.text(Pos2::new(inner.max.x, inner.min.y + 28.0), Align2::RIGHT_CENTER, &project.group, FontId::proportional(11.0), theme.text_muted.gamma_multiply(0.85));
+        }
         painter.text(Pos2::new(inner.min.x, inner.min.y + 28.0), Align2::LEFT_CENTER, project.url(self.config.settings.projects_port), FontId::proportional(11.5), theme.accent.gamma_multiply(0.9));
 
         // Its environment.
@@ -950,8 +1222,22 @@ impl App {
         }
 
         // What to do: on the card picked, start or open and stop; on the others, their state. Its
-        // database opened in Ronnie from the right end, on all of them.
+        // database opened in Ronnie from the right end, its logs beside, on all of them.
         let mut bottom = Rect::from_min_max(Pos2::new(inner.min.x, inner.max.y - 28.0), inner.max);
+        {
+            let square = Rect::from_min_max(Pos2::new(bottom.max.x - 28.0, bottom.min.y), bottom.max);
+            bottom.max.x = square.min.x - 6.0;
+            let fresh = self.project_logs_new(project);
+            let tip = if fresh { t.projects_logs_new } else { t.projects_logs_tip };
+            let button = ui.place(square, egui::Button::new("").corner_radius(6.0)).on_hover_text(tip);
+            paint_logs_icon(ui.painter(), square.center(), if button.hovered() { theme.accent } else { theme.text_muted });
+            if fresh {
+                ui.painter().circle_filled(Pos2::new(square.max.x - 5.0, square.min.y + 5.0), 3.5, theme.ansi[1]);
+            }
+            if button.clicked() {
+                *action = Some((id, Menu::Logs));
+            }
+        }
         if db.is_some() {
             let square = Rect::from_min_max(Pos2::new(bottom.max.x - 28.0, bottom.min.y), bottom.max);
             bottom.max.x = square.min.x - 8.0;
@@ -1010,6 +1296,8 @@ impl App {
             self.projects.selected = Some(id);
         }
         resp.context_menu(|ui| {
+            self.project_menu_extra(ui, project, groups);
+            ui.separator();
             menu_item(ui, t.projects_open_site, (id, Menu::Open), action);
             if state == State::Running {
                 menu_item(ui, t.projects_stop, (id, Menu::Stop), action);
@@ -1017,6 +1305,7 @@ impl App {
             ui.separator();
             menu_item(ui, t.projects_terminal, (id, Menu::Terminal), action);
             menu_item(ui, t.projects_folder, (id, Menu::Folder), action);
+            menu_item(ui, t.projects_logs_tip, (id, Menu::Logs), action);
             if project.db.is_some() {
                 menu_item(ui, t.projects_open_db, (id, Menu::Database), action);
             }
@@ -1026,8 +1315,11 @@ impl App {
     /// The settings of the project picked: a change while it runs restarts it.
     fn project_settings_ui(&mut self, ui: &mut Ui, id: Uuid, t: &'static Strings, theme: &Theme, action: &mut Option<(Uuid, Menu)>) {
         let Some(mut project) = self.project(id).cloned() else { return };
+        let groups = self.project_groups();
         let state = self.project_state(id);
         let found = self.project_found(&project).database.clone();
+        let xdebug = self.project_xdebug_state(id);
+        let mut xdebug_to: Option<bool> = None;
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(t.projects_settings).size(17.0).color(theme.text));
             ui.add_space(10.0);
@@ -1109,6 +1401,31 @@ impl App {
                     if ui.link(t.projects_db_more).clicked() {
                         *action = Some((id, Menu::Db));
                     }
+                    if ui.link(t.projects_import_sql).on_hover_text(t.sql_body).clicked() {
+                        *action = Some((id, Menu::ImportSql));
+                    }
+                });
+                ui.end_row();
+
+                ui.label(egui::RichText::new(t.projects_group).color(theme.text_muted));
+                ui.horizontal(|ui| {
+                    if ui.add(egui::TextEdit::singleline(&mut project.group).desired_width(180.0).hint_text(t.projects_no_group)).changed() {
+                        changed = true;
+                    }
+                    if !groups.is_empty() {
+                        egui::ComboBox::from_id_salt("project-group").selected_text("").width(28.0).show_ui(ui, |ui| {
+                            for group in &groups {
+                                if ui.selectable_label(project.group.trim().eq_ignore_ascii_case(group), group).clicked() {
+                                    project.group = group.clone();
+                                    changed = true;
+                                }
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
+                    if ui.checkbox(&mut project.favorite, t.projects_favorite_label).changed() {
+                        changed = true;
+                    }
                 });
                 ui.end_row();
 
@@ -1133,8 +1450,29 @@ impl App {
                 ui.end_row();
 
                 ui.label(egui::RichText::new(t.projects_logs).color(theme.text_muted));
-                if ui.link(t.projects_open_logs).clicked() {
+                if ui.link(t.projects_logs_show).clicked() {
                     *action = Some((id, Menu::Logs));
+                }
+                ui.end_row();
+
+                ui.label(egui::RichText::new("Xdebug").color(theme.text_muted));
+                match &xdebug {
+                    super::xdebug::XdebugState::Downloading(text) => {
+                        ui.ctx().request_repaint_after(Duration::from_millis(250));
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(12.0));
+                            ui.label(egui::RichText::new(text).size(12.5).color(theme.text_muted));
+                        });
+                    }
+                    super::xdebug::XdebugState::Unavailable => {
+                        ui.label(egui::RichText::new(t.projects_xdebug_unavailable).size(12.5).color(theme.text_muted));
+                    }
+                    state => {
+                        let mut on = matches!(state, super::xdebug::XdebugState::On);
+                        if ui.checkbox(&mut on, t.projects_xdebug_check).on_hover_text(t.projects_xdebug_tip).changed() {
+                            xdebug_to = Some(on);
+                        }
+                    }
                 }
                 ui.end_row();
             });
@@ -1145,7 +1483,9 @@ impl App {
             }
             self.save_config();
         }
-        if restart && state == State::Running {
+        if let Some(on) = xdebug_to {
+            self.project_xdebug_set(id, on);
+        } else if restart && state == State::Running {
             *action = Some((id, Menu::Restart));
         }
         ui.add_space(18.0);
@@ -1178,6 +1518,59 @@ enum Menu {
     Restart,
     /// Its database opened in Ronnie.
     Database,
+    /// A .sql file loaded into a new database for it.
+    ImportSql,
+}
+
+/// A sheet of lines: a project's logs.
+fn paint_logs_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let sheet = Rect::from_center_size(c, Vec2::new(11.0, 13.0));
+    painter.rect_stroke(sheet, 1.5, Stroke::new(1.3, color), egui::StrokeKind::Middle);
+    for (k, w) in [7.0, 5.0, 7.0].into_iter().enumerate() {
+        let y = sheet.min.y + 3.5 + k as f32 * 3.0;
+        painter.line_segment([Pos2::new(sheet.min.x + 2.0, y), Pos2::new(sheet.min.x + 2.0 + w, y)], Stroke::new(1.1, color));
+    }
+}
+
+/// The gold of a favorite's star.
+const STAR: Color32 = Color32::from_rgb(0xf2, 0xc1, 0x4e);
+
+/// A five-pointed star of outer radius `r`: filled, or its outline.
+fn paint_star(painter: &egui::Painter, c: Pos2, r: f32, filled: bool, color: Color32) {
+    let point = |k: usize, radius: f32| {
+        let angle = -std::f32::consts::FRAC_PI_2 + k as f32 * std::f32::consts::PI / 5.0;
+        c + Vec2::new(angle.cos(), angle.sin()) * radius
+    };
+    let inner = r * 0.45;
+    let outline: Vec<Pos2> = (0..10).map(|k| point(k, if k % 2 == 0 { r } else { inner })).collect();
+    if filled {
+        // The inner pentagon, then a triangle a point (a star isn't convex).
+        let pentagon: Vec<Pos2> = (0..5).map(|k| point(2 * k + 1, inner)).collect();
+        painter.add(egui::Shape::convex_polygon(pentagon, color, Stroke::NONE));
+        for k in 0..5 {
+            let tri = vec![point(2 * k + 1 + 9, inner), point(2 * k, r), point(2 * k + 1, inner)];
+            painter.add(egui::Shape::convex_polygon(tri, color, Stroke::NONE));
+        }
+    } else {
+        painter.add(egui::Shape::closed_line(outline, Stroke::new(1.2, color)));
+    }
+}
+
+fn sort_name(sort: projects::Sort, t: &Strings) -> &'static str {
+    match sort {
+        projects::Sort::Name => t.projects_sort_name,
+        projects::Sort::Kind => t.projects_sort_kind,
+        projects::Sort::Recent => t.projects_sort_recent,
+        projects::Sort::Running => t.projects_sort_running,
+    }
+}
+
+fn grouping_name(grouping: projects::Grouping, t: &Strings) -> &'static str {
+    match grouping {
+        projects::Grouping::None => t.projects_group_none,
+        projects::Grouping::Kind => t.projects_group_kind,
+        projects::Grouping::Mine => t.projects_group_mine,
+    }
 }
 
 /// PHP's logo: its ellipse, "php" inside.

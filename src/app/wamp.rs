@@ -16,6 +16,10 @@ pub(super) struct WampImport {
     step: Arc<Mutex<String>>,
     progress: Arc<Mutex<Progress>>,
     done: Arc<Mutex<Option<Imported>>>,
+    /// How far the copy of the data went.
+    copied: Arc<projects::Copied>,
+    /// How long the step under way still takes.
+    eta: crate::eta::Eta,
 }
 
 impl App {
@@ -30,10 +34,10 @@ impl App {
             self.error = Some(t.wamp_none.to_owned());
             return;
         }
-        let job = WampImport { step: Arc::new(Mutex::new(String::new())), progress: Arc::new(Mutex::new(Progress::default())), done: Arc::new(Mutex::new(None)) };
-        let (step, progress, done, ctx) = (job.step.clone(), job.progress.clone(), job.done.clone(), self.ctx.clone());
+        let job = WampImport { step: Arc::new(Mutex::new(String::new())), progress: Arc::new(Mutex::new(Progress::default())), done: Arc::new(Mutex::new(None)), copied: Arc::new(projects::Copied::default()), eta: Default::default() };
+        let (step, progress, done, copied, ctx) = (job.step.clone(), job.progress.clone(), job.done.clone(), job.copied.clone(), self.ctx.clone());
         let _ = std::thread::Builder::new().name("wamp-import".into()).spawn(move || {
-            let result = wamp_import(&wamps, t, &step, &progress, &ctx).map_err(|e| format!("{e:#}"));
+            let result = wamp_import(&wamps, t, &step, &progress, &copied, &ctx).map_err(|e| format!("{e:#}"));
             crate::log::info(&match &result {
                 Ok(dbs) => format!("WAMP's databases imported: {}", dbs.iter().map(|(db, _)| db.label("")).collect::<Vec<_>>().join(", ")),
                 Err(e) => format!("WAMP's databases not imported: {e}"),
@@ -53,12 +57,16 @@ impl App {
         self.wamp_checked.is_some_and(|(_, pending)| pending)
     }
 
-    /// What the import does now, and how far ("Downloading MySQL 8.4.7…", 0.4).
-    pub(super) fn wamp_import_state(&self) -> Option<(String, Option<f32>)> {
-        let job = self.wamp.as_ref()?;
+    /// What the import does now, how far and how long it still takes ("Downloading MySQL 8.4.7…",
+    /// 0.4, "encore 2 min"): its download, then the copy of its data.
+    pub(super) fn wamp_import_state(&mut self) -> Option<(String, Option<f32>, String)> {
+        let t = self.t();
+        let job = self.wamp.as_mut()?;
         let p = *job.progress.lock().unwrap();
-        let fraction = (p.total > 0 && !p.unpacking && p.received < p.total).then(|| p.received as f32 / p.total as f32);
-        Some((job.step.lock().unwrap().clone(), fraction))
+        let downloading = (p.total > 0 && !p.unpacking && p.received < p.total).then(|| p.received as f32 / p.total as f32);
+        let fraction = downloading.or_else(|| job.copied.fraction());
+        let left = fraction.map(|f| job.eta.said(f, t)).unwrap_or_default();
+        Some((job.step.lock().unwrap().clone(), fraction, left))
     }
 
     /// Collects the end of the import: a connection to each server, the projects set on the server
@@ -103,7 +111,7 @@ impl App {
 
 /// The import itself (off the interface's thread): each server's version installed, WAMP's services
 /// stopped if its data is to be copied, its data and settings copied; each server and its port.
-fn wamp_import(wamps: &[WampData], t: &'static Strings, step: &Arc<Mutex<String>>, progress: &Arc<Mutex<Progress>>, ctx: &egui::Context) -> anyhow::Result<Vec<(Db, u16)>> {
+fn wamp_import(wamps: &[WampData], t: &'static Strings, step: &Arc<Mutex<String>>, progress: &Arc<Mutex<Progress>>, copied: &projects::Copied, ctx: &egui::Context) -> anyhow::Result<Vec<(Db, u16)>> {
     let say = |text: String| {
         *step.lock().unwrap() = text;
         ctx.request_repaint();
@@ -123,7 +131,7 @@ fn wamp_import(wamps: &[WampData], t: &'static Strings, step: &Arc<Mutex<String>
     }
     for (wamp, db) in wamps.iter().zip(&dbs) {
         say(t.wamp_step_copy.replace("{name}", &db.label("")));
-        projects::import_wamp(wamp, db)?;
+        projects::import_wamp(wamp, db, copied)?;
     }
     Ok(wamps.iter().zip(dbs).map(|(wamp, db)| (db, wamp.port)).collect())
 }

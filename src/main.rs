@@ -27,6 +27,7 @@ mod media_keys;
 mod modules;
 mod node;
 mod envs;
+mod eta;
 mod projects;
 mod notify;
 mod openwith;

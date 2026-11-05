@@ -33,6 +33,7 @@ const NGINX_MAC: &str = "https://jirutka.github.io/nginx-binaries";
 const BREW_API: &str = "https://formulae.brew.sh/api/formula";
 const MYSQL_TAGS: &str = "https://api.github.com/repos/mysql/mysql-server/git/matching-refs/tags/mysql-";
 const MYSQL_CDN: &str = "https://cdn.mysql.com";
+const XDEBUG: &str = "https://xdebug.org";
 const MARIADB: &str = "https://downloads.mariadb.org/rest-api/mariadb";
 /// In a MySQL archive's name for macOS, the system it is built for ("macos15"): not in its list,
 /// tried at the download.
@@ -249,6 +250,54 @@ pub fn parse(version: &str) -> (u64, u64, u64, u64) {
 pub fn line(version: &str) -> String {
     let (major, minor, _, _) = parse(version);
     format!("{major}.{minor}")
+}
+
+/// Where Xdebug goes in a PHP version of Ronnie's (Windows: its builds are published there only;
+/// static-php-cli's PHP elsewhere loads no extension).
+pub fn xdebug_path(php: &str) -> Option<PathBuf> {
+    cfg!(windows).then(|| dir(Kind::Php, php)).flatten().map(|d| d.join("ext").join("php_xdebug.dll"))
+}
+
+/// Whether Xdebug is there for a PHP version.
+pub fn has_xdebug(php: &str) -> bool {
+    xdebug_path(php).is_some_and(|p| p.is_file())
+}
+
+/// The newest stable Xdebug for a PHP line on xdebug.org's download page: its file (its "non
+/// thread safe" 64-bit build, as Ronnie's PHP) and its SHA-256.
+fn xdebug_file(page: &str, php_line: &str) -> Option<(String, String)> {
+    // The newest so far: its version, file and SHA-256.
+    type Found = ((u64, u64, u64, u64), String, String);
+    let mut best: Option<Found> = None;
+    for part in page.split("SHA256:&nbsp;").skip(1) {
+        let sha256: String = part.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        let Some(file) = part.split("/files/").nth(1).and_then(|f| f.split(['\'', '"']).next()) else { continue };
+        let Some(rest) = file.strip_prefix("php_xdebug-") else { continue };
+        let Some((version, build)) = rest.split_once('-') else { continue };
+        let stable = version.chars().all(|c| c.is_ascii_digit() || c == '.');
+        if !stable || sha256.len() != 64 || !build.starts_with(&format!("{php_line}-nts-")) || !build.ends_with("-x86_64.dll") {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(v, _, _)| parse(version) > *v) {
+            best = Some((parse(version), file.to_owned(), sha256));
+        }
+    }
+    best.map(|(_, file, sha256)| (file, sha256))
+}
+
+/// Downloads Xdebug for a PHP version of Ronnie's from xdebug.org, checked against its SHA-256.
+pub fn install_xdebug(php: &str, progress: &Arc<Mutex<Progress>>, ctx: &egui::Context) -> Result<()> {
+    let target = xdebug_path(php).context("Xdebug: Windows only (Ronnie's PHP loads no extension elsewhere)")?;
+    let page = get_text(&format!("{XDEBUG}/download"))?;
+    let (file, sha256) = xdebug_file(&page, &line(php)).with_context(|| format!("xdebug.org publishes no Xdebug for PHP {}", line(php)))?;
+    let bytes = download(&agent(Duration::from_secs(300)), &format!("{XDEBUG}/files/{file}"), progress, ctx, 0, 0)?;
+    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if !actual.eq_ignore_ascii_case(&sha256) {
+        bail!("the downloaded Xdebug is corrupted (SHA-256 mismatch)");
+    }
+    let staging = target.with_extension("dll.part");
+    std::fs::write(&staging, &bytes)?;
+    std::fs::rename(&staging, &target).with_context(|| format!("cannot write {}", target.display()))
 }
 
 /// Deletes an installed version.
@@ -799,11 +848,38 @@ mod tests {
         assert!(program.starts_with(b"xx\0@executable_path/libpcre2-8.0.dylib\0\0"));
         assert!(program.ends_with(b"\0yy /opt/homebrew/opt/pcre/include"));
     }
+
+    #[test]
+    fn xdebug_the_newest_stable_for_the_line() {
+        let h = |c: char| c.to_string().repeat(64);
+        let link = |sha: &str, file: &str| format!("<li><a title=\"SHA256:&nbsp;{sha}\" href='/files/{file}'>PHP</a></li>\n");
+        let page = [
+            link(&h('a'), "php_xdebug-3.5.3-8.3-nts-vs16-x86_64.dll"),
+            link(&h('b'), "php_xdebug-3.5.3-8.3-ts-vs16-x86_64.dll"),
+            link(&h('c'), "php_xdebug-3.6.0alpha1-8.3-nts-vs16-x86_64.dll"),
+            link(&h('d'), "php_xdebug-3.5.3-8.4-nts-vs17-x86_64.dll"),
+            link(&h('e'), "php_xdebug-3.4.7-8.3-nts-vs16-x86_64.dll"),
+        ]
+        .concat();
+        assert_eq!(xdebug_file(&page, "8.3"), Some(("php_xdebug-3.5.3-8.3-nts-vs16-x86_64.dll".into(), h('a'))));
+        assert_eq!(xdebug_file(&page, "8.4"), Some(("php_xdebug-3.5.3-8.4-nts-vs17-x86_64.dll".into(), h('d'))));
+        assert_eq!(xdebug_file(&page, "7.4"), None);
+    }
 }
 
 #[cfg(test)]
 mod live_tests {
     use super::*;
+
+    /// Xdebug's builds for each PHP line (network): `cargo test xdebug_published -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn xdebug_published() {
+        let page = get_text(&format!("{XDEBUG}/download")).unwrap();
+        for line in ["7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"] {
+            println!("PHP {line}: {:?}", xdebug_file(&page, line));
+        }
+    }
 
     /// The lists published (network): `cargo test envs_releases -- --ignored --nocapture`.
     #[test]

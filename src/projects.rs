@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
@@ -79,6 +80,52 @@ pub struct Project {
     /// The database server it runs with (None: none).
     #[serde(default)]
     pub db: Option<Db>,
+    /// Kept at the head of the list (a star on its card).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favorite: bool,
+    /// The group of the user's it is shown in ("": none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    /// When it was last started (seconds since 1970), for the sort by the latest started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<i64>,
+    /// Debugged step by step: its PHP, its own, loads Xdebug (Windows).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub xdebug: bool,
+}
+
+/// How the projects are sorted, the favorites first.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Sort {
+    #[default]
+    Name,
+    /// WordPress, PrestaShop, Laravel, PHP; by name within.
+    Kind,
+    /// The latest started first.
+    Recent,
+    /// Those running first.
+    Running,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 4] = [Sort::Name, Sort::Kind, Sort::Recent, Sort::Running];
+}
+
+/// How the projects are grouped under titles.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Grouping {
+    #[default]
+    None,
+    /// WordPress, PrestaShop…
+    Kind,
+    /// The user's groups (`Project::group`), those without one last.
+    Mine,
+}
+
+impl Grouping {
+    pub const ALL: [Grouping; 3] = [Grouping::None, Grouping::Kind, Grouping::Mine];
 }
 
 /// A database server: MySQL or MariaDB, and its version.
@@ -103,7 +150,7 @@ impl Project {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "site".into());
         let php = found.php_line.or_else(wamp_php_line).as_deref().and_then(envs::php_of_line);
         let db = found.database.is_some().then(newest_db).flatten();
-        Project { id: Uuid::new_v4(), name, path: path.to_path_buf(), root: found.root, kind: found.kind, php, db }
+        Project { id: Uuid::new_v4(), name, path: path.to_path_buf(), root: found.root, kind: found.kind, php, db, favorite: false, group: String::new(), started: None, xdebug: false }
     }
 
     /// Its database server, if still installed.
@@ -196,8 +243,9 @@ pub fn folders_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// A project from elsewhere copied into the folder of the projects (the original left as it is):
-/// copied under a hidden name first, so that it is never read half copied. Its new folder.
-pub fn import(from: &Path, dir: &Path) -> Result<PathBuf> {
+/// copied under a hidden name first, so that it is never read half copied, how far told in `copied`.
+/// Its new folder.
+pub fn import(from: &Path, dir: &Path, copied: &Copied) -> Result<PathBuf> {
     let name = from.file_name().with_context(|| format!("{} isn't a folder", from.display()))?;
     let target = dir.join(name);
     if target.exists() {
@@ -205,7 +253,8 @@ pub fn import(from: &Path, dir: &Path) -> Result<PathBuf> {
     }
     let staging = dir.join(format!(".{}.import", name.to_string_lossy()));
     let _ = std::fs::remove_dir_all(&staging);
-    if let Err(e) = copy_tree(from, &staging) {
+    copied.total.store(tree_size(from, keep_all), Ordering::Relaxed);
+    if let Err(e) = copy_tree(from, &staging, keep_all, copied) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
@@ -213,18 +262,82 @@ pub fn import(from: &Path, dir: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// A folder copied whole.
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+/// How far a copy went: the bytes copied, out of how many (0 while they are counted).
+#[derive(Default)]
+pub struct Copied {
+    pub done: AtomicU64,
+    pub total: AtomicU64,
+}
+
+impl Copied {
+    /// The fraction copied, once the size is known.
+    pub fn fraction(&self) -> Option<f32> {
+        let total = self.total.load(Ordering::Relaxed);
+        (total > 0).then(|| (self.done.load(Ordering::Relaxed) as f64 / total as f64).min(1.0) as f32)
+    }
+}
+
+/// Every file copied.
+fn keep_all(_: &str) -> bool {
+    true
+}
+
+/// The bytes of the files of a folder, those `keep` takes.
+fn tree_size(dir: &Path, keep: fn(&str) -> bool) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .filter(|e| keep(&e.file_name().to_string_lossy().to_lowercase()))
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => tree_size(&e.path(), keep),
+            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+        })
+        .sum()
+}
+
+/// A folder copied whole (but for the files `keep` leaves, by their name in lower case), each byte
+/// counted in `copied`: a big file by pieces, for the count to move along.
+fn copy_tree(from: &Path, to: &Path, keep: fn(&str) -> bool, copied: &Copied) -> Result<()> {
     std::fs::create_dir_all(to).with_context(|| format!("cannot write {}", to.display()))?;
     for entry in std::fs::read_dir(from).with_context(|| format!("cannot read {}", from.display()))?.flatten() {
         let path = entry.path();
+        let name = entry.file_name();
+        if !keep(&name.to_string_lossy().to_lowercase()) {
+            continue;
+        }
         if entry.file_type()?.is_dir() {
-            copy_tree(&path, &to.join(entry.file_name()))?;
+            copy_tree(&path, &to.join(&name), keep, copied)?;
         } else {
-            std::fs::copy(&path, to.join(entry.file_name())).with_context(|| format!("cannot copy {}", path.display()))?;
+            copy_file(&path, &to.join(&name), copied).with_context(|| format!("cannot copy {}", path.display()))?;
         }
     }
     Ok(())
+}
+
+/// Above it, a file is copied by pieces.
+const BIG_FILE: u64 = 32 << 20;
+
+/// A file copied, its bytes counted in `copied`.
+fn copy_file(from: &Path, to: &Path, copied: &Copied) -> std::io::Result<()> {
+    let meta = std::fs::metadata(from)?;
+    if meta.len() < BIG_FILE {
+        let n = std::fs::copy(from, to)?;
+        copied.done.fetch_add(n, Ordering::Relaxed);
+        return Ok(());
+    }
+    let mut reader = std::fs::File::open(from)?;
+    let mut writer = std::fs::File::create(to)?;
+    let mut buf = vec![0u8; 4 << 20];
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut writer, &buf[..n])?;
+        copied.done.fetch_add(n as u64, Ordering::Relaxed);
+    }
+    drop(writer);
+    std::fs::set_permissions(to, meta.permissions())
 }
 
 /// What a folder holds.
@@ -297,9 +410,25 @@ fn upstream(version: &str) -> String {
     format!("php_{}", version.replace(['.', '-'], "_"))
 }
 
+/// The PHP processes a project runs on: those of its version, or its own with Xdebug (the other
+/// projects on the version aren't slowed down by it), named so in nginx's upstreams and in `running`.
+pub fn pool_key(version: &str, xdebug: bool) -> String {
+    if xdebug { format!("{version}-xdebug") } else { version.to_owned() }
+}
+
+/// Xdebug's settings: a debugger (VS Code, PhpStorm) listening on port 9003 of this computer is
+/// called at each request; none listening, the request goes on at once, nothing logged.
+fn xdebug_ini(dll: &Path) -> String {
+    format!(
+        "zend_extension = \"{}\"\nxdebug.mode = debug\nxdebug.start_with_request = yes\nxdebug.client_host = 127.0.0.1\nxdebug.client_port = 9003\nxdebug.log_level = 0\n",
+        slashed(dll)
+    )
+}
+
 /// PHP's settings for the projects: what WordPress and PrestaShop want, the mails to Ronnie's mail
-/// catcher (on Windows: elsewhere PHP sends through a sendmail program, to come).
-fn php_ini(version: &str, mail_port: u16) -> Result<String> {
+/// catcher (on Windows: elsewhere PHP sends through a sendmail program, to come); Xdebug for a
+/// project's own processes.
+fn php_ini(version: &str, mail_port: u16, xdebug: bool) -> Result<String> {
     let dir = envs::dir(Env::Php, version).context("PHP missing")?;
     let mut ini = String::from("; Written by Ronnie for its projects: changed at each start.\n");
     if cfg!(windows) {
@@ -332,6 +461,9 @@ fn php_ini(version: &str, mail_port: u16) -> Result<String> {
          opcache.enable = 1\nopcache.validate_timestamps = 1\nopcache.revalidate_freq = 0\nrealpath_cache_size = 4096K\n",
         slashed(&php_log(version)?)
     );
+    if xdebug {
+        ini += &xdebug_ini(&envs::xdebug_path(version).context("Xdebug: Windows only")?);
+    }
     Ok(ini)
 }
 
@@ -443,7 +575,7 @@ fn prestashop_images() -> String {
 
 /// The site of a project for nginx: its address, root, rules for its kind, PHP through its version's
 /// pool.
-fn site_conf(project: &Project, version: &str, port: u16) -> Result<String> {
+fn site_conf(project: &Project, pool: &str, port: u16) -> Result<String> {
     let (errors, requests) = site_logs(project)?;
     let rules = match project.kind {
         Kind::WordPress | Kind::Php => "    location / {\n        try_files $uri $uri/ /index.php?$args;\n    }\n".to_owned(),
@@ -469,7 +601,7 @@ fn site_conf(project: &Project, version: &str, port: u16) -> Result<String> {
         root = slashed(&project.web_root()),
         requests = slashed(&requests),
         errors = slashed(&errors),
-        upstream = upstream(version),
+        upstream = upstream(pool),
         params = slashed(&run_dir()?.join("nginx").join("fastcgi_params")),
     ))
 }
@@ -623,7 +755,7 @@ pub fn new_wordpress(stack: &std::sync::Mutex<Stack>, dir: &Path, name: &str, ve
         }
 
         // Its database: the site's name ("mon-site" → "mon_site"), numbered if taken.
-        let base: String = Project { id: Uuid::nil(), name: name.to_owned(), path: PathBuf::new(), root: String::new(), kind: Kind::WordPress, php: None, db: None }.slug().replace('-', "_");
+        let base: String = Project { id: Uuid::nil(), name: name.to_owned(), path: PathBuf::new(), root: String::new(), kind: Kind::WordPress, php: None, db: None, favorite: false, group: String::new(), started: None, xdebug: false }.slug().replace('-', "_");
         let base: String = base.chars().take(48).collect();
         let database = std::iter::once(base.clone()).chain((2..100).map(|n| format!("{base}_{n}"))).find(|d| !holds_database(db, d)).context("no database name left")?;
         let port = stack.lock().unwrap().create_database(db, &database)?;
@@ -817,7 +949,9 @@ impl Stack {
                 Err(e) => crate::log::info(&format!("{}: its address not checked: {e:#}", project.name)),
             }
         }
-        if let Err(e) = self.start_pool(&start.php, start.mail_port, &run) {
+        let xdebug = project.xdebug && envs::has_xdebug(&start.php);
+        let pool = pool_key(&start.php, xdebug);
+        if let Err(e) = self.start_pool(&start.php, xdebug, start.mail_port, &run) {
             self.stop_unused_dbs();
             return Err(e);
         }
@@ -829,8 +963,8 @@ impl Stack {
         std::fs::write(nginx_dir.join("mime.types"), MIME_TYPES)?;
         std::fs::write(nginx_dir.join("fastcgi_params"), FASTCGI_PARAMS)?;
         std::fs::write(nginx_dir.join("nginx.conf"), nginx_conf(&nginx_dir, &logs, start.port))?;
-        std::fs::write(nginx_dir.join("sites").join(format!("{}.conf", project.id)), site_conf(project, &start.php, start.port)?)?;
-        self.running.insert(project.id, (start.php.clone(), start.db.clone()));
+        std::fs::write(nginx_dir.join("sites").join(format!("{}.conf", project.id)), site_conf(project, &pool, start.port)?)?;
+        self.running.insert(project.id, (pool, start.db.clone()));
         // The sites of projects not running (left by a Ronnie that didn't quit): their PHP doesn't run,
         // nginx would refuse them all.
         self.remove_stale_sites(&nginx_dir.join("sites"));
@@ -856,6 +990,11 @@ impl Stack {
         let port = self.start_db(db, &run, &logs)?;
         self.manual.insert(data_dir(db)?);
         Ok(port)
+    }
+
+    /// Whether a database server was started by hand (an import then leaves it running).
+    pub fn db_alone(&self, db: &Db) -> bool {
+        data_dir(db).is_ok_and(|d| self.manual.contains(&d))
     }
 
     /// A database server started by hand stopped, unless a project runs with it.
@@ -956,20 +1095,21 @@ impl Stack {
         }
     }
 
-    fn start_pool(&mut self, version: &str, mail_port: u16, run: &Path) -> Result<()> {
-        if let Some(pool) = self.pools.get_mut(version) {
+    fn start_pool(&mut self, version: &str, xdebug: bool, mail_port: u16, run: &Path) -> Result<()> {
+        let key = pool_key(version, xdebug);
+        if let Some(pool) = self.pools.get_mut(&key) {
             if pool.children.iter_mut().all(|c| c.try_wait().ok().flatten().is_none()) {
                 return Ok(());
             }
             // One stopped (crashed): the pool started again.
             end_pool(&mut pool.children);
-            self.pools.remove(version);
+            self.pools.remove(&key);
         }
         let program = envs::php_server(version).with_context(|| format!("PHP {version} isn't installed"))?;
-        let dir = run.join("php").join(version);
+        let dir = run.join("php").join(&key);
         std::fs::create_dir_all(&dir)?;
         let ini = dir.join("php.ini");
-        std::fs::write(&ini, php_ini(version, mail_port)?)?;
+        std::fs::write(&ini, php_ini(version, mail_port, xdebug)?)?;
         let taken: BTreeSet<u16> = self.pools.values().flat_map(|p| p.ports.iter().copied()).collect();
         let wanted = if cfg!(windows) { CGI_WORKERS } else { 1 };
         let mut ports = Vec::new();
@@ -1005,7 +1145,7 @@ impl Stack {
             let log = php_log(version).ok().and_then(|p| tail(&p)).unwrap_or_default();
             bail!("PHP {version}: {e}{log}");
         }
-        self.pools.insert(version.to_owned(), pool);
+        self.pools.insert(key, pool);
         Ok(())
     }
 
@@ -1343,8 +1483,9 @@ pub fn holds_database(db: &Db, name: &str) -> bool {
 }
 
 /// WAMP's data copied as the data of `db` (of the same line), unless it has data already: its
-/// databases, users and passwords; WAMP's settings and port kept. Copied aside, then moved in place.
-pub fn import_wamp(wamp: &WampData, db: &Db) -> Result<()> {
+/// databases, users and passwords; WAMP's settings and port kept. Copied aside, then moved in place,
+/// how far told in `copied`.
+pub fn import_wamp(wamp: &WampData, db: &Db, copied: &Copied) -> Result<()> {
     let mut cnf = String::from("# WAMP's settings, imported by Ronnie (its folders are given at start).\n[mysqld]\n");
     for line in &wamp.settings {
         cnf += line;
@@ -1363,8 +1504,9 @@ pub fn import_wamp(wamp: &WampData, db: &Db) -> Result<()> {
     let target = data_dir(db)?;
     let staging = target.with_file_name(format!("{}.import", target.file_name().unwrap_or_default().to_string_lossy()));
     let _ = std::fs::remove_dir_all(&staging);
-    let copied = copy_dir(&wamp.data, &staging);
-    if let Err(e) = copied {
+    copied.done.store(0, Ordering::Relaxed);
+    copied.total.store(tree_size(&wamp.data, not_last_run), Ordering::Relaxed);
+    if let Err(e) = copy_tree(&wamp.data, &staging, not_last_run, copied) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
@@ -1372,23 +1514,9 @@ pub fn import_wamp(wamp: &WampData, db: &Db) -> Result<()> {
     std::fs::rename(&staging, &target).with_context(|| format!("cannot write {}", target.display()))
 }
 
-/// A folder copied whole, but for what a server leaves of its last run (its id, its errors).
-fn copy_dir(from: &Path, to: &Path) -> Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)?.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let lower = name.to_string_lossy().to_lowercase();
-        if lower.ends_with(".pid") || lower.ends_with(".err") {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            copy_dir(&path, &to.join(&name))?;
-        } else {
-            std::fs::copy(&path, to.join(&name)).with_context(|| format!("cannot copy {}", path.display()))?;
-        }
-    }
-    Ok(())
+/// What a server leaves of its last run (its id, its errors) isn't copied.
+fn not_last_run(name: &str) -> bool {
+    !name.ends_with(".pid") && !name.ends_with(".err")
 }
 
 /// nginx's arguments: its folder, its configuration, its first log in it (not `/var/log`, out of
@@ -1478,6 +1606,108 @@ fn kill_leftovers() {
     forget_all();
 }
 
+/// A database's name made of a site's name: lower case letters, digits and underscores ("Mon site" →
+/// "mon_site").
+pub fn database_name(name: &str) -> String {
+    let probe = Project { id: Uuid::nil(), name: name.to_owned(), path: PathBuf::new(), root: String::new(), kind: Kind::Php, php: None, db: None, favorite: false, group: String::new(), started: None, xdebug: false };
+    probe.slug().replace('-', "_").chars().take(64).collect()
+}
+
+/// A site of Local (WP Engine's WordPress tool, used by some instead of WAMP), from its `sites.json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalSite {
+    pub name: String,
+    /// Its folder (`~/Local Sites/<site>`): the site in `app/public`, its dumps in `app/sql`.
+    pub path: PathBuf,
+    /// The PHP version Local runs it on ("8.2.27").
+    pub php: Option<String>,
+    /// MySQL or MariaDB, and Local's version of it.
+    pub db_kind: Env,
+    pub db_version: Option<String>,
+    /// The port of its database server, while the site runs in Local.
+    pub db_port: Option<u16>,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+}
+
+impl LocalSite {
+    /// The newest dump of its database in `app/sql` (.sql or .sql.gz).
+    pub fn dump(&self) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(self.path.join("app").join("sql")).ok()?;
+        entries
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                name.ends_with(".sql") || name.ends_with(".sql.gz")
+            })
+            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+            .map(|e| e.path())
+    }
+
+    /// Whether its database server answers (the site started in Local): its database read live.
+    pub fn db_runs(&self) -> bool {
+        self.db_port.is_some_and(answers)
+    }
+
+    /// Its folder's name in the folder of the projects: its own folder's.
+    pub fn folder_name(&self) -> String {
+        self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.name.clone())
+    }
+}
+
+/// Local's list of sites: `sites.json` in its settings (`%APPDATA%\Local`, `~/Library/Application
+/// Support/Local`, `~/.config/Local`).
+/// `RONNIE_LOCAL_SITES` names another one (to try the import without Local).
+pub fn local_sites_file() -> Option<PathBuf> {
+    if let Some(file) = std::env::var_os("RONNIE_LOCAL_SITES") {
+        return Some(PathBuf::from(file)).filter(|f| f.is_file());
+    }
+    let dirs = directories::BaseDirs::new()?;
+    let base = if cfg!(target_os = "linux") { dirs.config_dir() } else { dirs.data_dir() };
+    Some(base.join("Local").join("sites.json")).filter(|f| f.is_file())
+}
+
+/// Local's sites, by name (none without Local).
+pub fn local_sites() -> Vec<LocalSite> {
+    let Some(file) = local_sites_file() else { return Vec::new() };
+    let home = directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()).unwrap_or_default();
+    std::fs::read_to_string(file).map(|text| parse_local_sites(&text, &home)).unwrap_or_default()
+}
+
+fn parse_local_sites(text: &str, home: &Path) -> Vec<LocalSite> {
+    use serde_json::Value;
+    let Ok(Value::Object(sites)) = serde_json::from_str::<Value>(text) else { return Vec::new() };
+    let string = |v: Option<&Value>| v.and_then(Value::as_str).map(str::to_owned);
+    let mut out = Vec::new();
+    for site in sites.values() {
+        let Some(path) = site.get("path").and_then(Value::as_str) else { continue };
+        let path = match path.strip_prefix('~') {
+            Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
+            None => PathBuf::from(path),
+        };
+        let services = site.get("services").and_then(Value::as_object);
+        let php = string(services.and_then(|s| s.get("php")).and_then(|p| p.get("version")));
+        let db = services.and_then(|s| s.iter().find(|(key, v)| matches!(key.as_str(), "mysql" | "mariadb") || v.get("role").and_then(Value::as_str) == Some("db")));
+        let db_kind = match db {
+            Some((key, v)) if key == "mariadb" || v.get("name").and_then(Value::as_str) == Some("mariadb") => Env::Mariadb,
+            _ => Env::Mysql,
+        };
+        let db_version = string(db.and_then(|(_, v)| v.get("version")));
+        let db_port = db
+            .and_then(|(_, v)| v.get("ports"))
+            .and_then(Value::as_object)
+            .and_then(|ports| ports.values().find_map(|p| p.as_array().and_then(|a| a.first()).unwrap_or(p).as_u64()))
+            .and_then(|p| u16::try_from(p).ok());
+        let mysql = site.get("mysql");
+        let field = |key: &str, default: &str| string(mysql.and_then(|m| m.get(key))).unwrap_or_else(|| default.to_owned());
+        let name = string(site.get("name")).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        out.push(LocalSite { name, path, php, db_kind, db_version, db_port, database: field("database", "local"), user: field("user", "root"), password: field("password", "root") });
+    }
+    out.sort_by_key(|s| s.name.to_lowercase());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,12 +1780,30 @@ mod tests {
         std::fs::write(site.join("config/app.php"), "<?php // app").unwrap();
         let dir = base.join("Projets");
         std::fs::create_dir_all(&dir).unwrap();
-        let target = import(&site, &dir).unwrap();
+        let copied = Copied::default();
+        let target = import(&site, &dir, &copied).unwrap();
         assert_eq!(target, dir.join("site"));
+        // "<?php" and "<?php // app": all counted.
+        assert_eq!((copied.done.load(Ordering::Relaxed), copied.total.load(Ordering::Relaxed)), (17, 17));
+        assert_eq!(copied.fraction(), Some(1.0));
         assert_eq!(std::fs::read_to_string(target.join("config/app.php")).unwrap(), "<?php // app");
         assert!(site.join("index.php").exists());
         assert_eq!(folders_in(&dir), vec![dir.join("site")]);
-        assert!(import(&site, &dir).is_err());
+        assert!(import(&site, &dir, &Copied::default()).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_big_file_is_copied_by_pieces_and_counted() {
+        let base = std::env::temp_dir().join(format!("ronnie-bigcopy-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let size = BIG_FILE as usize + 12345;
+        let data: Vec<u8> = (0..size).map(|k| (k % 251) as u8).collect();
+        std::fs::write(base.join("ibdata1"), &data).unwrap();
+        let copied = Copied::default();
+        copy_file(&base.join("ibdata1"), &base.join("copy"), &copied).unwrap();
+        assert_eq!(copied.done.load(Ordering::Relaxed), size as u64);
+        assert!(std::fs::read(base.join("copy")).unwrap() == data);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1575,5 +1823,41 @@ mod tests {
         let rules = prestashop_images();
         assert!(rules.contains("rewrite ^/(\\d)(-[\\w-]+)?/.+\\.jpg$ /img/p/$1/$1$2.jpg last;"), "{rules}");
         assert!(rules.contains("rewrite ^/(\\d)(\\d)(\\d)(-[\\w-]+)?/.+\\.jpg$ /img/p/$1/$2/$3/$1$2$3$4.jpg last;"), "{rules}");
+    }
+
+    #[test]
+    fn local_sites_read() {
+        let json = r#"{
+            "aBc12": {
+                "id": "aBc12", "name": "Mon Site", "path": "~/Local Sites/mon-site", "domain": "mon-site.local",
+                "mysql": { "database": "local", "user": "root", "password": "root" },
+                "services": {
+                    "nginx": { "name": "nginx", "version": "1.16.0", "role": "http", "ports": { "HTTP": [10003] } },
+                    "php": { "name": "php", "version": "8.2.27", "role": "php", "ports": { "PHP_FPM": [10004] } },
+                    "mysql": { "name": "mysql", "version": "8.0.35", "role": "db", "ports": { "MYSQL": [10005] } }
+                }
+            },
+            "zz": { "name": "Atelier", "path": "D:\\Sites\\atelier", "services": { "mariadb": { "version": "10.11.6", "ports": { "MYSQL": 10022 } } } },
+            "broken": { "name": "no path" }
+        }"#;
+        let sites = parse_local_sites(json, Path::new("/home/me"));
+        assert_eq!(sites.len(), 2);
+        assert_eq!(sites[0].name, "Atelier");
+        assert_eq!(sites[0].db_kind, Env::Mariadb);
+        assert_eq!(sites[0].db_port, Some(10022));
+        assert_eq!(sites[0].database, "local");
+        let site = &sites[1];
+        assert_eq!(site.path, Path::new("/home/me").join("Local Sites/mon-site"));
+        assert_eq!(site.php.as_deref(), Some("8.2.27"));
+        assert_eq!((site.db_kind, site.db_version.as_deref(), site.db_port), (Env::Mysql, Some("8.0.35"), Some(10005)));
+        assert_eq!(site.folder_name(), "mon-site");
+        assert!(parse_local_sites("not json", Path::new("/")).is_empty());
+    }
+
+    #[test]
+    fn database_names() {
+        assert_eq!(database_name("Mon Site Été"), "mon_site_ete");
+        assert_eq!(database_name("--"), "site");
+        assert_eq!(database_name(&"a".repeat(80)).len(), 64);
     }
 }

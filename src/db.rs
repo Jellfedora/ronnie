@@ -25,6 +25,8 @@ pub const CANCELLED: &str = "\u{1}cancelled";
 pub const RESTORED: &str = "\u{1}restored\n";
 /// ...or couldn't be.
 pub const LOST: &str = "\u{1}lost\n";
+/// A database to load a file into exists already (`load_into`).
+pub const EXISTS: &str = "\u{1}exists";
 /// How long to wait for an SSH forward to open (a password may have to be typed first).
 const TUNNEL_WAIT: Duration = Duration::from_secs(180);
 
@@ -520,6 +522,68 @@ pub fn test(ctx: &egui::Context, target: Target) -> (Receiver<Result<String, Str
         drop(forward);
     });
     (rx, pid)
+}
+
+/// A server of this computer reached over TCP on `port`.
+fn on_this_computer(port: u16, user: &str, password: &str) -> Target {
+    Target {
+        host: "127.0.0.1".into(),
+        port,
+        user: user.to_owned(),
+        password: (!password.is_empty()).then(|| password.to_owned()),
+        database: None,
+        tunnel: None,
+        engine: crate::config::Engine::Mysql,
+        trust_cert: false,
+    }
+}
+
+/// An emitter whose progress lands in `fraction` (an export or import run outside a view).
+fn progress_into(fraction: &Arc<Mutex<f32>>, ctx: &egui::Context) -> Emitter {
+    let (tx, rx) = mpsc::channel::<Event>();
+    let fraction = fraction.clone();
+    std::thread::spawn(move || {
+        for event in rx {
+            if let Event::Progress { fraction: f, .. } = event {
+                *fraction.lock().unwrap() = f;
+            }
+        }
+    });
+    Emitter { tx, ctx: ctx.clone() }
+}
+
+/// Database `db` of a server of this computer written to the .sql file `path`. Blocking.
+pub fn dump_from(port: u16, user: &str, password: &str, db: &str, path: &std::path::Path, fraction: &Arc<Mutex<f32>>, ctx: &egui::Context) -> Result<(), String> {
+    let target = on_this_computer(port, user, password);
+    let emit = progress_into(fraction, ctx);
+    let result = runtime().block_on(async {
+        let mut conn = connect(&target).await?;
+        let result = export(&mut conn, db, None, path, false, &emit, &AtomicBool::new(false)).await;
+        let _ = conn.disconnect().await;
+        result
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result.map(|_| ())
+}
+
+/// A .sql (or .sql.gz, .zip) file loaded into the new database `db` of one of Ronnie's servers (`root`
+/// without a password), made first; refused if it exists. Blocking.
+pub fn load_into(port: u16, db: &str, path: &std::path::Path, fraction: &Arc<Mutex<f32>>, ctx: &egui::Context) -> Result<(), String> {
+    let target = on_this_computer(port, "root", "");
+    let emit = progress_into(fraction, ctx);
+    runtime().block_on(async {
+        let mut conn = connect(&target).await?;
+        let exists: Option<String> = conn.query_first(format!("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = {}", literal(db))).await.map_err(|e| e.to_string())?;
+        if exists.is_some() {
+            return Err(EXISTS.to_owned());
+        }
+        conn.query_drop(format!("CREATE DATABASE {} CHARACTER SET utf8mb4", ident(db))).await.map_err(|e| e.to_string())?;
+        let result = import(&mut conn, Some(db), path, false, &emit, &AtomicBool::new(false)).await;
+        let _ = conn.disconnect().await;
+        result.map(|_| ())
+    })
 }
 
 async fn version(conn: &mut Conn) -> String {
