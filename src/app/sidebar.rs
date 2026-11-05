@@ -1770,6 +1770,14 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::hyperspace::droid_rect(field), ui.id().with("droid"), Sense::hover()).on_hover_text("Bip-bou-bip ! Bou-diiip !");
         }
+        if self.theme.wizard {
+            // Gryffindor: the castle at night, the candles, the Snitch, the owl, just above the cards.
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 120.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let now = ui.input(|i| i.time);
+            let again = super::wizard::scene(ui.painter(), field, now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+            ui.interact(super::wizard::castle_rect(field), ui.id().with("castle"), Sense::hover()).on_hover_text(t.wizard_castle);
+        }
         if self.theme.office {
             // Open space: the cork board, the plant, the coffee machine (it speaks when hovered), the water
             // cooler, just above the cards (the list goes over them).
@@ -1797,6 +1805,9 @@ impl App {
         } else if self.theme.office {
             // Open space: post-its above the settings.
             super::office::strip(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 10.0, footer_top - 3.0), Pos2::new(bar.max.x - 11.0, footer_top + 3.0)));
+        } else if self.theme.wizard {
+            // Gryffindor: the scarf above the settings.
+            super::wizard::scarf(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
         } else if self.theme.hyperspace {
             // Star Wars: a duel above the settings.
             let now = ui.input(|i| i.time);

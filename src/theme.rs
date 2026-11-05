@@ -27,6 +27,8 @@ pub struct Theme {
     /// Open space: post-its, a coffee machine, a plant, « T'as 5 minutes ? » at the bell (see
     /// `app::office`).
     pub office: bool,
+    /// Gryffindor: a wand for the pointer, the house's scarf, the castle at night (see `app::wizard`).
+    pub wizard: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -74,7 +76,7 @@ pub const METAL_THEME: &str = "ronnie-metal";
 /// The theme with the park's own touches, unlocked by Ronnie.io.
 pub const JURASSIC_THEME: &str = "jurassic-park";
 /// Mass to reach in a round of Ronnie.io to unlock it.
-pub const JURASSIC_UNLOCK: u32 = 5000;
+pub const JURASSIC_UNLOCK: u32 = 4_000;
 /// The space theme, unlocked at Larsen: beating the computer at its hardest, or someone online.
 pub const HYPERSPACE_THEME: &str = "hyperspace";
 /// The office theme, unlocked at Riff Hero: `OFFICE_UNLOCK` points in a song.
@@ -85,8 +87,10 @@ pub const OFFICE_UNLOCK: u32 = 30_000;
 pub fn office_unlocked(riff_bests: &[u32]) -> bool {
     riff_bests.iter().any(|&b| b >= OFFICE_UNLOCK)
 }
-/// The themes won in the games, shown apart in the settings.
-pub const SPECIAL_THEMES: [&str; 4] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME];
+/// Gryffindor (free).
+pub const WIZARD_THEME: &str = "gryffondor";
+/// The themes with their own touches, most won in the games, shown apart in the settings.
+pub const SPECIAL_THEMES: [&str; 5] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, WIZARD_THEME];
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -292,6 +296,22 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // Gryffindor: the common room at night, parchment text, the house's gold and scarlet.
+    Preset {
+        id: WIZARD_THEME,
+        name: "Gryffondor",
+        bg: 0x170b0e,
+        fg: 0xf1e4c3,
+        cursor: 0xeeba30,
+        chrome: 0x0f0709,
+        surface: 0x3a151b,
+        accent: 0xeeba30,
+        ansi: [
+            0x2a1418, 0xd0343c, 0x6f9e4c, 0xeeba30, 0x5a7cc0, 0xb0507e, 0x5aa6a0, 0xe6d8b8, //
+            0x5a3a3e, 0xff5a5f, 0x93c56a, 0xffd45a, 0x86a4e0, 0xd47aa4, 0x86cbc4, 0xfff6e0,
+        ],
+        dark: true,
+    },
     // Open space: a light office, beige walls and grey carpet, the corporate blue, post-it yellow.
     Preset {
         id: OFFICE_THEME,
@@ -375,6 +395,7 @@ impl Preset {
             jurassic: self.id == JURASSIC_THEME,
             hyperspace: self.id == HYPERSPACE_THEME,
             office: self.id == OFFICE_THEME,
+            wizard: self.id == WIZARD_THEME,
         }
     }
 

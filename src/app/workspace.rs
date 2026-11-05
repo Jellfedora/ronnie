@@ -151,6 +151,8 @@ impl App {
                 painter.rect_filled(r, 0.0, theme.bg);
                 if theme.jurassic {
                     super::jurassic::hazard(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
+                } else if theme.wizard {
+                    super::wizard::scarf(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
                 } else if theme.office {
                     // Open space: post-its stuck along the active tab.
                     super::office::strip(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 4.0)));

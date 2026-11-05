@@ -617,6 +617,12 @@ impl App {
                 super::jurassic::hazard(ui.painter(), band);
                 ui.add_space(10.0);
             }
+            // Gryffindor: the scarf on top, the disarming charm.
+            if self.theme.wizard {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                super::wizard::scarf(ui.painter(), band);
+                ui.add_space(10.0);
+            }
             // Hyperspace: a red beam on top, the alert.
             if self.theme.hyperspace {
                 let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -627,6 +633,8 @@ impl App {
                 super::jurassic::MAGIC_WORD
             } else if self.theme.hyperspace {
                 super::hyperspace::ALERT
+            } else if self.theme.wizard {
+                super::wizard::ALERT
             } else {
                 t.guard_title
             };
@@ -635,6 +643,10 @@ impl App {
                     // Star Wars: the Dark Lord's helmet.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
                     super::hyperspace::helmet(ui.painter(), r);
+                } else if self.theme.wizard {
+                    // Gryffindor: a lightning bolt.
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                    super::wizard::paint_bolt(ui.painter(), r.center(), 34.0);
                 } else {
                     ui.add(egui::Image::new(&hand).fit_to_exact_size(Vec2::splat(34.0)).tint(self.theme.ansi[1]));
                 }

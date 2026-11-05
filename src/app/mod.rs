@@ -45,6 +45,7 @@ mod history;
 mod issues;
 mod jurassic;
 mod hyperspace;
+mod wizard;
 mod office;
 mod library;
 mod mail;
@@ -410,6 +411,10 @@ pub struct App {
     fishing: fishing::Fishing,
     /// The pointer's trail (unlocked at Ronnie Run).
     trail: trail::Trail,
+    /// Gryffindor's wand and its sparks.
+    wand: wizard::Wand,
+    /// Gryffindor picked: the Sorting Hat (when it started; NaN: at the next frame).
+    sorting: Option<f64>,
     /// The minesweeper's page.
     mines: mines::Mines,
     /// Ronnie Run's page.
@@ -1289,6 +1294,8 @@ impl App {
             bughunt: bughunt::BugHunt::default(),
             fishing: fishing::Fishing::default(),
             trail: trail::Trail::default(),
+            wand: wizard::Wand::default(),
+            sorting: None,
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),
@@ -2140,6 +2147,9 @@ impl App {
             self.theme.apply(&self.ctx);
             if config.settings.theme == crate::theme::HYPERSPACE_THEME {
                 self.jump = Some(f64::NAN);
+            }
+            if config.settings.theme == crate::theme::WIZARD_THEME {
+                self.sorting = Some(f64::NAN);
             }
         }
         self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
@@ -3262,6 +3272,9 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     if theme.hyperspace {
         return hyperspace::logo(painter, rect, theme);
     }
+    if theme.wizard {
+        return wizard::logo(painter, rect);
+    }
     paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
@@ -3754,6 +3767,10 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     if focused && theme.jurassic {
         // Jurassic Park: safety stripes under the bar.
         jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+    }
+    if focused && theme.wizard {
+        // Gryffindor: the house's scarf under the bar.
+        wizard::scarf(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
     }
     if theme.hyperspace {
         // Star Wars: a lightsaber under the bar, lit when the pane takes the focus.
@@ -5059,6 +5076,8 @@ impl App {
                         jurassic::fence(ui.painter(), r, &self.theme);
                     } else if split && self.theme.hyperspace {
                         hyperspace::blade(ui.painter(), r, &self.theme);
+                    } else if split && self.theme.wizard {
+                        wizard::frame(ui.painter(), r);
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     }
@@ -5421,6 +5440,19 @@ impl App {
             ui.ctx().request_repaint();
         }
 
+        // Gryffindor: the Sorting Hat calls the house; a click or a key skips it.
+        if let Some(start) = self.sorting.filter(|_| main_window) {
+            let now = ui.input(|i| i.time);
+            let start = if start.is_nan() { now } else { start };
+            self.sorting = Some(start);
+            let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("sorting")));
+            if skip || !wizard::sorting(&painter, ui.ctx().content_rect(), (now - start) as f32, self.t().wizard_hat) {
+                self.sorting = None;
+            }
+            ui.ctx().request_repaint();
+        }
+
         // Keep the window title in sync (visible in the OS task switcher).
         {
             let title = self.tabs.get(self.active).map_or_else(|| APP_TITLE.to_owned(), |t| format!("{} — {APP_TITLE}", t.title()));
@@ -5437,6 +5469,9 @@ impl App {
         }
         if self.theme.hyperspace {
             hyperspace::pointer(ui.ctx(), &self.theme);
+        }
+        if self.theme.wizard {
+            self.wand.frame(ui.ctx());
         }
     }
 }
