@@ -218,6 +218,11 @@ impl App {
             self.config.settings.mines_best = ms;
             self.save_config();
         }
+        // The first game won: the wizz unlocked.
+        if best == 0 {
+            let t = self.t();
+            self.push_toast(super::Toast { ok: true, title: t.wizz_unlocked.to_owned(), body: t.wizz_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
         // Online only with a pseudo.
         if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
             self.mines.floor.finished(crate::floor::GameRound { score: ms, details: serde_json::json!({ "ms": ms, "clicks": self.mines.board.clicks }) });
