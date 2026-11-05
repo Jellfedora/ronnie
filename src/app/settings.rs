@@ -1655,7 +1655,7 @@ impl App {
                             let how = if preset.id == crate::theme::HYPERSPACE_THEME {
                                 t.theme_locked_larsen.to_owned()
                             } else if preset.id == crate::theme::WIZARD_THEME {
-                                t.unlock_wizard_how.to_owned()
+                                t.unlock_wizard_how.replace("{n}", &crate::theme::WIZARD_DAYS.to_string())
                             } else if preset.id == crate::theme::OFFICE_THEME {
                                 t.theme_locked_office.replace("{n}", &crate::theme::OFFICE_UNLOCK.to_string())
                             } else if preset.id == crate::theme::JURASSIC_THEME {
@@ -2158,10 +2158,10 @@ impl App {
     fn rewards_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         let games = self.games_list();
         let mut all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
-        // Claude Code's: the weekly quota used up.
-        let week = self.claude.current().and_then(|u| u.seven_day).map_or(0, |w| w.used_now(crate::claude::now()).round() as u32);
-        let wizard = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: t.unlock_wizard_how.to_owned(), done: !config::OFFICIAL || picked.wizard_unlocked, progress: Some((week.min(100), 100)), info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) }];
-        all.push(("Claude Code", wizard));
+        // Ronnie's own: open days in a row.
+        let days = crate::theme::WIZARD_DAYS;
+        let wizard = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: t.unlock_wizard_how.replace("{n}", &days.to_string()), done: !config::OFFICIAL || picked.wizard_unlocked, progress: Some((picked.open_streak.min(days), days)), info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) }];
+        all.push((t.rewards_loyal, wizard));
         let counted = all.iter().flat_map(|(_, u)| u.iter()).filter(|u| !u.info);
         let (done, total) = counted.fold((0, 0), |(d, n), u| (d + u.done as usize, n + 1));
         ui.label(egui::RichText::new(t.arcade_rewards.replace("{n}", &done.to_string()).replace("{max}", &total.to_string())).size(13.5).color(if done == total { theme.ansi[2] } else { theme.accent }));

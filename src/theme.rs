@@ -87,7 +87,8 @@ pub const OFFICE_UNLOCK: u32 = 30_000;
 pub fn office_unlocked(riff_bests: &[u32]) -> bool {
     riff_bests.iter().any(|&b| b >= OFFICE_UNLOCK)
 }
-/// Gryffindor, won by using up Claude's weekly quota.
+/// Gryffindor, won with Ronnie open `WIZARD_DAYS` days in a row.
+pub const WIZARD_DAYS: u32 = 7;
 pub const WIZARD_THEME: &str = "gryffondor";
 /// The themes with their own touches, most won in the games, shown apart in the settings.
 pub const SPECIAL_THEMES: [&str; 5] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, WIZARD_THEME];

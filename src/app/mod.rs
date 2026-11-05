@@ -5493,10 +5493,17 @@ impl App {
         if self.theme.wizard {
             self.wand.frame(ui.ctx());
         }
-        // Gryffindor, won when Claude's weekly quota is used up (read every few seconds).
-        if !self.config.settings.wizard_unlocked
-            && self.claude.current().and_then(|u| u.seven_day).is_some_and(|w| w.used_now(crate::claude::now()) >= 99.5)
-        {
+        // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
+        let today = chrono::Local::now().date_naive();
+        let today_s = today.format("%Y-%m-%d").to_string();
+        if self.config.settings.open_last != today_s {
+            let yesterday = today.pred_opt().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+            let s = &mut self.config.settings;
+            s.open_streak = if s.open_last == yesterday { s.open_streak + 1 } else { 1 };
+            s.open_last = today_s;
+            self.save_config();
+        }
+        if !self.config.settings.wizard_unlocked && self.config.settings.open_streak >= crate::theme::WIZARD_DAYS {
             self.config.settings.wizard_unlocked = true;
             self.save_config();
             let t = self.t();
