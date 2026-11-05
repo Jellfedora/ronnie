@@ -1,5 +1,5 @@
-//! The game for two, on floor: who is online, the invitations, the match played (Puissance 4, or a
-//! battle of Riff Hero). Only with a pseudo (see floor.rs).
+//! The games online, on floor: who is online, the invitations, the match played for two (Puissance 4,
+//! a battle of Riff Hero, Larsen), the table of the Président (3 to 6). Only with a pseudo (see floor.rs).
 //!
 //! A thread talks to floor while the app runs: a sign of life every few seconds (the player is online
 //! while it comes, and learns who else is, and the invitations received), every second while a match
@@ -185,6 +185,86 @@ impl Match {
     }
 }
 
+/// A seat at a table of the Président, as floor shows it.
+#[derive(Clone, Deserialize, Debug, PartialEq)]
+pub struct Seat {
+    pub name: Option<String>,
+    /// Cards left in hand.
+    pub cards: usize,
+    /// Its role in the round before ("president", "vice", "neutre", "vice-trou", "trou").
+    pub role: Option<String>,
+    /// Out of the trick.
+    pub passed: bool,
+    /// Its place out of cards in this round (-1: still in).
+    pub place: i32,
+    pub online: bool,
+}
+
+/// What lies on the trick: its value and how many cards of it.
+#[derive(Clone, Copy, Deserialize, Debug, PartialEq)]
+pub struct TableTop {
+    pub rank: u8,
+    pub count: u8,
+}
+
+/// The cards the player gives back (`k`), to whom (a seat).
+#[derive(Clone, Copy, Deserialize, Debug, PartialEq)]
+pub struct Give {
+    pub k: usize,
+    pub to: usize,
+}
+
+/// What the player gave and got at the last exchange, and with whom.
+#[derive(Clone, Deserialize, Debug, PartialEq)]
+pub struct Swap {
+    pub gave: Vec<[u8; 2]>,
+    pub got: Vec<[u8; 2]>,
+    pub with: usize,
+}
+
+/// A table of the Président, as floor sees it for this player (a card: [value 0 to 12, suit 0 to 3]).
+#[derive(Clone, Deserialize, Debug, PartialEq)]
+pub struct Table {
+    pub id: String,
+    /// The player's seat, and the host's.
+    pub you: i32,
+    pub host: i32,
+    /// "waiting", "playing", "over", "give" or "ended".
+    pub status: String,
+    /// Why it ended: "closed", "left", "away"; who left.
+    pub reason: Option<String>,
+    pub left: Option<String>,
+    pub seats: Vec<Seat>,
+    /// Invited, not answered yet.
+    #[serde(default)]
+    pub invited: Vec<Option<String>>,
+    pub hand: Vec<[u8; 2]>,
+    pub turn: Option<usize>,
+    pub top: Option<TableTop>,
+    pub laid: Vec<[u8; 2]>,
+    pub leader: Option<usize>,
+    pub out: Vec<usize>,
+    /// The roles of the round just over (for the exchange to come).
+    pub next_roles: Option<Vec<String>>,
+    pub give: Option<Give>,
+    /// The seats still to give back.
+    pub waiting: Vec<usize>,
+    pub swap: Option<Swap>,
+    pub rounds: u32,
+    pub presidencies: Vec<u32>,
+    /// Changes with each news.
+    pub moves: u32,
+    #[serde(default)]
+    pub chat: Vec<(Option<String>, String, bool)>,
+}
+
+impl Table {
+    /// The player hosts it.
+    pub fn hosting(&self) -> bool {
+        self.you == self.host
+    }
+}
+
 #[derive(Deserialize)]
 struct Ping {
     online: Vec<Online>,
@@ -192,6 +272,20 @@ struct Ping {
     sent: Option<Sent>,
     #[serde(rename = "match")]
     match_id: Option<String>,
+    /// The table of the Président the player sits at.
+    #[serde(default)]
+    table: Option<String>,
+}
+
+/// What the player does at a table of the Président.
+enum TableCmd {
+    Start,
+    Play(Vec<[u8; 2]>),
+    Pass,
+    Next,
+    Give(Vec<[u8; 2]>),
+    Leave,
+    Say(String),
 }
 
 /// What the player does.
@@ -213,6 +307,10 @@ enum Cmd {
     Shot(String, u8, u8),
     /// The match to fetch every second (None: none, out of the page).
     Watch(Option<String>),
+    /// At the table (its id).
+    Table(String, TableCmd),
+    /// The table to fetch every second (None: none, out of the page).
+    WatchTable(Option<String>),
     /// The board of online wins of a game.
     Board(&'static str),
 }
@@ -220,6 +318,9 @@ enum Cmd {
 enum Event {
     Ping(Ping),
     Match(Match),
+    Table(Box<Table>),
+    /// The table watched is gone from floor.
+    TableGone,
     Board(&'static str, Vec<(String, u32)>),
     /// floor refused (its message).
     Refused(String),
@@ -248,6 +349,9 @@ pub struct Live {
     pub playing: Option<String>,
     /// The match watched (the page shows it).
     pub game: Option<Match>,
+    /// The table of the Président the player sits at, for floor; the one watched (the page shows it).
+    pub seated: Option<String>,
+    pub table: Option<Table>,
     /// The boards of online wins (name, wins), by game, when fetched.
     pub boards: HashMap<&'static str, Vec<(String, u32)>>,
     /// floor answered (None: not asked yet).
@@ -277,7 +381,14 @@ impl Live {
                     self.invites = p.invites;
                     self.sent = p.sent;
                     self.playing = p.match_id;
+                    self.seated = p.table;
                 }
+                Event::Table(t) => {
+                    if self.table.as_ref().is_none_or(|old| old.id != t.id || old.moves <= t.moves) {
+                        self.table = Some(*t);
+                    }
+                }
+                Event::TableGone => self.table = None,
                 // The match watched (or the rematch, which the thread watches in its turn).
                 Event::Match(m) => {
                     if self.game.as_ref().is_none_or(|g| g.id == m.id || !m.over) {
@@ -427,6 +538,57 @@ impl Live {
         }
     }
 
+    /// The table shown in the page (None: the page left it).
+    pub fn watch_table(&mut self, id: Option<String>) {
+        if id.is_none() {
+            self.table = None;
+        }
+        self.send(Cmd::WatchTable(id));
+    }
+
+    fn at_table(&mut self, cmd: TableCmd) {
+        if let Some(id) = self.table.as_ref().map(|t| t.id.clone()).or_else(|| self.seated.clone()) {
+            self.send(Cmd::Table(id, cmd));
+        }
+    }
+
+    /// The host starts the game (3 at least).
+    pub fn table_start(&mut self) {
+        self.at_table(TableCmd::Start);
+    }
+
+    /// Cards laid on the trick (floor checks them).
+    pub fn table_play(&mut self, cards: Vec<[u8; 2]>) {
+        self.at_table(TableCmd::Play(cards));
+    }
+
+    pub fn table_pass(&mut self) {
+        self.at_table(TableCmd::Pass);
+    }
+
+    /// The host deals the next round.
+    pub fn table_next(&mut self) {
+        self.at_table(TableCmd::Next);
+    }
+
+    /// The cards the Président (or the Vice) gives back.
+    pub fn table_give(&mut self, cards: Vec<[u8; 2]>) {
+        self.at_table(TableCmd::Give(cards));
+    }
+
+    /// Up from the table: before the game, the seat freed (the host closes it); during, it stops.
+    pub fn table_leave(&mut self) {
+        self.at_table(TableCmd::Leave);
+    }
+
+    /// A message to the table, shown at once (floor's answer follows).
+    pub fn table_say(&mut self, text: &str) {
+        if let Some(t) = &mut self.table {
+            t.chat.push((None, text.to_owned(), true));
+        }
+        self.at_table(TableCmd::Say(text.to_owned()));
+    }
+
     /// The board of wins of `game` ("puissance-4", "riff-hero", "larsen"), fetched again.
     pub fn fetch_board(&mut self, game: &'static str) {
         self.send(Cmd::Board(game));
@@ -474,6 +636,9 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
     let now = || start.elapsed().as_secs_f64();
     let (mut last_ping, mut last_match) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut watched: Option<String> = None;
+    // The table watched, and when last fetched.
+    let mut watched_table: Option<String> = None;
+    let mut last_table = f64::NEG_INFINITY;
     let mut busy = false;
     let mut reachable = None;
     loop {
@@ -510,11 +675,44 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
                 last_ping = f64::NEG_INFINITY;
             }
             Some(Cmd::Accept(id)) => {
-                if let Some(m) = result(call(&agent, "POST", format!("{base}/invites/{id}/accept"), token, None), &mut out).and_then(|v| serde_json::from_value::<Match>(v).ok()) {
+                let answer = result(call(&agent, "POST", format!("{base}/invites/{id}/accept"), token, None), &mut out);
+                // The Président: a seat at a table; the others: a match.
+                if let Some(t) = answer.as_ref().filter(|v| v["game"] == "president").and_then(|v| serde_json::from_value::<Table>(v.clone()).ok()) {
+                    watched_table = Some(t.id.clone());
+                    last_table = now();
+                    out.push(Event::Table(Box::new(t)));
+                } else if let Some(m) = answer.and_then(|v| serde_json::from_value::<Match>(v).ok()) {
                     watched = Some(m.id.clone());
                     out.push(Event::Match(m));
                 }
                 last_ping = f64::NEG_INFINITY;
+            }
+            Some(Cmd::Table(id, cmd)) => {
+                let (path, body) = match cmd {
+                    TableCmd::Start => ("start", None),
+                    TableCmd::Play(cards) => ("play", Some(json!({ "cards": cards }))),
+                    TableCmd::Pass => ("pass", None),
+                    TableCmd::Next => ("next", None),
+                    TableCmd::Give(cards) => ("give", Some(json!({ "cards": cards }))),
+                    TableCmd::Leave => ("leave", None),
+                    TableCmd::Say(text) => ("chat", Some(json!({ "text": text }))),
+                };
+                let answer = result(call(&agent, "POST", format!("{base}/tables/{id}/{path}"), token, body), &mut out);
+                match answer.and_then(|v| serde_json::from_value::<Table>(v).ok()) {
+                    Some(t) => {
+                        out.push(Event::Table(Box::new(t)));
+                        last_table = now();
+                    }
+                    // Refused (or lost): floor's table again.
+                    None => last_table = f64::NEG_INFINITY,
+                }
+                if path == "leave" {
+                    last_ping = f64::NEG_INFINITY;
+                }
+            }
+            Some(Cmd::WatchTable(id)) => {
+                watched_table = id;
+                last_table = f64::NEG_INFINITY;
             }
             Some(Cmd::Decline(id)) => {
                 result(call(&agent, "POST", format!("{base}/invites/{id}/decline"), token, None), &mut out);
@@ -602,7 +800,12 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
         if now() - last_ping >= if busy || watched.is_some() { PING_BUSY } else { PING_IDLE } {
             last_ping = now();
             if let Some(p) = result(call(&agent, "POST", format!("{base}/ping"), token, None), &mut out).and_then(|v| serde_json::from_value::<Ping>(v).ok()) {
-                busy = !p.invites.is_empty() || p.match_id.is_some() || p.sent.as_ref().is_some_and(|s| s.status == "pending");
+                busy = !p.invites.is_empty() || p.match_id.is_some() || p.table.is_some() || p.sent.as_ref().is_some_and(|s| s.status == "pending");
+                // Seated at a table (the one opened by inviting, or joined): it is the one watched.
+                if let Some(id) = p.table.clone().filter(|id| watched_table.as_ref() != Some(id)) {
+                    watched_table = Some(id);
+                    last_table = f64::NEG_INFINITY;
+                }
                 // The invitation sent was accepted: its match watched.
                 if let Some(id) = p.sent.as_ref().and_then(|s| s.match_id.clone()).filter(|id| p.match_id.as_ref() == Some(id)) {
                     if watched.is_none() {
@@ -628,6 +831,24 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
                 }
                 // Gone from floor (restarted, or kept too long): not watched any more.
                 Err(Event::Refused(_)) => watched = None,
+                Err(e) => {
+                    result(Err(e), &mut out);
+                }
+            }
+        }
+        if let Some(id) = watched_table.clone().filter(|_| now() - last_table >= MATCH_EVERY) {
+            last_table = now();
+            match call(&agent, "GET", format!("{base}/tables/{id}"), token, None) {
+                Ok(v) => {
+                    if let Ok(t) = serde_json::from_value::<Table>(v) {
+                        out.push(Event::Table(Box::new(t)));
+                    }
+                }
+                // Gone from floor (restarted, or kept too long).
+                Err(Event::Refused(_)) => {
+                    watched_table = None;
+                    out.push(Event::TableGone);
+                }
                 Err(e) => {
                     result(Err(e), &mut out);
                 }
@@ -758,5 +979,72 @@ mod tests {
         assert_eq!((seen.standing.you, seen.received.len()), (0, 17));
         let won = lars.game.clone().unwrap().stage.unwrap();
         assert_eq!((won.fried.len(), won.fired.iter().filter(|s| s.2).count()), (5, 17));
+    }
+
+    /// Three players at a table of the Président, on a floor running (RONNIE_FLOOR_URL): the host invites
+    /// two, starts, and each one plays its weakest card that goes (or passes) until the round is over.
+    #[test]
+    #[ignore = "needs a floor running, at RONNIE_FLOOR_URL"]
+    fn three_players_play_president() {
+        let url = crate::floor::url().expect("RONNIE_FLOOR_URL");
+        let ctx = egui::Context::default();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
+        let account = |name: String| {
+            let made: Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
+        };
+        let accounts = [account(format!("Angus{stamp}")), account(format!("Bon{stamp}")), account(format!("Cliff{stamp}"))];
+        let mut lives: [Live; 3] = Default::default();
+        let mut until = |what: &str, lives: &mut [Live; 3], done: &dyn Fn(&[Live; 3]) -> bool| {
+            let start = Instant::now();
+            while !done(lives) {
+                assert!(start.elapsed() < Duration::from_secs(30), "waiting for: {what}");
+                for (live, a) in lives.iter_mut().zip(&accounts) {
+                    live.frame(&ctx, Some(a));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let names: Vec<String> = accounts.iter().map(|a| a.name.clone().unwrap()).collect();
+        until("all online", &mut lives, &|l| l[0].online.len() >= 2 && names[1..].iter().all(|n| l[0].online.iter().any(|p| &p.name == n)));
+        lives[0].invite_to(&names[1], "president");
+        lives[0].invite_to(&names[2], "president");
+        until("the invitations", &mut lives, &|l| !l[1].invites.is_empty() && !l[2].invites.is_empty());
+        for k in [1, 2] {
+            assert_eq!(lives[k].invites[0].game.as_deref(), Some("president"));
+            let id = lives[k].invites[0].id.clone();
+            lives[k].accept(&id);
+        }
+        until("three at the table", &mut lives, &|l| l.iter().all(|x| x.table.as_ref().is_some_and(|t| t.seats.len() == 3)));
+        assert!(lives[0].table.as_ref().unwrap().hosting());
+        lives[0].table_start();
+        until("the game, everywhere", &mut lives, &|l| l.iter().all(|x| x.table.as_ref().is_some_and(|t| t.status == "playing" && t.hand.len() >= 17)));
+        // Each one plays its weakest that goes, or passes, on its turn.
+        let mut moves = 0;
+        loop {
+            until("a turn", &mut lives, &|l| {
+                let t = l[0].table.as_ref().unwrap();
+                t.status != "playing" || (t.moves >= moves && t.turn.is_some_and(|p| l[p].table.as_ref().is_some_and(|m| m.moves == t.moves)))
+            });
+            let t = lives[0].table.clone().unwrap();
+            if t.status != "playing" {
+                break;
+            }
+            moves = t.moves + 1;
+            let p = t.turn.unwrap();
+            let mine = lives[p].table.clone().unwrap();
+            let need = mine.top.map_or(1, |top| top.count as usize);
+            let pick = (0..13u8).find_map(|rank| {
+                let same: Vec<[u8; 2]> = mine.hand.iter().copied().filter(|c| c[0] == rank).collect();
+                (same.len() >= need && mine.top.is_none_or(|top| rank > top.rank)).then(|| same[..need].to_vec())
+            });
+            match pick {
+                Some(cards) => lives[p].table_play(cards),
+                None => lives[p].table_pass(),
+            }
+            until("the move taken", &mut lives, &|l| l[0].table.as_ref().is_some_and(|t| t.moves >= moves));
+        }
+        let end = lives[1].table.clone().unwrap();
+        assert_eq!((end.status.as_str(), end.out.len(), end.presidencies.iter().sum::<u32>()), ("over", 3, 1));
     }
 }
