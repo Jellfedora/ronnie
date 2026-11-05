@@ -1,6 +1,6 @@
 //! Bug Hunt, in the games (its world in `crate::bughunt`): the bugs come down in ranks toward
 //! production, the debugger at the bottom squashes them (← → or Q D to move, Space to fire, P to pause).
-//! The score is kept when it beats the best.
+//! Out of a game, its welcome screen: how to play, the last game, the world's board on floor.
 
 use super::four::HomeGame;
 use super::*;
@@ -8,8 +8,9 @@ use crate::bughunt::{self as world, Game, Input, Kind, Power};
 
 /// The world moves in steps this long, whatever the frame rate.
 const STEP: f32 = 1.0 / 120.0;
+/// How long the field stays after a game lost, before the welcome screen.
+const OVER_SHOWN: f64 = 1.8;
 
-#[derive(Default)]
 pub(super) struct BugHunt {
     game: Option<Game>,
     /// When the game ended (app time): a key starts the next one a moment after.
@@ -18,6 +19,13 @@ pub(super) struct BugHunt {
     paused: bool,
     acc: f32,
     rng: u64,
+    pub(super) floor: crate::floor::GameFloor,
+}
+
+impl Default for BugHunt {
+    fn default() -> Self {
+        Self { game: None, ended: None, record: false, paused: false, acc: 0.0, rng: 0, floor: crate::floor::GameFloor::new("bug-hunt", false) }
+    }
 }
 
 impl BugHunt {
@@ -56,7 +64,9 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let now = ui.input(|i| i.time);
+        self.bughunt.floor.poll();
         if !playing {
+            self.bughunt.floor.sync(ui.ctx(), now, Some(60.0), self.config.settings.floor.as_ref());
             let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
             if ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0)).clicked() {
                 self.home_game = false;
@@ -65,33 +75,16 @@ impl App {
         }
         paint_metal(ui.painter(), Pos2::new(rect.center().x, rect.min.y + 40.0), Align2::CENTER_CENTER, t.bughunt_name, 34.0, theme.accent, 1.0);
 
-        // The field, as big as the page lets it, the lines under it.
-        let room = Vec2::new(rect.width() - 48.0, rect.height() - 70.0 - 64.0);
-        let scale = (room.x / world::W).min(room.y / world::H).max(0.2);
-        let size = Vec2::new(world::W, world::H) * scale;
-        let field = Rect::from_min_size(Pos2::new(rect.center().x - size.x / 2.0, rect.min.y + 70.0), size);
-        let resp = ui.interact(field, ui.id().with("bughunt-field"), Sense::click());
-
         // The keys: only when nothing else (a field of the sidebar...) has the keyboard.
         let free = ui.ctx().memory(|m| m.focused().is_none());
-        let clicked = resp.clicked();
         let (input, start, pause) = ui.input(|i| {
             let down = |k: Key| free && i.key_down(k);
             let pressed = |k: Key| free && i.key_pressed(k);
             let input = Input { left: down(Key::ArrowLeft) || down(Key::Q) || down(Key::A), right: down(Key::ArrowRight) || down(Key::D), fire: down(Key::Space) || down(Key::ArrowUp) };
-            (input, pressed(Key::Space) || pressed(Key::Enter) || clicked, pressed(Key::P) || pressed(Key::Escape))
+            (input, pressed(Key::Space) || pressed(Key::Enter), pressed(Key::P) || pressed(Key::Escape))
         });
         if playing && pause {
             self.bughunt.paused = !self.bughunt.paused;
-            self.bughunt.acc = 0.0;
-        }
-        // A new game: away from the last one's end for a moment (a key still held doesn't start one).
-        if !playing && start && self.bughunt.ended.is_none_or(|at| now - at > 0.8) && self.game_locked(HomeGame::BugHunt).is_none() {
-            let seed = super::game::random(&mut self.bughunt.rng);
-            self.bughunt.game = Some(Game::new(seed));
-            self.bughunt.ended = None;
-            self.bughunt.record = false;
-            self.bughunt.paused = false;
             self.bughunt.acc = 0.0;
         }
 
@@ -109,39 +102,126 @@ impl App {
                 self.bughunt_over(now);
             }
         }
-        // Always: before the first game too, the bugs waiting flap and the digits fall.
+        // Always: on the welcome screen too, the bugs flap.
         ui.ctx().request_repaint();
 
-        self.paint_field(ui, field, scale, &theme, now);
-
-        // Under the field: how the game ended, or how to start one; the keys below.
-        let locked = (!self.bughunt.playing()).then(|| self.game_locked(HomeGame::BugHunt)).flatten().map(|p| t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
-        let (line, color) = match &self.bughunt.game {
-            Some(g) if g.over => {
-                let text = t.bughunt_over.replace("{s}", &g.score.to_string()).replace("{w}", &g.wave.to_string());
-                if self.bughunt.record { (format!("{text}  {}", t.game_new_best), theme.accent) } else { (text, theme.text) }
+        let welcome = match &self.bughunt.game {
+            None => true,
+            Some(g) => g.over && self.bughunt.ended.is_some_and(|at| now - at > OVER_SHOWN),
+        };
+        if welcome {
+            let body = Rect::from_min_max(Pos2::new(rect.min.x + 24.0, rect.min.y + 80.0), Pos2::new(rect.max.x - 24.0, rect.max.y - 16.0));
+            // A new game: Space, or the button; away from the last one's end for a moment (a key still
+            // held doesn't start one).
+            let clicked = self.bughunt_welcome(ui, body, now);
+            if (start || clicked) && self.bughunt.ended.is_none_or(|at| now - at > OVER_SHOWN + 0.4) && self.game_locked(HomeGame::BugHunt).is_none() {
+                let seed = super::game::random(&mut self.bughunt.rng);
+                self.bughunt.game = Some(Game::new(seed));
+                self.bughunt.ended = None;
+                self.bughunt.record = false;
+                self.bughunt.paused = false;
+                self.bughunt.acc = 0.0;
             }
-            Some(_) => (String::new(), theme.text),
-            None => (t.bughunt_start.to_owned(), theme.text),
-        };
-        let below = match (&self.bughunt.game, locked) {
-            (_, Some(locked)) => locked,
-            (Some(g), None) if g.over => t.bughunt_again.to_owned(),
-            _ => t.bughunt_help.to_owned(),
-        };
-        ui.painter().text(Pos2::new(field.center().x, field.max.y + 20.0), Align2::CENTER_CENTER, line, FontId::proportional(14.0), color);
-        ui.painter().text(Pos2::new(field.center().x, field.max.y + 42.0), Align2::CENTER_CENTER, below, FontId::proportional(12.5), theme.text_muted);
+            return;
+        }
+
+        // The field, as big as the page lets it, the keys under it.
+        let room = Vec2::new(rect.width() - 48.0, rect.height() - 70.0 - 40.0);
+        let scale = (room.x / world::W).min(room.y / world::H).max(0.2);
+        let size = Vec2::new(world::W, world::H) * scale;
+        let field = Rect::from_min_size(Pos2::new(rect.center().x - size.x / 2.0, rect.min.y + 70.0), size);
+        self.paint_field(ui, field, scale, &theme, now);
+        ui.painter().text(Pos2::new(field.center().x, field.max.y + 20.0), Align2::CENTER_CENTER, t.bughunt_help, FontId::proportional(12.5), theme.text_muted);
     }
 
-    /// The game just ended: kept when it beats the best.
+    /// The welcome screen: how to play (the bugs and their points, the fixes, the keys), the last game,
+    /// the button to play; beside it, the world's board. Whether the button was clicked.
+    fn bughunt_welcome(&mut self, ui: &mut Ui, body: Rect, now: f64) -> bool {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let wide = body.width() >= 760.0;
+        let width = body.width().min(if wide { 860.0 } else { 420.0 });
+        let left_w = if wide { 420.0 } else { width };
+        let x0 = body.center().x - width / 2.0;
+        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 430.0f32.min(body.height())));
+        let painter = ui.painter().clone();
+        painter.rect(card, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+        let left = card.min.x + 20.0;
+        let mut y = card.min.y + 24.0;
+        painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.bughunt_howto, FontId::proportional(16.0), theme.text);
+        y += 34.0;
+        // The bugs, their points.
+        let names: Vec<&str> = t.bughunt_kinds.split('|').collect();
+        for (k, kind) in [Kind::Moth, Kind::Beetle, Kind::Spider].into_iter().enumerate() {
+            paint_bug(&painter, Pos2::new(left + 18.0, y), 1.0, kind, now as f32 * 1.5 + k as f32, &theme);
+            painter.text(Pos2::new(left + 48.0, y), Align2::LEFT_CENTER, names.get(k).copied().unwrap_or_default(), FontId::proportional(14.0), theme.text);
+            painter.text(Pos2::new(card.max.x - 20.0, y), Align2::RIGHT_CENTER, t.bughunt_points.replace("{n}", &kind.points().to_string()), FontId::monospace(13.0), bug_color(kind, &theme));
+            y += 36.0;
+        }
+        painter.text(Pos2::new(left, y - 6.0), Align2::LEFT_CENTER, t.bughunt_dive, FontId::proportional(12.5), theme.text_muted);
+        y += 28.0;
+        // The fixes.
+        painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.bughunt_fixes_title, FontId::proportional(14.0), theme.text);
+        y += 28.0;
+        let fixes: Vec<&str> = t.bughunt_fixes.split('|').collect();
+        for (k, power) in [Power::Triple, Power::Rapid, Power::Shield].into_iter().enumerate() {
+            paint_power(&painter, Pos2::new(left + 18.0, y), 1.1, power, &theme, now);
+            painter.text(Pos2::new(left + 48.0, y), Align2::LEFT_CENTER, fixes.get(k).copied().unwrap_or_default(), FontId::proportional(13.0), theme.text_muted);
+            y += 26.0;
+        }
+        y += 8.0;
+        painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.bughunt_help, FontId::proportional(12.5), theme.text_muted);
+        y += 30.0;
+        // The last game.
+        if let Some(g) = self.bughunt.game.as_ref().filter(|g| g.over) {
+            let text = t.bughunt_over.replace("{s}", &g.score.to_string()).replace("{w}", &g.wave.to_string());
+            let (text, color) = if self.bughunt.record { (format!("{text}  {}", t.game_new_best), theme.accent) } else { (text, theme.text) };
+            painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, text, FontId::proportional(13.5), color);
+        }
+        // Play, or when the games are back.
+        let locked = self.game_locked(HomeGame::BugHunt).map(|p| t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
+        let button_y = card.max.y - 34.0;
+        let clicked = match locked {
+            Some(text) => {
+                painter.text(Pos2::new(left, button_y), Align2::LEFT_CENTER, text, FontId::proportional(13.0), theme.accent);
+                false
+            }
+            None => {
+                let r = Rect::from_min_size(Pos2::new(left, button_y - 17.0), Vec2::new(140.0, 34.0));
+                let b = egui::Button::new(egui::RichText::new(t.four_play).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
+                let clicked = ui.put(r, b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                painter.text(Pos2::new(r.max.x + 14.0, button_y), Align2::LEFT_CENTER, t.bughunt_start, FontId::proportional(12.5), theme.text_muted);
+                clicked
+            }
+        };
+        // The world's board: beside, or under on a narrow page.
+        let board = if wide { Rect::from_min_max(Pos2::new(card.max.x + 32.0, body.min.y + 6.0), Pos2::new(x0 + width, body.max.y)) } else { Rect::from_min_max(Pos2::new(x0, card.max.y + 20.0), Pos2::new(x0 + width, body.max.y)) };
+        if board.height() > 60.0 {
+            let best = (self.config.settings.bughunt_best > 0).then(|| t.bughunt_best.replace("{s}", &self.config.settings.bughunt_best.to_string()));
+            if self.game_board(ui, board, &theme, self.bughunt.floor.board(), best, |s| s.to_string()) {
+                self.ask_pseudo();
+            }
+        }
+        clicked
+    }
+
+    /// The game just ended: kept when it beats the best, and sent to floor.
     fn bughunt_over(&mut self, now: f64) {
         self.bughunt.ended = Some(now);
         let Some(game) = &self.bughunt.game else { return };
-        let score = game.score;
+        let (score, wave, kills) = (game.score, game.wave, game.kills);
+        if score == 0 || kills == 0 {
+            return;
+        }
         self.bughunt.record = score > self.config.settings.bughunt_best;
         if self.bughunt.record {
             self.config.settings.bughunt_best = score;
             self.save_config();
+        }
+        // Online only with a pseudo.
+        if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
+            self.bughunt.floor.finished(crate::floor::GameRound { score, details: serde_json::json!({ "score": score, "wave": wave, "kills": kills }) });
+            self.bughunt.floor.sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
         }
     }
 

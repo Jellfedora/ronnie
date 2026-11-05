@@ -171,8 +171,7 @@ impl App {
             }
             // Against the computer only, for now: no board.
             HomeGame::President => return,
-            // Its best kept here only, for now: no board.
-            HomeGame::BugHunt => return,
+            HomeGame::BugHunt => (&mut self.bughunt.floor, bests(settings.bughunt_best, t.bughunt_best, "{s}", settings.bughunt_best.to_string()), |s| s.to_string()),
             HomeGame::Four | HomeGame::Larsen => {
                 let id = if game == HomeGame::Four { "puissance-4" } else { "larsen" };
                 let pseudo = crate::floor::pseudo(account.as_ref()).map(str::to_owned);
