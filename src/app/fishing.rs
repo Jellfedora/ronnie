@@ -355,7 +355,10 @@ impl App {
         // Held: Space, or the mouse on the scene (only when nothing else has the keyboard).
         let free = ui.ctx().memory(|m| m.focused().is_none());
         let resp = ui.interact(field, ui.id().with("fishing-field"), Sense::click_and_drag());
-        let held = ui.input(|i| free && (i.key_down(Key::Space) || i.key_down(Key::Enter))) || resp.is_pointer_button_down_on();
+        // A press on a bait's button is for the button, not the rod.
+        let baits = self.bait_rects(field, scale);
+        let on_bait = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| baits.iter().any(|(_, r)| r.contains(p)));
+        let held = ui.input(|i| free && (i.key_down(Key::Space) || i.key_down(Key::Enter))) || (resp.is_pointer_button_down_on() && !on_bait);
         let pressed = held && !self.fishing.held;
         let released = !held && self.fishing.held;
         self.fishing.held = held;
@@ -509,28 +512,28 @@ impl App {
 
         // The baits won: one put on the hook (out of a cast), used one a cast.
         let idle = matches!(self.fishing.phase, Phase::Idle);
-        let mut y = field.min.y + 62.0 * scale;
         let mut picked = None;
-        for bait in Bait::ALL {
+        for (bait, r) in baits {
             let n = self.config.settings.fish_baits.get(bait.id()).copied().unwrap_or(0);
-            if n == 0 {
-                continue;
-            }
             let on = self.config.settings.fish_bait.as_deref() == Some(bait.id());
             let name = t.fishing_baits.split('|').nth(bait.index()).unwrap_or_default();
             let effect = t.fishing_bait_effects.split('|').nth(bait.index()).unwrap_or_default();
             let text = egui::RichText::new(format!("{}  {name}  ×{n}", ["🎫", "🏠", "💶"][bait.index()])).size(12.0).color(if on { theme.bg } else { theme.text });
             let b = egui::Button::new(text).fill(if on { theme.accent } else { theme.chrome_bg.gamma_multiply(0.9) }).corner_radius(12.0);
-            let r = Rect::from_min_size(Pos2::new(field.min.x + 12.0 * scale, y), Vec2::new(176.0, 24.0));
             if ui.put(r, b).on_hover_text(effect).clicked() && idle {
                 picked = Some(if on { None } else { Some(bait.id().to_owned()) });
             }
-            y += 28.0;
         }
         if let Some(bait) = picked {
             self.config.settings.fish_bait = bait;
             self.save_config();
         }
+    }
+
+    /// The baits' buttons: those the player has, one under the other at the scene's top left.
+    fn bait_rects(&self, field: Rect, scale: f32) -> Vec<(Bait, Rect)> {
+        let have = Bait::ALL.into_iter().filter(|b| self.config.settings.fish_baits.get(b.id()).is_some_and(|&n| n > 0));
+        have.enumerate().map(|(k, b)| (b, Rect::from_min_size(Pos2::new(field.min.x + 12.0 * scale, field.min.y + 62.0 * scale + k as f32 * 28.0), Vec2::new(176.0, 24.0)))).collect()
     }
 
     /// The line let go with `power`: where it lands, who will bite there (with the bait used, in the
