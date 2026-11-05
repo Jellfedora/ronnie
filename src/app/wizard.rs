@@ -723,38 +723,177 @@ fn paint_wand(painter: &egui::Painter, tip: Pos2, now: f64) {
     painter.circle_filled(tip, 2.2, Color32::from_rgb(0xff, 0xf4, 0xc8).gamma_multiply(glow));
 }
 
-/// Picking the theme, `t` seconds in: the screen darkens, golden sparks swirl, the Sorting Hat's words,
-/// then the house's name in gold. False once over (2.8 s).
-pub(super) fn sorting(painter: &egui::Painter, screen: Rect, t: f32, words: &str) -> bool {
-    const LASTS: f32 = 2.8;
+/// The great opening, `t` seconds in (at the start and when the theme is picked), over `screen`:
+/// night falls and mist drifts, the castle rises under the moon, its windows lighting one by one; the
+/// Snitch streaks around leaving a gold trail, then dives to the middle; the crest bursts out of it in
+/// a flash and a ring of fire, rays of light turning behind it, sparks everywhere; then `title` in
+/// gold letter by letter, `words` under it. False once over.
+pub(super) fn intro(painter: &egui::Painter, screen: Rect, t: f32, title: &str, words: &str) -> bool {
+    const LASTS: f32 = 4.4;
     if t > LASTS {
         return false;
     }
-    let fade = (t * 4.0).min(1.0).min((LASTS - t) * 3.0).max(0.0);
-    painter.rect_filled(screen, 0.0, Color32::from_black_alpha((200.0 * fade) as u8));
+    let ease = |x: f32| 1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3);
+    let fade_all = ((LASTS - t) / 0.5).clamp(0.0, 1.0);
     let c = screen.center();
-    // Sparks swirling inward.
-    for k in 0..60u32 {
-        let a = noise(k) * TAU + t * (1.0 + noise(k + 99) * 1.5);
-        let r = (0.2 + noise(k + 7) * 0.8) * screen.width().min(screen.height()) * 0.45 * (1.0 - (t / LASTS) * 0.6);
-        let p = c + Vec2::angled(a) * r;
-        painter.circle_filled(p, 1.0 + noise(k + 3) * 1.6, GOLD.gamma_multiply(fade * (0.4 + 0.6 * noise(k + 5))));
+    let s = (screen.height() / 700.0).clamp(0.6, 1.6);
+    // Night, the house's maroon at the bottom.
+    let night = Color32::from_rgb(0x08, 0x06, 0x14);
+    let maroon = Color32::from_rgb(0x3a, 0x0c, 0x1c);
+    let a = (t / 0.35).min(1.0) * fade_all;
+    let mut mesh = egui::Mesh::default();
+    for (p, col) in [(screen.left_top(), night), (screen.right_top(), night), (screen.left_bottom(), maroon), (screen.right_bottom(), maroon)] {
+        mesh.colored_vertex(p, col.gamma_multiply(a));
     }
-    // The hat's words, then the name, growing in.
-    painter.text(c - Vec2::new(0.0, 46.0), Align2::CENTER_CENTER, words, FontId::proportional(17.0), Color32::from_rgb(0xf3, 0xe6, 0xc4).gamma_multiply(fade));
-    let k = ((t - 0.9) / 0.4).clamp(0.0, 1.0);
-    if k > 0.0 {
-        let size = 30.0 + 36.0 * (1.0 - (1.0 - k).powi(3));
-        let font = FontId::proportional(size);
-        for (dx, dy) in [(-2.0, 0.0), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
-            painter.text(c + Vec2::new(dx, dy + 14.0), Align2::CENTER_CENTER, "GRYFFONDOR !", font.clone(), SCARLET.gamma_multiply(fade * k));
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(mesh);
+    let k = fade_all * (t / 0.6).min(1.0);
+    // Stars.
+    for i in 0..140u32 {
+        let p = Pos2::new(screen.min.x + noise(i * 3 + 1) * screen.width(), screen.min.y + noise(i * 3 + 2) * screen.height() * 0.7);
+        let tw = 0.5 + 0.5 * (t * (1.0 + noise(i) * 3.0) + noise(i + 9) * TAU).sin();
+        painter.circle_filled(p, if noise(i + 5) > 0.9 { 1.6 } else { 0.9 } * s, Color32::WHITE.gamma_multiply(0.7 * tw * k));
+    }
+    // The moon, its halo.
+    let moon = Pos2::new(c.x + screen.width() * 0.22, screen.min.y + screen.height() * 0.22);
+    let moonlight = Color32::from_rgb(0xf4, 0xee, 0xd8);
+    glow(painter, moon, 160.0 * s, moonlight, 0.7 * k);
+    painter.circle_filled(moon, 34.0 * s, moonlight.gamma_multiply(k));
+    for (dx, dy, r) in [(-9.0, -6.0, 8.0), (8.0, 9.0, 6.0), (10.0, -9.0, 4.0)] {
+        painter.circle_filled(moon + Vec2::new(dx, dy) * s, r * s, Color32::from_rgb(0xd8, 0xd0, 0xb8).gamma_multiply(k));
+    }
+
+    // The castle rising from below, its windows lighting one by one.
+    let rise = ease((t - 0.2) / 1.1);
+    let base = screen.max.y - screen.height() * 0.14 + (1.0 - rise) * 160.0 * s;
+    let lit_k = ((t - 0.8) / 1.0).clamp(0.0, 1.0);
+    let towers: [(f32, f32, f32, f32); 11] = [(-0.36, 28.0, 120.0, 46.0), (-0.28, 22.0, 170.0, 60.0), (-0.2, 40.0, 140.0, 0.0), (-0.11, 30.0, 230.0, 80.0), (-0.03, 48.0, 300.0, 110.0), (0.06, 28.0, 210.0, 76.0), (0.14, 36.0, 260.0, 90.0), (0.22, 26.0, 180.0, 0.0), (0.29, 30.0, 150.0, 56.0), (0.36, 22.0, 110.0, 40.0), (-0.44, 18.0, 80.0, 30.0)];
+    let stone = Color32::from_rgb(0x16, 0x12, 0x22).gamma_multiply(fade_all);
+    let stone_lit = Color32::from_rgb(0x30, 0x2a, 0x46).gamma_multiply(fade_all);
+    painter.rect_filled(Rect::from_min_max(Pos2::new(c.x - screen.width() * 0.4, base - 90.0 * s), Pos2::new(c.x + screen.width() * 0.4, base + 400.0)), 0.0, stone);
+    let mut wi = 0u32;
+    for &(fx, tw, th, roof) in &towers {
+        let cx = c.x + screen.width() * fx;
+        let (tw, th, roof) = (tw * s, th * s, roof * s);
+        let wall = Rect::from_min_max(Pos2::new(cx - tw / 2.0, base - th), Pos2::new(cx + tw / 2.0, base + 400.0));
+        painter.rect_filled(wall, 0.0, stone);
+        painter.rect_filled(Rect::from_min_max(Pos2::new(wall.max.x - tw * 0.3, wall.min.y), wall.max), 0.0, stone_lit);
+        if roof > 0.0 {
+            let apex = Pos2::new(cx, wall.min.y - roof);
+            painter.add(egui::Shape::convex_polygon(vec![Pos2::new(wall.min.x - 4.0 * s, wall.min.y), apex, Pos2::new(cx, wall.min.y)], stone, Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(vec![Pos2::new(cx, wall.min.y), apex, Pos2::new(wall.max.x + 4.0 * s, wall.min.y)], stone_lit, Stroke::NONE));
+            painter.line_segment([apex, Pos2::new(wall.max.x + 4.0 * s, wall.min.y)], Stroke::new(1.2, moonlight.gamma_multiply(0.4 * fade_all)));
+        } else {
+            for j in 0..5 {
+                if j % 2 == 0 {
+                    let x = wall.min.x + j as f32 * tw / 4.0;
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(x - 3.0 * s, wall.min.y - 7.0 * s), Vec2::new(6.0 * s, 7.0 * s)), 0.0, stone);
+                }
+            }
         }
-        painter.text(c + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, "GRYFFONDOR !", font, GOLD.gamma_multiply(fade * k));
-        // A flash as it lands.
-        let flash = (1.0 - (t - 1.3).abs() * 4.0).max(0.0);
-        if flash > 0.0 {
-            painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0xee, 0xba, 0x30, (40.0 * flash) as u8));
+        let rows = (th / (26.0 * s)) as u32;
+        for r in 0..rows {
+            wi += 1;
+            if noise(wi * 7) < 0.25 || noise(wi * 13) > lit_k {
+                continue;
+            }
+            let flicker = (0.75 + 0.25 * (t * 3.0 + wi as f32).sin()) * fade_all;
+            arched_window(painter, Pos2::new(cx + (noise(wi) - 0.5) * tw * 0.3, wall.min.y + 18.0 * s + r as f32 * 24.0 * s), Vec2::new(5.0, 10.0) * s, flicker);
         }
+    }
+    // Mist rolling in front.
+    for i in 0..8 {
+        let x = screen.min.x + ((t * (40.0 + i as f32 * 12.0) + i as f32 * 260.0) % (screen.width() + 600.0)) - 300.0;
+        let y = base - 10.0 * s + (i % 3) as f32 * 30.0 * s;
+        soft_ellipse(painter, Pos2::new(x, y), Vec2::new(300.0, 34.0) * s, Color32::from_rgb(0xb8, 0xb4, 0xd4), 0.18 * k);
+    }
+
+    // The Snitch: a loop around the screen, its gold trail, then a dive to the middle.
+    let path = |u: f32| -> Pos2 {
+        let a = u * TAU * 1.3;
+        let r = (1.0 - u * 0.85) * screen.width().min(screen.height()) * 0.42;
+        c + Vec2::new(a.cos() * r * 1.4, a.sin() * r * 0.8 - 40.0 * s)
+    };
+    let (s0, s1) = (1.0, 2.2);
+    if t > s0 && t < s1 + 0.1 {
+        let u = ((t - s0) / (s1 - s0)).clamp(0.0, 1.0);
+        for j in 0..60 {
+            let v = u - j as f32 * 0.006;
+            if v < 0.0 {
+                break;
+            }
+            let f = 1.0 - j as f32 / 60.0;
+            painter.circle_filled(path(v), (1.0 + 3.0 * f) * s, GOLD.gamma_multiply(0.6 * f));
+            painter.circle_filled(path(v), (5.0 + 6.0 * f) * s, GOLD.gamma_multiply(0.05 * f));
+        }
+        snitch(painter, path(u), 7.0 * s, t, 1.0);
+    }
+
+    // The burst: a flash, a ring of fire, sparks, rays turning behind the crest.
+    let b = t - s1;
+    if b > 0.0 {
+        let flash = (1.0 - b / 0.35).max(0.0);
+        painter.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(0xff, 0xe8, 0xb0, (170.0 * flash) as u8));
+        let ring = ease(b / 0.9);
+        painter.circle_stroke(c, ring * screen.width() * 0.6, Stroke::new(14.0 * (1.0 - ring) * s, GOLD.gamma_multiply((1.0 - ring) * fade_all)));
+        painter.circle_stroke(c, ring * screen.width() * 0.45, Stroke::new(6.0 * (1.0 - ring) * s, Color32::from_rgb(0xff, 0x6a, 0x3a).gamma_multiply((1.0 - ring) * fade_all)));
+        for i in 0..90u32 {
+            let ang = noise(i + 900) * TAU;
+            let speed = (180.0 + noise(i + 910) * 520.0) * s;
+            let life = 0.6 + noise(i + 920) * 0.9;
+            if b > life {
+                continue;
+            }
+            let p = c + Vec2::angled(ang) * speed * ease(b / life) + Vec2::new(0.0, b * b * 120.0 * s);
+            let f = 1.0 - b / life;
+            let col = if i % 3 == 0 { Color32::from_rgb(0xff, 0x5a, 0x3a) } else { GOLD };
+            painter.circle_filled(p, 2.4 * s * f + 0.5, col.gamma_multiply(f * fade_all));
+            painter.circle_filled(p, 7.0 * s * f, col.gamma_multiply(0.1 * f * fade_all));
+        }
+        // Rays.
+        let rays = (b / 0.5).min(1.0) * fade_all;
+        for i in 0..14 {
+            let a0 = i as f32 / 14.0 * TAU + t * 0.25;
+            let len = screen.width() * 0.7;
+            let p1 = c + Vec2::angled(a0 - 0.05) * len;
+            let p2 = c + Vec2::angled(a0 + 0.05) * len;
+            painter.add(egui::Shape::convex_polygon(vec![c, p1, p2], GOLD.gamma_multiply(0.06 * rays), Stroke::NONE));
+        }
+        glow(painter, c - Vec2::new(0.0, 40.0 * s), 220.0 * s, GOLD, 0.8 * rays);
+        // The crest, popping out then settling.
+        let pop = ease(b / 0.45);
+        let over = 1.0 + 0.18 * (1.0 - ((b - 0.45) / 0.3).clamp(0.0, 1.0)) * (b > 0.45) as i32 as f32;
+        let h = 190.0 * s * pop * over;
+        if h > 2.0 {
+            crest(painter, Rect::from_center_size(c - Vec2::new(0.0, 60.0 * s), Vec2::new(h * 0.82, h)));
+        }
+        // The title, letter by letter, each one dropping in with a glint.
+        let font = FontId::proportional(64.0 * s);
+        let full = painter.layout_no_wrap(title.to_owned(), font.clone(), GOLD).size().x;
+        let mut x = c.x - full / 2.0;
+        let y = c.y + 100.0 * s;
+        for (i, ch) in title.chars().enumerate() {
+            let at = b - 0.55 - i as f32 * 0.07;
+            let w = painter.layout_no_wrap(ch.to_string(), font.clone(), GOLD).size().x;
+            if at > 0.0 {
+                let e = ease(at / 0.3);
+                let p = Pos2::new(x + w / 2.0, y - (1.0 - e) * 40.0 * s);
+                let alpha = e * fade_all;
+                for (dx, dy) in [(-2.0, 0.0), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
+                    painter.text(p + Vec2::new(dx, dy) * s, Align2::CENTER_CENTER, ch, font.clone(), Color32::from_rgb(0x5a, 0x0e, 0x22).gamma_multiply(alpha));
+                }
+                painter.text(p, Align2::CENTER_CENTER, ch, font.clone(), GOLD.gamma_multiply(alpha));
+                let glint = (1.0 - at / 0.4).max(0.0);
+                if glint > 0.0 {
+                    glow(painter, p, 40.0 * s, Color32::WHITE, glint);
+                }
+            }
+            x += w;
+        }
+        // The words under it.
+        let wa = ((b - 1.2) / 0.4).clamp(0.0, 1.0) * fade_all;
+        painter.text(Pos2::new(c.x, y + 58.0 * s), Align2::CENTER_CENTER, words, FontId::proportional(18.0 * s), Color32::from_rgb(0xf6, 0xe8, 0xcc).gamma_multiply(wa));
     }
     true
 }

@@ -5426,7 +5426,13 @@ impl App {
             self.splash = Some(start);
             let skip = ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("splash")));
-            if skip || !paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32, self.t()) {
+            // Gryffindor: its own opening, the app's name under the crest.
+            let shown = if self.theme.wizard {
+                wizard::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, "RONNIE", self.t().wizard_welcome)
+            } else {
+                paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32, self.t())
+            };
+            if skip || !shown {
                 self.splash = None;
             }
             ui.ctx().request_repaint();
@@ -5452,7 +5458,7 @@ impl App {
             self.sorting = Some(start);
             let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("sorting")));
-            if skip || !wizard::sorting(&painter, ui.ctx().content_rect(), (now - start) as f32, self.t().wizard_hat) {
+            if skip || !wizard::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, "GRYFFONDOR", self.t().wizard_hat) {
                 self.sorting = None;
             }
             ui.ctx().request_repaint();
