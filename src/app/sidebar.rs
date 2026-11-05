@@ -352,6 +352,9 @@ impl App {
             let active = category == shown;
             if active {
                 ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
+                if self.theme.wizard {
+                    super::wizard::active_slot(ui.painter(), slot);
+                }
                 ui.painter().rect_filled(Rect::from_min_size(Pos2::new(strip.min.x + 2.0, slot.min.y + 10.0), Vec2::new(3.0, slot.height() - 20.0)), 1.5, self.theme.accent);
             } else if resp.hovered() {
                 ui.painter().rect_filled(slot, 9.0, self.theme.tab_hover.gamma_multiply(0.75));
@@ -1006,8 +1009,12 @@ impl App {
         self.config.normalize();
         self.note_shown_pane();
         let bar = ui.max_rect();
-        ui.painter().rect_filled(bar, 0.0, self.theme.chrome_bg);
-        ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
+        if self.theme.wizard {
+            super::wizard::strip_bg(ui.painter(), bar);
+        } else {
+            ui.painter().rect_filled(bar, 0.0, self.theme.chrome_bg);
+            ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
+        }
         // Empty space drags the window, as in the sidebar.
         let bg = ui.interact(bar, ui.id().with("rail-bg"), Sense::click_and_drag());
         if bg.drag_started() {
@@ -1017,7 +1024,11 @@ impl App {
         let cx = bar.center().x;
         // The R of the logo, where the logo sits unfolded.
         let r_at = Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0);
-        super::paint_metal(ui.painter(), r_at, Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
+        if self.theme.wizard {
+            super::wizard::crest(ui.painter(), Rect::from_center_size(r_at, Vec2::new(28.0, 34.0)));
+        } else {
+            super::paint_metal(ui.painter(), r_at, Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
+        }
         let logo = ui.interact(Rect::from_center_size(r_at, Vec2::splat(34.0)), ui.id().with("rail-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
         self.logo_clicked(&logo);
         let unfold = Rect::from_center_size(Pos2::new(cx, bar.min.y + top + LOGO_H + 10.0), Vec2::splat(26.0));
@@ -1700,8 +1711,13 @@ impl App {
         // On the left the strip of categories, a shade darker; the panel of the one picked beside it.
         let strip = Rect::from_min_max(whole.min, Pos2::new(whole.min.x + STRIP_W, whole.max.y));
         let bar = Rect::from_min_max(Pos2::new(strip.max.x, whole.min.y), whole.max);
-        ui.painter().rect_filled(strip, 0.0, self.theme.bg.gamma_multiply(0.3));
-        ui.painter().vline(strip.max.x - 0.5, strip.y_range(), Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.7)));
+        if self.theme.wizard {
+            super::wizard::panel_bg(ui.painter(), bar);
+            super::wizard::strip_bg(ui.painter(), strip);
+        } else {
+            ui.painter().rect_filled(strip, 0.0, self.theme.bg.gamma_multiply(0.3));
+            ui.painter().vline(strip.max.x - 0.5, strip.y_range(), Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.7)));
+        }
 
         // Empty space in the sidebar drags the window (the native title bar is hidden).
         let bg = ui.interact(whole, ui.id().with("sidebar-bg"), Sense::click_and_drag());
@@ -1747,6 +1763,9 @@ impl App {
         }
         let logo_rect = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + top), Vec2::new(bar.width() - 1.0, LOGO_H));
         paint_logo(ui.painter(), logo_rect, &self.theme);
+        if self.theme.wizard {
+            super::wizard::ornament(ui.painter(), Pos2::new(logo_rect.center().x, logo_rect.max.y + 2.0), (logo_rect.width() - 40.0).min(200.0));
+        }
         // The logo leads home (the typing game).
         let logo_hit = Rect::from_center_size(logo_rect.center(), Vec2::new(150.0, logo_rect.height()));
         let logo = ui.interact(logo_hit, ui.id().with("logo-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -2213,6 +2232,13 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
     let mut job = egui::text::LayoutJob::default();
     job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(11.0), color: theme.text_muted, extra_letter_spacing: 1.4, ..Default::default() });
     let galley = painter.layout_job(job);
+    if theme.wizard {
+        // Gryffindor: a gold diamond before, a gold line fading out after.
+        let end = rect.min.x + 10.0 + galley.size().x;
+        super::wizard::title_marks(painter, rect, end);
+        painter.galley(Pos2::new(rect.min.x + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
+        return;
+    }
     painter.galley(Pos2::new(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
 }
 

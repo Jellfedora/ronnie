@@ -808,3 +808,105 @@ pub(super) fn footprints(ctx: &egui::Context, area: Rect, name: &str) {
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(60));
 }
+
+/// The strip of categories (or the folded rail) in `r`: a deep red fading darker downward, warm light
+/// at the top, a gold rule on its right edge with diamonds along it, a glint running down now and then.
+pub(super) fn strip_bg(painter: &egui::Painter, r: Rect) {
+    vgrad(painter, r, Color32::from_rgb(0x4a, 0x1a, 0x1a), Color32::from_rgb(0x24, 0x0e, 0x10));
+    vgrad(painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 140.0)), GOLD.gamma_multiply(0.07), Color32::TRANSPARENT);
+    let x = r.max.x - 1.5;
+    painter.vline(x, r.y_range(), Stroke::new(3.0, GOLD.gamma_multiply(0.12)));
+    painter.vline(x, r.y_range(), Stroke::new(1.0, GOLD.gamma_multiply(0.75)));
+    let mut y = r.min.y + 60.0;
+    while y < r.max.y - 20.0 {
+        let d = 3.0;
+        painter.add(egui::Shape::convex_polygon(vec![Pos2::new(x, y - d), Pos2::new(x + d, y), Pos2::new(x, y + d), Pos2::new(x - d, y)], GOLD, Stroke::NONE));
+        y += 90.0;
+    }
+    let ctx = painter.ctx();
+    let now = ctx.input(|i| i.time);
+    let into = (now + 3.0) % 9.0;
+    if into < 1.6 {
+        let k = (into / 1.6) as f32;
+        let gy = r.min.y - 30.0 + (r.height() + 60.0) * k;
+        for (h, a) in [(60.0, 0.12), (30.0, 0.3), (12.0, 0.75)] {
+            painter.vline(x, gy - h / 2.0..=gy + h / 2.0, Stroke::new(if h > 40.0 { 4.0 } else { 2.0 }, Color32::from_rgb(0xff, 0xf2, 0xc8).gamma_multiply(a)));
+        }
+        ctx.request_repaint();
+    } else {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(9.0 - into));
+    }
+}
+
+/// The active category's slot: a warm glow behind it, a thin gold ring, three sparkles circling it.
+pub(super) fn active_slot(painter: &egui::Painter, slot: Rect) {
+    let ctx = painter.ctx();
+    let tm = ctx.input(|i| i.time) as f32;
+    let c = slot.center();
+    glow(painter, c, 30.0, GOLD, 0.8);
+    painter.rect_stroke(slot, 9.0, Stroke::new(1.0, GOLD.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+    for k in 0..3 {
+        let a = tm * 1.4 + k as f32 * TAU / 3.0;
+        let p = c + Vec2::new(a.cos() * 22.0, a.sin() * 22.0 * 0.9);
+        let tw = 0.5 + 0.5 * (tm * 4.0 + k as f32 * 2.0).sin();
+        painter.circle_filled(p, 1.1, Color32::from_rgb(0xff, 0xf2, 0xc8).gamma_multiply(0.4 + 0.6 * tw));
+        painter.circle_filled(p, 3.0, GOLD.gamma_multiply(0.12 * tw));
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(40));
+}
+
+/// Over the panel: warm light from the top (the fire), its sides a little darker.
+pub(super) fn panel_bg(painter: &egui::Painter, r: Rect) {
+    vgrad(painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 180.0)), GOLD.gamma_multiply(0.06), Color32::TRANSPARENT);
+    let edge = 14.0;
+    let side = |from: Pos2, to_x: f32, inward_left: bool| {
+        let mut mesh = egui::Mesh::default();
+        let dark = Color32::from_black_alpha(40);
+        let (a, b) = if inward_left { (dark, Color32::TRANSPARENT) } else { (Color32::TRANSPARENT, dark) };
+        let (x0, x1) = if inward_left { (from.x, to_x) } else { (to_x, from.x) };
+        mesh.colored_vertex(Pos2::new(x0, r.min.y), a);
+        mesh.colored_vertex(Pos2::new(x1, r.min.y), b);
+        mesh.colored_vertex(Pos2::new(x0, r.max.y), a);
+        mesh.colored_vertex(Pos2::new(x1, r.max.y), b);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        painter.add(mesh);
+    };
+    side(r.left_top(), r.min.x + edge, true);
+    side(r.right_top(), r.max.x - edge, false);
+}
+
+/// An ornament across `width` centered at `c`: gold lines fading outward from a diamond, two dots.
+pub(super) fn ornament(painter: &egui::Painter, c: Pos2, width: f32) {
+    let half = width / 2.0;
+    for k in 0..12 {
+        let t0 = k as f32 / 12.0;
+        let t1 = (k + 1) as f32 / 12.0;
+        let a = 0.9 * (1.0 - t0);
+        for s in [-1.0f32, 1.0] {
+            painter.line_segment([c + Vec2::new(s * (8.0 + (half - 8.0) * t0), 0.0), c + Vec2::new(s * (8.0 + (half - 8.0) * t1), 0.0)], Stroke::new(1.0, GOLD.gamma_multiply(a)));
+        }
+    }
+    let d = 4.0;
+    painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, -d), c + Vec2::new(d, 0.0), c + Vec2::new(0.0, d), c + Vec2::new(-d, 0.0)], GOLD, Stroke::NONE));
+    painter.circle_filled(c, 1.2, SCARLET);
+    for s in [-1.0f32, 1.0] {
+        painter.circle_filled(c + Vec2::new(s * 9.0, 0.0), 1.2, GOLD);
+    }
+}
+
+/// Before a section's title: a small gold diamond; after it, a gold line fading out.
+pub(super) fn title_marks(painter: &egui::Painter, rect: Rect, text_end: f32) {
+    let y = rect.center().y;
+    let c = Pos2::new(rect.min.x + 3.0, y);
+    let d = 2.6;
+    painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, -d), c + Vec2::new(d, 0.0), c + Vec2::new(0.0, d), c + Vec2::new(-d, 0.0)], GOLD, Stroke::NONE));
+    let from = text_end + 8.0;
+    let to = (rect.max.x - 60.0).max(from + 10.0);
+    let n = 10;
+    for k in 0..n {
+        let t0 = k as f32 / n as f32;
+        let t1 = (k + 1) as f32 / n as f32;
+        painter.hline(from + (to - from) * t0..=from + (to - from) * t1, y, Stroke::new(0.8, GOLD.gamma_multiply(0.5 * (1.0 - t0))));
+    }
+}
