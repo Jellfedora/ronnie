@@ -303,7 +303,7 @@ impl Reel {
     /// `risk`: how far it was hooked (0 to 1), far out the bar a little shorter.
     pub fn new(fish: usize, seed: u64, risk: f32) -> Self {
         let d = FISH[fish].difficulty / 100.0;
-        let bar_h = (0.30 - d * 0.10) * (1.0 - 0.2 * risk.clamp(0.0, 1.0));
+        let bar_h = (0.30 - d * 0.10) * (1.0 - 0.1 * risk.clamp(0.0, 1.0));
         Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: FISH[fish].behavior, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, offer: 0.0, rng: seed | 1 }
     }
 
@@ -328,7 +328,7 @@ impl Reel {
             }
             let r = unit(&mut self.rng);
             let reach = match self.mood {
-                Dart => 0.35 + 0.45 * d,
+                Dart => 0.3 + 0.3 * d,
                 _ => 0.2 + 0.3 * d,
             };
             let mut target = self.fish_y + (r * 2.0 - 1.0) * reach;
@@ -340,13 +340,13 @@ impl Reel {
             }
             self.target = target.clamp(0.03, 0.97);
             let pause = match self.mood {
-                Dart => 0.35 + unit(&mut self.rng) * 0.6,
+                Dart => 0.5 + unit(&mut self.rng) * 0.7,
                 _ => 0.6 + unit(&mut self.rng) * 1.0,
             };
             self.timer = pause * (1.35 - d * 0.75);
         }
         let pull = match self.mood {
-            Dart => 14.0 + 26.0 * d,
+            Dart => 11.0 + 14.0 * d,
             _ => 6.0 + 16.0 * d,
         };
         let damp = 2.0 * pull.sqrt();
