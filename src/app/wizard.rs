@@ -626,8 +626,8 @@ impl Wand {
             }
             if ctx.input(|i| i.pointer.any_pressed()) {
                 self.cast = Some((tip, now));
-                // One click in six, a spell's name.
-                if self.random() < 1.0 / 6.0 {
+                // One click in three, a spell's name.
+                if self.random() < 1.0 / 3.0 {
                     let k = (self.random() * SPELLS.len() as f32) as usize % SPELLS.len();
                     self.word = Some((SPELLS[k], tip, now));
                 }
