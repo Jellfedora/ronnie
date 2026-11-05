@@ -109,9 +109,8 @@ impl App {
                 self.bughunt_over(now);
             }
         }
-        if self.bughunt.game.is_some() {
-            ui.ctx().request_repaint();
-        }
+        // Always: before the first game too, the bugs waiting flap and the digits fall.
+        ui.ctx().request_repaint();
 
         self.paint_field(ui, field, scale, &theme, now);
 
