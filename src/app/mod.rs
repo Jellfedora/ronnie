@@ -32,6 +32,7 @@ mod filesearch;
 mod four;
 mod larsen;
 mod president;
+mod bughunt;
 mod game;
 mod git;
 mod home;
@@ -396,6 +397,7 @@ pub struct App {
     four: four::Four,
     larsen: larsen::Larsen,
     president: president::President,
+    bughunt: bughunt::BugHunt,
     /// The minesweeper's page.
     mines: mines::Mines,
     /// Ronnie Run's page.
@@ -1270,6 +1272,7 @@ impl App {
             four: four::Four::default(),
             larsen: larsen::Larsen::default(),
             president: president::President::default(),
+            bughunt: bughunt::BugHunt::default(),
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),

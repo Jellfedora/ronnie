@@ -4,6 +4,7 @@ mod app;
 mod askpass;
 mod backstage;
 mod blob;
+mod bughunt;
 mod awake;
 mod claude;
 mod config;

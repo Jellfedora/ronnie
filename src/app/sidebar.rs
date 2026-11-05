@@ -37,11 +37,12 @@ impl App {
                 return;
             }
             // These fold the sidebar themselves, during a run, a song, a show.
-            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage) {
+            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::BugHunt) {
                 self.games_drawn.push(self.home_which);
                 return match self.home_which {
                     super::four::HomeGame::Runner => self.runner_page(ui, rect),
                     super::four::HomeGame::Riff => self.riff_page(ui, rect),
+                    super::four::HomeGame::BugHunt => self.bughunt_page(ui, rect),
                     _ => self.backstage_page(ui, rect),
                 };
             }
@@ -485,6 +486,7 @@ impl App {
                 HomeGame::Backstage => super::backstage::paint_backstage_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Larsen => super::larsen::paint_larsen_icon(&painter, icon, &theme, 1.0),
                 HomeGame::President => super::president::paint_president_icon(&painter, icon, &theme, 1.0),
+                HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(&painter, icon, &theme, 1.0),
             }
             painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
             if let Some(note) = note {
@@ -505,7 +507,7 @@ impl App {
     /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
     /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
     /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 9] {
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 10] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
@@ -516,7 +518,8 @@ impl App {
         let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
         let riff_best = self.config.settings.riff_bests.iter().max().filter(|&&b| b > 0).map(u32::to_string);
         let backstage_best = (self.config.settings.backstage_best > 0).then(|| self.config.settings.backstage_best.to_string());
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None)];
+        let bughunt_best = (self.config.settings.bughunt_best > 0).then(|| self.config.settings.bughunt_best.to_string());
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None), (HomeGame::BugHunt, t.bughunt_name, bughunt_best)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
@@ -543,6 +546,9 @@ impl App {
         if !drawn.contains(&HomeGame::Backstage) {
             self.backstage.leave();
         }
+        if !drawn.contains(&HomeGame::BugHunt) {
+            self.bughunt.leave();
+        }
     }
 
     /// The games' page, on this window's home page.
@@ -564,6 +570,7 @@ impl App {
             HomeGame::Backstage => self.open_backstage(),
             HomeGame::Larsen => self.open_larsen(),
             HomeGame::President => self.open_president(),
+            HomeGame::BugHunt => self.open_bughunt(),
         }
     }
 

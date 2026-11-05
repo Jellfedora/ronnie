@@ -20,6 +20,7 @@ pub(super) enum HomeGame {
     Backstage,
     Larsen,
     President,
+    BugHunt,
 }
 
 /// A disc falling into place, since `at`.

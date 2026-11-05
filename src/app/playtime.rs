@@ -30,6 +30,7 @@ impl App {
             HomeGame::Backstage => usage.backstage,
             HomeGame::Larsen => usage.larsen,
             HomeGame::President => usage.president,
+            HomeGame::BugHunt => usage.bughunt,
         };
         used.then_some(p)
     }
@@ -57,6 +58,7 @@ impl App {
             HomeGame::Backstage => &mut usage.backstage,
             HomeGame::Larsen => &mut usage.larsen,
             HomeGame::President => &mut usage.president,
+            HomeGame::BugHunt => &mut usage.bughunt,
             HomeGame::Blob | HomeGame::Mines => return,
         };
         if !*played {
@@ -112,6 +114,7 @@ impl App {
             HomeGame::Backstage => super::backstage::paint_backstage_icon(painter, icon, &theme, 2.6),
             HomeGame::Larsen => super::larsen::paint_larsen_icon(painter, icon, &theme, 2.6),
             HomeGame::President => super::president::paint_president_icon(painter, icon, &theme, 2.6),
+            HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(painter, icon, &theme, 2.6),
         }
         paint_metal(painter, Pos2::new(c.x, c.y - 50.0), Align2::CENTER_CENTER, t.playtime_title, 44.0, theme.accent, 1.0);
         let name = match game {
@@ -124,6 +127,7 @@ impl App {
             HomeGame::Backstage => t.backstage_name,
             HomeGame::Larsen => t.larsen_name,
             HomeGame::President => t.president_name,
+            HomeGame::BugHunt => t.bughunt_name,
         };
         let why = match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),
@@ -167,6 +171,8 @@ impl App {
             }
             // Against the computer only, for now: no board.
             HomeGame::President => return,
+            // Its best kept here only, for now: no board.
+            HomeGame::BugHunt => return,
             HomeGame::Four | HomeGame::Larsen => {
                 let id = if game == HomeGame::Four { "puissance-4" } else { "larsen" };
                 let pseudo = crate::floor::pseudo(account.as_ref()).map(str::to_owned);
