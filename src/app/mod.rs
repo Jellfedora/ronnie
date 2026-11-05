@@ -5497,9 +5497,9 @@ impl App {
 }
 
 impl App {
-    /// Gryffindor's opening tune on bells, unless the games' sounds are off.
+    /// Gryffindor's opening tune on bells, unless the themes' music is off.
     fn opening_tune(&mut self) {
-        if self.config.settings.game_sound == Some(false) {
+        if !self.config.settings.theme_music {
             return;
         }
         if self.bells.is_none() {

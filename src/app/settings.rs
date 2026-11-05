@@ -1635,6 +1635,11 @@ impl App {
             if group.is_none() {
                 ui.label(egui::RichText::new(t.themes_special_desc).size(12.5).color(theme.text_muted));
                 ui.add_space(8.0);
+                card(ui, theme, None, |ui| {
+                    setting_row(ui, theme, t.theme_music_setting, Some(t.theme_music_setting_desc), |ui| {
+                        toggle(ui, theme, &mut picked.theme_music);
+                    });
+                });
             }
             let presets: Vec<&Preset> = PRESETS.iter().filter(|p| match group {
                 Some(dark) => p.dark == dark && !special(p),

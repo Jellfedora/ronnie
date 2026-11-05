@@ -229,7 +229,7 @@ impl Sound {
                     let env = (t * 400.0).min(1.0) * (-t * 3.2).exp();
                     let tau = std::f32::consts::TAU;
                     let wave = (tau * f * t).sin() + 0.35 * (tau * 2.0 * f * t).sin() * (-t * 6.0).exp() + 0.12 * (tau * 3.0 * f * t).sin() * (-t * 9.0).exp();
-                    *out += wave * env * loud * 0.25;
+                    *out += wave * env * loud * 0.2;
                 }
             }
             at += len;
