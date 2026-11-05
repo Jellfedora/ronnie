@@ -479,9 +479,10 @@ fn answers(port: u16) -> bool {
     TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(200)).is_ok()
 }
 
-/// Whether `port` is free to listen on (this computer).
+/// Whether `port` is free to listen on (this computer): nothing answers on it either (macOS lets
+/// 127.0.0.1 be taken beside a server listening on all addresses, a MySQL of the system's).
 fn free(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_ok()
+    TcpListener::bind(("127.0.0.1", port)).is_ok() && !answers(port)
 }
 
 /// A site's address in its database made Ronnie's (`<name>.localhost:<port>`), so that it doesn't send
@@ -812,8 +813,8 @@ impl Stack {
             cmd.arg("--mysqlx=OFF");
         }
         if !cfg!(windows) {
-            // PHP's "localhost" goes to `run/mysql.sock`: the server on the usual port.
-            let socket = if port == DB_PORT { run.join("mysql.sock") } else { run.join(format!("mysql-{port}.sock")) };
+            // PHP's "localhost" goes to `run/mysql.sock`: the main server's.
+            let socket = if is_main_db(port) { run.join("mysql.sock") } else { run.join(format!("mysql-{port}.sock")) };
             cmd.arg(format!("--socket={}", slashed(&socket)));
         }
         let child = cmd.spawn().with_context(|| format!("{name} doesn't start"))?;
@@ -1191,19 +1192,28 @@ fn settings_file(db: &Db) -> Result<PathBuf> {
 }
 
 /// A new database server's own port, kept in its settings unless it has some: the first from 3306 on
-/// that no other server of Ronnie's has (MySQL on 3306, MariaDB beside it on 3307, as WAMP has them).
+/// that no other server of Ronnie's has (MySQL on 3306, MariaDB beside it on 3307, as WAMP has them),
+/// nor another program (a MySQL or MariaDB of the system, running).
 fn give_port(db: &Db) -> Result<()> {
     let file = settings_file(db)?;
     if file.is_file() {
         return Ok(());
     }
     let others: BTreeSet<u16> = local_servers().into_iter().filter(|(d, _)| !same_data(d, db)).map(|(_, port)| port).collect();
-    let port = (DB_PORT..DB_PORT + 100).find(|p| !others.contains(p)).unwrap_or(DB_PORT);
+    let ports = DB_PORT..DB_PORT + 100;
+    let port = ports.clone().find(|p| !others.contains(p) && free(*p)).or_else(|| ports.clone().find(|p| !others.contains(p))).unwrap_or(DB_PORT);
     std::fs::write(&file, format!("# {}'s settings, written by Ronnie (its folders are given at start).\n[mysqld]\nport={port}\n", db.label("system")))
         .with_context(|| format!("cannot write {}", file.display()))
 }
 
 /// The port a database server would rather have (WAMP's, when imported from it).
+/// Whether the server on `port` is Ronnie's main one, the one PHP's "localhost" reaches (its
+/// `mysql.sock`): on 3306, or the first of Ronnie's when 3306 is another program's.
+fn is_main_db(port: u16) -> bool {
+    let ports: BTreeSet<u16> = local_servers().into_iter().map(|(_, p)| p).collect();
+    port == DB_PORT || (!ports.contains(&DB_PORT) && ports.first() == Some(&port))
+}
+
 fn wanted_port(db: &Db) -> u16 {
     let text = settings_file(db).ok().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
     text.lines().find_map(|l| l.trim().strip_prefix("port=").and_then(|p| p.trim().parse().ok())).unwrap_or(DB_PORT)
