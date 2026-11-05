@@ -374,6 +374,8 @@ pub struct App {
     error: Option<String>,
     /// The error shown, and since when (it goes away by itself after a while).
     error_shown: Option<(String, f64)>,
+    /// The terminals' area this frame (the five-legged sheep walks along its foot).
+    terminals_rect: Option<Rect>,
     window_title: String,
     next_pane: PaneId,
 
@@ -1263,6 +1265,7 @@ impl App {
             last_scrollback_save: 0.0,
             error: None,
             error_shown: None,
+            terminals_rect: None,
             window_title: String::new(),
             next_pane: 1,
             config: Config::default(),
@@ -4490,6 +4493,7 @@ impl App {
                 }
             });
 
+        self.terminals_rect = None;
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(self.theme.bg))
             .show(ui, |ui| {
@@ -4626,6 +4630,7 @@ impl App {
                 let line = Stroke::new(1.0, self.theme.tab_hover);
                 tab.layout.show(ui, rect, ui.id().with("layout"), line, &mut rects);
                 let layout_rect = rect;
+                self.terminals_rect = Some(rect);
                 let split = rects.len() > 1;
                 let strings = self.config.settings.language.strings();
                 let local = tab.ssh.is_none();
@@ -5305,6 +5310,7 @@ impl App {
                     self.reopen_pane(ui.ctx(), self.active, id, k);
                 }
             });
+        self.sheep_walk(ui.ctx());
 
         if dialogs_here {
             self.settings_window(ui.ctx());

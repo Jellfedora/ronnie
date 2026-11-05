@@ -3,7 +3,7 @@
 //!   plant, a water cooler at the foot of the sidebar; a strip of post-its over the settings and over
 //!   the active tab; « T'as 5 minutes ? » over a pane when its bell rings;
 //! - the five-legged sheep, for the legendary card: now and then it walks along the foot of the
-//!   sidebar, stops to graze, and bleats when hovered (switched off in the settings);
+//!   terminals, stops to graze, and bleats when hovered (switched off in the settings);
 //! - the « Chasseur de têtes » badge, for 100 candidates hired (kept on floor): a small hook beside the
 //!   avatar, wherever the others see it.
 
@@ -113,7 +113,27 @@ pub(super) fn bubble(painter: &egui::Painter, pane: Rect, k: f32, text: &str, th
     painter.galley(r.center() - galley.size() / 2.0, galley, Color32::from_rgb(0x2e, 0x34, 0x40).gamma_multiply(alpha));
 }
 
-/// The sheep's walk: every so often, along `strip` (the foot of the sidebar), from one side to the
+impl super::App {
+    /// The five-legged sheep, caught at the fishing: now and then a walk along the foot of the
+    /// terminals, over them; hovered, it bleats.
+    pub(super) fn sheep_walk(&mut self, ctx: &egui::Context) {
+        let Some(area) = self.terminals_rect.filter(|_| self.config.settings.sheep && sheep_unlocked(&self.config.settings)) else { return };
+        let strip = Rect::from_min_max(Pos2::new(area.min.x + 6.0, area.max.y - 32.0), Pos2::new(area.max.x - 6.0, area.max.y - 2.0));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sheep-walk")));
+        let (shown, again) = sheep(&painter, strip, ctx.input(|i| i.time));
+        ctx.request_repaint_after(std::time::Duration::from_secs_f32(again));
+        if let Some(r) = shown
+            && ctx.pointer_hover_pos().is_some_and(|p| r.contains(p))
+        {
+            let bleat = self.t().sheep_bleat;
+            egui::Area::new(egui::Id::new("sheep-bleat")).order(egui::Order::Tooltip).fixed_pos(r.center_top() - Vec2::new(0.0, 4.0)).pivot(egui::Align2::CENTER_BOTTOM).interactable(false).show(ctx, |ui| {
+                Frame::popup(ui.style()).show(ui, |ui| ui.label(bleat));
+            });
+        }
+    }
+}
+
+/// The sheep's walk: every so often, along `strip` (the foot of the terminals), from one side to the
 /// other, a stop to graze halfway. Its rect when it shows (to hover), and when to draw again.
 pub(super) fn sheep(painter: &egui::Painter, strip: Rect, now: f64) -> (Option<Rect>, f32) {
     // A walk of 16 s every 50 s.

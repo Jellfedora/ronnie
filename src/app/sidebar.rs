@@ -1779,15 +1779,6 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::office::coffee_rect(field), ui.id().with("coffee"), Sense::hover()).on_hover_text(t.office_coffee);
         }
-        // The five-legged sheep, caught at the fishing: now and then a walk along the foot of the list.
-        if self.config.settings.sheep && super::office::sheep_unlocked(&self.config.settings) {
-            let strip = Rect::from_min_max(Pos2::new(bar.min.x + 4.0, card_top - 34.0), Pos2::new(bar.max.x - 5.0, card_top - 2.0));
-            let (shown, again) = super::office::sheep(ui.painter(), strip, ui.input(|i| i.time));
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
-            if let Some(r) = shown {
-                ui.interact(r, ui.id().with("sheep"), Sense::hover()).on_hover_text(t.sheep_bleat);
-            }
-        }
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).
