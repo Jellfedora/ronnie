@@ -2,6 +2,32 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.44.0] - 2026-11-06
+
+### Nouveautés
+
+- **La pêche aux talents**, un nouveau jeu : tu es RH au bord d'un étang de candidats. Tu vises à la souris, tu lances, tu attends que ça morde (gare aux fausses touches), puis tu gardes le candidat dans la barre jusqu'à l'embaucher. 38 cartes à collectionner, de la commune à la légendaire, dont une brillante de temps en temps : le stagiaire, la comptable, le DevOps, Maria et Karène les secrétaires, Monique de l'accueil, Flash l'homme de ménage, le mouton à cinq pattes… Chacun mord à ses heures, au large les plus rares. Des bancs de bulles et des salons de l'emploi font mordre plus vite, des appâts (tickets resto, télétravail, salaire +10 %) attirent certains profils, et un cabinet concurrent tente parfois une contre-offre. Les collègues qui pêchent en même temps sont sur la berge, avec leurs prises. 10 embauches par demi-journée de travail.
+- **Bug Hunt**, un nouveau jeu : les bugs descendent en rangs vers la prod, écrase-les avant qu'ils l'atteignent. Des correctifs à attraper, et toutes les cinq vagues un boss, le Heisenbug.
+- **Des récompenses à gagner dans les jeux**, toutes réunies dans Paramètres › Récompenses avec un aperçu de chacune, ta progression, et un bouton pour les utiliser :
+  - le thème **Open space** à 30 000 points sur une chanson de Riff Hero ;
+  - le **mouton à cinq pattes**, qui se balade en bas des terminaux, avec la carte légendaire de la pêche ;
+  - le badge **Chasseur de têtes** à 100 embauches ;
+  - la **traînée d'étincelles du pointeur** à 1 000 m à Ronnie Run ;
+  - des **cadres d'avatar** animés à Bug Hunt (Glitch, Essaim, Circuit) et le cadre Holo pour toutes les cartes brillantes ;
+  - le thème **Gryffondor** en ouvrant Ronnie 7 jours d'affilée.
+- **Le thème Gryffondor** : un curseur baguette qui laisse des étincelles et lance parfois un sort, le château la nuit au bord du lac avec ses fenêtres allumées, des bougies flottantes, le Vif d'or, un hibou, des feux d'artifice et un Patronus, le blason au lion, les pas de la Carte du Maraudeur en bas des terminaux, et une ouverture en musique.
+- **La page des jeux tient dans la fenêtre**, et chaque jeu montre ce qu'il reste à y débloquer.
+- **Des toasts quand une récompense se débloque** (le wizz du tchat au démineur, les boutons Claude au Puissance 4…).
+- **Les paramètres réorganisés** : rangés en quatre groupes, avec moins d'entrées. Les thèmes à décor sont à part, dans « Thèmes spéciaux ». L'import des serveurs depuis ~/.ssh/config ou PuTTY passe dans le menu « + » de la section SSH.
+- **Mes projets PHP, deuxième version** : recherche, tri, favoris et groupes ; import des bases du logiciel Local et de n'importe quel .sql ; temps restant des imports et des copies ; les logs d'un projet dans leur fenêtre ; Xdebug sous Windows ; recherche dans les tables d'une base. Merci à Jonathan !
+- **Nouveau WordPress** : un formulaire avant de le créer (son nom, sa version de WordPress, de PHP et de base de données).
+- **Les projets sur Mac** : nginx et MySQL s'installent aussi sur macOS.
+
+### Corrections
+
+- Le thème Jurassic Park se débloque à 4 000 points à Ronnie.io, au lieu de 5 000.
+- Un import .sql raté ne laisse plus de base vide derrière lui, et la fenêtre d'import des bases de Local ne se fige plus sous Windows.
+
 ## [0.43.0] - 2026-11-05
 
 ### Nouveautés
