@@ -38,6 +38,10 @@ pub(super) struct Projects {
     restart_after: HashSet<Uuid>,
     /// The projects being copied into the folder of the projects, by name.
     importing: Vec<(String, Imported)>,
+    /// The name of a new WordPress being typed (its field shown).
+    new_wp: Option<String>,
+    /// The new WordPress sites being made, by name.
+    creating: Vec<(String, Imported)>,
     /// When the folder of the projects was last read.
     scanned: Option<Instant>,
     /// The port of the database server of each project running.
@@ -68,6 +72,8 @@ impl Projects {
             errors: HashMap::new(),
             restart_after: HashSet::new(),
             importing: Vec::new(),
+            new_wp: None,
+            creating: Vec::new(),
             scanned: None,
             db_ports: HashMap::new(),
             found: HashMap::new(),
@@ -175,6 +181,56 @@ impl App {
                 Some(Err(e)) => self.error = Some(format!("{} : {e}", t.projects_import_failed.replace("{name}", &name))),
             }
         }
+        for (name, done) in std::mem::take(&mut self.projects.creating) {
+            let result = done.lock().unwrap().take();
+            match result {
+                None => self.projects.creating.push((name, done)),
+                // Shown, started and opened in the browser: on WordPress's install page.
+                Some(Ok(folder)) => {
+                    self.projects.scanned = None;
+                    self.projects_scan();
+                    if let Some(id) = self.config.projects.iter().find(|p| p.path == folder).map(|p| p.id) {
+                        self.projects.selected = Some(id);
+                        self.project_start(id, true);
+                    }
+                }
+                Some(Err(e)) => self.error = Some(format!("{} : {e}", t.projects_wp_failed.replace("{name}", &name))),
+            }
+        }
+    }
+
+    /// A new WordPress made in the background in the folder of the projects (see
+    /// `projects::new_wordpress`), on the newest database server installed: then started, its install
+    /// page opened.
+    fn projects_new_wordpress(&mut self, name: String) {
+        let t = self.t();
+        let name = name.trim().to_owned();
+        let Some(dir) = self.projects_dir() else { return };
+        if self.read_only || self.projects.creating.iter().any(|(n, _)| *n == name) {
+            return;
+        }
+        if !projects::valid_site_name(&name) || dir.join(&name).exists() {
+            self.error = Some(t.projects_wp_bad_name.replace("{name}", &name));
+            return;
+        }
+        let Some(db) = projects::newest_db() else {
+            self.error = Some(t.projects_wp_no_db.to_owned());
+            return self.open_env_page(DevTool::Mysql);
+        };
+        let french = self.config.settings.language == crate::i18n::Lang::Fr;
+        let done: Imported = Arc::new(Mutex::new(None));
+        let (stack, slot, ctx, folder_name) = (self.projects.stack.clone(), done.clone(), self.ctx.clone(), name.clone());
+        let _ = std::thread::Builder::new().name("new-wordpress".into()).spawn(move || {
+            let result = projects::new_wordpress(&stack, &dir, &folder_name, &db, french).map_err(|e| format!("{e:#}"));
+            crate::log::info(&match &result {
+                Ok(_) => format!("WordPress {folder_name} made"),
+                Err(e) => format!("WordPress {folder_name} not made: {e}"),
+            });
+            *slot.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+        self.projects.creating.push((name, done));
+        self.projects.new_wp = None;
     }
 
     /// Starts a project in the background (its PHP, nginx and database installed first, or the way to
@@ -617,7 +673,7 @@ impl App {
     /// from its card, its settings below.
     pub(super) fn project_page_ui(&mut self, ui: &mut Ui, t: &'static Strings, theme: &Theme) {
         let dir = self.projects_dir();
-        let (mut action, mut import, mut pick_dir) = (None, false, false);
+        let (mut action, mut import, mut pick_dir, mut new_wp) = (None, false, false, None);
         egui::ScrollArea::vertical().id_salt("project-page").auto_shrink([false, false]).show(ui, |ui| {
             // Title, the folder of the projects (picked, opened); projects imported into it.
             ui.horizontal(|ui| {
@@ -626,6 +682,9 @@ impl App {
                     let button = |text: String| egui::Button::new(egui::RichText::new(text).size(13.0)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0));
                     if ui.add(button(format!("+  {}", t.projects_import))).on_hover_text(t.projects_import_hint).clicked() {
                         import = true;
+                    }
+                    if ui.add(button(format!("+  {}", t.projects_wp_new))).on_hover_text(t.projects_wp_hint).clicked() && !self.read_only {
+                        self.projects.new_wp = Some(String::new());
                     }
                     if ui.add(button(t.projects_dir_pick.to_owned())).clicked() {
                         pick_dir = true;
@@ -640,6 +699,35 @@ impl App {
             });
             if let Some(dir) = &dir {
                 ui.label(egui::RichText::new(t.projects_dir_line.replace("{path}", &dir.display().to_string())).size(12.0).color(theme.text_muted));
+            }
+            // A new WordPress: its name typed, Enter makes it.
+            let mut cancel = false;
+            if let Some(name) = &mut self.projects.new_wp {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(t.projects_wp_name).size(12.5).color(theme.text_muted));
+                    let field = ui.add(egui::TextEdit::singleline(name).desired_width(240.0).hint_text("mon-site"));
+                    if !field.has_focus() && name.is_empty() {
+                        field.request_focus();
+                    }
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let ok = projects::valid_site_name(name);
+                    if (ui.add_enabled(ok, egui::Button::new(t.projects_wp_create)).clicked() || enter) && ok {
+                        new_wp = Some(name.clone());
+                    }
+                    if ui.button(t.cancel).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel = true;
+                    }
+                });
+            }
+            if cancel {
+                self.projects.new_wp = None;
+            }
+            for (name, _) in &self.projects.creating {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(12.0));
+                    ui.label(egui::RichText::new(t.projects_wp_creating.replace("{name}", name)).size(12.0).color(theme.text_muted));
+                });
             }
             for (name, _) in &self.projects.importing {
                 ui.horizontal(|ui| {
@@ -679,6 +767,9 @@ impl App {
         }
         if pick_dir {
             self.projects_pick_dir();
+        }
+        if let Some(name) = new_wp {
+            self.projects_new_wordpress(name);
         }
         let Some((id, action)) = action else { return };
         match action {

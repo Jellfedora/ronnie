@@ -492,23 +492,7 @@ fn fix_address(project: &Project, db: &Db, db_port: u16, port: u16) -> Result<bo
     let Some(client) = envs::db_client(db.kind, &db.version) else { return Ok(false) };
     let read = |file: &str| std::fs::read_to_string(project.path.join(file)).unwrap_or_default();
     let host = format!("{}.localhost:{port}", project.slug());
-    let sql = |database: &str, query: &str| -> Result<String> {
-        let mut cmd = Command::new(&client);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
-        }
-        let out = cmd
-            .args(["--user=root", "--host=127.0.0.1", &format!("--port={db_port}"), "--batch", "--skip-column-names", "--default-character-set=utf8mb4", database, "-e", query])
-            .stdin(Stdio::null())
-            .output()
-            .context("the database's client doesn't start")?;
-        if !out.status.success() {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-    };
+    let sql = |database: &str, query: &str| run_sql(&client, db_port, Some(database), query);
     let safe = |prefix: &str| prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
     match project.kind {
         Kind::PrestaShop => {
@@ -552,6 +536,95 @@ fn fix_address(project: &Project, db: &Db, db_port: u16, port: u16) -> Result<bo
         }
         Kind::Laravel | Kind::Php => Ok(false),
     }
+}
+
+/// A query run by a database server's client, as root (on Ronnie's server on `port`), in `database`;
+/// what it printed.
+fn run_sql(client: &Path, port: u16, database: Option<&str>, query: &str) -> Result<String> {
+    let mut cmd = Command::new(client);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd.args(["--user=root", "--host=127.0.0.1", &format!("--port={port}"), "--batch", "--skip-column-names", "--default-character-set=utf8mb4"]);
+    cmd.args(database).args(["-e", query]);
+    let out = cmd.stdin(Stdio::null()).output().context("the database's client doesn't start")?;
+    if !out.status.success() {
+        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// A new site's folder name: as typed, but what a folder can't be named (or would hide it).
+pub fn valid_site_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && name.len() <= 64 && !name.starts_with('.') && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) && !name.to_lowercase().starts_with("wamp")
+}
+
+/// A new WordPress in the folder of the projects, as `name`: its newest version downloaded (in French
+/// for `french`), its database made empty on `db` (started for it, then stopped unless something runs
+/// on it), its `wp-config.php` written (root without a password, as WAMP has it). WordPress's own
+/// install page does the rest: the site's title, its administrator. Put together aside, then moved in
+/// place. Its folder; blocking.
+pub fn new_wordpress(stack: &std::sync::Mutex<Stack>, dir: &Path, name: &str, db: &Db, french: bool) -> Result<PathBuf> {
+    let name = name.trim();
+    if !valid_site_name(name) {
+        bail!("{name:?} can't be a folder's name");
+    }
+    let target = dir.join(name);
+    if target.exists() {
+        bail!("{} already exists", target.display());
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot write {}", dir.display()))?;
+    let staging = dir.join(format!(".{name}.new"));
+    let _ = std::fs::remove_dir_all(&staging);
+    let result = (|| {
+        let url = if french { "https://fr.wordpress.org/latest-fr_FR.zip" } else { "https://wordpress.org/latest.zip" };
+        let agent: ureq::Agent = ureq::config::Config::builder().timeout_connect(Some(Duration::from_secs(15))).timeout_global(Some(Duration::from_secs(600))).build().new_agent();
+        let zip = agent
+            .get(url)
+            .header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .with_context(|| format!("{url} unreachable"))?
+            .body_mut()
+            .with_config()
+            .limit(200 * 1024 * 1024)
+            .read_to_vec()
+            .context("WordPress's download failed")?;
+        zip::ZipArchive::new(std::io::Cursor::new(zip)).context("WordPress's archive unreadable")?.extract(&staging).context("WordPress's archive unreadable")?;
+        let site = staging.join("wordpress");
+        if !site.join("wp-settings.php").is_file() {
+            bail!("WordPress's archive doesn't hold WordPress");
+        }
+
+        // Its database: the site's name ("mon-site" → "mon_site"), numbered if taken.
+        let base: String = Project { id: Uuid::nil(), name: name.to_owned(), path: PathBuf::new(), root: String::new(), kind: Kind::WordPress, php: None, db: None }.slug().replace('-', "_");
+        let base: String = base.chars().take(48).collect();
+        let database = std::iter::once(base.clone()).chain((2..100).map(|n| format!("{base}_{n}"))).find(|d| !holds_database(db, d)).context("no database name left")?;
+        let port = stack.lock().unwrap().create_database(db, &database)?;
+        let host = if is_main_db(port) { "localhost".to_owned() } else { format!("127.0.0.1:{port}") };
+        std::fs::write(site.join("wp-config.php"), wp_config(&database, &host)).context("wp-config.php can't be written")?;
+        std::fs::rename(&site, &target).with_context(|| format!("cannot write {}", target.display()))?;
+        Ok(target.clone())
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// WordPress's settings: its database on Ronnie's server (root without a password), its keys drawn
+/// at random.
+fn wp_config(database: &str, host: &str) -> String {
+    let mut text = String::from("<?php\n/**\n * WordPress's settings, written by Ronnie: the database is on Ronnie's server, root without a password.\n */\n\n");
+    for (key, value) in [("DB_NAME", database), ("DB_USER", "root"), ("DB_PASSWORD", ""), ("DB_HOST", host), ("DB_CHARSET", "utf8mb4"), ("DB_COLLATE", "")] {
+        text += &format!("define( '{key}', '{value}' );\n");
+    }
+    text.push('\n');
+    for key in ["AUTH_KEY", "SECURE_AUTH_KEY", "LOGGED_IN_KEY", "NONCE_KEY", "AUTH_SALT", "SECURE_AUTH_SALT", "LOGGED_IN_SALT", "NONCE_SALT"] {
+        text += &format!("define( '{key}', '{}{}' );\n", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    }
+    text += "\n$table_prefix = 'wp_';\n\ndefine( 'WP_DEBUG', false );\n\nif ( ! defined( 'ABSPATH' ) ) {\n\tdefine( 'ABSPATH', __DIR__ . '/' );\n}\n\nrequire_once ABSPATH . 'wp-settings.php';\n";
+    text
 }
 
 /// PrestaShop's cache emptied: moved aside at once (rebuilt from the next page), deleted in the
@@ -832,6 +905,22 @@ impl Stack {
 
     /// Stops the database servers no project runs with any more: cleanly (its admin program), or
     /// else killed.
+    /// An empty database `name` made on `db` (started for it, stopped after unless something runs on
+    /// it); the server's port. Blocking.
+    pub fn create_database(&mut self, db: &Db, name: &str) -> Result<u16> {
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            bail!("invalid database name {name}");
+        }
+        let run = run_dir()?;
+        let logs = logs_dir()?;
+        std::fs::create_dir_all(&logs)?;
+        let port = self.start_db(db, &run, &logs)?;
+        let client = envs::db_client(db.kind, &db.version).with_context(|| format!("{}'s client is missing", db.label("system")));
+        let done = client.and_then(|client| run_sql(&client, port, None, &format!("CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")));
+        self.stop_unused_dbs();
+        done.map(|_| port)
+    }
+
     fn stop_unused_dbs(&mut self) {
         let mut used: BTreeSet<PathBuf> = self.running.values().filter_map(|(_, db)| db.as_ref().and_then(|db| data_dir(db).ok())).collect();
         used.extend(self.manual.iter().cloned());
@@ -1368,6 +1457,15 @@ fn kill_leftovers() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wordpress_settings() {
+        let config = wp_config("mon_site", "localhost");
+        assert_eq!(quoted_after(&config, "'DB_NAME'").as_deref(), Some("mon_site"));
+        assert!(config.contains("define( 'DB_HOST', 'localhost' );") && config.contains("define( 'DB_PASSWORD', '' );"));
+        assert_eq!(quoted_after(&config, "$table_prefix").as_deref(), Some("wp_"));
+        assert!(valid_site_name("Mon site") && !valid_site_name(".cache") && !valid_site_name("a/b") && !valid_site_name("  ") && !valid_site_name("wamp"));
+    }
 
     #[test]
     fn slugs() {
