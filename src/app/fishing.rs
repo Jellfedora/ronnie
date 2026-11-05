@@ -1313,11 +1313,18 @@ pub(super) fn paint_card(painter: &egui::Painter, r: Rect, fish: usize, entry: O
 
     // The name, the motivation.
     let name = if known { text.name } else { t.fishing_unknown };
-    painter.text(Pos2::new(inner.min.x + pad, inner.min.y + 13.0 * k), Align2::LEFT_CENTER, name, font(12.5), ink);
+    // The motivation on the right; the name made smaller until it fits beside it.
+    let mut room = inner.width() - 2.0 * pad;
     if known {
         let hp = format!("{} {}", t.fishing_motivation, 30 + f.difficulty as u32);
-        painter.text(Pos2::new(inner.max.x - pad, inner.min.y + 13.0 * k), Align2::RIGHT_CENTER, hp, font(9.0), hex(0xd0453a));
+        let hp = painter.text(Pos2::new(inner.max.x - pad, inner.min.y + 13.0 * k), Align2::RIGHT_CENTER, hp, font(9.0), hex(0xd0453a));
+        room -= hp.width() + 6.0 * k;
     }
+    let mut size = 12.5;
+    while size > 8.0 && painter.layout_no_wrap(name.to_owned(), font(size), ink).size().x > room {
+        size -= 0.5;
+    }
+    painter.text(Pos2::new(inner.min.x + pad, inner.min.y + 13.0 * k), Align2::LEFT_CENTER, name, font(size), ink);
 
     // The picture, in the water of its hours.
     let pic = Rect::from_min_max(Pos2::new(inner.min.x + pad, inner.min.y + 26.0 * k), Pos2::new(inner.max.x - pad, inner.min.y + 112.0 * k));
