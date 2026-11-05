@@ -903,6 +903,8 @@ mod tests {
         let profile = Uuid::new_v4();
         let config = format!(
             r#"{{"theme": "ronnie", "shortcuts": {{"new_tab": "Cmd+Y"}},
+                "jurassic_unlocked": true, "wizard_unlocked": true, "open_streak": 7, "riff_bests": [0, 49000], "runner_best": 1200,
+                "fish_cards": {{"maria": {{"count": 2, "shiny": 1}}}}, "fish_baits": {{"salaire": 3}},
                 "profiles": [{{"id": "{profile}", "name": "web", "layout": {{"type": "pane", "cwd": "/Users/me/web"}}}}],
                 "ssh": [{{"id": "{host}", "name": "srv", "host": "srv.example", "identity_file": "/nowhere/id_ed25519", "password_saved": true, "sftp_local": "/Users/me"}}]}}"#
         );
@@ -925,6 +927,10 @@ mod tests {
         assert!(prepare(&zip, &read, "nope", t).is_err(), "a wrong password changes nothing");
         let prepared = prepare(&zip, &read, "longpassword", t).unwrap();
         assert_eq!(prepared.config.settings.shortcuts, config::Shortcuts::default());
+        // The rewards won come along.
+        let s = &prepared.config.settings;
+        assert!(s.jurassic_unlocked && s.wizard_unlocked && crate::theme::office_unlocked(&s.riff_bests));
+        assert_eq!((s.open_streak, s.runner_best, s.fish_cards["maria"].shiny, s.fish_baits["salaire"]), (7, 1200, 1, 3));
         assert_eq!(prepared.config.profiles[0].tab.layout.cwds(), vec![None]);
         assert!(prepared.config.ssh[0].sftp_local.is_none());
         let passwords = write_import(&to, prepared).unwrap();
