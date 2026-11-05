@@ -1,7 +1,8 @@
 //! Bug Hunt's world: bugs come down in ranks toward production, marching from side to side and a row
 //! lower at each edge, faster as they thin out; they drop exceptions, and from the third wave some
 //! leave the ranks to dive at the debugger. The debugger, at the bottom, moves and fires patches; four
-//! firewalls shelter it and wear away under the shots of both sides. A bug squashed now and then drops
+//! firewalls shelter it from the exceptions and wear away under them (its own patches go out through
+//! them). A bug squashed now and then drops
 //! a fix: a triple shot, a rapid fire, a shield. Units are the field's (y down); the page scales them.
 
 /// The field.
@@ -504,7 +505,7 @@ impl Game {
     }
 
     fn collide(&mut self) {
-        // The patches: on a bug, an exception, a firewall.
+        // The patches: on a bug, an exception (they go out through the firewalls).
         let mut k = 0;
         while k < self.shots.len() {
             let s = self.shots[k];
@@ -517,10 +518,6 @@ impl Game {
                 self.shots.swap_remove(k);
                 self.bolts.swap_remove(b);
                 self.burst(s.x, s.y, None, 4);
-                continue;
-            }
-            if self.erode(s.x, s.y - 6.0, -1) {
-                self.shots.swap_remove(k);
                 continue;
             }
             k += 1;
