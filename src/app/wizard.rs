@@ -71,15 +71,77 @@ fn stars(painter: &egui::Painter, rect: Rect, n: u32, seed: u32, now: f64) {
 pub(super) fn logo(painter: &egui::Painter, rect: Rect) {
     let field = Rect::from_center_size(rect.center(), Vec2::new(rect.width().min(190.0), rect.height()));
     stars(painter, field, 18, 7, 0.0);
-    let at = rect.center() - Vec2::new(-8.0, 2.0);
     let font = FontId::proportional(28.0);
     let galley = painter.layout_no_wrap("Ronnie".to_owned(), font.clone(), GOLD);
-    let left = at.x - galley.size().x / 2.0;
-    bolt(painter, Pos2::new(left - 14.0, at.y), 26.0, GOLD);
+    // The crest, then the name beside it, the two centered together.
+    let h = (rect.height() - 6.0).clamp(30.0, 46.0);
+    let shield = Vec2::new(h * 0.82, h);
+    let gap = 10.0;
+    let left = rect.center().x - (shield.x + gap + galley.size().x) / 2.0;
+    crest(painter, Rect::from_min_size(Pos2::new(left, rect.center().y - h / 2.0 - 1.0), shield));
+    let at = Pos2::new(left + shield.x + gap, rect.center().y - 2.0);
     for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-        painter.text(at + Vec2::new(dx, dy), Align2::CENTER_CENTER, "Ronnie", font.clone(), SCARLET);
+        painter.text(at + Vec2::new(dx, dy), Align2::LEFT_CENTER, "Ronnie", font.clone(), SCARLET.gamma_multiply(0.8));
     }
-    painter.text(at, Align2::CENTER_CENTER, "Ronnie", font, GOLD);
+    painter.text(at, Align2::LEFT_CENTER, "Ronnie", font, GOLD);
+}
+
+/// The house's crest in `r`: a scarlet shield edged in gold, a gold lion rampant on it (facing left,
+/// its forepaws up, its tail raised), a lightning bolt over its shoulder.
+pub(super) fn crest(painter: &egui::Painter, r: Rect) {
+    let p = |x: f32, y: f32| Pos2::new(r.min.x + x * r.width(), r.min.y + y * r.height());
+    let u = r.width();
+    // The shield: flat on top, its sides straight then curving to a point.
+    let outline = |inset: f32| -> Vec<Pos2> {
+        let mut pts = vec![p(inset, inset * 0.82), p(1.0 - inset, inset * 0.82)];
+        pts.push(p(1.0 - inset, 0.5));
+        for k in 1..=10 {
+            let a = k as f32 / 10.0 * std::f32::consts::FRAC_PI_2;
+            pts.push(p(0.5 + (0.5 - inset) * a.cos(), 0.5 + (0.5 - inset * 0.82) * a.sin()));
+        }
+        for k in 1..=10 {
+            let a = std::f32::consts::FRAC_PI_2 + k as f32 / 10.0 * std::f32::consts::FRAC_PI_2;
+            pts.push(p(0.5 + (0.5 - inset) * a.cos(), 0.5 + (0.5 - inset * 0.82) * a.sin()));
+        }
+        pts
+    };
+    painter.add(egui::Shape::convex_polygon(outline(-0.03), Color32::from_black_alpha(160), Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(outline(0.0), GOLD, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(outline(0.08), Color32::from_rgb(0xa8, 0x1c, 0x22), Stroke::NONE));
+    // A sheen on the field's upper left.
+    painter.add(egui::Shape::convex_polygon(vec![p(0.1, 0.08), p(0.45, 0.08), p(0.1, 0.42)], Color32::WHITE.gamma_multiply(0.07), Stroke::NONE));
+
+    // The lion, in pieces (each convex): body, legs, tail, mane, head.
+    let gold = GOLD;
+    let ellipse = |c: Pos2, rx: f32, ry: f32, tilt: f32| -> Vec<Pos2> {
+        (0..20).map(|k| {
+            let a = k as f32 / 20.0 * TAU;
+            let (x, y) = (a.cos() * rx, a.sin() * ry);
+            c + Vec2::new(x * tilt.cos() - y * tilt.sin(), x * tilt.sin() + y * tilt.cos())
+        }).collect()
+    };
+    let limb = |from: Pos2, to: Pos2, w: f32| {
+        painter.line_segment([from, to], Stroke::new(w, gold));
+        painter.circle_filled(to, w * 0.62, gold);
+    };
+    // The tail, raised behind, its tuft.
+    painter.add(egui::Shape::line(vec![p(0.62, 0.72), p(0.78, 0.62), p(0.8, 0.46), p(0.72, 0.36)], Stroke::new(u * 0.045, gold)));
+    painter.circle_filled(p(0.71, 0.34), u * 0.055, gold);
+    // The hind legs, one forward, one back.
+    limb(p(0.55, 0.74), p(0.44, 0.88), u * 0.08);
+    limb(p(0.6, 0.72), p(0.66, 0.86), u * 0.08);
+    // The body, rearing.
+    painter.add(egui::Shape::convex_polygon(ellipse(p(0.53, 0.6), u * 0.13, u * 0.22, -0.45), gold, Stroke::NONE));
+    // The forepaws, up and out.
+    limb(p(0.45, 0.48), p(0.27, 0.4), u * 0.07);
+    limb(p(0.47, 0.55), p(0.3, 0.58), u * 0.07);
+    // The mane, then the head and the muzzle.
+    painter.add(egui::Shape::convex_polygon(ellipse(p(0.43, 0.32), u * 0.14, u * 0.15, 0.0), Color32::from_rgb(0xd4, 0x96, 0x24), Stroke::NONE));
+    painter.circle_filled(p(0.4, 0.31), u * 0.09, gold);
+    painter.add(egui::Shape::convex_polygon(vec![p(0.27, 0.32), p(0.34, 0.27), p(0.36, 0.38), p(0.29, 0.37)], gold, Stroke::NONE));
+    painter.circle_filled(p(0.37, 0.29), u * 0.018, Color32::from_rgb(0x5a, 0x10, 0x14));
+    // An ear.
+    painter.add(egui::Shape::convex_polygon(vec![p(0.42, 0.22), p(0.46, 0.17), p(0.48, 0.24)], gold, Stroke::NONE));
 }
 
 /// Where the castle stands in the scene `rect` (to hover it).

@@ -1753,7 +1753,8 @@ impl App {
         self.logo_clicked(&logo);
         // Dev builds say so, next to the logo: they don't share the installed app's profiles.
         if !config::OFFICIAL {
-            let at = Pos2::new(logo_rect.center().x + 58.0, logo_rect.center().y - 12.0);
+            // Gryffindor's name sits further right, its crest before it.
+            let at = Pos2::new(logo_rect.center().x + if self.theme.wizard { 66.0 } else { 58.0 }, logo_rect.center().y - 12.0);
             let galley = ui.painter().layout_no_wrap("DEV".to_owned(), FontId::monospace(9.5), self.theme.bg);
             let badge = Rect::from_min_size(at, galley.size() + Vec2::new(8.0, 2.0));
             ui.painter().rect_filled(badge, 3.0, self.theme.ansi[3]);
