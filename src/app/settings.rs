@@ -2115,7 +2115,7 @@ impl App {
                     Some(Reward::Trail) => {
                         // The real trail, behind a pointer wandering in the card.
                         let tm = now as f32;
-                        let tip = rect.center() + Vec2::new((tm * 1.3).cos() * rect.width() * 0.36, (tm * 2.1).sin() * rect.height() * 0.3);
+                        let tip = rect.center() + Vec2::new((tm * 2.0).cos() * rect.width() * 0.38, (tm * 3.2).sin() * rect.height() * 0.32);
                         let dt = ui.input(|i| i.stable_dt).min(0.05);
                         self.trail_preview.step(Some(tip), dt);
                         self.trail_preview.paint(&painter, theme);

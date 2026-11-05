@@ -99,3 +99,18 @@ impl Trail {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pointer as slow as the preview's (1.5 points a frame at 60 fps) leaves sparks.
+    #[test]
+    fn a_slow_pointer_leaves_sparks() {
+        let mut trail = Trail::default();
+        for k in 0..60 {
+            trail.step(Some(Pos2::new(100.0 + k as f32 * 1.5, 50.0)), 1.0 / 60.0);
+        }
+        assert!(!trail.sparks.is_empty());
+    }
+}
