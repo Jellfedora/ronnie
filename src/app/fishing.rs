@@ -29,7 +29,7 @@ const BITE_TIME: f32 = 1.1;
 /// How long another one's catch shows over their head (ms).
 const SHOWN_MS: f64 = 6000.0;
 /// How far the aim turns either way from straight out (radians).
-const AIM_MAX: f32 = 1.15;
+const AIM_MAX: f32 = 1.45;
 /// How near the bubbles a float must land to be in them.
 const HOT_R: f32 = 48.0;
 /// A nibble: the float tapped this long (hooking then scares the candidate off).
@@ -240,10 +240,21 @@ fn cast_origin(spot: usize) -> Pos2 {
     Pos2::new(spot_x(spot) + 26.0, BANK - 6.0)
 }
 
-/// Where a cast of `power` aimed at `aim` lands (kept on the water).
+/// Where a cast of `power` aimed at `aim` lands (kept on the water): at full power, the water's
+/// far edge that way, wherever it is.
 fn landing(origin: Pos2, aim: f32, power: f32) -> Pos2 {
-    let d = 40.0 + power * 200.0;
-    Pos2::new((origin.x + aim.sin() * d).clamp(20.0, W - 20.0), (origin.y - aim.cos() * d).clamp(WATER_TOP + 16.0, BANK - 22.0))
+    let (dx, dy) = (aim.sin(), -aim.cos());
+    let mut reach = f32::MAX;
+    if dx > 0.001 {
+        reach = reach.min((W - 20.0 - origin.x) / dx);
+    } else if dx < -0.001 {
+        reach = reach.min((20.0 - origin.x) / dx);
+    }
+    if dy < -0.001 {
+        reach = reach.min((WATER_TOP + 16.0 - origin.y) / dy);
+    }
+    let d = 40.0 + power * (reach - 40.0).max(0.0);
+    Pos2::new((origin.x + dx * d).clamp(20.0, W - 20.0), (origin.y + dy * d).clamp(WATER_TOP + 16.0, BANK - 22.0))
 }
 
 /// The clock, in seconds (the same for everyone at the pond: the fairs, the bubbles).
@@ -740,6 +751,7 @@ impl App {
                 painter.circle_stroke(at(spot.x + dx, spot.y + dy * 0.5), (1.5 + phase * 2.5) * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(alpha)));
             }
             painter.add(egui::Shape::ellipse_stroke(at(spot.x, spot.y + 4.0), Vec2::new(HOT_R * 0.7, HOT_R * 0.22) * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.12 * strength))));
+            painter.text(at(spot.x, spot.y + 18.0), Align2::CENTER_TOP, t.fishing_shoal, FontId::proportional(10.5 * scale.max(0.75)), Color32::WHITE.gamma_multiply(0.45 * strength));
         }
         // A job fair: bunting over the far bank, and how long it lasts.
         if let Some(left) = crate::fishing::job_fair(unix as i64) {
