@@ -178,7 +178,7 @@ fn eater<'a>(t: &Strings, by: &'a str) -> &'a str {
 
 /// The game's little sounds, made on the spot: a gulp (the player ate someone), a rising chime (a bonus),
 /// sparkles (Ronnie), a growl (the Demogorgon caught the player).
-struct Sound {
+pub(super) struct Sound {
     _device: rodio::MixerDeviceSink,
     mixer: rodio::mixer::Mixer,
 }
@@ -192,7 +192,7 @@ enum Sfx {
 }
 
 impl Sound {
-    fn open() -> Option<Self> {
+    pub(super) fn open() -> Option<Self> {
         let mut device = rodio::DeviceSinkBuilder::open_default_sink().map_err(|e| crate::log::error(&format!("Ronnie.io sound: {e}"))).ok()?;
         device.log_on_drop(false);
         let mixer = device.mixer().clone();
@@ -200,7 +200,6 @@ impl Sound {
     }
 
     fn play(&self, sfx: Sfx) {
-        const RATE: u32 = 44_100;
         // Notes: start and end frequencies, length (seconds), loudness.
         let notes: &[(f32, f32, f32, f32)] = match sfx {
             Sfx::Gulp => &[(520.0, 160.0, 0.16, 0.5)],
@@ -208,6 +207,12 @@ impl Sound {
             Sfx::Growl => &[(140.0, 55.0, 0.45, 0.7), (90.0, 40.0, 0.3, 0.5)],
             Sfx::Sparkle => &[(1568.0, 1568.0, 0.06, 0.22), (2093.0, 2093.0, 0.06, 0.22), (2637.0, 2637.0, 0.06, 0.22), (3136.0, 3136.0, 0.18, 0.2)],
         };
+        self.tones(notes);
+    }
+
+    /// Notes one after the other: each one's start and end frequencies, length (seconds), loudness.
+    pub(super) fn tones(&self, notes: &[(f32, f32, f32, f32)]) {
+        const RATE: u32 = 44_100;
         let mut samples = Vec::new();
         let mut phase = 0.0_f32;
         for &(from, to, length, loud) in notes {

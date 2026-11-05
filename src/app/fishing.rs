@@ -9,7 +9,7 @@
 
 use super::four::HomeGame;
 use super::*;
-use crate::fishing::{Reel, Rarity, When, FISH};
+use crate::fishing::{Bait, Lure, Reel, Rarity, When, FISH};
 use crate::pond::Line;
 
 /// The world moves in steps this long, whatever the frame rate.
@@ -28,15 +28,40 @@ const SHINY_ONE_IN: u64 = 25;
 const BITE_TIME: f32 = 1.1;
 /// How long another one's catch shows over their head (ms).
 const SHOWN_MS: f64 = 6000.0;
+/// How far the aim turns either way from straight out (radians).
+const AIM_MAX: f32 = 1.15;
+/// How near the bubbles a float must land to be in them.
+const HOT_R: f32 = 48.0;
+/// A nibble: the float tapped this long (hooking then scares the candidate off).
+const NIBBLE: f32 = 0.32;
+/// The candidate leaping out of the water before its card shows.
+const LEAP: f64 = 0.75;
+/// A rival's counter-offer, in seconds.
+const OFFER: f32 = 3.5;
+
+/// Who is on the line: picked as the float lands (its shadow comes to it), with its size, whether
+/// shiny, and the seed of its fight.
+#[derive(Clone, Copy)]
+struct Hook {
+    fish: usize,
+    size: u32,
+    shiny: bool,
+    seed: u64,
+    /// Landed in the bubbles.
+    hot: bool,
+}
 
 enum Phase {
     Idle,
     /// The cast charging: its power goes up and down while held.
     Charging { power: f32, rising: bool },
-    Waiting { cast: f32, bite_in: f32 },
-    Bite { cast: f32, left: f32 },
-    Reeling { cast: f32, reel: Reel, size: u32, shiny: bool },
-    Caught { fish: usize, size: u32, shiny: bool, new: bool, record: bool, at: f64 },
+    /// The float in the water: the bite at `bite_in` seconds after the cast, nibbles before (their
+    /// times, negative: none), `elapsed` since the cast.
+    Waiting { cast: f32, hook: Hook, bite_in: f32, nibbles: [f32; 3], elapsed: f32, splashed: bool },
+    Bite { cast: f32, hook: Hook, left: f32 },
+    /// The fight; a rival's counter-offer at `offer_at` seconds into it (negative: none).
+    Reeling { cast: f32, reel: Reel, hook: Hook, t: f32, offer_at: f32 },
+    Caught { fish: usize, size: u32, shiny: bool, new: bool, record: bool, bait: Option<Bait>, at: f64 },
 }
 
 pub(super) struct Fishing {
@@ -50,6 +75,11 @@ pub(super) struct Fishing {
     held: bool,
     /// When the line was let go (the cast's swing and the float's flight drawn from it).
     cast_at: f64,
+    /// Where the player aims (radians from straight out, toward the right positive), and where the
+    /// float went (the scene's units).
+    aim: f32,
+    float: Pos2,
+    sound: Option<super::blob::Sound>,
     acc: f32,
     rng: u64,
     pub(super) pond: crate::pond::Pond,
@@ -58,7 +88,7 @@ pub(super) struct Fishing {
 
 impl Default for Fishing {
     fn default() -> Self {
-        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, cast_at: 0.0, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
+        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
     }
 }
 
@@ -99,6 +129,18 @@ pub(super) fn card_text(t: &Strings, fish: usize) -> CardText<'static> {
     let mut parts = line.split('|');
     let mut next = || parts.next().unwrap_or_default();
     CardText { name: next(), attack: next(), damage: next(), flavor: next() }
+}
+
+/// The chime of a hire: longer the rarer, sparkles when shiny.
+fn hired_sound(r: Rarity, shiny: bool) -> &'static [(f32, f32, f32, f32)] {
+    match (r, shiny) {
+        (_, true) => &[(784.0, 784.0, 0.08, 0.3), (988.0, 988.0, 0.08, 0.3), (1175.0, 1175.0, 0.08, 0.3), (1568.0, 1568.0, 0.06, 0.22), (2093.0, 2093.0, 0.06, 0.22), (2637.0, 2637.0, 0.2, 0.2)],
+        (Rarity::Common, _) => &[(660.0, 660.0, 0.08, 0.3), (880.0, 880.0, 0.14, 0.3)],
+        (Rarity::Uncommon, _) => &[(660.0, 660.0, 0.08, 0.3), (880.0, 880.0, 0.08, 0.3), (1100.0, 1100.0, 0.16, 0.3)],
+        (Rarity::Rare, _) => &[(523.0, 523.0, 0.08, 0.3), (659.0, 659.0, 0.08, 0.3), (784.0, 784.0, 0.08, 0.3), (1047.0, 1047.0, 0.22, 0.3)],
+        (Rarity::VeryRare, _) => &[(523.0, 523.0, 0.07, 0.3), (659.0, 659.0, 0.07, 0.3), (784.0, 784.0, 0.07, 0.3), (1047.0, 1047.0, 0.1, 0.3), (1319.0, 1319.0, 0.28, 0.3)],
+        (Rarity::Legendary, _) => &[(392.0, 392.0, 0.12, 0.35), (523.0, 523.0, 0.12, 0.35), (659.0, 659.0, 0.12, 0.35), (784.0, 784.0, 0.3, 0.35), (659.0, 659.0, 0.1, 0.3), (1047.0, 1047.0, 0.45, 0.35)],
+    }
 }
 
 fn rarity_color(r: Rarity) -> Color32 {
@@ -193,6 +235,36 @@ fn rod_angle(from: f32, t: f32) -> (f32, f32) {
     }
 }
 
+/// Where the player's line leaves from on the water's edge.
+fn cast_origin(spot: usize) -> Pos2 {
+    Pos2::new(spot_x(spot) + 26.0, BANK - 6.0)
+}
+
+/// Where a cast of `power` aimed at `aim` lands (kept on the water).
+fn landing(origin: Pos2, aim: f32, power: f32) -> Pos2 {
+    let d = 40.0 + power * 200.0;
+    Pos2::new((origin.x + aim.sin() * d).clamp(20.0, W - 20.0), (origin.y - aim.cos() * d).clamp(WATER_TOP + 16.0, BANK - 22.0))
+}
+
+/// The clock, in seconds (the same for everyone at the pond: the fairs, the bubbles).
+fn unix_now() -> f64 {
+    chrono::Utc::now().timestamp_millis() as f64 / 1000.0
+}
+
+/// The bubbles on the water now: where, and how strong.
+fn hotspots(unix: f64) -> [(Pos2, f32); 2] {
+    crate::fishing::hotspots(unix).map(|(u, v, k)| (Pos2::new(u * W, WATER_TOP + 20.0 + v * (BANK - WATER_TOP - 50.0)), k))
+}
+
+fn in_bubbles(unix: f64, p: Pos2) -> bool {
+    hotspots(unix).iter().any(|(at, k)| *k > 0.3 && at.distance(p) < HOT_R)
+}
+
+/// A rect from two corners in the scene's units.
+fn r_of(at: &impl Fn(f32, f32) -> Pos2, x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+    Rect::from_min_max(at(x0, y0), at(x1, y1))
+}
+
 /// Where a line's float is, cast so far.
 fn float_at(spot: usize, cast: f32) -> Pos2 {
     Pos2::new(spot_x(spot) + 26.0 + cast * 18.0, BANK - 28.0 - cast * (BANK - WATER_TOP - 60.0))
@@ -279,7 +351,24 @@ impl App {
 
         let left = self.fish_left();
         let dt = ui.input(|i| i.stable_dt).min(0.1);
+
+        // The aim: the pointer over the scene, or ← →, until the line goes.
+        let me = self.fishing.pond.view.as_ref().and_then(|v| v.you).unwrap_or(2).min(SPOTS - 1);
+        let origin = cast_origin(me);
+        if matches!(self.fishing.phase, Phase::Idle | Phase::Charging { .. }) {
+            if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| field.contains(*p)) {
+                let p = ((p - field.min) / scale).to_pos2();
+                if p.y < origin.y - 4.0 {
+                    self.fishing.aim = (p.x - origin.x).atan2(origin.y - p.y).clamp(-AIM_MAX, AIM_MAX);
+                }
+            }
+            let turn = ui.input(|i| free as i32 * (i.key_down(Key::ArrowRight) as i32 - i.key_down(Key::ArrowLeft) as i32));
+            self.fishing.aim = (self.fishing.aim + turn as f32 * dt * 1.1).clamp(-AIM_MAX, AIM_MAX);
+        }
+
         let mut caught = None;
+        let mut thrown = None;
+        let mut sfx: Option<&'static [(f32, f32, f32, f32)]> = None;
         match &mut self.fishing.phase {
             Phase::Idle => {
                 if pressed {
@@ -301,47 +390,64 @@ impl App {
                     *rising = true;
                 }
                 if released {
-                    let cast = power.max(0.05);
-                    let wait = 2.5 + (super::game::random(&mut self.fishing.rng) % 7000) as f32 / 1000.0;
-                    self.fishing.phase = Phase::Waiting { cast, bite_in: wait };
-                    self.fishing.cast_at = now;
+                    thrown = Some(power.max(0.05));
                 }
             }
-            Phase::Waiting { cast, bite_in } => {
-                *bite_in -= dt;
+            Phase::Waiting { cast, hook, bite_in, nibbles, elapsed, splashed } => {
+                *elapsed += dt;
+                if !*splashed && *elapsed >= LET_GO + FLIGHT_BASE + FLIGHT_PER_CAST * *cast {
+                    *splashed = true;
+                    sfx = Some(&[(420.0, 110.0, 0.14, 0.35)]);
+                }
+                let nibbling = nibbles.iter().any(|&n| n >= 0.0 && *elapsed >= n && *elapsed < n + NIBBLE);
+                if nibbles.iter().any(|&n| n >= 0.0 && *elapsed >= n && *elapsed - dt < n) {
+                    sfx = Some(&[(1250.0, 1100.0, 0.035, 0.12)]);
+                }
                 if pressed {
-                    // Reeled in empty.
+                    // Reeled in empty; on a nibble, it took fright.
+                    if nibbling {
+                        self.fishing.message = Some((t.fishing_spooked.to_owned(), now + 3.0));
+                        sfx = Some(&[(380.0, 200.0, 0.2, 0.3)]);
+                    }
                     self.fishing.phase = Phase::Idle;
-                } else if *bite_in <= 0.0 {
-                    self.fishing.phase = Phase::Bite { cast: *cast, left: BITE_TIME };
+                } else if *elapsed >= *bite_in {
+                    self.fishing.phase = Phase::Bite { cast: *cast, hook: *hook, left: BITE_TIME };
+                    sfx = Some(&[(900.0, 1300.0, 0.06, 0.3), (900.0, 1300.0, 0.06, 0.3)]);
                 }
             }
-            Phase::Bite { cast, left } => {
+            Phase::Bite { cast, hook, left } => {
                 *left -= dt;
                 if pressed {
-                    let cast = *cast;
-                    let (fish, size) = crate::fishing::pick(&mut self.fishing.rng, hour(), cast);
-                    let seed = super::game::random(&mut self.fishing.rng);
-                    let shiny = super::game::random(&mut self.fishing.rng).is_multiple_of(SHINY_ONE_IN);
-                    self.fishing.phase = Phase::Reeling { cast, reel: Reel::new(fish, seed), size, shiny };
+                    let (cast, hook) = (*cast, *hook);
+                    let r = super::game::random(&mut self.fishing.rng);
+                    let rare = FISH[hook.fish].rarity.index() >= Rarity::Rare.index();
+                    let offer_at = if r % 100 < if rare { 35 } else { 12 } { 2.0 + (r >> 8) as f32 % 4000.0 / 1000.0 } else { -1.0 };
+                    self.fishing.phase = Phase::Reeling { cast, reel: Reel::new(hook.fish, hook.seed, cast), hook, t: 0.0, offer_at };
                     self.fishing.acc = 0.0;
                 } else if *left <= 0.0 {
                     self.fishing.phase = Phase::Idle;
                     self.fishing.message = Some((t.fishing_late.to_owned(), now + 3.0));
                 }
             }
-            Phase::Reeling { reel, size, shiny, .. } => {
+            Phase::Reeling { reel, hook, t: fight, offer_at, .. } => {
+                *fight += dt;
+                if *offer_at >= 0.0 && *fight >= *offer_at {
+                    *offer_at = -1.0;
+                    reel.offer = OFFER;
+                    sfx = Some(&[(220.0, 220.0, 0.14, 0.4), (175.0, 175.0, 0.22, 0.4)]);
+                }
                 self.fishing.acc += dt;
                 while self.fishing.acc >= STEP {
                     self.fishing.acc -= STEP;
                     match reel.step(STEP, held) {
                         Some(true) => {
-                            caught = Some((reel.fish, *size, *shiny));
+                            caught = Some((reel.fish, hook.size, hook.shiny));
                             break;
                         }
                         Some(false) => {
                             self.fishing.phase = Phase::Idle;
                             self.fishing.message = Some((t.fishing_lost.to_owned(), now + 3.0));
+                            sfx = Some(&[(300.0, 140.0, 0.3, 0.35)]);
                             break;
                         }
                         None => {}
@@ -350,13 +456,21 @@ impl App {
             }
             Phase::Caught { at, .. } => {
                 // Stays until put away (a press, once the hand let go of the reel): time to read it.
-                if pressed && now - *at > 1.2 {
+                if pressed && now - *at > LEAP + 0.6 {
                     self.fishing.phase = Phase::Idle;
                 }
             }
         }
+        if let Some(cast) = thrown {
+            self.fishing_cast(origin, cast, now);
+            sfx = Some(&[(260.0, 820.0, 0.13, 0.12)]);
+        }
         if let Some((fish, size, shiny)) = caught {
             self.fishing_hired(fish, size, shiny, now);
+            sfx = Some(hired_sound(FISH[fish].rarity, shiny));
+        }
+        if let Some(notes) = sfx {
+            self.fishing_sound(notes);
         }
 
         self.paint_pond(ui, field, scale, now);
@@ -369,13 +483,108 @@ impl App {
                 _ => t.fishing_cast.to_owned(),
             },
             Phase::Charging { .. } => t.fishing_cast.to_owned(),
+            Phase::Waiting { hook, .. } if hook.hot => t.fishing_wait_hot.to_owned(),
             Phase::Waiting { .. } => t.fishing_wait.to_owned(),
             Phase::Bite { .. } => t.fishing_bite.to_owned(),
+            Phase::Reeling { reel, .. } if reel.offer > 0.0 => t.fishing_offer.to_owned(),
             Phase::Reeling { .. } => t.fishing_help.to_owned(),
             Phase::Caught { .. } => t.fishing_put_away.to_owned(),
         };
-        let color = if matches!(self.fishing.phase, Phase::Bite { .. }) { theme.accent } else { theme.text_muted };
+        let alarm = matches!(&self.fishing.phase, Phase::Bite { .. }) || matches!(&self.fishing.phase, Phase::Reeling { reel, .. } if reel.offer > 0.0);
+        let color = if alarm { theme.accent } else { theme.text_muted };
         ui.painter().text(Pos2::new(field.center().x, field.max.y + 18.0), Align2::CENTER_CENTER, hint, FontId::proportional(13.0), color);
+
+        // The baits won: one put on the hook (out of a cast), used one a cast.
+        let idle = matches!(self.fishing.phase, Phase::Idle);
+        let mut y = field.min.y + 62.0 * scale;
+        let mut picked = None;
+        for bait in Bait::ALL {
+            let n = self.config.settings.fish_baits.get(bait.id()).copied().unwrap_or(0);
+            if n == 0 {
+                continue;
+            }
+            let on = self.config.settings.fish_bait.as_deref() == Some(bait.id());
+            let name = t.fishing_baits.split('|').nth(bait.index()).unwrap_or_default();
+            let effect = t.fishing_bait_effects.split('|').nth(bait.index()).unwrap_or_default();
+            let text = egui::RichText::new(format!("{}  {name}  ×{n}", ["🎫", "🏠", "💶"][bait.index()])).size(12.0).color(if on { theme.bg } else { theme.text });
+            let b = egui::Button::new(text).fill(if on { theme.accent } else { theme.chrome_bg.gamma_multiply(0.9) }).corner_radius(12.0);
+            let r = Rect::from_min_size(Pos2::new(field.min.x + 12.0 * scale, y), Vec2::new(176.0, 24.0));
+            if ui.put(r, b).on_hover_text(effect).clicked() && idle {
+                picked = Some(if on { None } else { Some(bait.id().to_owned()) });
+            }
+            y += 28.0;
+        }
+        if let Some(bait) = picked {
+            self.config.settings.fish_bait = bait;
+            self.save_config();
+        }
+    }
+
+    /// The line let go with `power`: where it lands, who will bite there (with the bait used, in the
+    /// bubbles or not), when, and the nibbles before.
+    fn fishing_cast(&mut self, origin: Pos2, power: f32, now: f64) {
+        let float = landing(origin, self.fishing.aim, power);
+        self.fishing.float = float;
+        let unix = unix_now();
+        let hot = in_bubbles(unix, float);
+        let bait = self.fishing_take_bait();
+        let rng = &mut self.fishing.rng;
+        let (fish, size) = crate::fishing::pick(rng, hour(), power, Lure { bait, hot });
+        let seed = super::game::random(rng);
+        let shiny = super::game::random(rng).is_multiple_of(SHINY_ONE_IN);
+        // Patience: 7 to 18 s, sooner with tickets resto, in the bubbles, at a job fair.
+        let mut wait = 7.0 + (super::game::random(rng) % 11_000) as f32 / 1000.0;
+        if bait == Some(Bait::Tickets) {
+            wait *= 0.65;
+        }
+        if hot {
+            wait *= 0.6;
+        }
+        if crate::fishing::job_fair(unix as i64).is_some() {
+            wait *= 0.6;
+        }
+        let landed = LET_GO + FLIGHT_BASE + FLIGHT_PER_CAST * power;
+        let bite_in = landed + wait.max(3.5);
+        // Up to three nibbles before, none in the last second.
+        let mut nibbles = [-1.0f32; 3];
+        let room = bite_in - landed - 2.2;
+        let count = if room > 0.5 { super::game::random(rng) % 4 } else { 0 } as usize;
+        for n in nibbles.iter_mut().take(count) {
+            *n = landed + 1.0 + (super::game::random(rng) % 1000) as f32 / 1000.0 * room;
+        }
+        self.fishing.phase = Phase::Waiting { cast: power, hook: Hook { fish, size, shiny, seed, hot }, bite_in, nibbles, elapsed: 0.0, splashed: false };
+        self.fishing.cast_at = now;
+        self.fishing.message = None;
+    }
+
+    /// The bait on the hook, one used (none left: taken off).
+    fn fishing_take_bait(&mut self) -> Option<Bait> {
+        let s = &mut self.config.settings;
+        let id = s.fish_bait.clone()?;
+        let bait = Bait::by_id(&id);
+        let left = s.fish_baits.get_mut(&id).map(|n| {
+            *n = n.saturating_sub(1);
+            *n
+        });
+        if left.unwrap_or(0) == 0 {
+            s.fish_baits.remove(&id);
+            s.fish_bait = None;
+        }
+        self.save_config();
+        bait.filter(|_| left.is_some())
+    }
+
+    /// A little sound, unless the games are muted.
+    fn fishing_sound(&mut self, notes: &[(f32, f32, f32, f32)]) {
+        if self.config.settings.game_sound == Some(false) {
+            return;
+        }
+        if self.fishing.sound.is_none() {
+            self.fishing.sound = super::blob::Sound::open();
+        }
+        if let Some(sound) = &self.fishing.sound {
+            sound.tones(notes);
+        }
     }
 
     /// A candidate hired: its card in the binder, counted for the half-day, told to the pond and to
@@ -396,7 +605,13 @@ impl App {
         if new {
             card.first_at = chrono::Utc::now().timestamp();
         }
-        self.fishing.phase = Phase::Caught { fish, size, shiny, new, record, at: now };
+        // A bait won: with each new card, else one hire in three.
+        let r = super::game::random(&mut self.fishing.rng);
+        let bait = (new || r.is_multiple_of(3)).then(|| Bait::ALL[(r >> 8) as usize % Bait::ALL.len()]);
+        if let Some(b) = bait {
+            *self.config.settings.fish_baits.entry(b.id().to_owned()).or_default() += 1;
+        }
+        self.fishing.phase = Phase::Caught { fish, size, shiny, new, record, bait, at: now };
         self.count_fish();
         self.save_config();
         self.fishing.pond.caught(id, size, shiny);
@@ -510,6 +725,39 @@ impl App {
                 painter.circle_filled(at(x - 4.0, y - 3.0), 4.0 * scale, hex(0xf2a5c0));
             }
         }
+        // The bubbles where a shoal of candidates is (the same for everyone at the pond).
+        let unix = unix_now();
+        for (k, (spot, strength)) in hotspots(unix).into_iter().enumerate() {
+            if strength <= 0.0 {
+                continue;
+            }
+            for b in 0..9 {
+                let phase = ((tm * 0.7 + b as f32 * 0.37 + k as f32 * 0.5) % 1.0 + 1.0) % 1.0;
+                let h = (b as u32 + 1).wrapping_mul(2_654_435_761);
+                let dx = ((h % 100) as f32 - 50.0) * 0.6 + (tm * 2.0 + b as f32).sin() * 3.0;
+                let dy = ((h >> 8) % 40) as f32 - 20.0 - phase * 10.0;
+                let alpha = strength * (1.0 - phase) * 0.8;
+                painter.circle_stroke(at(spot.x + dx, spot.y + dy * 0.5), (1.5 + phase * 2.5) * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(alpha)));
+            }
+            painter.add(egui::Shape::ellipse_stroke(at(spot.x, spot.y + 4.0), Vec2::new(HOT_R * 0.7, HOT_R * 0.22) * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.12 * strength))));
+        }
+        // A job fair: bunting over the far bank, and how long it lasts.
+        if let Some(left) = crate::fishing::job_fair(unix as i64) {
+            let colors = [0xe0453a, 0xf2b832, 0x4f8fe8, 0x5fd06a, 0xa86be8];
+            let rope: Vec<Pos2> = (0..=24).map(|k| at(k as f32 * W / 24.0, WATER_TOP - 52.0 + ((k as f32 / 4.0 * std::f32::consts::PI).sin()).abs() * 10.0)).collect();
+            painter.add(egui::Shape::line(rope.clone(), Stroke::new(1.0 * scale, Color32::WHITE.gamma_multiply(0.7))));
+            for (k, w) in rope.windows(2).enumerate() {
+                let sway = (tm * 2.0 + k as f32).sin() * 1.5 * scale;
+                let mid = Pos2::new((w[0].x + w[1].x) / 2.0 + sway, (w[0].y + w[1].y) / 2.0 + 12.0 * scale);
+                painter.add(egui::Shape::convex_polygon(vec![w[0], w[1], mid], hex(colors[k % colors.len()]), Stroke::NONE));
+            }
+            let text = t.fishing_fair.replace("{n}", &((left + 59) / 60).to_string());
+            let galley = painter.layout_no_wrap(text, FontId::proportional(13.0 * scale.max(0.75)), Color32::WHITE);
+            let banner = Rect::from_center_size(at(W / 2.0, 40.0), galley.size() + Vec2::new(22.0, 10.0));
+            painter.rect_filled(banner, 12.0, hex(0xe0453a).gamma_multiply(0.9));
+            painter.galley(banner.center() - galley.size() / 2.0, galley, Color32::WHITE);
+        }
+
         // The near bank.
         gradient(&painter, r(0.0, BANK, W, H), hex(0x5f9a4a), hex(0x3d6b32));
         painter.line_segment([at(0.0, BANK), at(W, BANK)], Stroke::new(3.0 * scale, hex(0x7a6a48)));
@@ -537,7 +785,7 @@ impl App {
         for f in &rows {
             let shirt = theme.ansi[1 + (f.name.bytes().map(u32::from).sum::<u32>() as usize % 6)];
             let (cast, bend) = (f.cast, f.state == Line::Reel);
-            self.paint_fisher(&painter, at, scale, f.spot, &f.name, shirt, false, f.state, cast, bend, Swing::Still, now);
+            self.paint_fisher(&painter, at, scale, f.spot, &f.name, shirt, false, f.state, bend, Swing::Still, float_at(f.spot, cast), now);
             // Their catch, a moment over their head.
             if let Some(c) = f.catch.as_ref().filter(|c| c.ago + (now - self.fishing.pond.at) * 1000.0 < SHOWN_MS)
                 && let Some(k) = crate::fishing::by_id(&c.fish)
@@ -555,16 +803,21 @@ impl App {
             }
         }
         let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(t.game_you);
-        let (line, cast) = match &self.fishing.phase {
-            Phase::Charging { .. } => (Line::Idle, 0.0),
-            _ => self.fishing.line(),
-        };
+        let line = self.fishing.line().0;
         let swing = match &self.fishing.phase {
             Phase::Charging { power, .. } => Swing::Back(*power),
             Phase::Waiting { cast, .. } if now - self.fishing.cast_at < 3.0 => Swing::Thrown { from: *cast, t: (now - self.fishing.cast_at) as f32 },
             _ => Swing::Still,
         };
-        self.paint_fisher(&painter, at, scale, me, name, theme.accent, true, line, cast, matches!(self.fishing.phase, Phase::Reeling { .. }), swing, now);
+        // Under the float: the candidate coming (its shadow), nibbling, biting; splashing in the fight.
+        self.paint_under_float(&painter, at, scale, now);
+        // A nibble taps the float under for a moment.
+        let dip = match &self.fishing.phase {
+            Phase::Waiting { nibbles, elapsed, .. } => nibbles.iter().filter(|&&n| n >= 0.0 && *elapsed >= n && *elapsed < n + NIBBLE).map(|&n| ((elapsed - n) / NIBBLE * std::f32::consts::PI).sin() * 5.0).sum(),
+            _ => 0.0,
+        };
+        self.paint_fisher(&painter, at, scale, me, name, theme.accent, true, line, matches!(self.fishing.phase, Phase::Reeling { .. }), swing, self.fishing.float + Vec2::new(0.0, dip), now);
+        self.paint_aim(&painter, at, scale, me, now);
 
         // The cast charging: a gauge beside the player.
         if let Phase::Charging { power, .. } = &self.fishing.phase {
@@ -603,9 +856,20 @@ impl App {
         if let Phase::Reeling { reel, .. } = &self.fishing.phase {
             let side = if me < SPOTS / 2 { 1.0 } else { -1.0 };
             let x = spot_x(me) + side * 150.0;
-            let track = r(x - 22.0, 70.0, x + 22.0, 430.0);
+            let track = r(x - 22.0, 104.0, x + 22.0, 420.0);
             let panel = track.expand(10.0 * scale);
-            painter.rect(Rect::from_min_max(panel.min, Pos2::new(panel.max.x + 26.0 * scale, panel.max.y)), 10.0, theme.chrome_bg.gamma_multiply(0.95), Stroke::new(1.5, hex(0x7a6a48)), egui::StrokeKind::Inside);
+            let rarity = FISH[reel.fish].rarity;
+            let rival = reel.offer > 0.0;
+            let edge = if rival && (tm * 6.0).sin() > 0.0 { hex(0xe0453a) } else { rarity_color(rarity) };
+            painter.rect(Rect::from_min_max(panel.min, Pos2::new(panel.max.x + 26.0 * scale, panel.max.y)), 10.0, theme.chrome_bg.gamma_multiply(0.95), Stroke::new(2.0, edge), egui::StrokeKind::Inside);
+            // Who it is, how rare, how it moves.
+            let top = Pos2::new(panel.center().x + 13.0 * scale, panel.min.y - 8.0 * scale);
+            let kind = format!("{} · {}", t.fishing_rarities.split('|').nth(rarity.index()).unwrap_or_default(), t.fishing_moods.split('|').nth(FISH[reel.fish].behavior as usize).unwrap_or_default());
+            painter.text(top - Vec2::new(0.0, 16.0 * scale.max(0.75)), Align2::CENTER_BOTTOM, card_text(t, reel.fish).name, FontId::proportional(15.0 * scale.max(0.75)), Color32::WHITE);
+            painter.text(top, Align2::CENTER_BOTTOM, kind, FontId::proportional(11.5 * scale.max(0.75)), rarity_color(rarity));
+            if rival {
+                painter.text(Pos2::new(panel.center().x + 13.0 * scale, panel.max.y + 6.0 * scale), Align2::CENTER_TOP, t.fishing_offer_tag, FontId::proportional(13.0 * scale.max(0.75)), hex(0xff6a5a));
+            }
             painter.rect_filled(track, 4.0, lerp(water, Color32::BLACK, 0.35));
             let y_of = |v: f32| track.max.y - v * track.height();
             let bar = Rect::from_min_max(Pos2::new(track.min.x + 2.0, y_of(reel.bar_y + reel.bar_h)), Pos2::new(track.max.x - 2.0, y_of(reel.bar_y)));
@@ -620,13 +884,54 @@ impl App {
         }
 
         // Hired: its card, big, in the middle.
-        if let Phase::Caught { fish, size, shiny, new, record, at: when } = &self.fishing.phase {
-            let k = ((now - when) / 0.35).min(1.0) as f32;
-            painter.rect_filled(field, 0.0, Color32::from_black_alpha((110.0 * k) as u8));
+        if let Phase::Caught { fish, size, shiny, new, record, bait, at: when } = &self.fishing.phase {
+            let age = now - when;
             let h = (H - 90.0) * scale;
-            let card = Rect::from_center_size(field.center() + Vec2::new(0.0, 14.0 * scale + (1.0 - k) * 40.0), Vec2::new(h * 0.714, h));
+            let centre = field.center() + Vec2::new(0.0, 14.0 * scale);
+            if age < LEAP {
+                // Out of the water in an arc, growing, toward where its card shows.
+                let u = (age / LEAP) as f32;
+                let from = at(self.fishing.float.x, self.fishing.float.y);
+                let p = from + (centre - from) * u - Vec2::new(0.0, 160.0 * scale * 4.0 * u * (1.0 - u));
+                if u < 0.6 {
+                    for k in 0..8 {
+                        let a = k as f32 / 8.0 * std::f32::consts::PI;
+                        let d = u * 70.0 * scale;
+                        painter.circle_filled(from + Vec2::new(-a.cos() * d, -a.sin() * d * 1.2 + u * u * 120.0 * scale), 2.0 * scale, Color32::WHITE.gamma_multiply(1.0 - u / 0.6));
+                    }
+                    painter.add(egui::Shape::ellipse_stroke(from, Vec2::new(8.0 + u * 60.0, 3.0 + u * 20.0) * scale, Stroke::new(1.5, Color32::WHITE.gamma_multiply(1.0 - u / 0.6))));
+                }
+                paint_candidate(&painter, p, (40.0 + 80.0 * u) * scale, *fish, None, now);
+                return;
+            }
+            let age = age - LEAP;
+            let k = (age / 0.3).min(1.0) as f32;
+            painter.rect_filled(field, 0.0, Color32::from_black_alpha((110.0 * k) as u8));
+            let card = Rect::from_center_size(centre, Vec2::new(h * 0.714, h));
+            let rarity = FISH[*fish].rarity;
+            // The rarer ones show their back first, then turn over; the others pop up.
+            let turn = if rarity.index() >= Rarity::Rare.index() { 0.32 } else { 0.0 };
+            if age < turn {
+                let squeeze = (1.0 - age / turn) as f32;
+                let back = Rect::from_center_size(centre, Vec2::new(card.width() * squeeze, card.height()));
+                painter.rect_filled(back, 10.0, rarity_color(rarity));
+                painter.rect_filled(back.shrink(6.0 * scale), 6.0, lerp(rarity_color(rarity), Color32::BLACK, 0.45));
+                if squeeze > 0.3 {
+                    painter.text(back.center(), Align2::CENTER_CENTER, "?", FontId::proportional(90.0 * scale * squeeze), rarity_color(rarity));
+                }
+                return;
+            }
+            let pop = ((age - turn) / 0.18).min(1.0) as f32;
+            let card = Rect::from_center_size(centre, card.size() * (0.86 + 0.14 * ease_out(pop)));
             let entry = self.config.settings.fish_cards.get(FISH[*fish].id);
             paint_card(&painter, card, *fish, entry, *shiny, t, theme, now);
+            if pop < 1.0 {
+                painter.rect_filled(card, 10.0, Color32::WHITE.gamma_multiply(0.7 * (1.0 - pop)));
+            }
+            if let Some(b) = bait {
+                let name = t.fishing_baits.split('|').nth(b.index()).unwrap_or_default();
+                painter.text(Pos2::new(card.center().x, card.max.y + 30.0 * scale), Align2::CENTER_TOP, t.fishing_bait_won.replace("{bait}", name), FontId::proportional(13.0 * scale.max(0.7)), hex(0xffd23a));
+            }
             let mut title = t.fishing_caught.to_owned();
             for (on, word) in [(*new, t.fishing_new_card), (*record, t.fishing_record), (*shiny, t.fishing_shiny)] {
                 if on {
@@ -649,10 +954,95 @@ impl App {
         Some((crate::playtime::FISH_CATCHES.saturating_sub(used), ()))
     }
 
+    /// Under the player's float: the candidate who will bite, a shadow coming in the last seconds,
+    /// tapping it on a nibble, pulling it under at the bite; splashing in the fight.
+    fn paint_under_float(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, now: f64) {
+        let float = self.fishing.float;
+        let tm = now as f32;
+        let shadow = |p: Pos2, fish: usize, alpha: f32| {
+            let len = 22.0 + FISH[fish].rarity.index() as f32 * 9.0;
+            paint_candidate(painter, at(p.x, p.y + 6.0), len * scale, fish, Some(Color32::from_black_alpha((alpha * 255.0) as u8)), now);
+        };
+        match &self.fishing.phase {
+            Phase::Waiting { hook, bite_in, nibbles, elapsed, .. } => {
+                let nibbling = nibbles.iter().any(|&n| n >= 0.0 && *elapsed >= n && *elapsed < n + NIBBLE);
+                let coming = elapsed - (bite_in - 4.5);
+                // From the left (it faces right), a little below, nearer and darker.
+                let side = if hook.seed % 2 == 0 { 0.25 } else { -0.25 };
+                let k = (coming / 4.5).clamp(0.0, 1.0);
+                let near = nibbles.iter().any(|&n| n >= 0.0 && *elapsed >= n - 0.6 && *elapsed < n + NIBBLE + 0.4);
+                if nibbling || near {
+                    let d = if nibbling { 8.0 } else { 18.0 };
+                    shadow(float + Vec2::new(-d - 10.0, 2.0 + (tm * 9.0).sin()), hook.fish, 0.28);
+                } else if coming > 0.0 {
+                    let d = (1.0 - k) * 110.0 + 14.0;
+                    shadow(float + Vec2::new(-d - 10.0, d * side + (tm * 3.0).sin() * 2.0), hook.fish, 0.12 + 0.22 * k);
+                }
+                if nibbling {
+                    painter.circle_stroke(at(float.x, float.y + 2.0), 9.0 * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.6)));
+                }
+            }
+            Phase::Bite { hook, .. } => shadow(float + Vec2::new(-14.0, 3.0), hook.fish, 0.4),
+            Phase::Reeling { .. } => {
+                // Thrashing: rings and drops.
+                let beat = (tm * 2.5) % 1.0;
+                painter.add(egui::Shape::ellipse_stroke(at(float.x, float.y + 3.0), Vec2::new(8.0 + beat * 26.0, 3.0 + beat * 9.0) * scale, Stroke::new(1.3, Color32::WHITE.gamma_multiply(0.8 * (1.0 - beat)))));
+                for k in 0..4 {
+                    let a = k as f32 * 1.7 + tm * 7.0;
+                    let up = ((tm * 4.0 + k as f32 * 0.25) % 1.0) * 1.0;
+                    painter.circle_filled(at(float.x + a.cos() * 10.0, float.y - up * 16.0 + up * up * 16.0), 1.5 * scale, Color32::WHITE.gamma_multiply(0.8 * (1.0 - up)));
+                }
+            }
+            _ => {}
+        }
+        // A rival firm's boat, coming for the candidate during its counter-offer.
+        if let Phase::Reeling { reel, .. } = &self.fishing.phase
+            && reel.offer > 0.0
+        {
+            let k = 1.0 - reel.offer / OFFER;
+            let dir = if float.x > W / 2.0 { -1.0 } else { 1.0 };
+            let x = float.x - dir * (260.0 * (1.0 - k.min(0.6) / 0.6) + 60.0);
+            let y = float.y - 8.0 + (tm * 3.0).sin() * 1.5;
+            painter.add(egui::Shape::convex_polygon(vec![at(x - 26.0, y), at(x + 26.0, y), at(x + 18.0, y + 10.0), at(x - 18.0, y + 10.0)], hex(0x8a2a2a), Stroke::NONE));
+            painter.rect_filled(r_of(&at, x - 4.0, y - 22.0, x + 4.0, y), 2.0, hex(0x2a2a35));
+            painter.circle_filled(at(x, y - 26.0), 5.0 * scale, hex(0xf0c8a0));
+            painter.text(at(x + dir * 14.0, y - 30.0), Align2::CENTER_CENTER, "€€", FontId::proportional(14.0 * scale.max(0.7)), hex(0xffd23a));
+            painter.add(egui::Shape::line(vec![at(x - dir * 30.0, y + 6.0), at(x - dir * 60.0, y + 4.0)], Stroke::new(1.2 * scale, Color32::WHITE.gamma_multiply(0.5))));
+        }
+    }
+
+    /// The aim: out of a cast a few dots where the line would go; charging, the arc to where the
+    /// float would land, ringed green over the bubbles.
+    fn paint_aim(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, me: usize, now: f64) {
+        let origin = cast_origin(me);
+        let aim = self.fishing.aim;
+        match &self.fishing.phase {
+            Phase::Idle if self.fishing.message.is_none() || now > self.fishing.message.as_ref().map_or(0.0, |m| m.1) => {
+                for k in 1..=5 {
+                    let d = 18.0 + k as f32 * 16.0;
+                    painter.circle_filled(at(origin.x + aim.sin() * d, origin.y - aim.cos() * d), 2.0 * scale, Color32::WHITE.gamma_multiply(0.55 - k as f32 * 0.08));
+                }
+            }
+            Phase::Charging { power, .. } => {
+                let end = landing(origin, aim, *power);
+                let high = 40.0 + 90.0 * power;
+                for k in 1..14 {
+                    let u = k as f32 / 14.0;
+                    let p = origin + (end - origin) * u - Vec2::new(0.0, 4.0 * high * u * (1.0 - u));
+                    painter.circle_filled(at(p.x, p.y), 1.8 * scale, Color32::WHITE.gamma_multiply(0.65));
+                }
+                let hot = in_bubbles(unix_now(), end);
+                let color = if hot { hex(0x5fd06a) } else { Color32::WHITE };
+                painter.add(egui::Shape::ellipse_stroke(at(end.x, end.y), Vec2::new(12.0, 4.5) * scale, Stroke::new(1.6, color.gamma_multiply(0.85))));
+            }
+            _ => {}
+        }
+    }
+
     /// A fisher on the bank at `spot`: a figure with a cap in `shirt`, its rod, its line and float
     /// where `line` is; their name under them.
     #[allow(clippy::too_many_arguments)]
-    fn paint_fisher(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, spot: usize, name: &str, shirt: Color32, me: bool, line: Line, cast: f32, bend: bool, swing: Swing, now: f64) {
+    fn paint_fisher(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, spot: usize, name: &str, shirt: Color32, me: bool, line: Line, bend: bool, swing: Swing, float_pos: Pos2, now: f64) {
         let x = spot_x(spot);
         let tm = now as f32;
         let skin = hex(0xf0c8a0);
@@ -714,7 +1104,7 @@ impl App {
                 } else {
                     let (angle, _) = rod_angle(from, LET_GO);
                     let start = Pos2::new(x + 14.0 + ROD * angle.sin(), FEET - 44.0 - ROD * angle.cos() + 10.0);
-                    let end = float_at(spot, from);
+                    let end = float_pos;
                     let u = ((t - LET_GO) / flight).clamp(0.0, 1.0);
                     let high = 40.0 + 90.0 * from;
                     at(start.x + (end.x - start.x) * u, start.y + (end.y - start.y) * u - 4.0 * high * u * (1.0 - u))
@@ -726,7 +1116,7 @@ impl App {
                 return self.paint_fisher_name(painter, at, scale, x, name, me);
             }
             // The splash: rings spreading, drops thrown up and falling back.
-            let float = float_at(spot, from);
+            let float = float_pos;
             if landed < 0.9 {
                 for (k, delay) in [0.0f32, 0.18].into_iter().enumerate() {
                     let a = landed - delay;
@@ -747,7 +1137,7 @@ impl App {
             }
         }
         if in_water {
-            let mut float = float_at(spot, cast);
+            let mut float = float_pos;
             // Just landed: it sinks and bobs back up, less and less.
             if let Swing::Thrown { from, t } = swing {
                 let landed = t - LET_GO - FLIGHT_BASE - FLIGHT_PER_CAST * from;
@@ -1009,6 +1399,11 @@ enum Wear {
     Beard,
     TopHat,
     Wool,
+    /// Hair in a bun.
+    Bun,
+    Pearls,
+    Mug,
+    Phone,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1031,7 +1426,7 @@ struct Look {
     wear: &'static [Wear],
 }
 
-const LOOKS: [Look; 16] = [
+const LOOKS: [Look; 36] = [
     Look { body: 0xb8c4cc, belly: 0xeef2f4, fins: 0xd8504a, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Badge] },
     Look { body: 0xd2dce6, belly: 0xf4f8fa, fins: 0xa8b8c8, aspect: 0.32, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap] },
     Look { body: 0xa6b84c, belly: 0xe8e2b0, fins: 0xe88a3a, aspect: 0.42, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Glasses, Wear::Headset] },
@@ -1047,6 +1442,26 @@ const LOOKS: [Look; 16] = [
     Look { body: 0x4f6b3a, belly: 0xd8e0b0, fins: 0x6a7a3a, aspect: 0.24, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Tie] },
     Look { body: 0x7a7f86, belly: 0xd0d4d8, fins: 0x5a5f66, aspect: 0.22, pattern: Pattern::Plates, whiskers: true, wear: &[Wear::Glasses, Wear::Beard] },
     Look { body: 0x3d3a36, belly: 0x8a8478, fins: 0x2a2826, aspect: 0.3, pattern: Pattern::Plain, whiskers: true, wear: &[Wear::TopHat] },
+    Look { body: 0xd88a9a, belly: 0xf6dde2, fins: 0xb05a6a, aspect: 0.4, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Bun, Wear::Pearls] },
+    Look { body: 0xc0a0d8, belly: 0xf0e6f8, fins: 0x8a6aa8, aspect: 0.4, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Bun, Wear::Glasses] },
+    Look { body: 0x9ad0e8, belly: 0xeef8fc, fins: 0x5a9ab8, aspect: 0.3, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap, Wear::Phone] },
+    Look { body: 0xc8b070, belly: 0xf2e8c8, fins: 0x9a8040, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Glasses, Wear::Clipboard] },
+    Look { body: 0xf08ab8, belly: 0xfde0ee, fins: 0xc05088, aspect: 0.38, pattern: Pattern::Patches, whiskers: false, wear: &[Wear::Phone] },
+    Look { body: 0x8a8a7a, belly: 0xd8d8cc, fins: 0x6a6a5a, aspect: 0.36, pattern: Pattern::Plates, whiskers: false, wear: &[Wear::Beard, Wear::Mug] },
+    Look { body: 0x4a6aa8, belly: 0xc8d6ee, fins: 0x2a4a88, aspect: 0.44, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Cap] },
+    Look { body: 0xe08a3a, belly: 0xf8dcc0, fins: 0xb05a20, aspect: 0.42, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Headset, Wear::Pearls] },
+    Look { body: 0x6ac0a0, belly: 0xd8f2e8, fins: 0x3a8a70, aspect: 0.38, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::PostIt, Wear::Glasses] },
+    Look { body: 0xa0b8e0, belly: 0xe6eef8, fins: 0x6a88c0, aspect: 0.36, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Glasses, Wear::Clipboard] },
+    Look { body: 0x3ad0c0, belly: 0xd0f6f2, fins: 0x1a9a8a, aspect: 0.3, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Cap, Wear::Phone] },
+    Look { body: 0xd04a3a, belly: 0xf6d0c8, fins: 0x9a2a20, aspect: 0.44, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Beard, Wear::Badge] },
+    Look { body: 0x8a5ab0, belly: 0xe6d6f2, fins: 0x5a3a80, aspect: 0.4, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Bun, Wear::Clipboard] },
+    Look { body: 0x5a9ae0, belly: 0xd6e8fa, fins: 0x2a6ab0, aspect: 0.36, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Glasses, Wear::Mug] },
+    Look { body: 0x5ab070, belly: 0xd6f0dc, fins: 0x2a8040, aspect: 0.34, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Headset, Wear::Mug] },
+    Look { body: 0x3a4a6a, belly: 0xb8c4d8, fins: 0x2a3450, aspect: 0.3, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Tie, Wear::Glasses] },
+    Look { body: 0x2a3a2a, belly: 0xa8b8a8, fins: 0x1a2a1a, aspect: 0.32, pattern: Pattern::Plates, whiskers: false, wear: &[Wear::Glasses, Wear::Badge] },
+    Look { body: 0x6a6ab0, belly: 0xd6d6f2, fins: 0x4a4a90, aspect: 0.26, pattern: Pattern::Patches, whiskers: false, wear: &[Wear::Beard, Wear::Glasses] },
+    Look { body: 0xc87a9a, belly: 0xf2dce6, fins: 0x9a4a6a, aspect: 0.44, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Bun, Wear::Glasses, Wear::Pearls] },
+    Look { body: 0xe8c070, belly: 0xfaeccc, fins: 0xc09040, aspect: 0.28, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Beard, Wear::Phone] },
     Look { body: 0xf2c94c, belly: 0xfff0b0, fins: 0xe8a020, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Wool] },
 ];
 
@@ -1125,6 +1540,32 @@ pub(super) fn paint_candidate(painter: &egui::Painter, c: Pos2, len: f32, fish: 
     let ink = |v: u32| shadow.unwrap_or(hex(v));
     for wear in look.wear {
         match wear {
+            Wear::Bun => {
+                let top = at(0.35, -1.0);
+                painter.circle_filled(top + Vec2::new(0.0, -4.0) * u, 5.0 * u, ink(0x5a3a22));
+                painter.line_segment([top + Vec2::new(-4.0, -1.0) * u, top + Vec2::new(4.0, -1.0) * u], Stroke::new(1.6 * u, ink(0xe0453a)));
+            }
+            Wear::Pearls => {
+                for k in 0..7 {
+                    let a = k as f32 / 6.0;
+                    painter.circle_filled(at(0.12 + a * 0.5, 0.42 + (a * std::f32::consts::PI).sin() * 0.3), 1.5 * u, ink(0xfaf6ee));
+                }
+            }
+            Wear::Mug => {
+                let m = Rect::from_center_size(at(1.05, 0.55), Vec2::new(7.0, 8.0) * u);
+                painter.circle_stroke(Pos2::new(m.max.x, m.center().y), 2.4 * u, Stroke::new(1.2 * u, ink(0xf2f2f2)));
+                painter.rect_filled(m, 1.2 * u, ink(0xf2f2f2));
+                painter.rect_filled(Rect::from_min_size(m.min + Vec2::new(0.0, 3.0 * u), Vec2::new(m.width(), 2.0 * u)), 0.0, ink(0xd0453a));
+                if shadow.is_none() {
+                    let steam = ((now * 3.0).sin() * 1.2) as f32;
+                    painter.add(egui::Shape::line(vec![m.center_top() + Vec2::new(0.0, -1.0) * u, m.center_top() + Vec2::new(1.5 + steam, -4.0) * u, m.center_top() + Vec2::new(-0.5 - steam, -7.0) * u], Stroke::new(0.8 * u, Color32::WHITE.gamma_multiply(0.6))));
+                }
+            }
+            Wear::Phone => {
+                let ph = Rect::from_center_size(at(0.95, 0.35), Vec2::new(5.5, 9.5) * u);
+                painter.rect_filled(ph, 1.4 * u, ink(0x1a1a22));
+                painter.rect_filled(ph.shrink(1.0 * u), 0.8 * u, ink(0x6ac0f0));
+            }
             Wear::Badge => {
                 painter.add(egui::Shape::line(vec![at(0.45, -0.9), at(0.3, 0.2), at(0.55, -0.9)], Stroke::new(1.0 * u, ink(0x3a6ae0))));
                 let card = Rect::from_center_size(at(0.38, 0.4), Vec2::new(7.0, 9.0) * u);

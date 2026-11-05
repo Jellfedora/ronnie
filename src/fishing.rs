@@ -126,7 +126,7 @@ const fn fish(id: &'static str, min_cm: u32, max_cm: u32, rarity: Rarity, diffic
 use Behavior::*;
 use Rarity::*;
 
-pub const FISH: [Fish; 16] = [
+pub const FISH: [Fish; 36] = [
     fish("stagiaire", 10, 30, Common, 15.0, Smooth, When::Any),
     fish("alternant", 8, 20, Common, 22.0, Dart, When::Day),
     fish("developpeur", 15, 45, Common, 30.0, Mixed, When::Any),
@@ -142,6 +142,27 @@ pub const FISH: [Fish; 16] = [
     fish("directeur", 50, 120, Rare, 72.0, Dart, When::Any),
     fish("senior-legacy", 80, 200, VeryRare, 80.0, Smooth, When::Morning),
     fish("pdg", 80, 250, VeryRare, 85.0, Sinker, When::Evening),
+    // The colleagues one knows by their first name.
+    fish("maria", 15, 40, Common, 18.0, Smooth, When::Morning),
+    fish("karene", 15, 40, Common, 20.0, Floater, When::Afternoon),
+    fish("kevin", 8, 20, Common, 12.0, Dart, When::Day),
+    fish("sandrine", 20, 50, Common, 25.0, Sinker, When::Any),
+    fish("jessica", 15, 40, Common, 26.0, Floater, When::Day),
+    fish("jean-michel", 40, 90, Uncommon, 35.0, Sinker, When::Morning),
+    fish("gerard", 30, 80, Uncommon, 40.0, Smooth, When::Any),
+    fish("fatou", 25, 60, Uncommon, 38.0, Floater, When::Day),
+    fish("jerome", 25, 65, Uncommon, 42.0, Smooth, When::Morning),
+    fish("elodie", 20, 55, Uncommon, 46.0, Mixed, When::Afternoon),
+    fish("brice", 20, 55, Uncommon, 48.0, Dart, When::Afternoon),
+    fish("thierry", 40, 100, Uncommon, 50.0, Sinker, When::Any),
+    fish("nathalie", 35, 85, Rare, 60.0, Smooth, When::Morning),
+    fish("sophie", 30, 75, Rare, 58.0, Mixed, When::Afternoon),
+    fish("lea", 30, 75, Rare, 62.0, Dart, When::Evening),
+    fish("bernard", 50, 110, Rare, 66.0, Dart, When::Any),
+    fish("patrick", 45, 100, Rare, 68.0, Sinker, When::Evening),
+    fish("yannick", 60, 150, VeryRare, 82.0, Mixed, When::Evening),
+    fish("monique", 60, 140, VeryRare, 84.0, Smooth, When::Morning),
+    fish("clement", 70, 160, VeryRare, 88.0, Dart, When::Any),
     fish("mouton-5-pattes", 60, 100, Legendary, 95.0, Mixed, When::Any),
 ];
 
@@ -162,11 +183,69 @@ fn unit(rng: &mut u64) -> f32 {
     (*rng >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// The fish that bites at `hour`, a cast thrown with `power` (0 to 1: farther, the rarer and the
-/// bigger a bit more often), and its size in centimeters.
-pub fn pick(rng: &mut u64, hour: u32, power: f32) -> (usize, u32) {
+/// A bait, an offer put on the hook: won with the hires, one used at each cast.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Bait {
+    /// Bites come sooner, the juniors most of all.
+    Tickets,
+    /// The tech profiles come.
+    Remote,
+    /// The rarer ones come, and bigger.
+    Salary,
+}
+
+impl Bait {
+    pub const ALL: [Bait; 3] = [Bait::Tickets, Bait::Remote, Bait::Salary];
+
+    /// Its id in the config (and its place in `i18n`'s `fishing_baits`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Bait::Tickets => "tickets-resto",
+            Bait::Remote => "teletravail",
+            Bait::Salary => "salaire",
+        }
+    }
+
+    pub fn by_id(id: &str) -> Option<Bait> {
+        Self::ALL.into_iter().find(|b| b.id() == id)
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The profiles working from home draws.
+const TECH: [&str; 11] = ["developpeur", "admin-sys", "designer", "devops", "senior-legacy", "elodie", "brice", "sophie", "lea", "patrick", "yannick"];
+
+/// What a cast has for it: its bait, and whether it landed where the bubbles rise.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Lure {
+    pub bait: Option<Bait>,
+    pub hot: bool,
+}
+
+/// The fish that bites at `hour`, a cast thrown with `power` (0 to 1: near the bank the commons,
+/// far out the rarer ones, a bit bigger), with `lure`; and its size in centimeters.
+pub fn pick(rng: &mut u64, hour: u32, power: f32, lure: Lure) -> (usize, u32) {
     let power = power.clamp(0.0, 1.0);
-    let weight = |f: &Fish| if f.rarity == Common { f.rarity.weight() } else { f.rarity.weight() * (1.0 + power * 0.6) };
+    let weight = |f: &Fish| {
+        let mut w = f.rarity.weight();
+        if f.rarity == Common {
+            w *= 1.3 - 0.7 * power;
+        } else {
+            w *= 0.6 + 1.8 * power;
+            if lure.hot {
+                w *= 1.8;
+            }
+        }
+        match lure.bait {
+            Some(Bait::Tickets) if f.rarity == Common => w * 1.5,
+            Some(Bait::Remote) if TECH.contains(&f.id) => w * 3.0,
+            Some(Bait::Salary) if f.rarity != Common => w * 2.0,
+            _ => w,
+        }
+    };
     let biting: Vec<usize> = (0..FISH.len()).filter(|&k| FISH[k].when.bites(hour)).collect();
     let total: f32 = biting.iter().map(|&k| weight(&FISH[k])).sum();
     let mut roll = unit(rng) * total;
@@ -180,7 +259,8 @@ pub fn pick(rng: &mut u64, hour: u32, power: f32) -> (usize, u32) {
     }
     let f = &FISH[which];
     // Most of them small, a big one now and then; a long cast pushes up a little.
-    let t = (unit(rng).powf(1.8) * (1.0 - power * 0.25) + power * 0.25 * unit(rng)).clamp(0.0, 1.0);
+    let push = power * 0.25 + if lure.bait == Some(Bait::Salary) { 0.2 } else { 0.0 };
+    let t = (unit(rng).powf(1.8) * (1.0 - push) + push * unit(rng)).clamp(0.0, 1.0);
     let size = f.min_cm + ((f.max_cm - f.min_cm) as f32 * t).round() as u32;
     (which, size.clamp(f.min_cm, f.max_cm))
 }
@@ -210,15 +290,19 @@ pub struct Reel {
     pub perfect: bool,
     /// Seconds since the bar was last held: left alone at the bottom, it hires nobody.
     idle: f32,
+    /// Seconds left of a rival's counter-offer: the hire fills slower and empties faster.
+    pub offer: f32,
     rng: u64,
 }
 
 impl Reel {
-    pub fn new(fish: usize, seed: u64) -> Self {
+    /// `risk`: how far it was hooked (0 to 1), far out the bar a little shorter.
+    pub fn new(fish: usize, seed: u64, risk: f32) -> Self {
         let d = FISH[fish].difficulty / 100.0;
-        let bar_h = 0.30 - d * 0.10;
-        Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: Smooth, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, rng: seed | 1 }
+        let bar_h = (0.30 - d * 0.10) * (1.0 - 0.2 * risk.clamp(0.0, 1.0));
+        Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: FISH[fish].behavior, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, offer: 0.0, rng: seed | 1 }
     }
+
 
     /// The fish is on the bar.
     pub fn on_bar(&self) -> bool {
@@ -284,12 +368,14 @@ impl Reel {
 
         // The catch: filling only with a hand on the bar.
         self.idle = if held { 0.0 } else { self.idle + dt };
+        let rival = self.offer > 0.0;
+        self.offer = (self.offer - dt).max(0.0);
         if self.on_bar() {
             if self.idle < 2.0 {
-                self.progress += 0.17 * dt;
+                self.progress += 0.17 * dt * if rival { 0.55 } else { 1.0 };
             }
         } else {
-            self.progress -= (0.11 + 0.05 * d) * dt;
+            self.progress -= (0.11 + 0.05 * d) * dt * if rival { 1.6 } else { 1.0 };
             self.perfect = false;
         }
         if self.progress >= 1.0 {
@@ -304,6 +390,35 @@ impl Reel {
     }
 }
 
+/// A number from `seed`, the same on every machine (splitmix64).
+fn mix(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d4_9bb1_3311_14eb);
+    z ^ (z >> 31)
+}
+
+/// Each quarter of an hour, one in three opens with a job fair of 4 minutes: the seconds it still
+/// lasts at `unix` (the clock's, so that the colleagues at the pond have the same).
+pub fn job_fair(unix: i64) -> Option<i64> {
+    let (slot, into) = (unix.div_euclid(900), unix.rem_euclid(900));
+    (mix(slot as u64 ^ 0x5a1e).is_multiple_of(3) && into < 240).then_some(240 - into)
+}
+
+/// Where the bubbles rise (two places, moving each 75 s, the same for everyone): each one's place
+/// on the water (0 to 1 across, 0 to 1 from the far bank to the near), and how strong they are now
+/// (rising then fading over its 75 s).
+pub fn hotspots(unix: f64) -> [(f32, f32, f32); 2] {
+    let slot = (unix / 75.0).floor();
+    let into = ((unix - slot * 75.0) / 75.0) as f32;
+    let strength = (into * 8.0).min(1.0).min((1.0 - into) * 8.0);
+    let at = |k: u64| {
+        let h = mix(slot as u64 * 2 + k);
+        (0.08 + (h % 1000) as f32 / 1000.0 * 0.84, 0.1 + ((h >> 20) % 1000) as f32 / 1000.0 * 0.6, strength)
+    };
+    [at(0), at(1)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,7 +429,8 @@ mod tests {
         let mut seen = [false; FISH.len()];
         for k in 0..20000 {
             let hour = [9, 15, 21][k % 3];
-            let (f, size) = pick(&mut rng, hour, (k % 7) as f32 / 6.0);
+            let lure = Lure { bait: [None, Some(Bait::Tickets), Some(Bait::Remote), Some(Bait::Salary)][k % 4], hot: k % 5 == 0 };
+            let (f, size) = pick(&mut rng, hour, (k % 7) as f32 / 6.0, lure);
             assert!(FISH[f].when.bites(hour), "{} at {hour}", FISH[f].id);
             assert!((FISH[f].min_cm..=FISH[f].max_cm).contains(&size));
             seen[f] = true;
@@ -324,9 +440,13 @@ mod tests {
         // Only in the evening.
         assert!(!When::Evening.bites(10) && When::Evening.bites(23) && When::Evening.bites(3));
         assert_eq!(by_id("directeur"), Some(12));
-        // As floor counts them: 158 for the whole binder, shiny.
+        // The fairs: some quarters of an hour, never more than 4 minutes.
+        let fairs = (0..96).filter(|q| job_fair(q * 900 + 10).is_some()).count();
+        assert!((15..50).contains(&fairs), "{fairs}");
+        assert_eq!(job_fair(900 * 7 + 300), None);
+        // As floor counts them: 306 for the whole binder, shiny.
         let all: std::collections::BTreeMap<String, crate::config::FishCard> = FISH.iter().map(|f| (f.id.to_owned(), crate::config::FishCard { count: 1, shiny: 1, ..Default::default() })).collect();
-        assert_eq!(points(&all), 158);
+        assert_eq!(points(&all), 306);
     }
 
     /// Following the fish with the bar catches it; doing nothing loses it.
@@ -334,7 +454,7 @@ mod tests {
     #[allow(clippy::needless_range_loop)]
     fn followed_caught_left_lost() {
         for fish in 0..FISH.len() {
-            let mut reel = Reel::new(fish, 7 + fish as u64);
+            let mut reel = Reel::new(fish, 7 + fish as u64, 0.0);
             let mut end = None;
             for _ in 0..120 * 60 {
                 let held = reel.bar_y + reel.bar_h / 2.0 < reel.fish_y;
@@ -346,7 +466,7 @@ mod tests {
             if FISH[fish].difficulty < 40.0 {
                 assert_eq!(end, Some(true), "{}", FISH[fish].id);
             }
-            let mut reel = Reel::new(fish, 3);
+            let mut reel = Reel::new(fish, 3, 0.0);
             reel.fish_y = 0.9;
             let mut end = None;
             for _ in 0..120 * 60 {
@@ -372,7 +492,7 @@ mod rates {
             let mut won = 0;
             let mut secs = 0.0;
             for seed in 0..200u64 {
-                let mut reel = Reel::new(fish, seed * 7919 + 1);
+                let mut reel = Reel::new(fish, seed * 7919 + 1, 0.0);
                 // Holds when the fish is above the bar's middle, reacting 0.15 s late.
                 let mut seen = vec![reel.fish_y; 18];
                 for k in 0..120 * 90 {
