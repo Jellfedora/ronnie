@@ -22,8 +22,10 @@ pub(super) enum Reward {
     Theme(&'static str),
     Trail,
     Sheep,
-    /// An avatar frame, worn from the account.
-    Frame,
+    /// An avatar frame (its id), worn from the account.
+    Frame(&'static str),
+    /// A badge beside the avatar (its id), worn by itself.
+    Badge(&'static str),
 }
 
 impl App {
@@ -54,7 +56,7 @@ impl App {
             HomeGame::BugHunt | HomeGame::Fishing => {
                 let frames = super::frames::FRAMES.iter().filter(|f| matches!(f.need, super::frames::Need::Wave(_)) == (game == HomeGame::BugHunt)).map(|f| {
                     let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
-                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame) }
+                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame(f.id)) }
                 });
                 if game == HomeGame::BugHunt {
                     return frames.collect();
@@ -64,7 +66,7 @@ impl App {
                 let sheep = super::office::sheep_unlocked(s);
                 let mut list = vec![
                     Unlock { what: t.unlock_sheep.into(), how: t.unlock_sheep_how.to_owned(), done: sheep, progress: None, info: false, reward: Some(Reward::Sheep) },
-                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false, reward: None },
+                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false, reward: Some(Reward::Badge(super::office::HUNTER_BADGE)) },
                 ];
                 list.extend(frames);
                 list

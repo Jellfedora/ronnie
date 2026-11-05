@@ -2081,6 +2081,70 @@ fn nav_entry(tab: SettingsTab) -> SettingsTab {
 impl App {
     /// "Rewards" page: everything the games unlock, game by game: done (and then switched on here: a
     /// theme worn, the trail, the sheep, a frame from the account) or how to get it and how far.
+    /// A reward's look: the theme's card, the avatar in its frame or with its badge, the sheep
+    /// walking, the pointer's sparks; locked, a padlock in its corner.
+    fn reward_preview(&self, ui: &mut Ui, u: &super::unlocks::Unlock, theme: &Theme) {
+        use super::unlocks::Reward;
+        let now = ui.input(|i| i.time);
+        let rect = match u.reward {
+            Some(Reward::Theme(id)) => theme_card(ui, crate::theme::Preset::find(id), false, false).rect,
+            _ => {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(THEME_CARD.x, THEME_CARD.y), Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 8.0, theme.bg);
+                painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.tab_active), egui::StrokeKind::Inside);
+                let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you);
+                match u.reward {
+                    Some(Reward::Frame(id)) => {
+                        super::talk::paint_avatar(&painter, rect.center(), 26.0, name, false, None, Some(id), theme);
+                        ui.ctx().request_repaint();
+                    }
+                    Some(Reward::Badge(id)) => {
+                        super::talk::paint_avatar(&painter, rect.center(), 26.0, name, false, None, None, theme);
+                        super::office::paint_badge(&painter, rect.center(), 26.0, &[id.to_owned()]);
+                    }
+                    Some(Reward::Sheep) => {
+                        // Grass, the sheep walking to and fro.
+                        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 16.0), rect.max), egui::CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, Color32::from_rgb(0x4c, 0x8a, 0x3a));
+                        let p = ((now * 0.25) % 2.0) as f32;
+                        let (k, dir) = if p < 1.0 { (p, 1.0) } else { (2.0 - p, -1.0) };
+                        let x = rect.min.x + 30.0 + (rect.width() - 60.0) * k;
+                        super::office::paint_sheep(&painter, Pos2::new(x, rect.max.y - 26.0), dir, Some(now as f32));
+                        ui.ctx().request_repaint();
+                    }
+                    Some(Reward::Trail) => {
+                        // A pointer going along a wave, its sparks behind.
+                        let colors = [theme.accent, theme.ansi[1], theme.ansi[3], theme.ansi[5], theme.ansi[6]];
+                        let at = |p: f32| Pos2::new(rect.min.x + 14.0 + (rect.width() - 28.0) * p, rect.center().y + (p * 9.0).sin() * 16.0);
+                        let head = ((now * 0.35) % 1.0) as f32;
+                        for k in 1..26 {
+                            let p = head - k as f32 * 0.018;
+                            if p < 0.0 {
+                                break;
+                            }
+                            let fade = 1.0 - k as f32 / 26.0;
+                            let drop = Vec2::new(0.0, k as f32 * 0.9);
+                            painter.circle_filled(at(p) + drop, 1.0 + 2.0 * fade, colors[k % colors.len()].gamma_multiply(fade));
+                        }
+                        let tip = at(head);
+                        painter.add(egui::Shape::convex_polygon(vec![tip, tip + Vec2::new(0.0, 13.0), tip + Vec2::new(3.5, 10.0), tip + Vec2::new(9.0, 9.5)], Color32::WHITE, Stroke::new(1.0, Color32::BLACK)));
+                        ui.ctx().request_repaint();
+                    }
+                    _ => {
+                        let mark = if u.done { "✓" } else if u.info { "•" } else { "?" };
+                        painter.text(rect.center(), Align2::CENTER_CENTER, mark, FontId::proportional(30.0), theme.accent.gamma_multiply(0.7));
+                    }
+                }
+                rect
+            }
+        };
+        if !u.done && !u.info {
+            let corner = Pos2::new(rect.max.x - 14.0, rect.min.y + 14.0);
+            ui.painter().circle_filled(corner, 11.0, Color32::from_black_alpha(190));
+            super::unlocks::paint_padlock(ui.painter(), corner, false, theme.accent);
+        }
+    }
+
     fn rewards_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         let games = self.games_list();
         let all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
@@ -2109,30 +2173,47 @@ impl App {
                             None => u.how.clone(),
                         }
                     };
-                    setting_row(ui, theme, &title, Some(&desc), |ui| {
-                        if !u.done {
-                            if let (Some((have, need)), false) = (u.progress, u.info) {
-                                ui.label(egui::RichText::new(format!("{} / {}", have.min(need), need)).size(12.5).color(theme.text_muted));
+                    ui.horizontal(|ui| {
+                        // What it looks like, shown whole even locked: to make one want it.
+                        self.reward_preview(ui, u, theme);
+                        ui.add_space(14.0);
+                        let control_w = 130.0;
+                        ui.vertical(|ui| {
+                            ui.set_width((ui.available_width() - control_w - 12.0).max(120.0));
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(&title).size(14.0).strong().color(if u.done { theme.text } else { theme.text.gamma_multiply(0.85) }));
+                            ui.add(egui::Label::new(egui::RichText::new(&desc).size(12.5).color(theme.text_muted)).wrap());
+                            if let (Some((have, need)), false, false) = (u.progress, u.done, u.info) {
+                                ui.add_space(4.0);
+                                let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(220.0), 6.0), Sense::hover());
+                                ui.painter().rect_filled(bar, 3.0, theme.tab_hover);
+                                let k = (have.min(need) as f32 / need.max(1) as f32).clamp(0.0, 1.0);
+                                ui.painter().rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k, bar.height())), 3.0, theme.accent);
+                                ui.label(egui::RichText::new(format!("{} / {}", have.min(need), need)).size(11.5).color(theme.text_muted));
                             }
-                            return;
-                        }
-                        match u.reward {
-                            Some(super::unlocks::Reward::Theme(id)) => {
-                                if picked.theme == id {
-                                    ui.label(egui::RichText::new(t.reward_worn).size(12.5).color(theme.ansi[2]));
-                                } else if ui.button(t.reward_wear).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                    picked.theme = id.to_owned();
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !u.done {
+                                return;
+                            }
+                            match u.reward {
+                                Some(super::unlocks::Reward::Theme(id)) => {
+                                    if picked.theme == id {
+                                        ui.label(egui::RichText::new(t.reward_worn).size(12.5).color(theme.ansi[2]));
+                                    } else if ui.button(t.reward_wear).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                        picked.theme = id.to_owned();
+                                    }
                                 }
+                                Some(super::unlocks::Reward::Trail) => {
+                                    toggle(ui, theme, &mut picked.cursor_trail);
+                                }
+                                Some(super::unlocks::Reward::Sheep) => {
+                                    toggle(ui, theme, &mut picked.sheep);
+                                }
+                                Some(super::unlocks::Reward::Frame(_)) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
+                                Some(super::unlocks::Reward::Badge(_)) | None => {}
                             }
-                            Some(super::unlocks::Reward::Trail) => {
-                                toggle(ui, theme, &mut picked.cursor_trail);
-                            }
-                            Some(super::unlocks::Reward::Sheep) => {
-                                toggle(ui, theme, &mut picked.sheep);
-                            }
-                            Some(super::unlocks::Reward::Frame) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
-                            None => {}
-                        }
+                        });
                     });
                 }
             });
