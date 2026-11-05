@@ -1,6 +1,6 @@
-//! What the fishing (`super::fishing`) unlocks, apart from its avatar frame (`super::frames`):
-//! - the Open space theme, for the whole binder: a cork board of post-its, a coffee machine steaming, a
-//!   plant, a water cooler at the foot of the sidebar; a strip of post-its over the settings and over
+//! The office's unlocks (the fishing's, apart from its avatar frame in `super::frames`, and Riff Hero's theme):
+//! - the Open space theme (won at Riff Hero, `crate::theme::OFFICE_UNLOCK` points): a cork board of
+//!   post-its, a coffee machine steaming, a plant, a water cooler at the foot of the sidebar; a strip of post-its over the settings and over
 //!   the active tab; « T'as 5 minutes ? » over a pane when its bell rings;
 //! - the five-legged sheep, for the legendary card: now and then it walks along the foot of the
 //!   terminals, stops to graze, and bleats when hovered (switched off in the settings);

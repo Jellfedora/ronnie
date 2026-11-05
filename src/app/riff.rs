@@ -435,10 +435,16 @@ impl App {
             let p = &song.play;
             let round = crate::floor::GameRound { score: p.score, details: serde_json::json!({ "score": p.score, "hits": p.hits, "perfects": p.perfects, "misses": p.misses, "combo": p.best_combo }) };
             if song.record {
+                let before = crate::theme::office_unlocked(&self.config.settings.riff_bests);
                 let bests = &mut self.config.settings.riff_bests;
                 bests.resize(bests.len().max(level + 1), 0);
                 bests[level] = song.play.score;
                 self.save_config();
+                // The Open space theme, at the first song past its points.
+                if !before && crate::theme::office_unlocked(&self.config.settings.riff_bests) {
+                    let t = self.t();
+                    self.push_toast(super::Toast { ok: true, title: t.office_unlocked.to_owned(), body: t.office_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+                }
             }
             if round.score > 0 && crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
                 let now = ui.input(|i| i.time);

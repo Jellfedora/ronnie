@@ -699,7 +699,7 @@ impl App {
         let id = FISH[fish].id;
         let all = FISH.len() as u32;
         let tally = |cards: &std::collections::BTreeMap<String, crate::config::FishCard>| (cards.len() as u32, cards.values().filter(|c| c.shiny > 0).count() as u32, cards.values().map(|c| c.count).sum::<u32>());
-        let (species_before, shiny_before, hires_before) = tally(&self.config.settings.fish_cards);
+        let (_, shiny_before, hires_before) = tally(&self.config.settings.fish_cards);
         let card = self.config.settings.fish_cards.entry(id.to_owned()).or_default();
         let new = card.count == 0;
         let record = !new && size > card.best_cm;
@@ -730,9 +730,6 @@ impl App {
         // What it unlocks: said.
         let t = self.t();
         let mut said = vec![];
-        if species_before < all && species >= all {
-            said.push((t.office_unlocked.to_owned(), t.office_unlocked_body.to_owned()));
-        }
         if new && FISH[fish].id == crate::fishing::SHEEP {
             said.push((t.sheep_unlocked.to_owned(), t.sheep_unlocked_body.to_owned()));
         }

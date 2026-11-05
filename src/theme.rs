@@ -77,8 +77,14 @@ pub const JURASSIC_THEME: &str = "jurassic-park";
 pub const JURASSIC_UNLOCK: u32 = 5000;
 /// The space theme, unlocked at Larsen: beating the computer at its hardest, or someone online.
 pub const HYPERSPACE_THEME: &str = "hyperspace";
-/// The office theme, unlocked at the fishing: the whole binder of candidates.
+/// The office theme, unlocked at Riff Hero: `OFFICE_UNLOCK` points in a song.
 pub const OFFICE_THEME: &str = "open-space";
+pub const OFFICE_UNLOCK: u32 = 30_000;
+
+/// Whether a song of Riff Hero (any level) reached `OFFICE_UNLOCK`.
+pub fn office_unlocked(riff_bests: &[u32]) -> bool {
+    riff_bests.iter().any(|&b| b >= OFFICE_UNLOCK)
+}
 /// The themes won in the games, shown apart in the settings.
 pub const SPECIAL_THEMES: [&str; 4] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME];
 /// Letters to reach in a round of the typing game to unlock it.
