@@ -39,6 +39,7 @@ mod pane;
 mod putty;
 mod procs;
 mod playtime;
+mod president;
 mod recap;
 mod screens;
 mod sftp;

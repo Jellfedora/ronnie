@@ -795,6 +795,8 @@ pub struct GameUsage {
     pub backstage: bool,
     /// Larsen.
     pub larsen: bool,
+    /// The Président.
+    pub president: bool,
     /// Its HMAC (`crate::playtime`): an edit by hand shows.
     #[serde(default)]
     pub seal: String,

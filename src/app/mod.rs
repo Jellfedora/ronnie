@@ -30,6 +30,7 @@ mod editor;
 mod files;
 mod four;
 mod larsen;
+mod president;
 mod game;
 mod git;
 mod home;
@@ -392,6 +393,7 @@ pub struct App {
     /// Puissance 4's page.
     four: four::Four,
     larsen: larsen::Larsen,
+    president: president::President,
     /// The minesweeper's page.
     mines: mines::Mines,
     /// Ronnie Run's page.
@@ -1265,6 +1267,7 @@ impl App {
             versus: crate::live::Live::default(),
             four: four::Four::default(),
             larsen: larsen::Larsen::default(),
+            president: president::President::default(),
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),
