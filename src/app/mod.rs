@@ -411,6 +411,8 @@ pub struct App {
     fishing: fishing::Fishing,
     /// The pointer's trail (unlocked at Ronnie Run).
     trail: trail::Trail,
+    /// The trail run in its preview (Settings › Rewards).
+    trail_preview: trail::Trail,
     /// Gryffindor's wand and its sparks.
     wand: wizard::Wand,
     /// Gryffindor picked: the Sorting Hat (when it started; NaN: at the next frame).
@@ -1290,6 +1292,7 @@ impl App {
             bughunt: bughunt::BugHunt::default(),
             fishing: fishing::Fishing::default(),
             trail: trail::Trail::default(),
+            trail_preview: trail::Trail::default(),
             wand: wizard::Wand::default(),
             sorting: None,
             mines: mines::Mines::default(),

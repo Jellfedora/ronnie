@@ -2083,7 +2083,7 @@ impl App {
     /// theme worn, the trail, the sheep, a frame from the account) or how to get it and how far.
     /// A reward's look: the theme's card, the avatar in its frame or with its badge, the sheep
     /// walking, the pointer's sparks; locked, a padlock in its corner.
-    fn reward_preview(&self, ui: &mut Ui, u: &super::unlocks::Unlock, theme: &Theme) {
+    fn reward_preview(&mut self, ui: &mut Ui, u: &super::unlocks::Unlock, theme: &Theme) {
         use super::unlocks::Reward;
         let now = ui.input(|i| i.time);
         let rect = match u.reward {
@@ -2113,20 +2113,12 @@ impl App {
                         ui.ctx().request_repaint();
                     }
                     Some(Reward::Trail) => {
-                        // A pointer going along a wave, its sparks behind.
-                        let colors = [theme.accent, theme.ansi[1], theme.ansi[3], theme.ansi[5], theme.ansi[6]];
-                        let at = |p: f32| Pos2::new(rect.min.x + 14.0 + (rect.width() - 28.0) * p, rect.center().y + (p * 9.0).sin() * 16.0);
-                        let head = ((now * 0.35) % 1.0) as f32;
-                        for k in 1..26 {
-                            let p = head - k as f32 * 0.018;
-                            if p < 0.0 {
-                                break;
-                            }
-                            let fade = 1.0 - k as f32 / 26.0;
-                            let drop = Vec2::new(0.0, k as f32 * 0.9);
-                            painter.circle_filled(at(p) + drop, 1.0 + 2.0 * fade, colors[k % colors.len()].gamma_multiply(fade));
-                        }
-                        let tip = at(head);
+                        // The real trail, behind a pointer wandering in the card.
+                        let tm = now as f32;
+                        let tip = rect.center() + Vec2::new((tm * 1.3).cos() * rect.width() * 0.36, (tm * 2.1).sin() * rect.height() * 0.3);
+                        let dt = ui.input(|i| i.stable_dt).min(0.05);
+                        self.trail_preview.step(Some(tip), dt);
+                        self.trail_preview.paint(&painter, theme);
                         painter.add(egui::Shape::convex_polygon(vec![tip, tip + Vec2::new(0.0, 13.0), tip + Vec2::new(3.5, 10.0), tip + Vec2::new(9.0, 9.5)], Color32::WHITE, Stroke::new(1.0, Color32::BLACK)));
                         ui.ctx().request_repaint();
                     }

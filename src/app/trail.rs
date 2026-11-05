@@ -39,7 +39,17 @@ impl Trail {
     /// One frame: sparks along the way the pointer went, the others moved on; all drawn over the window.
     pub(super) fn frame(&mut self, ctx: &egui::Context, theme: &Theme) {
         let dt = ctx.input(|i| i.stable_dt).min(0.05);
-        let at = ctx.input(|i| i.pointer.hover_pos());
+        self.step(ctx.input(|i| i.pointer.hover_pos()), dt);
+        if self.sparks.is_empty() {
+            return;
+        }
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pointer-trail")));
+        self.paint(&painter, theme);
+        ctx.request_repaint();
+    }
+
+    /// `dt` seconds more, the pointer now at `at`: new sparks along its way, the others moved on.
+    pub(super) fn step(&mut self, at: Option<Pos2>, dt: f32) {
         if let (Some(at), Some(last)) = (at, self.last) {
             let way = at - last;
             let n = ((way.length() / 5.0) as usize).min(8);
@@ -65,10 +75,10 @@ impl Trail {
             s.life -= dt;
         }
         self.sparks.retain(|s| s.life > 0.0);
-        if self.sparks.is_empty() {
-            return;
-        }
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pointer-trail")));
+    }
+
+    /// The sparks, in the theme's colors.
+    pub(super) fn paint(&self, painter: &egui::Painter, theme: &Theme) {
         let colors = [theme.accent, theme.ansi[5], theme.ansi[6], theme.ansi[3]];
         for s in &self.sparks {
             let k = s.life / LIFE;
@@ -83,6 +93,5 @@ impl Trail {
                 painter.line_segment([s.at - Vec2::new(0.0, r), s.at + Vec2::new(0.0, r)], stroke);
             }
         }
-        ctx.request_repaint();
     }
 }
