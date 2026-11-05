@@ -605,14 +605,15 @@ impl Wand {
         (super::game::random(&mut self.rng) >> 40) as f32 / (1u64 << 24) as f32
     }
 
-    /// One frame: the pointer as a wand (for the plain arrow and the hand), sparks where it went, a
+    /// One frame: the pointer as a wand (for the plain arrow, the hand and the text beam), sparks where it went, a
     /// burst and a ring of light at a click.
     pub(super) fn frame(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let dt = ctx.input(|i| i.stable_dt).min(0.05);
         let at = ctx.input(|i| i.pointer.hover_pos());
         let icon = ctx.output(|o| o.cursor_icon);
-        let wand = at.filter(|_| matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::PointingHand));
+        // Over the text too (the terminals): its tip is as precise as the beam.
+        let wand = at.filter(|_| matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::PointingHand | egui::CursorIcon::Text));
         if let Some(tip) = wand {
             // Sparks along the way, a few even still.
             let moved = self.last.map_or(0.0, |l| l.distance(tip));
