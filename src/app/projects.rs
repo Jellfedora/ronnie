@@ -190,7 +190,10 @@ impl App {
             return self.open_env_page(DevTool::Php);
         };
         let Some(nginx) = self.envs.installed(Env::Nginx).first().cloned() else {
-            self.error = Some(if cfg!(windows) { t.projects_no_nginx.to_owned() } else { t.env_nginx_missing.to_owned() });
+            self.error = Some(match envs::system_only(Env::Nginx) {
+                Some(how) => t.env_system_missing.replace("{name}", Env::Nginx.name()).replace("{how}", how),
+                None => t.projects_no_nginx.to_owned(),
+            });
             return self.open_env_page(DevTool::Nginx);
         };
         let db = project.db_server();

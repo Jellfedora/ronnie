@@ -223,6 +223,24 @@ impl App {
     fn env_releases_list(&mut self, ui: &mut Ui, kind: Env, t: &'static Strings, theme: &Theme) {
         ui.label(egui::RichText::new(t.env_available_title.replace("{source}", kind.source()).to_uppercase()).size(11.0).color(theme.text_muted).extra_letter_spacing(1.2));
         ui.add_space(6.0);
+        if let Some(how) = envs::system_only(kind) {
+            // Nothing published for this machine: the system's, if it is there.
+            ui.label(egui::RichText::new(t.env_system_only.replace("{name}", kind.name())).color(theme.text_muted));
+            ui.add_space(6.0);
+            let system = match kind {
+                Env::Nginx => envs::system_nginx(),
+                _ => envs::db_server(kind, envs::SYSTEM),
+            };
+            let found = match system {
+                Some(p) => t.env_system_found.replace("{path}", &p.display().to_string()),
+                None => t.env_system_missing.replace("{how}", how),
+            };
+            ui.label(egui::RichText::new(found.replace("{name}", kind.name())).size(12.5).color(theme.text));
+            if ui.button(t.env_check_again).clicked() {
+                self.envs.refresh();
+            }
+            return;
+        }
         let releases = match self.envs.releases.get(&kind) {
             None => {
                 ui.horizontal(|ui| {
@@ -232,15 +250,8 @@ impl App {
                 return;
             }
             Some(Err(e)) => {
-                ui.label(egui::RichText::new(e).color(if kind == Env::Nginx && !cfg!(windows) { theme.text_muted } else { theme.ansi[1] }));
-                if kind == Env::Nginx && !cfg!(windows) {
-                    ui.add_space(6.0);
-                    let found = envs::system_nginx().map(|p| t.env_nginx_found.replace("{path}", &p.display().to_string())).unwrap_or_else(|| t.env_nginx_missing.to_owned());
-                    ui.label(egui::RichText::new(found).size(12.5).color(theme.text));
-                    if ui.button(t.env_check_again).clicked() {
-                        self.envs.refresh();
-                    }
-                } else if ui.button(t.node_retry).clicked() {
+                ui.label(egui::RichText::new(e).color(theme.ansi[1]));
+                if ui.button(t.node_retry).clicked() {
                     self.envs.fetch(kind, ui.ctx());
                 }
                 return;

@@ -3,12 +3,14 @@
 //!
 //! PHP comes from windows.php.net on Windows (its "non thread safe" builds, with `php-cgi`), from
 //! static-php-cli's "bulk" builds elsewhere (a `php` and a `php-fpm` each, with the extensions
-//! WordPress and PrestaShop want built in). nginx comes from nginx.org on Windows; elsewhere it isn't
-//! published, the system's is used (`brew install nginx`, `apt install nginx`...).
+//! WordPress and PrestaShop want built in). nginx comes from nginx.org on Windows, from
+//! jirutka/nginx-binaries on Apple's Macs (its PCRE2, the only library it needs, taken from Homebrew's
+//! bottle and put beside it); elsewhere it isn't published, the system's is used (`apt install
+//! nginx`...).
 //!
-//! The databases: MySQL from mysql.com on Windows (its versions listed from its GitHub tags, its
-//! download page shutting robots out), MariaDB from mariadb.org on Windows and Linux; elsewhere the
-//! system's (`brew install mysql`...).
+//! The databases: MySQL from mysql.com on Windows and macOS (its versions listed from its GitHub tags,
+//! its download page shutting robots out), MariaDB from mariadb.org on Windows and Linux; elsewhere
+//! the system's (`brew install mariadb`, `apt install mysql-server`...): see `system_only`.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -27,9 +29,17 @@ const USER_AGENT: &str = concat!("ronnie/", env!("CARGO_PKG_VERSION"));
 const PHP_WINDOWS: &str = "https://windows.php.net/downloads/releases";
 const STATIC_PHP: &str = "https://dl.static-php.dev/static-php-cli/bulk";
 const NGINX: &str = "https://nginx.org";
+const NGINX_MAC: &str = "https://jirutka.github.io/nginx-binaries";
+const BREW_API: &str = "https://formulae.brew.sh/api/formula";
 const MYSQL_TAGS: &str = "https://api.github.com/repos/mysql/mysql-server/git/matching-refs/tags/mysql-";
 const MYSQL_CDN: &str = "https://cdn.mysql.com";
 const MARIADB: &str = "https://downloads.mariadb.org/rest-api/mariadb";
+/// In a MySQL archive's name for macOS, the system it is built for ("macos15"): not in its list,
+/// tried at the download.
+const MACOS: &str = "{macos}";
+/// The PCRE2 library nginx's Mac builds are linked against (Homebrew's place), and its name.
+const PCRE2_BREW: &str = "/opt/homebrew/opt/pcre2/lib/";
+const PCRE2_LIB: &str = "libpcre2-8.0.dylib";
 /// The version name of the system's program (where none is published for it).
 pub const SYSTEM: &str = "system";
 
@@ -60,6 +70,7 @@ impl Kind {
         match self {
             Kind::Php if cfg!(windows) => "windows.php.net",
             Kind::Php => "static-php.dev",
+            Kind::Nginx if cfg!(target_os = "macos") => "jirutka/nginx-binaries",
             Kind::Nginx => "nginx.org",
             Kind::Mysql => "mysql.com",
             Kind::Mariadb => "mariadb.org",
@@ -83,6 +94,27 @@ impl Kind {
             Kind::Mysql => "mysqld",
             Kind::Mariadb => "mariadbd",
         }
+    }
+}
+
+/// Whether this is one of Apple's Macs (nginx is published for them, not for Intel's).
+fn apple_silicon() -> bool {
+    cfg!(target_os = "macos") && std::env::consts::ARCH == "aarch64"
+}
+
+/// When nothing of `kind` is published for this machine (the system's is used): how to install it on
+/// the system.
+pub fn system_only(kind: Kind) -> Option<&'static str> {
+    let (mac, linux_x64) = (cfg!(target_os = "macos"), cfg!(target_os = "linux") && std::env::consts::ARCH == "x86_64");
+    match kind {
+        _ if cfg!(windows) => None,
+        Kind::Php => None,
+        Kind::Nginx if apple_silicon() => None,
+        Kind::Nginx => Some(if mac { "brew install nginx" } else { "sudo apt install nginx" }),
+        Kind::Mysql if mac => None,
+        Kind::Mysql => Some("sudo apt install mysql-server"),
+        Kind::Mariadb if linux_x64 => None,
+        Kind::Mariadb => Some(if mac { "brew install mariadb" } else { "sudo apt install mariadb-server" }),
     }
 }
 
@@ -242,13 +274,15 @@ fn get_text(url: &str) -> Result<String> {
 
 /// The versions published for this machine, the newest first.
 pub fn releases(kind: Kind) -> Result<Vec<Release>> {
+    if let Some(how) = system_only(kind) {
+        bail!("{} isn't published for this system: install it on the system ({how}), Ronnie uses it", kind.name());
+    }
     let mut all = match kind {
         Kind::Php if cfg!(windows) => php_windows_releases()?,
         Kind::Php => php_static_releases()?,
         Kind::Nginx if cfg!(windows) => nginx_releases()?,
-        Kind::Nginx => bail!("nginx.org publishes nginx for Windows only: install it on the system (brew install nginx, apt install nginx...), Ronnie uses it"),
-        Kind::Mysql if cfg!(windows) => mysql_releases()?,
-        Kind::Mysql => bail!("Ronnie installs MySQL on Windows only: install it on the system (brew install mysql, apt install mysql-server...), Ronnie uses it"),
+        Kind::Nginx => nginx_mac_releases()?,
+        Kind::Mysql => mysql_releases()?,
         Kind::Mariadb => mariadb_releases()?,
     };
     all.sort_by_key(|r| std::cmp::Reverse(parse(&r.version)));
@@ -341,15 +375,101 @@ fn nginx_releases() -> Result<Vec<Release>> {
 }
 
 #[derive(Deserialize)]
+struct NginxBinaries {
+    contents: Vec<NginxBinary>,
+}
+
+#[derive(Deserialize)]
+struct NginxBinary {
+    name: String,
+    version: String,
+    variant: String,
+    arch: String,
+    os: String,
+    filename: String,
+    /// "sha1:…".
+    checksum: String,
+}
+
+/// jirutka/nginx-binaries' Mac builds, the newest of each of its last lines (the stable, even, and the
+/// mainline), each with Homebrew's PCRE2 it is linked against.
+fn nginx_mac_releases() -> Result<Vec<Release>> {
+    let index: NginxBinaries = serde_json::from_str(&get_text(&format!("{NGINX_MAC}/index.json"))?).context("nginx-binaries' list unreadable")?;
+    let mut newest: std::collections::BTreeMap<(u64, u64), NginxBinary> = std::collections::BTreeMap::new();
+    for bin in index.contents {
+        if bin.name != "nginx" || bin.os != "darwin" || bin.arch != "arm64" || !bin.variant.is_empty() || !safe_version(&bin.version) {
+            continue;
+        }
+        let (major, minor, _, _) = parse(&bin.version);
+        if newest.get(&(major, minor)).is_none_or(|b| parse(&bin.version) > parse(&b.version)) {
+            newest.insert((major, minor), bin);
+        }
+    }
+    let pcre2 = brew_bottle("pcre2")?;
+    Ok(newest
+        .into_values()
+        .rev()
+        .take(4)
+        .map(|bin| {
+            let note = if parse(&bin.version).1.is_multiple_of(2) { "stable" } else { "mainline" }.to_owned();
+            Release { files: vec![(format!("{NGINX_MAC}/{}", bin.filename), Some(bin.checksum)), pcre2.clone()], version: bin.version, note }
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct Formula {
+    bottle: FormulaBottles,
+}
+
+#[derive(Deserialize)]
+struct FormulaBottles {
+    stable: FormulaBottle,
+}
+
+#[derive(Deserialize)]
+struct FormulaBottle {
+    files: std::collections::BTreeMap<String, BottleFile>,
+}
+
+#[derive(Deserialize)]
+struct BottleFile {
+    url: String,
+    sha256: String,
+}
+
+/// The place of Homebrew's bottle of `formula` for Apple's Macs, the oldest system's (it runs on the
+/// newer), and its SHA-256.
+fn brew_bottle(formula: &str) -> Result<(String, Option<String>)> {
+    let found: Formula = serde_json::from_str(&get_text(&format!("{BREW_API}/{formula}.json"))?).context("Homebrew's answer unreadable")?;
+    let files = found.bottle.stable.files;
+    let tag = ["all", "arm64_sonoma", "arm64_sequoia", "arm64_tahoe"]
+        .iter()
+        .map(|t| t.to_string())
+        .find(|t| files.contains_key(t))
+        .or_else(|| files.keys().find(|t| t.starts_with("arm64_") && !t.contains("linux")).cloned())
+        .with_context(|| format!("Homebrew has no {formula} for this Mac"))?;
+    let file = &files[&tag];
+    Ok((file.url.clone(), Some(file.sha256.clone())))
+}
+
+#[derive(Deserialize)]
 struct GitRef {
     #[serde(rename = "ref")]
     name: String,
 }
 
 /// MySQL's newest release of its long-term lines (8.0, 8.4, 9.7...) and of its newest line, from its
-/// GitHub tags; the archive's place (`MySQL-8.4/mysql-8.4.13-winx64.zip`) under the CDN's
-/// `Downloads`, or its `archives` once superseded.
+/// GitHub tags; the archive's place (`MySQL-8.4/mysql-8.4.13-winx64.zip`,
+/// `MySQL-8.4/mysql-8.4.13-macos15-arm64.tar.gz`) under the CDN's `Downloads`, or its `archives` once
+/// superseded.
 fn mysql_releases() -> Result<Vec<Release>> {
+    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => "winx64.zip",
+        ("macos", "aarch64") => "{macos}-arm64.tar.gz",
+        ("macos", "x86_64") => "{macos}-x86_64.tar.gz",
+        _ => bail!("mysql.com publishes MySQL for Windows and macOS only: install it on the system (sudo apt install mysql-server), Ronnie uses it"),
+    };
     let refs: Vec<GitRef> = serde_json::from_str(&get_text(MYSQL_TAGS)?).context("MySQL's list unreadable")?;
     let mut newest: std::collections::BTreeMap<(u64, u64), String> = std::collections::BTreeMap::new();
     for r in &refs {
@@ -371,7 +491,7 @@ fn mysql_releases() -> Result<Vec<Release>> {
         .filter(|(line, _)| lts(*line) || Some(*line) == last)
         .map(|((major, minor), version)| {
             let note = if lts((major, minor)) { "LTS" } else { "innovation" }.to_owned();
-            Release { files: vec![(format!("MySQL-{major}.{minor}/mysql-{version}-winx64.zip"), None)], version, note }
+            Release { files: vec![(format!("MySQL-{major}.{minor}/mysql-{version}-{platform}"), None)], version, note }
         })
         .collect())
 }
@@ -463,7 +583,12 @@ pub fn release_of(kind: Kind, version: &str) -> Result<Release> {
 /// Downloads `url` whole (at most `MAX_DOWNLOAD`), telling how far it went from `before` bytes on
 /// (the files of a version add up).
 fn download(agent: &ureq::Agent, url: &str, progress: &Arc<Mutex<Progress>>, ctx: &egui::Context, before: u64, total_hint: u64) -> Result<Vec<u8>> {
-    let mut response = agent.get(url).header("User-Agent", USER_AGENT).call().with_context(|| format!("download failed: {url}"))?;
+    let mut request = agent.get(url).header("User-Agent", USER_AGENT);
+    if url.starts_with("https://ghcr.io/") {
+        // Homebrew's bottles: its packages are public, read with the anonymous token.
+        request = request.header("Authorization", "Bearer QQ==");
+    }
+    let mut response = request.call().with_context(|| format!("download failed: {url}"))?;
     let size: u64 = response.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
     let total = total_hint.max(before + size);
     let mut reader = response.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
@@ -500,13 +625,17 @@ pub fn install(kind: Kind, release: &Release, progress: &Arc<Mutex<Progress>>, c
             // A release superseded moves to the archives.
             Kind::Php if cfg!(windows) => download(&agent, &format!("{PHP_WINDOWS}/{file}"), progress, ctx, received, 0).or_else(|_| download(&agent, &format!("{PHP_WINDOWS}/archives/{file}"), progress, ctx, received, 0))?,
             Kind::Php => download(&agent, &format!("{STATIC_PHP}/{file}"), progress, ctx, received, 0)?,
-            Kind::Nginx => download(&agent, &format!("{NGINX}/download/{file}"), progress, ctx, received, 0)?,
-            Kind::Mysql => download(&agent, &format!("{MYSQL_CDN}/Downloads/{file}"), progress, ctx, received, 0)
-                .or_else(|_| download(&agent, &format!("{MYSQL_CDN}/archives/{}", file.to_lowercase()), progress, ctx, received, 0))?,
+            Kind::Nginx if cfg!(windows) => download(&agent, &format!("{NGINX}/download/{file}"), progress, ctx, received, 0)?,
+            Kind::Nginx => download(&agent, file, progress, ctx, received, 0)?,
+            Kind::Mysql => mysql_download(&agent, file, progress, ctx, received)?,
             Kind::Mariadb => download(&agent, file, progress, ctx, received, 0)?,
         };
         if let Some(expected) = sha256 {
-            let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+            let actual: String = match expected.strip_prefix("sha1:") {
+                Some(_) => sha1::Sha1::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect(),
+                None => Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect(),
+            };
+            let expected = expected.strip_prefix("sha1:").unwrap_or(expected);
             if !actual.eq_ignore_ascii_case(expected) {
                 bail!("the downloaded archive is corrupted (SHA-256 mismatch)");
             }
@@ -524,7 +653,10 @@ pub fn install(kind: Kind, release: &Release, progress: &Arc<Mutex<Progress>>, c
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir(&staging)?;
     let result = (|| {
-        for (file, bytes) in &archives {
+        if kind == Kind::Nginx && !cfg!(windows) {
+            nginx_mac_unpack(&staging, &archives)?;
+        }
+        for (file, bytes) in archives.iter().filter(|_| kind != Kind::Nginx || cfg!(windows)) {
             if file.ends_with(".zip") {
                 zip::ZipArchive::new(std::io::Cursor::new(bytes))?.extract(&staging)?;
             } else {
@@ -551,6 +683,88 @@ pub fn install(kind: Kind, release: &Release, progress: &Arc<Mutex<Progress>>, c
     result
 }
 
+/// A MySQL archive, under the CDN's `Downloads` or its `archives`; for macOS, built for one of the
+/// systems it is published for (its name says which: "macos15").
+fn mysql_download(agent: &ureq::Agent, file: &str, progress: &Arc<Mutex<Progress>>, ctx: &egui::Context, received: u64) -> Result<Vec<u8>> {
+    let names: Vec<String> = if file.contains(MACOS) { ["macos15", "macos26", "macos27", "macos14"].map(|os| file.replace(MACOS, os)).to_vec() } else { vec![file.to_owned()] };
+    let mut failed = None;
+    for name in &names {
+        for url in [format!("{MYSQL_CDN}/Downloads/{name}"), format!("{MYSQL_CDN}/archives/{}", name.to_lowercase())] {
+            match download(agent, &url, progress, ctx, received, 0) {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => failed = Some(e),
+            }
+        }
+    }
+    Err(failed.unwrap_or_else(|| anyhow::anyhow!("MySQL isn't published for this system")))
+}
+
+/// nginx for the Mac put together in `staging`: its program (`archives`' first), Homebrew's PCRE2
+/// beside it (in the bottle, the second), the program sent to it there rather than to Homebrew's
+/// folder, then signed again (macOS runs nothing whose signature doesn't match).
+fn nginx_mac_unpack(staging: &Path, archives: &[(String, Vec<u8>)]) -> Result<()> {
+    let [(_, program), (_, bottle)] = archives else { bail!("nginx: its files are missing") };
+    let mut program = program.clone();
+    let lib = staging.join(PCRE2_LIB);
+    let mut found = false;
+    for entry in tar::Archive::new(flate2::read::GzDecoder::new(&bottle[..])).entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        // `pcre2/10.49/lib/libpcre2-8.0.dylib`: the file itself (the others are links to it).
+        if path.file_name().is_some_and(|n| n == PCRE2_LIB) && entry.header().entry_type().is_file() {
+            entry.unpack(&lib)?;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        bail!("Homebrew's PCRE2 doesn't hold {PCRE2_LIB}");
+    }
+    if relink(&mut program, PCRE2_BREW, "@executable_path/") == 0 {
+        bail!("nginx isn't linked against Homebrew's PCRE2 any more");
+    }
+    let nginx = staging.join("nginx");
+    std::fs::write(&nginx, &program)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&nginx, std::fs::Permissions::from_mode(0o755))?;
+    }
+    for file in [&lib, &nginx] {
+        let out = std::process::Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(file).stdin(std::process::Stdio::null()).output().context("codesign missing")?;
+        if !out.status.success() {
+            bail!("{} can't be signed: {}", file.display(), String::from_utf8_lossy(&out.stderr).trim());
+        }
+    }
+    let out = std::process::Command::new(&nginx).arg("-v").stdin(std::process::Stdio::null()).output().context("nginx doesn't start")?;
+    if !out.status.success() {
+        bail!("nginx doesn't start: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
+/// In a program, the libraries it loads from folder `from` ("/opt/homebrew/opt/pcre2/lib/") loaded from
+/// `to` instead ("@executable_path/"), as long as no longer (their place in it is fixed: what is left
+/// is zeros); how many.
+fn relink(program: &mut [u8], from: &str, to: &str) -> usize {
+    let (from, to) = (from.as_bytes(), to.as_bytes());
+    let mut count = 0;
+    let mut at = 0;
+    while let Some(found) = program[at..].windows(from.len()).position(|w| w == from) {
+        let start = at + found;
+        let end = start + program[start..].iter().position(|&b| b == 0).unwrap_or(program.len() - start);
+        let name = program[start + from.len()..end].to_vec();
+        let new: Vec<u8> = to.iter().chain(&name).copied().collect();
+        if new.len() <= end - start {
+            program[start..start + new.len()].copy_from_slice(&new);
+            program[start + new.len()..end].fill(0);
+            count += 1;
+        }
+        at = end;
+    }
+    count
+}
+
 /// The installed version of PHP's line `line` ("8.3"), the newest of it.
 pub fn php_of_line(line_wanted: &str) -> Option<String> {
     installed(Kind::Php).into_iter().find(|v| line(v) == line_wanted)
@@ -571,6 +785,16 @@ mod tests {
         assert!(!safe_version("../8.3") && !safe_version("8..3") && !safe_version("") && !safe_version("system"));
         assert!(parse("8.3.36-1") > parse("8.3.36") && parse("8.10.0") > parse("8.9.9"));
         assert_eq!(line("8.3.36-1"), "8.3");
+    }
+
+    #[test]
+    fn relinked() {
+        let mut program = b"xx\0/opt/homebrew/opt/pcre2/lib/libpcre2-8.0.dylib\0yy /opt/homebrew/opt/pcre/include".to_vec();
+        let len = program.len();
+        assert_eq!(relink(&mut program, PCRE2_BREW, "@executable_path/"), 1);
+        assert_eq!(program.len(), len);
+        assert!(program.starts_with(b"xx\0@executable_path/libpcre2-8.0.dylib\0\0"));
+        assert!(program.ends_with(b"\0yy /opt/homebrew/opt/pcre/include"));
     }
 }
 
