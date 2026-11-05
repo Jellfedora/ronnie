@@ -1376,11 +1376,22 @@ impl App {
             });
         });
         // What the games unlocked, to switch off.
-        if super::trail::unlocked(picked.runner_best) {
+        let (trail, sheep) = (super::trail::unlocked(picked.runner_best), super::office::sheep_unlocked(picked));
+        if trail || sheep {
             card(ui, theme, Some(t.set_rewards), |ui| {
-                setting_row(ui, theme, t.trail_setting, Some(t.trail_setting_desc), |ui| {
-                    toggle(ui, theme, &mut picked.cursor_trail);
-                });
+                if trail {
+                    setting_row(ui, theme, t.trail_setting, Some(t.trail_setting_desc), |ui| {
+                        toggle(ui, theme, &mut picked.cursor_trail);
+                    });
+                }
+                if trail && sheep {
+                    divider(ui, theme);
+                }
+                if sheep {
+                    setting_row(ui, theme, t.sheep_setting, Some(t.sheep_setting_desc), |ui| {
+                        toggle(ui, theme, &mut picked.sheep);
+                    });
+                }
             });
         }
         card(ui, theme, Some(t.set_home), |ui| {
@@ -1909,9 +1920,11 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked) {
+                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, picked.fish_cards.len() >= crate::fishing::FISH.len()) {
                             let how = if preset.id == crate::theme::HYPERSPACE_THEME {
                                 t.theme_locked_larsen.to_owned()
+                            } else if preset.id == crate::theme::OFFICE_THEME {
+                                t.theme_locked_office.replace("{n}", &crate::fishing::FISH.len().to_string())
                             } else if preset.id == crate::theme::JURASSIC_THEME {
                                 t.theme_locked_blob.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string())
                             } else {

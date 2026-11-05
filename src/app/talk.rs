@@ -713,6 +713,7 @@ impl App {
             let c = Pos2::new(slot.min.x + 17.0, slot.center().y);
             let face = self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &m.id, m.avatar.as_deref());
             paint_avatar(&painter, c, 9.0, &m.name, false, face.as_ref(), m.frame.as_deref(), &theme);
+            super::office::paint_badge(&painter, c, 9.0, &m.badges);
             if *online {
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 3.8, theme.chrome_bg);
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 2.6, theme.ansi[2]);

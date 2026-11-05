@@ -42,6 +42,25 @@ impl Rarity {
     pub fn index(self) -> usize {
         self as usize
     }
+
+    /// What its card is worth in the collection (as much again shiny): floor's src/pond/fish.js.
+    pub fn points(self) -> u32 {
+        match self {
+            Rarity::Common => 1,
+            Rarity::Uncommon => 2,
+            Rarity::Rare => 5,
+            Rarity::VeryRare => 10,
+            Rarity::Legendary => 25,
+        }
+    }
+}
+
+/// Candidates hired in all for the « Chasseur de têtes » badge on floor (src/games/peche.js).
+pub const HUNTER: u32 = 100;
+
+/// The collection's points: each card by its rarity, as much again when caught shiny.
+pub fn points(cards: &std::collections::BTreeMap<String, crate::config::FishCard>) -> u32 {
+    FISH.iter().filter_map(|f| cards.get(f.id).filter(|c| c.count > 0).map(|c| f.rarity.points() * if c.shiny > 0 { 2 } else { 1 })).sum()
 }
 
 /// When a fish bites (the machine's clock).
@@ -305,6 +324,9 @@ mod tests {
         // Only in the evening.
         assert!(!When::Evening.bites(10) && When::Evening.bites(23) && When::Evening.bites(3));
         assert_eq!(by_id("directeur"), Some(12));
+        // As floor counts them: 158 for the whole binder, shiny.
+        let all: std::collections::BTreeMap<String, crate::config::FishCard> = FISH.iter().map(|f| (f.id.to_owned(), crate::config::FishCard { count: 1, shiny: 1, ..Default::default() })).collect();
+        assert_eq!(points(&all), 158);
     }
 
     /// Following the fish with the bar catches it; doing nothing loses it.

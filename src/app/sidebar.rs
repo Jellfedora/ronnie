@@ -600,6 +600,7 @@ impl App {
         let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
         if let (Some(face), Some(name)) = (&face, &pseudo) {
             super::talk::paint_avatar(&painter, avatar, 18.0, name, false, Some(face), account.as_ref().and_then(|a| a.frame.as_deref()), &theme);
+            super::office::paint_badge(&painter, avatar, 18.0, &self.own_badges());
         } else {
             painter.circle_filled(avatar, 18.0, theme.accent.gamma_multiply(if pseudo.is_some() { 1.0 } else { 0.25 }));
             let initial = pseudo.as_deref().and_then(|p| p.chars().next()).map_or("?".to_owned(), |c| c.to_uppercase().to_string());
@@ -1756,6 +1757,24 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::hyperspace::droid_rect(field), ui.id().with("droid"), Sense::hover()).on_hover_text("Bip-bou-bip ! Bou-diiip !");
         }
+        if self.theme.office {
+            // Open space: the cork board, the plant, the coffee machine (it speaks when hovered), the water
+            // cooler, just above the cards (the list goes over them).
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 96.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let now = ui.input(|i| i.time);
+            let again = super::office::scene(ui.painter(), field, &self.theme, now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+            ui.interact(super::office::coffee_rect(field), ui.id().with("coffee"), Sense::hover()).on_hover_text(t.office_coffee);
+        }
+        // The five-legged sheep, caught at the fishing: now and then a walk along the foot of the list.
+        if self.config.settings.sheep && super::office::sheep_unlocked(&self.config.settings) {
+            let strip = Rect::from_min_max(Pos2::new(bar.min.x + 4.0, card_top - 34.0), Pos2::new(bar.max.x - 5.0, card_top - 2.0));
+            let (shown, again) = super::office::sheep(ui.painter(), strip, ui.input(|i| i.time));
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+            if let Some(r) = shown {
+                ui.interact(r, ui.id().with("sheep"), Sense::hover()).on_hover_text(t.sheep_bleat);
+            }
+        }
         let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).
@@ -1771,6 +1790,9 @@ impl App {
         if self.theme.jurassic {
             // Jurassic Park: safety stripes above the settings (the ferns are under the cards).
             super::jurassic::hazard(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else if self.theme.office {
+            // Open space: post-its above the settings.
+            super::office::strip(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 10.0, footer_top - 3.0), Pos2::new(bar.max.x - 11.0, footer_top + 3.0)));
         } else if self.theme.hyperspace {
             // Star Wars: a duel above the settings.
             let now = ui.input(|i| i.time);

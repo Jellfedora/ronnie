@@ -224,7 +224,7 @@ impl App {
         let before = self.config.settings.bughunt_best_wave;
         let wave = wave.max(before);
         let t = self.t();
-        for f in super::frames::FRAMES.iter().filter(|f| before < f.wave && wave >= f.wave) {
+        for f in super::frames::FRAMES.iter().filter(|f| matches!(f.need, super::frames::Need::Wave(w) if before < w && wave >= w)) {
             let title = t.frame_unlocked.replace("{n}", super::frames::frame_name(t, f.id));
             self.push_toast(super::Toast { ok: true, title, body: t.frame_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
         }

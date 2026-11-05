@@ -48,6 +48,9 @@ pub struct Member {
     /// The frame it wears around it (`app::frames`).
     #[serde(default)]
     pub frame: Option<String>,
+    /// The badges floor gave it (the fishing's « chasseur », `app::office`).
+    #[serde(default)]
+    pub badges: Vec<String>,
 }
 
 /// A reaction to a message: an emoji, and the players who reacted so.

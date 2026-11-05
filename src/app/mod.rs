@@ -45,6 +45,7 @@ mod history;
 mod issues;
 mod jurassic;
 mod hyperspace;
+mod office;
 mod library;
 mod mail;
 mod procs;
@@ -5046,6 +5047,16 @@ impl App {
                         hyperspace::blade(ui.painter(), r, &self.theme);
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    }
+                    // Open space: « T'as 5 minutes ? » over the pane, 2.5 s after its bell.
+                    if self.theme.office
+                        && let Some(at) = tab.panes.get(&id).and_then(|p| p.bell_at)
+                    {
+                        let k = 1.0 - at.elapsed().as_secs_f32() / 2.5;
+                        if k > 0.0 {
+                            office::bubble(ui.painter(), r, k, self.config.settings.language.strings().office_bell, &self.theme);
+                            ui.ctx().request_repaint();
+                        }
                     }
                     if let Some((color, level)) = tab.panes.get_mut(&id).and_then(Terminal::flash_level) {
                         for k in 0..10 {

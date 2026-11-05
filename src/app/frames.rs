@@ -5,18 +5,50 @@
 
 use super::*;
 
-/// A frame: its id on floor, the Bug Hunt wave that unlocks it.
-pub(super) struct FrameDef {
-    pub id: &'static str,
-    pub wave: u32,
+/// What unlocks a frame.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Need {
+    /// This Bug Hunt wave reached.
+    Wave(u32),
+    /// So many of the fishing's cards caught shiny (floor checks the same, `holo`).
+    Shiny(u32),
 }
 
-/// The frames, in the order they unlock: the first once the first boss is beaten.
-pub(super) const FRAMES: [FrameDef; 3] = [FrameDef { id: "glitch", wave: 6 }, FrameDef { id: "swarm", wave: 11 }, FrameDef { id: "circuit", wave: 16 }];
+/// A frame: its id on floor, what unlocks it.
+pub(super) struct FrameDef {
+    pub id: &'static str,
+    pub need: Need,
+}
 
-/// Whether a frame is unlocked, by the highest Bug Hunt wave reached.
-pub(super) fn unlocked(def: &FrameDef, best_wave: u32) -> bool {
-    !crate::config::OFFICIAL || best_wave >= def.wave
+/// The frames, in the order they unlock: Bug Hunt's (the first once the first boss is beaten), then
+/// the fishing's shiny binder.
+pub(super) const FRAMES: [FrameDef; 4] = [
+    FrameDef { id: "glitch", need: Need::Wave(6) },
+    FrameDef { id: "swarm", need: Need::Wave(11) },
+    FrameDef { id: "circuit", need: Need::Wave(16) },
+    FrameDef { id: "holo", need: Need::Shiny(crate::fishing::FISH.len() as u32) },
+];
+
+/// How far the player is toward a frame, and how far they must go.
+pub(super) fn progress(def: &FrameDef, s: &crate::config::Settings) -> (u32, u32) {
+    match def.need {
+        Need::Wave(w) => (s.bughunt_best_wave, w),
+        Need::Shiny(n) => (s.fish_cards.values().filter(|c| c.shiny > 0).count() as u32, n),
+    }
+}
+
+/// Whether a frame is unlocked.
+pub(super) fn unlocked(def: &FrameDef, s: &crate::config::Settings) -> bool {
+    let (have, need) = progress(def, s);
+    !crate::config::OFFICIAL || have >= need
+}
+
+/// How a frame unlocks, said.
+pub(super) fn how(def: &FrameDef, t: &Strings) -> String {
+    match def.need {
+        Need::Wave(w) => t.frame_how.replace("{n}", &w.to_string()),
+        Need::Shiny(n) => t.frame_how_shiny.replace("{n}", &n.to_string()),
+    }
 }
 
 /// A frame's name.
@@ -93,6 +125,29 @@ pub(super) fn paint_frame(painter: &egui::Painter, c: Pos2, r: f32, id: Option<&
                     let at = c + Vec2::angled(a - trail as f32 * 0.09) * ring;
                     painter.circle_filled(at, w * (0.9 - trail as f32 * 0.18), Color32::WHITE.gamma_multiply(0.85 - trail as f32 * 0.2));
                 }
+            }
+        }
+        // The shiny binder's: a gold ring, a rainbow sheen running round it, sparkles.
+        "holo" => {
+            let gold = Color32::from_rgb(0xf2, 0xc2, 0x3a);
+            painter.circle_stroke(c, ring + w * 0.5, Stroke::new(w * 1.6, gold.gamma_multiply(0.35)));
+            painter.circle_stroke(c, ring, Stroke::new(w, gold));
+            let rainbow = [(0xff, 0x6a, 0x6a), (0xff, 0xd3, 0x6a), (0x8c, 0xff, 0x8a), (0x6a, 0xd8, 0xff), (0xb3, 0x8c, 0xff)];
+            let n = 40;
+            for k in 0..n {
+                let a0 = k as f32 / n as f32 * tau;
+                let a1 = (k + 1) as f32 / n as f32 * tau;
+                let shift = (now as f32 * 0.5 + k as f32 / n as f32) * rainbow.len() as f32;
+                let (r1, g1, b1) = rainbow[shift as usize % rainbow.len()];
+                painter.line_segment([c + Vec2::angled(a0) * (ring + w * 1.2), c + Vec2::angled(a1) * (ring + w * 1.2)], Stroke::new(w * 0.6, Color32::from_rgb(r1, g1, b1).gamma_multiply(0.8)));
+            }
+            for k in 0..4 {
+                let phase = (now as f32 * 0.8 + k as f32 * 0.25) % 1.0;
+                let a = k as f32 * 1.7 + now as f32 * 0.3;
+                let at = c + Vec2::angled(a) * (ring + w * 2.2);
+                let s = w * 1.6 * (1.0 - (phase * 2.0 - 1.0).abs());
+                painter.line_segment([at - Vec2::new(s, 0.0), at + Vec2::new(s, 0.0)], Stroke::new(w * 0.35, Color32::WHITE));
+                painter.line_segment([at - Vec2::new(0.0, s), at + Vec2::new(0.0, s)], Stroke::new(w * 0.35, Color32::WHITE));
             }
         }
         _ => return,

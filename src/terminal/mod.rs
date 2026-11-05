@@ -183,6 +183,8 @@ pub struct Terminal {
     cwd_cache: Option<(Instant, Option<PathBuf>, u64)>,
     /// A flash of the pane's edges (a command failed...): its color and when it began.
     flash: Option<(Color32, Instant)>,
+    /// When the bell last rang (the Open space theme's « T'as 5 minutes ? »).
+    pub bell_at: Option<Instant>,
     /// A shell on this machine (not ssh): the directory it reports is a local one.
     local_shell: bool,
     /// Its RONNIE_PANE: Claude Code's hooks name the pane with it (see `claude::Event`).
@@ -294,6 +296,7 @@ impl Terminal {
             grid_origin: Pos2::ZERO,
             cwd_cache: None,
             flash: None,
+            bell_at: None,
             local_shell: false,
             token: None,
             started: Instant::now(),
@@ -729,6 +732,11 @@ impl Terminal {
                 TermEvent::Bell if theme.jurassic => self.flash(theme.ansi[1]),
                 // Hyperspace: a red blade.
                 TermEvent::Bell if theme.hyperspace => self.flash(theme.ansi[1]),
+                // Open space: a post-it yellow, and someone asking for 5 minutes.
+                TermEvent::Bell if theme.office => {
+                    self.flash(theme.ansi[11]);
+                    self.bell_at = Some(Instant::now());
+                }
                 _ => {}
             }
         }

@@ -34,13 +34,27 @@ impl App {
                 let need = super::trail::TRAIL_METERS;
                 vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false }]
             }
-            HomeGame::BugHunt => super::frames::FRAMES
-                .iter()
-                .map(|f| {
+            HomeGame::BugHunt | HomeGame::Fishing => {
+                let frames = super::frames::FRAMES.iter().filter(|f| matches!(f.need, super::frames::Need::Wave(_)) == (game == HomeGame::BugHunt)).map(|f| {
                     let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
-                    Unlock { what, how: t.frame_how.replace("{n}", &f.wave.to_string()), done: super::frames::unlocked(f, s.bughunt_best_wave), progress: Some((s.bughunt_best_wave, f.wave)), info: false }
-                })
-                .collect(),
+                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false }
+                });
+                if game == HomeGame::BugHunt {
+                    return frames.collect();
+                }
+                // The fishing: the theme of the full binder, the sheep, the badge, then the frame.
+                let species = s.fish_cards.len() as u32;
+                let all = crate::fishing::FISH.len() as u32;
+                let hires: u32 = s.fish_cards.values().map(|c| c.count).sum();
+                let sheep = super::office::sheep_unlocked(s);
+                let mut list = vec![
+                    Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &all.to_string()), done: !crate::config::OFFICIAL || species >= all, progress: Some((species, all)), info: false },
+                    Unlock { what: t.unlock_sheep.into(), how: t.unlock_sheep_how.to_owned(), done: sheep, progress: None, info: false },
+                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false },
+                ];
+                list.extend(frames);
+                list
+            }
             _ => Vec::new(),
         }
     }

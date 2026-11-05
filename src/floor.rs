@@ -672,6 +672,8 @@ pub struct GameEntry {
     pub id: Option<String>,
     pub avatar: Option<String>,
     pub frame: Option<String>,
+    /// The badges floor gave the player (the fishing's « chasseur »).
+    pub badges: Vec<String>,
 }
 
 #[derive(Default)]
@@ -693,7 +695,8 @@ impl GameFloor {
 
     /// A round played: sent at the next sync (the best one, when several wait).
     pub fn finished(&mut self, round: GameRound) {
-        let better = |p: &GameRound| if self.lower_wins { round.score < p.score } else { round.score > p.score };
+        // A tie too: the later one's details (the fishing's hires...) go on.
+        let better = |p: &GameRound| if self.lower_wins { round.score <= p.score } else { round.score >= p.score };
         if self.pending.as_ref().is_none_or(better) {
             self.pending = Some(round);
         }
@@ -761,6 +764,8 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         avatar: Option<String>,
         #[serde(default)]
         frame: Option<String>,
+        #[serde(default)]
+        badges: Vec<String>,
     }
     #[derive(Deserialize)]
     struct Answer {
@@ -776,7 +781,7 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         request = request.header("Authorization", format!("Bearer {}", a.token));
     }
     let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame }).collect())
+    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame, badges: l.badges }).collect())
 }
 
 #[cfg(test)]

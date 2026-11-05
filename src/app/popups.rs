@@ -1247,7 +1247,8 @@ impl App {
         let own = account.as_ref().and_then(|a| a.name.clone());
         let face = account.as_ref().and_then(|a| self.avatars.get(ctx, Some(a), &a.id, a.avatar.as_deref()));
         let now = ctx.input(|i| i.time);
-        let best_wave = self.config.settings.bughunt_best_wave;
+        // The frames unlocked (by their id).
+        let frames_open: Vec<(&str, bool)> = super::frames::FRAMES.iter().map(|d| (d.id, super::frames::unlocked(d, &self.config.settings))).collect();
         let Some(prompt) = &mut self.pseudo_prompt else { return };
         let mode = prompt.mode;
         // Whether the pseudo is free (signing up, renaming), asked once the typing pauses (not one's own).
@@ -1308,7 +1309,7 @@ impl App {
                     let choices = std::iter::once(None).chain(super::frames::FRAMES.iter().map(Some));
                     for def in choices {
                         let id = def.map(|d| d.id);
-                        let open = def.is_none_or(|d| super::frames::unlocked(d, best_wave));
+                        let open = def.is_none_or(|d| frames_open.iter().any(|&(id, o)| id == d.id && o));
                         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(52.0), egui::Sense::click());
                         let picked = worn.as_deref() == id;
                         let hot = open && resp.hovered();
@@ -1322,7 +1323,7 @@ impl App {
                         }
                         let name = id.map_or(t.frame_none, |id| super::frames::frame_name(t, id));
                         let tip = match def {
-                            Some(d) if !open => format!("{name}\n{}", t.frame_how.replace("{n}", &d.wave.to_string())),
+                            Some(d) if !open => format!("{name}\n{}", super::frames::how(d, t)),
                             _ => name.to_owned(),
                         };
                         let resp = resp.on_hover_text(tip);

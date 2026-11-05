@@ -213,6 +213,10 @@ impl App {
         } else {
             self.fishing_pond(ui, body, now);
         }
+        // What it unlocks (the theme, the sheep, the badge, the frame), out of a fight.
+        if !self.fishing.fighting() && self.fishing.zoom.is_none() {
+            self.unlocks_pill(ui, rect, HomeGame::Fishing);
+        }
     }
 
     /// The pond: the scene, the line, the fight, the card just won.
@@ -333,6 +337,9 @@ impl App {
     /// floor's board.
     fn fishing_hired(&mut self, fish: usize, size: u32, shiny: bool, now: f64) {
         let id = FISH[fish].id;
+        let all = FISH.len() as u32;
+        let tally = |cards: &std::collections::BTreeMap<String, crate::config::FishCard>| (cards.len() as u32, cards.values().filter(|c| c.shiny > 0).count() as u32, cards.values().map(|c| c.count).sum::<u32>());
+        let (species_before, shiny_before, hires_before) = tally(&self.config.settings.fish_cards);
         let card = self.config.settings.fish_cards.entry(id.to_owned()).or_default();
         let new = card.count == 0;
         let record = !new && size > card.best_cm;
@@ -349,11 +356,31 @@ impl App {
         self.save_config();
         self.fishing.pond.caught(id, size, shiny);
         let cards = &self.config.settings.fish_cards;
-        let species = cards.len() as u32;
-        let catches: u32 = cards.values().map(|c| c.count).sum();
+        let (species, shinies, catches) = tally(cards);
         let biggest = cards.values().map(|c| c.best_cm).max().unwrap_or(size);
+        let points = crate::fishing::points(cards);
+
+        // What it unlocks: said.
+        let t = self.t();
+        let mut said = vec![];
+        if species_before < all && species >= all {
+            said.push((t.office_unlocked.to_owned(), t.office_unlocked_body.to_owned()));
+        }
+        if new && FISH[fish].rarity == Rarity::Legendary {
+            said.push((t.sheep_unlocked.to_owned(), t.sheep_unlocked_body.to_owned()));
+        }
+        if hires_before < crate::fishing::HUNTER && catches >= crate::fishing::HUNTER {
+            said.push((t.hunter_unlocked.to_owned(), t.hunter_unlocked_body.to_owned()));
+        }
+        if shiny_before < all && shinies >= all {
+            said.push((t.frame_unlocked.replace("{n}", super::frames::frame_name(t, "holo")), t.frame_unlocked_body.to_owned()));
+        }
+        for (title, body) in said {
+            self.push_toast(super::Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
+
         if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
-            self.fishing.floor.finished(crate::floor::GameRound { score: species, details: serde_json::json!({ "species": species, "catches": catches, "biggest": biggest }) });
+            self.fishing.floor.finished(crate::floor::GameRound { score: points, details: serde_json::json!({ "points": points, "species": species, "shiny": shinies, "catches": catches, "biggest": biggest }) });
             self.fishing.floor.sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
         }
     }
@@ -685,7 +712,7 @@ impl App {
             let best = (have > 0).then(|| t.fishing_collection.replace("{n}", &have.to_string()).replace("{max}", &FISH.len().to_string()));
             let note = |e: &crate::floor::GameEntry| e.details.get("catches").and_then(serde_json::Value::as_u64).map(|n| t.fishing_board_note.replace("{n}", &n.to_string()));
             let entries = self.fishing.floor.board().map(<[_]>::to_vec);
-            if self.game_board_noted(ui, board, &theme, entries.as_deref(), best, |s| format!("{s}/{}", FISH.len()), &note) {
+            if self.game_board_noted(ui, board, &theme, entries.as_deref(), best, |s| format!("{s} pts"), &note) {
                 self.ask_pseudo();
             }
         }

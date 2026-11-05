@@ -165,6 +165,7 @@ impl App {
             let account = self.config.settings.floor.as_ref();
             let face = entry.id.as_deref().and_then(|id| self.avatars.get(ui.ctx(), account, id, entry.avatar.as_deref()));
             super::talk::paint_avatar(&painter, Pos2::new(area.min.x + 40.0, y + 8.0), 8.0, name, false, face.as_ref(), entry.frame.as_deref(), theme);
+            super::office::paint_badge(&painter, Pos2::new(area.min.x + 40.0, y + 8.0), 8.0, &entry.badges);
             painter.text(Pos2::new(area.min.x + 56.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
             painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, score(entry.score), FontId::monospace(13.0), color);
             if let Some(note) = note(entry) {
