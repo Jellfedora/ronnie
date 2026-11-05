@@ -1911,9 +1911,18 @@ impl App {
                 });
             }
         });
-        for (dark, title) in [(true, t.themes_dark), (false, t.themes_light)] {
+        // The usual themes by light, then the special ones won in the games.
+        let special = |p: &Preset| crate::theme::SPECIAL_THEMES.contains(&p.id);
+        for (group, title) in [(Some(true), t.themes_dark), (Some(false), t.themes_light), (None, t.themes_special)] {
             section_title(ui, theme, title);
-            let presets: Vec<&Preset> = PRESETS.iter().filter(|p| p.dark == dark).collect();
+            if group.is_none() {
+                ui.label(egui::RichText::new(t.themes_special_desc).size(12.5).color(theme.text_muted));
+                ui.add_space(8.0);
+            }
+            let presets: Vec<&Preset> = PRESETS.iter().filter(|p| match group {
+                Some(dark) => p.dark == dark && !special(p),
+                None => special(p),
+            }).collect();
             let best = picked.typing_scores.first().map_or(0, |s| s.letters);
             let per_row = ((ui.available_width() + 12.0) / (THEME_CARD.x + 12.0)).floor().max(1.0) as usize;
             for row in presets.chunks(per_row) {

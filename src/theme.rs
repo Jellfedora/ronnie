@@ -79,6 +79,8 @@ pub const JURASSIC_UNLOCK: u32 = 5000;
 pub const HYPERSPACE_THEME: &str = "hyperspace";
 /// The office theme, unlocked at the fishing: the whole binder of candidates.
 pub const OFFICE_THEME: &str = "open-space";
+/// The themes won in the games, shown apart in the settings.
+pub const SPECIAL_THEMES: [&str; 4] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME];
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
