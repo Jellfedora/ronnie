@@ -131,62 +131,254 @@ pub(super) fn logo(painter: &egui::Painter, rect: Rect) {
     painter.text(at, Align2::LEFT_CENTER, "Ronnie", font, GOLD);
 }
 
-/// The house's crest in `r`: a scarlet shield edged in gold, a gold lion rampant on it (facing left,
-/// its forepaws up, its tail raised), a lightning bolt over its shoulder.
+/// The house's crest in `r`: a shield bevelled in gold (light, dark, gold, a dark line), its scarlet
+/// field shaded top to bottom and damasked, a sheen; on it a gold lion rampant drawn whole (its
+/// outline filled, a shadow under it, its mane, eye, claws, a muscle line); large enough, gold scrolls
+/// on its sides and a ribbon with the house's name under it.
 pub(super) fn crest(painter: &egui::Painter, r: Rect) {
     let p = |x: f32, y: f32| Pos2::new(r.min.x + x * r.width(), r.min.y + y * r.height());
     let u = r.width();
-    // The shield: flat on top, its sides straight then curving to a point.
+    let big = r.height() > 80.0;
     let outline = |inset: f32| -> Vec<Pos2> {
-        let mut pts = vec![p(inset, inset * 0.82), p(1.0 - inset, inset * 0.82)];
+        let mut pts = vec![p(inset, inset * 0.82), p(0.5, inset * 0.82 + 0.035), p(1.0 - inset, inset * 0.82)];
         pts.push(p(1.0 - inset, 0.5));
-        for k in 1..=10 {
-            let a = k as f32 / 10.0 * std::f32::consts::FRAC_PI_2;
+        for k in 1..=12 {
+            let a = k as f32 / 12.0 * std::f32::consts::FRAC_PI_2;
             pts.push(p(0.5 + (0.5 - inset) * a.cos(), 0.5 + (0.5 - inset * 0.82) * a.sin()));
         }
-        for k in 1..=10 {
-            let a = std::f32::consts::FRAC_PI_2 + k as f32 / 10.0 * std::f32::consts::FRAC_PI_2;
+        for k in 1..=12 {
+            let a = std::f32::consts::FRAC_PI_2 + k as f32 / 12.0 * std::f32::consts::FRAC_PI_2;
             pts.push(p(0.5 + (0.5 - inset) * a.cos(), 0.5 + (0.5 - inset * 0.82) * a.sin()));
         }
         pts
     };
-    painter.add(egui::Shape::convex_polygon(outline(-0.03), Color32::from_black_alpha(160), Stroke::NONE));
-    painter.add(egui::Shape::convex_polygon(outline(0.0), GOLD, Stroke::NONE));
-    painter.add(egui::Shape::convex_polygon(outline(0.08), Color32::from_rgb(0xa8, 0x1c, 0x22), Stroke::NONE));
-    // A sheen on the field's upper left.
-    painter.add(egui::Shape::convex_polygon(vec![p(0.1, 0.08), p(0.45, 0.08), p(0.1, 0.42)], Color32::WHITE.gamma_multiply(0.07), Stroke::NONE));
+    let gold_light = Color32::from_rgb(0xff, 0xd8, 0x7a);
+    let gold_dark = Color32::from_rgb(0x9a, 0x62, 0x14);
+    // Large: gold scrolls of mantling behind the shield's sides.
+    if big {
+        for side in [-1.0f32, 1.0] {
+            for (k, (y, len)) in [(0.18f32, 0.34f32), (0.42, 0.3), (0.64, 0.24)].into_iter().enumerate() {
+                let from = p(0.5 + side * 0.46, y);
+                let pts: Vec<Pos2> = (0..=20).map(|j| {
+                    let t = j as f32 / 20.0;
+                    let ang = t * 4.2 + k as f32;
+                    let rad = len * u * (1.0 - t * 0.8);
+                    from + Vec2::new(side * (t * len * u * 0.9 + ang.cos() * rad * 0.25), -ang.sin() * rad * 0.25 + t * 0.06 * u)
+                }).collect();
+                painter.add(egui::Shape::line(pts.clone(), Stroke::new(u * 0.05, gold_dark)));
+                painter.add(egui::Shape::line(pts, Stroke::new(u * 0.028, GOLD)));
+            }
+        }
+    }
+    // The shield's bevelled edge.
+    painter.add(egui::Shape::convex_polygon(outline(-0.035), Color32::from_black_alpha(170), Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(outline(0.0), gold_light, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(outline(0.022), gold_dark, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(outline(0.036), GOLD, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(outline(0.066), Color32::from_rgb(0x3a, 0x08, 0x10), Stroke::NONE));
+    // The field: scarlet, lighter at the top, damasked.
+    let field = outline(0.075);
+    let mut mesh = egui::Mesh::default();
+    let centre = p(0.5, 0.45);
+    mesh.colored_vertex(centre, Color32::from_rgb(0xb8, 0x1e, 0x2a));
+    for q in &field {
+        let k = ((q.y - r.min.y) / r.height()).clamp(0.0, 1.0);
+        mesh.colored_vertex(*q, lerp_color(Color32::from_rgb(0xd0, 0x2a, 0x34), Color32::from_rgb(0x6a, 0x0c, 0x16), k));
+    }
+    let n = field.len() as u32;
+    for k in 0..n {
+        mesh.add_triangle(0, 1 + k, 1 + (k + 1) % n);
+    }
+    painter.add(mesh);
+    let inside = |q: Pos2| {
+        let x = (q.x - r.min.x) / u;
+        let y = (q.y - r.min.y) / r.height();
+        x > 0.1 && x < 0.9 && y > 0.09 && (y < 0.5 || ((x - 0.5) / 0.4).powi(2) + ((y - 0.5) / 0.4).powi(2) < 1.0)
+    };
+    let step = (u * 0.11).max(4.0);
+    let mut yy = r.min.y + step * 0.6;
+    let mut row = 0;
+    while yy < r.max.y {
+        let mut xx = r.min.x + if row % 2 == 0 { step * 0.5 } else { step };
+        while xx < r.max.x {
+            let q = Pos2::new(xx, yy);
+            if inside(q) {
+                let d = step * 0.16;
+                painter.add(egui::Shape::convex_polygon(vec![q + Vec2::new(0.0, -d), q + Vec2::new(d, 0.0), q + Vec2::new(0.0, d), q + Vec2::new(-d, 0.0)], Color32::from_rgb(0x5a, 0x06, 0x10).gamma_multiply(0.5), Stroke::NONE));
+            }
+            xx += step;
+        }
+        yy += step * 0.5;
+        row += 1;
+    }
+    // A sheen across the upper left.
+    painter.add(egui::Shape::convex_polygon(vec![p(0.1, 0.08), p(0.5, 0.08), p(0.1, 0.5)], Color32::WHITE.gamma_multiply(0.06), Stroke::NONE));
 
-    // The lion, in pieces (each convex): body, legs, tail, mane, head.
-    let gold = GOLD;
-    let ellipse = |c: Pos2, rx: f32, ry: f32, tilt: f32| -> Vec<Pos2> {
-        (0..20).map(|k| {
-            let a = k as f32 / 20.0 * TAU;
-            let (x, y) = (a.cos() * rx, a.sin() * ry);
-            c + Vec2::new(x * tilt.cos() - y * tilt.sin(), x * tilt.sin() + y * tilt.cos())
-        }).collect()
-    };
-    let limb = |from: Pos2, to: Pos2, w: f32| {
-        painter.line_segment([from, to], Stroke::new(w, gold));
-        painter.circle_filled(to, w * 0.62, gold);
-    };
-    // The tail, raised behind, its tuft.
-    painter.add(egui::Shape::line(vec![p(0.62, 0.72), p(0.78, 0.62), p(0.8, 0.46), p(0.72, 0.36)], Stroke::new(u * 0.045, gold)));
-    painter.circle_filled(p(0.71, 0.34), u * 0.055, gold);
-    // The hind legs, one forward, one back.
-    limb(p(0.55, 0.74), p(0.44, 0.88), u * 0.08);
-    limb(p(0.6, 0.72), p(0.66, 0.86), u * 0.08);
-    // The body, rearing.
-    painter.add(egui::Shape::convex_polygon(ellipse(p(0.53, 0.6), u * 0.13, u * 0.22, -0.45), gold, Stroke::NONE));
-    // The forepaws, up and out.
-    limb(p(0.45, 0.48), p(0.27, 0.4), u * 0.07);
-    limb(p(0.47, 0.55), p(0.3, 0.58), u * 0.07);
-    // The mane, then the head and the muzzle.
-    painter.add(egui::Shape::convex_polygon(ellipse(p(0.43, 0.32), u * 0.14, u * 0.15, 0.0), Color32::from_rgb(0xd4, 0x96, 0x24), Stroke::NONE));
-    painter.circle_filled(p(0.4, 0.31), u * 0.09, gold);
-    painter.add(egui::Shape::convex_polygon(vec![p(0.27, 0.32), p(0.34, 0.27), p(0.36, 0.38), p(0.29, 0.37)], gold, Stroke::NONE));
-    painter.circle_filled(p(0.37, 0.29), u * 0.018, Color32::from_rgb(0x5a, 0x10, 0x14));
-    // An ear.
-    painter.add(egui::Shape::convex_polygon(vec![p(0.42, 0.22), p(0.46, 0.17), p(0.48, 0.24)], gold, Stroke::NONE));
+    // The lion keeps inside the field: drawn in a box a little smaller.
+    let lp = |x: f32, y: f32| p(0.1 + x * 0.8, 0.1 + y * 0.78);
+    let shape: Vec<Pos2> = LION.iter().map(|&(x, y)| lp(x, y)).collect();
+    let shadow: Vec<Pos2> = shape.iter().map(|q| *q + Vec2::new(u * 0.018, u * 0.022)).collect();
+    fill_polygon(painter, &shadow, Color32::from_rgb(0x3a, 0x04, 0x0c).gamma_multiply(0.75));
+    fill_polygon(painter, &shape, GOLD);
+    // Its outline, dark, then a light rim on its upper edges.
+    let mut closed = shape.clone();
+    closed.push(shape[0]);
+    painter.add(egui::Shape::line(closed, Stroke::new((u * 0.012).max(0.6), gold_dark)));
+    if big || u > 30.0 {
+        // The mane: strands curling down the neck.
+        for k in 0..6 {
+            let t = k as f32 / 5.0;
+            let from = lp(0.37 + t * 0.15, 0.12 + t * 0.08);
+            let pts: Vec<Pos2> = (0..=6).map(|j| { let v = j as f32 / 6.0; from + Vec2::new(-v * u * 0.05 + (v * 4.0).sin() * u * 0.012, v * u * 0.13) }).collect();
+            painter.add(egui::Shape::line(pts, Stroke::new((u * 0.012).max(0.6), gold_dark)));
+        }
+        // The eye, the mouth, a muscle on the hind leg, the claws.
+        painter.circle_filled(lp(0.29, 0.165), (u * 0.014).max(0.8), Color32::from_rgb(0x3a, 0x04, 0x0c));
+        painter.line_segment([lp(0.215, 0.235), lp(0.265, 0.245)], Stroke::new((u * 0.009).max(0.5), gold_dark));
+        let leg: Vec<Pos2> = (0..=8).map(|j| { let v = j as f32 / 8.0; lp(0.6 + v * 0.08, 0.6 + (v * 3.0).sin() * 0.04 + v * 0.12) }).collect();
+        painter.add(egui::Shape::line(leg, Stroke::new((u * 0.01).max(0.5), gold_dark)));
+        for (x, y) in [(0.145, 0.30), (0.19, 0.575), (0.31, 0.925), (0.815, 0.965)] {
+            for k in 0..3 {
+                let q = lp(x, y) + Vec2::new(0.0, (k as f32 - 1.0) * u * 0.018);
+                painter.line_segment([q, q - Vec2::new(u * 0.025, 0.0)], Stroke::new((u * 0.008).max(0.5), Color32::from_rgb(0xff, 0xf2, 0xd0)));
+            }
+        }
+        // The light on its back.
+        let rim: Vec<Pos2> = LION[5..13].iter().map(|&(x, y)| lp(x, y) + Vec2::new(-u * 0.006, u * 0.008)).collect();
+        painter.add(egui::Shape::line(rim, Stroke::new((u * 0.012).max(0.6), gold_light.gamma_multiply(0.8))));
+    }
+
+    // Large: a ribbon under the shield, the house's name on it, its ends folded back.
+    if big {
+        let y = r.max.y + r.height() * 0.02;
+        let half = u * 0.72;
+        let h = r.height() * 0.12;
+        let curve = |t: f32| Pos2::new(r.center().x - half + 2.0 * half * t, y - (t * std::f32::consts::PI).sin() * h * 0.6);
+        for side in [-1.0f32, 1.0] {
+            let end = curve(if side < 0.0 { 0.0 } else { 1.0 });
+            let tail = vec![end + Vec2::new(side * h * 0.2, -h * 0.3), end + Vec2::new(side * h * 1.4, -h * 0.15), end + Vec2::new(side * h * 0.9, h * 0.5), end + Vec2::new(side * h * 1.4, h * 1.1), end + Vec2::new(side * h * 0.2, h * 0.8)];
+            fill_polygon(painter, &tail, gold_dark);
+        }
+        let mut mesh = egui::Mesh::default();
+        let n = 24;
+        for k in 0..=n {
+            let t = k as f32 / n as f32;
+            let c = curve(t);
+            let shade = lerp_color(gold_light, GOLD, (t - 0.5).abs() * 2.0);
+            mesh.colored_vertex(c - Vec2::new(0.0, h / 2.0), shade);
+            mesh.colored_vertex(c + Vec2::new(0.0, h / 2.0), lerp_color(shade, gold_dark, 0.5));
+        }
+        for k in 0..n as u32 {
+            let i = k * 2;
+            mesh.add_triangle(i, i + 1, i + 2);
+            mesh.add_triangle(i + 1, i + 3, i + 2);
+        }
+        painter.add(mesh);
+        let name = "GRYFFONDOR";
+        let font = FontId::proportional(h * 0.68);
+        let count = name.chars().count();
+        for (k, ch) in name.chars().enumerate() {
+            let t = 0.12 + 0.76 * (k as f32 + 0.5) / count as f32;
+            painter.text(curve(t), Align2::CENTER_CENTER, ch, font.clone(), Color32::from_rgb(0x6a, 0x0c, 0x16));
+        }
+    }
+}
+
+/// The lion rampant, facing left: its outline (x, y in its box, 0 to 1).
+const LION: [(f32, f32); 66] = [
+    (0.20, 0.205), (0.235, 0.17), (0.28, 0.125), (0.325, 0.09), (0.355, 0.045), (0.385, 0.095), (0.46, 0.10), (0.52, 0.155), (0.55, 0.235), (0.56, 0.32),
+    (0.62, 0.40), (0.675, 0.50), (0.715, 0.575), (0.755, 0.555), (0.835, 0.46), (0.875, 0.34), (0.855, 0.245), (0.80, 0.185), (0.775, 0.14), (0.83, 0.125),
+    (0.90, 0.195), (0.93, 0.315), (0.90, 0.46), (0.82, 0.60), (0.775, 0.645), (0.765, 0.72), (0.745, 0.82), (0.78, 0.905), (0.825, 0.945), (0.80, 0.985),
+    (0.70, 0.975), (0.66, 0.935), (0.66, 0.84), (0.63, 0.765), (0.585, 0.745), (0.525, 0.80), (0.445, 0.875), (0.385, 0.93), (0.32, 0.945), (0.305, 0.905),
+    (0.36, 0.86), (0.42, 0.78), (0.46, 0.705), (0.44, 0.625), (0.36, 0.605), (0.265, 0.585), (0.195, 0.60), (0.185, 0.55), (0.25, 0.52), (0.34, 0.50),
+    (0.38, 0.46), (0.30, 0.42), (0.22, 0.365), (0.145, 0.335), (0.145, 0.28), (0.22, 0.29), (0.30, 0.32), (0.33, 0.30), (0.30, 0.262), (0.26, 0.255),
+    (0.235, 0.25), (0.21, 0.24), (0.235, 0.232), (0.265, 0.236), (0.24, 0.222), (0.205, 0.218),
+];
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t.clamp(0.0, 1.0)).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// Fills a polygon that need not be convex: `pts` its outline, in either turn.
+fn fill_polygon(painter: &egui::Painter, pts: &[Pos2], color: Color32) {
+    let mut mesh = egui::Mesh::default();
+    for p in pts {
+        mesh.colored_vertex(*p, color);
+    }
+    for [a, b, c] in triangulate(pts) {
+        mesh.add_triangle(a as u32, b as u32, c as u32);
+    }
+    painter.add(mesh);
+}
+
+/// A polygon's triangles, by ear clipping (`pts` its outline, in either turn).
+fn triangulate(pts: &[Pos2]) -> Vec<[usize; 3]> {
+    let n = pts.len();
+    let mut out = vec![];
+    if n < 3 {
+        return out;
+    }
+    let area: f32 = (0..n).map(|i| { let (a, b) = (pts[i], pts[(i + 1) % n]); a.x * b.y - b.x * a.y }).sum();
+    let ccw = area > 0.0;
+    let cross = |o: Pos2, a: Pos2, b: Pos2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut guard = 0;
+    while idx.len() > 3 && guard < n * n {
+        guard += 1;
+        let m = idx.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let (ia, ib, ic) = (idx[(i + m - 1) % m], idx[i], idx[(i + 1) % m]);
+            let (a, b, c) = (pts[ia], pts[ib], pts[ic]);
+            let turn = cross(a, b, c);
+            if (turn > 0.0) != ccw || turn.abs() < 1e-6 {
+                continue;
+            }
+            let inside = idx.iter().any(|&j| {
+                if j == ia || j == ib || j == ic {
+                    return false;
+                }
+                let q = pts[j];
+                let (d1, d2, d3) = (cross(a, b, q), cross(b, c, q), cross(c, a, q));
+                if ccw { d1 > 0.0 && d2 > 0.0 && d3 > 0.0 } else { d1 < 0.0 && d2 < 0.0 && d3 < 0.0 }
+            });
+            if inside {
+                continue;
+            }
+            out.push([ia, ib, ic]);
+            idx.remove(i);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn area(pts: &[Pos2]) -> f32 {
+        (0..pts.len()).map(|i| { let (a, b) = (pts[i], pts[(i + 1) % pts.len()]); a.x * b.y - b.x * a.y }).sum::<f32>().abs() / 2.0
+    }
+
+    /// A concave outline, and the lion's, are filled whole: their triangles cover their area.
+    #[test]
+    fn concave_outlines_fill_whole() {
+        let notch = vec![Pos2::new(0.0, 0.0), Pos2::new(4.0, 0.0), Pos2::new(4.0, 4.0), Pos2::new(2.0, 1.0), Pos2::new(0.0, 4.0)];
+        let lion: Vec<Pos2> = LION.iter().map(|&(x, y)| Pos2::new(x * 100.0, y * 100.0)).collect();
+        for pts in [notch, lion] {
+            let covered: f32 = triangulate(&pts).iter().map(|t| area(&[pts[t[0]], pts[t[1]], pts[t[2]]])).sum();
+            assert!((covered - area(&pts)).abs() < area(&pts) * 0.001, "{covered} of {}", area(&pts));
+        }
+    }
 }
 
 /// Where the castle stands in the scene `rect` (to hover it).
@@ -729,7 +921,7 @@ fn paint_wand(painter: &egui::Painter, tip: Pos2, now: f64) {
 /// a flash and a ring of fire, rays of light turning behind it, sparks everywhere; then `title` in
 /// gold letter by letter, `words` under it. False once over.
 pub(super) fn intro(painter: &egui::Painter, screen: Rect, t: f32, title: &str, words: &str) -> bool {
-    const LASTS: f32 = 4.4;
+    const LASTS: f32 = 7.0;
     if t > LASTS {
         return false;
     }
@@ -1081,3 +1273,12 @@ pub(super) fn active_nav(painter: &egui::Painter, r: Rect) {
     glow(painter, Pos2::new(r.min.x + 22.0, r.center().y), 26.0, GOLD, 0.6);
     painter.rect_stroke(r, 8.0, Stroke::new(1.0, GOLD.gamma_multiply(0.55)), egui::StrokeKind::Inside);
 }
+
+/// The opening's tune, an air of our own for a celesta: each note's MIDI number (0: a rest) and
+/// length in seconds. A minor, in threes: a climb, a turn, a fall, a held bell; again a third higher;
+/// then down home.
+pub(super) const OPENING_TUNE: [(f32, f32); 22] = [
+    (69.0, 0.3), (72.0, 0.3), (76.0, 0.3), (81.0, 0.45), (79.0, 0.15), (76.0, 0.3), (77.0, 0.3), (74.0, 0.6),
+    (0.0, 0.15), (72.0, 0.3), (76.0, 0.3), (79.0, 0.3), (84.0, 0.45), (83.0, 0.15), (79.0, 0.3), (81.0, 0.6),
+    (76.0, 0.3), (74.0, 0.3), (71.0, 0.3), (72.0, 0.3), (69.0, 0.9), (0.0, 0.1),
+];

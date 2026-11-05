@@ -417,6 +417,8 @@ pub struct App {
     wand: wizard::Wand,
     /// Gryffindor picked: the Sorting Hat (when it started; NaN: at the next frame).
     sorting: Option<f64>,
+    /// The opening's bells (opened when first played).
+    bells: Option<blob::Sound>,
     /// The minesweeper's page.
     mines: mines::Mines,
     /// Ronnie Run's page.
@@ -1295,6 +1297,7 @@ impl App {
             trail_preview: trail::Trail::default(),
             wand: wizard::Wand::default(),
             sorting: None,
+            bells: None,
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),
@@ -5422,6 +5425,9 @@ impl App {
         // Startup splash, over everything; a click or a key skips it.
         if let Some(start) = self.splash.filter(|_| main_window) {
             let now = ui.input(|i| i.time);
+            if start.is_nan() && self.theme.wizard {
+                self.opening_tune();
+            }
             let start = if start.is_nan() { now } else { start };
             self.splash = Some(start);
             let skip = ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
@@ -5454,6 +5460,9 @@ impl App {
         // Gryffindor: the Sorting Hat calls the house; a click or a key skips it.
         if let Some(start) = self.sorting.filter(|_| main_window) {
             let now = ui.input(|i| i.time);
+            if start.is_nan() {
+                self.opening_tune();
+            }
             let start = if start.is_nan() { now } else { start };
             self.sorting = Some(start);
             let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
@@ -5483,6 +5492,21 @@ impl App {
         }
         if self.theme.wizard {
             self.wand.frame(ui.ctx());
+        }
+    }
+}
+
+impl App {
+    /// Gryffindor's opening tune on bells, unless the games' sounds are off.
+    fn opening_tune(&mut self) {
+        if self.config.settings.game_sound == Some(false) {
+            return;
+        }
+        if self.bells.is_none() {
+            self.bells = blob::Sound::open();
+        }
+        if let Some(bells) = &self.bells {
+            bells.bells(&wizard::OPENING_TUNE, 0.9);
         }
     }
 }
