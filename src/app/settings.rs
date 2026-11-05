@@ -2155,7 +2155,10 @@ impl App {
 
     fn rewards_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         let games = self.games_list();
-        let all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
+        let mut all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
+        // The themes given with no condition, after the games' (not counted).
+        let free = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: String::new(), done: true, progress: None, info: true, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) }];
+        all.push((t.rewards_free, free));
         let counted = all.iter().flat_map(|(_, u)| u.iter()).filter(|u| !u.info);
         let (done, total) = counted.fold((0, 0), |(d, n), u| (d + u.done as usize, n + 1));
         ui.label(egui::RichText::new(t.arcade_rewards.replace("{n}", &done.to_string()).replace("{max}", &total.to_string())).size(13.5).color(if done == total { theme.ansi[2] } else { theme.accent }));
@@ -2169,7 +2172,9 @@ impl App {
                     }
                     let mark = if u.done { "✓" } else if u.info { "•" } else { "🔒" };
                     let title = format!("{mark}  {}", u.what);
-                    let desc = if u.done {
+                    let desc = if u.done && u.info {
+                        t.rewards_free_desc.to_owned()
+                    } else if u.done {
                         match u.reward {
                             Some(super::unlocks::Reward::Trail) => t.trail_setting_desc.to_owned(),
                             Some(super::unlocks::Reward::Sheep) => t.sheep_setting_desc.to_owned(),
