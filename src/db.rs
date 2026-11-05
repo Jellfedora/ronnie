@@ -581,6 +581,10 @@ pub fn load_into(port: u16, db: &str, path: &std::path::Path, fraction: &Arc<Mut
         }
         conn.query_drop(format!("CREATE DATABASE {} CHARACTER SET utf8mb4", ident(db))).await.map_err(|e| e.to_string())?;
         let result = import(&mut conn, Some(db), path, false, &emit, &AtomicBool::new(false)).await;
+        if result.is_err() {
+            // Not left half loaded: trying again under the same name would be refused.
+            let _ = conn.query_drop(format!("DROP DATABASE IF EXISTS {}", ident(db))).await;
+        }
         let _ = conn.disconnect().await;
         result.map(|_| ())
     })

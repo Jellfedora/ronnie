@@ -47,7 +47,9 @@ impl App {
         let Some(project) = self.project(id) else { return XdebugState::Unavailable };
         match project.php_version() {
             Some(php) if envs::xdebug_path(&php).is_some() => {
-                if project.xdebug {
+                // Ticked only when there: else (another PHP version, PHP reinstalled) it runs
+                // without, and ticking it again downloads it.
+                if project.xdebug && envs::has_xdebug(&php) {
                     XdebugState::On
                 } else {
                     XdebugState::Off

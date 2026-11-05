@@ -1823,7 +1823,8 @@ impl DbView {
             if find {
                 resp.request_focus();
             }
-            if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+            // egui takes the focus away on Escape before the field is drawn: lost now, not had.
+            if (resp.has_focus() || resp.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape)) {
                 self.table_search.1.clear();
             }
             if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {

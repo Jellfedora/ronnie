@@ -24,7 +24,9 @@ impl Default for Eta {
 impl Eta {
     /// The time left, the fraction now done being `fraction` (0 to 1).
     pub fn update(&mut self, fraction: f32) -> Option<Duration> {
-        if fraction + 0.001 < self.last {
+        // Started over when going back (the next step), and when it first moves: a wait at 0 (a
+        // server starting, a page fetched) told nothing of the pace.
+        if fraction + 0.001 < self.last || (self.last <= 0.0 && fraction > 0.0) {
             self.started = Instant::now();
         }
         self.last = fraction;
@@ -93,5 +95,12 @@ mod tests {
     fn a_new_step_starts_over() {
         let mut eta = Eta { started: Instant::now() - Duration::from_secs(100), last: 0.9 };
         assert_eq!(eta.update(0.1), None);
+    }
+
+    #[test]
+    fn a_wait_at_zero_isnt_counted() {
+        let mut eta = Eta { started: Instant::now() - Duration::from_secs(100), last: 0.0 };
+        assert_eq!(eta.update(0.0), None);
+        assert_eq!(eta.update(0.01), None);
     }
 }

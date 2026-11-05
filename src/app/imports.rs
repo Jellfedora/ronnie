@@ -34,6 +34,9 @@ impl Job {
 /// Local's sites: whether to bring in each one's database, and under which name.
 struct LocalDialog {
     sites: Vec<(LocalSite, bool, String)>,
+    /// Each site's database as found on opening: read live from Local, else the file of its
+    /// latest dump (both looked for once, not at each frame: a closed port may take 200 ms).
+    found: Vec<(bool, Option<String>)>,
     server: Option<Db>,
 }
 
@@ -91,6 +94,7 @@ impl App {
             return;
         }
         let kind = sites.first().map_or(Env::Mysql, |s| s.db_kind);
+        let found = sites.iter().map(|site| (site.db_runs(), site.dump().map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))).collect();
         let sites = sites
             .into_iter()
             .map(|site| {
@@ -99,7 +103,7 @@ impl App {
             })
             .collect::<Vec<_>>();
         self.projects.imports.error = None;
-        self.projects.imports.local = Some(LocalDialog { sites, server: server_for(kind) });
+        self.projects.imports.local = Some(LocalDialog { sites, found, server: server_for(kind) });
     }
 
     /// A .sql file picked, then where to load it asked; `prefill`: the server, name and project a
@@ -267,6 +271,9 @@ impl App {
         if running.is_some() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
+        if self.projects.imports.local.is_none() && self.projects.imports.sql.is_none() {
+            return;
+        }
         let frame = Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
         let button = |text: &str, fill: Option<Color32>| {
             let b = egui::Button::new(egui::RichText::new(text).size(13.0).color(if fill.is_some() { theme.bg } else { theme.text })).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0));
@@ -322,14 +329,15 @@ impl App {
                                 });
                             });
                         });
-                        let note = if site.db_runs() {
+                        let (live, dump) = &dialog.found[k];
+                        let note = if *live {
                             t.local_db_live.to_owned()
-                        } else if let Some(dump) = site.dump() {
-                            t.local_db_dump.replace("{file}", &dump.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                        } else if let Some(dump) = dump {
+                            t.local_db_dump.replace("{file}", dump)
                         } else {
                             t.local_db_none.to_owned()
                         };
-                        let warn = !site.db_runs() && site.dump().is_none();
+                        let warn = !*live && dump.is_none();
                         ui.horizontal(|ui| {
                             ui.add_space(28.0);
                             ui.add(egui::Label::new(egui::RichText::new(note).size(11.5).color(if warn { theme.ansi[3] } else { theme.text_muted })).wrap());
