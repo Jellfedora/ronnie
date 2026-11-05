@@ -1,5 +1,5 @@
 //! The Gryffindor theme's own touches: the pointer as a wand (golden sparks behind it, a burst at each
-//! click), the house's scarf (scarlet and gold stripes) under the bars and over the active tab, the
+//! click), a gold line under the bars and over the active tab, the
 //! focused pane framed in gold, the name in gold under a lightning bolt, and at the foot of the
 //! sidebar the castle at night (its windows lit, the moon, the stars, floating candles), the Golden
 //! Snitch darting about now and then and an owl crossing with a letter. The guard's window says
@@ -11,7 +11,7 @@ use std::f32::consts::TAU;
 /// What the guard's window says instead of its title.
 pub(super) const ALERT: &str = "Expelliarmus !";
 
-pub(super) const SCARLET: Color32 = Color32::from_rgb(0x8a, 0x10, 0x18);
+pub(super) const SCARLET: Color32 = Color32::from_rgb(0xc8, 0x10, 0x20);
 pub(super) const GOLD: Color32 = Color32::from_rgb(0xee, 0xba, 0x30);
 const GOLD_DARK: Color32 = Color32::from_rgb(0xa8, 0x7a, 0x1a);
 const NIGHT: Color32 = Color32::from_rgb(0x0c, 0x0a, 0x1e);
@@ -29,22 +29,11 @@ fn noise(seed: u32) -> f32 {
     (x & 0xffff) as f32 / 65536.0
 }
 
-/// The house's scarf along `rect`: scarlet and gold stripes, slanted.
-pub(super) fn scarf(painter: &egui::Painter, rect: Rect) {
-    let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
-    painter.rect_filled(rect, 0.0, SCARLET);
-    let h = rect.height();
-    let step = (h * 2.4).max(8.0);
-    let mut x = rect.min.x - h;
-    let mut k = 0;
-    while x < rect.max.x + h {
-        if k % 2 == 0 {
-            let w = step * 0.45;
-            painter.add(egui::Shape::convex_polygon(vec![Pos2::new(x, rect.max.y), Pos2::new(x + w, rect.max.y), Pos2::new(x + w + h, rect.min.y), Pos2::new(x + h, rect.min.y)], GOLD, Stroke::NONE));
-        }
-        x += step * 0.5;
-        k += 1;
-    }
+/// A gold line along `rect`, softly glowing (under the bars, over the active tab).
+pub(super) fn gold_line(painter: &egui::Painter, rect: Rect) {
+    let y = rect.center().y;
+    painter.hline(rect.x_range(), y, Stroke::new(rect.height().max(3.0), GOLD.gamma_multiply(0.18)));
+    painter.hline(rect.x_range(), y, Stroke::new(1.5, GOLD));
 }
 
 /// The focused pane framed in gold, a soft glow inward, a small diamond at each corner.
@@ -55,7 +44,7 @@ pub(super) fn frame(painter: &egui::Painter, r: Rect) {
     let r = r.shrink(1.5);
     for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
         let d = 4.5;
-        painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, -d), c + Vec2::new(d, 0.0), c + Vec2::new(0.0, d), c + Vec2::new(-d, 0.0)], GOLD, Stroke::new(1.0, SCARLET)));
+        painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, -d), c + Vec2::new(d, 0.0), c + Vec2::new(0.0, d), c + Vec2::new(-d, 0.0)], GOLD, Stroke::NONE));
     }
 }
 

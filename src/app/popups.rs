@@ -617,10 +617,10 @@ impl App {
                 super::jurassic::hazard(ui.painter(), band);
                 ui.add_space(10.0);
             }
-            // Gryffindor: the scarf on top, the disarming charm.
+            // Gryffindor: a gold line on top, the disarming charm.
             if self.theme.wizard {
                 let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
-                super::wizard::scarf(ui.painter(), band);
+                super::wizard::gold_line(ui.painter(), band);
                 ui.add_space(10.0);
             }
             // Hyperspace: a red beam on top, the alert.

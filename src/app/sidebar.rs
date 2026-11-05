@@ -1818,8 +1818,8 @@ impl App {
             // Open space: post-its above the settings.
             super::office::strip(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 10.0, footer_top - 3.0), Pos2::new(bar.max.x - 11.0, footer_top + 3.0)));
         } else if self.theme.wizard {
-            // Gryffindor: the scarf above the settings.
-            super::wizard::scarf(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+            // Gryffindor: a gold line above the settings.
+            super::wizard::gold_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
         } else if self.theme.hyperspace {
             // Star Wars: a duel above the settings.
             let now = ui.input(|i| i.time);

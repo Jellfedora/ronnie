@@ -296,19 +296,20 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
-    // Gryffindor: the common room at night, parchment text, the house's gold and scarlet.
+    // Gryffindor: the house's scarlet for the sidebar and the bars, a warm crimson behind the text,
+    // parchment text, gold for the accent.
     Preset {
         id: WIZARD_THEME,
         name: "Gryffondor",
-        bg: 0x170b0e,
-        fg: 0xf1e4c3,
-        cursor: 0xeeba30,
-        chrome: 0x0f0709,
-        surface: 0x3a151b,
-        accent: 0xeeba30,
+        bg: 0x34121a,
+        fg: 0xf6ead0,
+        cursor: 0xf2c232,
+        chrome: 0x7a0f1c,
+        surface: 0x9e1a2a,
+        accent: 0xf2c232,
         ansi: [
-            0x2a1418, 0xd0343c, 0x6f9e4c, 0xeeba30, 0x5a7cc0, 0xb0507e, 0x5aa6a0, 0xe6d8b8, //
-            0x5a3a3e, 0xff5a5f, 0x93c56a, 0xffd45a, 0x86a4e0, 0xd47aa4, 0x86cbc4, 0xfff6e0,
+            0x4a1c24, 0xff3b47, 0x7fc25a, 0xf2c232, 0x6f93e0, 0xd46aa0, 0x5fc4bc, 0xefe2c6, //
+            0x7a4048, 0xff6b72, 0xa2dc7c, 0xffd860, 0x95b3f0, 0xe692bf, 0x8adcd4, 0xfffaee,
         ],
         dark: true,
     },

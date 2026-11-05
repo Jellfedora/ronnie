@@ -53,7 +53,7 @@ impl App {
         if theme.jurassic {
             super::jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 6.0), rect.max));
         } else if theme.wizard {
-            super::wizard::scarf(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+            super::wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
         } else if theme.hyperspace {
             super::hyperspace::beam(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max), theme.accent);
         } else {

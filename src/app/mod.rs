@@ -3763,8 +3763,8 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
     }
     if focused && theme.wizard {
-        // Gryffindor: the house's scarf under the bar.
-        wizard::scarf(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+        // Gryffindor: a gold line under the bar.
+        wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
     }
     if theme.hyperspace {
         // Star Wars: a lightsaber under the bar, lit when the pane takes the focus.
