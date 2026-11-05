@@ -99,145 +99,6 @@ impl App {
         }
     }
 
-    /// Settings page listing the profiles: rename, recolor, open or delete them.
-    /// Profiles (`local`) or SSH hosts as in the sidebar: each group in order, then those without a
-    /// group. The section name is None when there are no groups at all (a plain list).
-    pub(super) fn grouped_ids(&self, local: bool) -> Vec<(Option<String>, Vec<Uuid>)> {
-        let of_kind = |id: &Uuid| if local { self.config.profiles.iter().any(|p| p.id == *id) } else { self.config.ssh.iter().any(|h| h.id == *id) };
-        let mut sections: Vec<(Option<String>, Vec<Uuid>)> = self
-            .config
-            .groups
-            .iter()
-            .filter(|g| g.kind() == if local { config::GroupKind::Profiles } else { config::GroupKind::Ssh })
-            .map(|g| (Some(g.name.clone()), g.items.iter().copied().filter(of_kind).collect::<Vec<_>>()))
-            .filter(|(_, ids)| !ids.is_empty())
-            .collect();
-        let loose: Vec<Uuid> = self.config.ungrouped.iter().copied().filter(of_kind).collect();
-        if !loose.is_empty() {
-            let name = (!sections.is_empty()).then(|| self.t().no_group.to_owned());
-            sections.push((name, loose));
-        }
-        sections
-    }
-
-    pub(super) fn profiles_ui(&mut self, ui: &mut Ui, t: &Strings) {
-        let theme = self.theme.clone();
-        if self.config.profiles.is_empty() {
-            card(ui, &theme, None, |ui| {
-                ui.add_space(14.0);
-                ui.label(egui::RichText::new(t.profiles_none).size(13.0).color(theme.text_muted));
-                ui.add_space(14.0);
-            });
-            return;
-        }
-        let (mut rename, mut recolor, mut open, mut delete, mut edit) = (None, None, None, None, None);
-        let sections = self.grouped_ids(true);
-        egui::ScrollArea::vertical().id_salt("settings-profiles").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_width(ui.available_width() - 12.0);
-            if let Some(err) = self.profile_error {
-                ui.label(egui::RichText::new(format!("⚠  {err}")).size(13.0).color(theme.ansi[1]));
-                ui.add_space(10.0);
-            }
-            for (name, ids) in &sections {
-                let profiles: Vec<&Profile> = ids.iter().filter_map(|id| self.config.profiles.iter().find(|p| p.id == *id)).collect();
-                if profiles.is_empty() {
-                    continue;
-                }
-                let title = format!("{}  ·  {}", name.as_deref().unwrap_or(t.no_group), profiles.len());
-                card(ui, &theme, Some(&title), |ui| {
-                    for (i, p) in profiles.iter().enumerate() {
-                        if i > 0 {
-                            divider(ui, &theme);
-                        }
-                        let (rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
-                        if row.hovered() {
-                            ui.painter().rect_filled(rect.expand2(Vec2::new(10.0, -3.0)), 8.0, theme.tab_hover.gamma_multiply(0.45));
-                        }
-                        // The badge picks the color.
-                        let badge = Rect::from_center_size(Pos2::new(rect.min.x + 14.0, rect.center().y), Vec2::splat(26.0));
-                        let badge_resp = ui.interact(badge, ui.id().with(("profile-color", p.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                        super::sidebar::paint_badge(ui.painter(), badge.center(), p.name(t.untitled), p.tab.color, false, true, badge_resp.hovered(), &theme);
-                        egui::Popup::menu(&badge_resp).show(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                for color in TAB_COLORS {
-                                    let (r, s) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                                    ui.painter().circle_filled(r.center(), 7.5, color);
-                                    if p.tab.color == Some(color) || s.hovered() {
-                                        ui.painter().circle_stroke(r.center(), 9.0, Stroke::new(1.5, theme.text));
-                                    }
-                                    if s.clicked() {
-                                        recolor = Some((p.id, Some(color)));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            if p.tab.color.is_some() && ui.button(t.remove_color).clicked() {
-                                recolor = Some((p.id, None));
-                                ui.close();
-                            }
-                        });
-                        // The name, edited in place; the panes below.
-                        let current = p.name(t.untitled).to_owned();
-                        let buffer = self.profile_names.entry(p.id).or_insert_with(|| current.clone());
-                        let field = Rect::from_min_size(Pos2::new(rect.min.x + 36.0, rect.min.y + 8.0), Vec2::new(260.0_f32.min(rect.width() - 330.0), 24.0));
-                        let id = ui.id().with(("profile-name", p.id));
-                        let focused = ui.memory(|m| m.has_focus(id));
-                        if focused || ui.rect_contains_pointer(field) {
-                            ui.painter().rect_filled(field.expand2(Vec2::new(4.0, 0.0)), 5.0, theme.chrome_bg);
-                            ui.painter().rect_stroke(field.expand2(Vec2::new(4.0, 0.0)), 5.0, Stroke::new(1.0, if focused { theme.accent } else { theme.tab_hover }), egui::StrokeKind::Inside);
-                        }
-                        // In a child: the row is already laid out.
-                        let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                        let name_edit = field_ui.add(egui::TextEdit::singleline(buffer).id(id).frame(Frame::NONE).font(FontId::proportional(14.5)).text_color(theme.text).desired_width(field.width()));
-                        if name_edit.lost_focus() && *buffer != current {
-                            rename = Some((p.id, buffer.clone()));
-                        }
-                        let panes = p.tab.layout.panes();
-                        ui.painter().text(Pos2::new(rect.min.x + 36.0, rect.min.y + 42.0), Align2::LEFT_CENTER, format!("{panes} {}", if panes == 1 { t.layout_pane } else { t.layout_panes }), FontId::proportional(12.0), theme.text_muted);
-                        // Actions, on the right.
-                        let actions = Rect::from_min_max(Pos2::new(rect.max.x - 300.0, rect.min.y), rect.max);
-                        let mut ui_actions = ui.new_child(egui::UiBuilder::new().max_rect(actions).layout(egui::Layout::right_to_left(egui::Align::Center)));
-                        if ui_actions.add(ghost_button(t.delete, theme.ansi[1])).clicked() {
-                            delete = Some(p.id);
-                        }
-                        if ui_actions.add(ghost_button(t.edit, theme.text_muted)).clicked() {
-                            edit = Some(p.id);
-                        }
-                        let open_button = egui::Button::new(egui::RichText::new(t.open).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(72.0, 28.0));
-                        if ui_actions.add(open_button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || row.double_clicked() {
-                            open = Some(p.id);
-                        }
-                    }
-                });
-            }
-        });
-        if let Some((id, name)) = rename {
-            match self.rename_profile(id, &name) {
-                Ok(()) => self.profile_error = None,
-                Err(err) => {
-                    // Put the current name back in the field.
-                    self.profile_names.remove(&id);
-                    self.profile_error = Some(err);
-                }
-            }
-        }
-        if let Some((id, color)) = recolor {
-            self.set_profile_color(id, color);
-        }
-        if let Some(id) = delete {
-            self.delete_profile(id);
-            self.profile_names.remove(&id);
-        }
-        if let Some(id) = edit {
-            self.open_profile_editor(id);
-        }
-        if let Some(id) = open {
-            self.open_profile(id);
-            self.settings_dialog = false;
-        }
-    }
-
     pub(super) fn delete_host(&mut self, id: Uuid) {
         self.config.ssh.retain(|h| h.id != id);
         ssh::delete_password(id);
@@ -271,160 +132,6 @@ impl App {
                 self.config.normalize();
             }
             Err(e) => self.error = Some(format!("{} : {e}", self.t().ssh_import_failed)),
-        }
-    }
-
-    /// Settings page for SSH: import from ~/.ssh/config (explained first) and the list of hosts.
-    pub(super) fn ssh_settings_ui(&mut self, ui: &mut Ui, t: &Strings, picked: &mut config::Settings) {
-        let theme = self.theme.clone();
-        let (mut edit, mut delete, mut new_host, mut import) = (None, None, false, false);
-        let sections = self.grouped_ids(false);
-        let found = self.new_ssh_config_hosts();
-        // Shown only when PuTTY has sessions.
-        let putty = self.new_putty_hosts().ok().filter(|(total, _)| *total > 0);
-        let mut import_putty = false;
-        egui::ScrollArea::vertical().id_salt("settings-ssh").max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_width(ui.available_width() - 12.0);
-            card(ui, &theme, None, |ui| {
-                setting_row(ui, &theme, t.health_row, Some(t.health_desc), |ui| {
-                    toggle(ui, &theme, &mut picked.server_health);
-                });
-            });
-            // Import from ~/.ssh/config.
-            card(ui, &theme, Some(t.import_title), |ui| {
-                match &found {
-                    Err(_) => setting_row(ui, &theme, t.no_ssh_config, Some(t.import_explain), |_| {}),
-                    Ok((total, new)) => {
-                        let summary = t.import_found.replace("{total}", &total.to_string()).replace("{new}", &new.len().to_string());
-                        setting_row(ui, &theme, &summary, Some(t.import_explain), |ui| {
-                            let label = t.import_button.replace("{new}", &new.len().to_string());
-                            let (fill, color) = if new.is_empty() { (theme.tab_hover, theme.text_muted) } else { (theme.accent, theme.bg) };
-                            let button = egui::Button::new(egui::RichText::new(label).size(13.0).color(color)).fill(fill).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                            if ui.add_enabled(!new.is_empty(), button).clicked() {
-                                import = true;
-                            }
-                        });
-                    }
-                }
-            });
-            if let Some((total, new)) = &putty {
-                card(ui, &theme, Some(t.putty_import_title), |ui| {
-                    let summary = t.import_found.replace("{total}", &total.to_string()).replace("{new}", &new.len().to_string());
-                    setting_row(ui, &theme, &summary, Some(t.putty_import_explain), |ui| {
-                        let label = t.import_button.replace("{new}", &new.len().to_string());
-                        let (fill, color) = if new.is_empty() { (theme.tab_hover, theme.text_muted) } else { (theme.accent, theme.bg) };
-                        let button = egui::Button::new(egui::RichText::new(label).size(13.0).color(color)).fill(fill).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                        if ui.add_enabled(!new.is_empty(), button).clicked() {
-                            import_putty = true;
-                        }
-                    });
-                });
-            }
-
-            // The hosts, by group, with "New host" by the heading.
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.ssh_hosts.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = egui::Button::new(egui::RichText::new(format!("+  {}", t.new_host)).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0));
-                    if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        new_host = true;
-                    }
-                });
-            });
-            ui.add_space(8.0);
-            if self.config.ssh.is_empty() {
-                card(ui, &theme, None, |ui| {
-                    ui.add_space(14.0);
-                    ui.label(egui::RichText::new(t.no_ssh_hosts).size(13.0).color(theme.text_muted));
-                    ui.add_space(14.0);
-                });
-            }
-            for (name, ids) in &sections {
-                let hosts: Vec<&SshHost> = ids.iter().filter_map(|id| self.config.ssh.iter().find(|h| h.id == *id)).collect();
-                if hosts.is_empty() {
-                    continue;
-                }
-                let title = format!("{}  ·  {}", name.as_deref().unwrap_or(t.no_group), hosts.len());
-                card(ui, &theme, Some(&title), |ui| {
-                    for (i, host) in hosts.iter().enumerate() {
-                        if i > 0 {
-                            divider(ui, &theme);
-                        }
-                        let (rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::click());
-                        if row.hovered() {
-                            ui.painter().rect_filled(rect.expand2(Vec2::new(10.0, -3.0)), 8.0, theme.tab_hover.gamma_multiply(0.45));
-                        }
-                        let open = self.tabs.iter().any(|t| t.ssh == Some(host.id));
-                        super::sidebar::paint_badge(ui.painter(), Pos2::new(rect.min.x + 14.0, rect.center().y), &host.name, host.color, true, open, false, &theme);
-                        ui.painter().text(Pos2::new(rect.min.x + 36.0, rect.min.y + 18.0), Align2::LEFT_CENTER, &host.name, FontId::proportional(14.5), theme.text);
-                        ui.painter().text(Pos2::new(rect.min.x + 36.0, rect.min.y + 38.0), Align2::LEFT_CENTER, host.address(), FontId::monospace(12.0), theme.text_muted);
-                        // How it logs in, in a pill.
-                        let auth = match host.auth_method() {
-                            SshAuth::Auto => t.auth_auto,
-                            SshAuth::Password => t.auth_password,
-                            SshAuth::Ask => t.auth_ask,
-                            SshAuth::Interactive => t.auth_interactive,
-                            SshAuth::Key => t.auth_key,
-                        };
-                        let galley = ui.painter().layout_no_wrap(auth.to_owned(), FontId::proportional(11.0), theme.text_muted);
-                        let pill = Rect::from_min_size(Pos2::new(rect.max.x - 210.0 - galley.size().x - 16.0, rect.center().y - 10.0), Vec2::new(galley.size().x + 16.0, 20.0));
-                        ui.painter().rect_filled(pill, 10.0, theme.tab_hover.gamma_multiply(0.9));
-                        ui.painter().galley(pill.center() - galley.size() / 2.0, galley, theme.text_muted);
-                        let actions = Rect::from_min_max(Pos2::new(rect.max.x - 200.0, rect.min.y), rect.max);
-                        let mut ui_actions = ui.new_child(egui::UiBuilder::new().max_rect(actions).layout(egui::Layout::right_to_left(egui::Align::Center)));
-                        if ui_actions.add(ghost_button(t.delete, theme.ansi[1])).clicked() {
-                            delete = Some(host.id);
-                        }
-                        if ui_actions.add(ghost_button(t.edit, theme.text)).clicked() || row.double_clicked() {
-                            edit = Some(host.id);
-                        }
-                    }
-                });
-            }
-
-            // Hosts imported from ~/.ssh/config: all removed at once.
-            let imported = self.config.ssh.iter().filter(|h| h.imported).count();
-            if imported > 0 {
-                card(ui, &theme, Some(t.reset_section), |ui| {
-                    let title = format!("{} ({imported})", t.delete_imported);
-                    let desc = if self.confirm_delete_imported { Some(t.delete_imported_confirm) } else { None };
-                    setting_row(ui, &theme, &title, desc, |ui| {
-                        if self.confirm_delete_imported {
-                            let yes = egui::Button::new(egui::RichText::new(t.confirm).size(13.0).color(theme.bg)).fill(theme.ansi[1]).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                            if ui.add(yes).clicked() {
-                                let ids: Vec<Uuid> = self.config.ssh.iter().filter(|h| h.imported).map(|h| h.id).collect();
-                                for id in ids {
-                                    self.delete_host(id);
-                                }
-                                self.confirm_delete_imported = false;
-                            }
-                            if ui.add(ghost_button(t.cancel, theme.text_muted)).clicked() {
-                                self.confirm_delete_imported = false;
-                            }
-                        } else {
-                            let button = egui::Button::new(egui::RichText::new(t.delete).size(13.0).color(theme.ansi[1])).stroke(Stroke::new(1.0, theme.ansi[1].gamma_multiply(0.7))).fill(Color32::TRANSPARENT).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                            if ui.add(button).clicked() {
-                                self.confirm_delete_imported = true;
-                            }
-                        }
-                    });
-                });
-            }
-        });
-        if import || import_putty {
-            self.import_ssh(import_putty);
-        }
-        if new_host {
-            self.host_editor = Some(HostEditor::new(SshHost::blank(), true, None));
-        }
-        if let Some(id) = delete {
-            self.delete_host(id);
-        }
-        if let Some(id) = edit {
-            if let Some(host) = self.config.ssh.iter().find(|h| h.id == id) {
-                let group = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);
-                self.host_editor = Some(HostEditor::new(host.clone(), false, group));
-            }
         }
     }
 
@@ -1210,7 +917,7 @@ impl App {
                 // The pages in four groups; pages akin share an entry (their tabs on the page).
                 let groups: [&[(SettingsTab, &str, &str)]; 4] = [
                     &[(SettingsTab::General, "⚙", t.general), (SettingsTab::Appearance, "🎨", t.appearance), (SettingsTab::Terminal, ">_", t.set_terminal), (SettingsTab::Shortcuts, "⌨", t.shortcuts)],
-                    &[(SettingsTab::Profiles, "▣", t.nav_profiles_ssh), (SettingsTab::Claude, "✳", t.set_claude)],
+                    &[(SettingsTab::Claude, "✳", t.set_claude)],
                     &[(SettingsTab::Rewards, "🏆", t.set_rewards), (SettingsTab::Music, "♫", t.music_nav)],
                     &[(SettingsTab::Account, "@", t.account_nav), (SettingsTab::Backup, "💾", t.backup_section), (SettingsTab::ConfigFile, "{ }", t.nav_advanced)],
                 ];
@@ -1249,8 +956,6 @@ impl App {
                     SettingsTab::Claude => (t.set_claude, t.sub_claude),
                     SettingsTab::Backup => (t.backup_section, t.sub_backup),
                     SettingsTab::Shortcuts => (t.shortcuts, t.sub_shortcuts),
-                    SettingsTab::Profiles => (t.manage_profiles, t.sub_profiles),
-                    SettingsTab::Ssh => (t.ssh_tab, t.sub_ssh),
                     SettingsTab::Music => (t.music_nav, t.sub_music),
                     SettingsTab::ConfigFile => (t.config_file, t.sub_config),
                     SettingsTab::Logs => (t.logs_nav, t.sub_logs),
@@ -1270,7 +975,6 @@ impl App {
                 }
                 // Pages sharing an entry: their tabs.
                 let tabs: &[(SettingsTab, &str)] = match nav_entry(self.settings_tab) {
-                    SettingsTab::Profiles => &[(SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab)],
                     SettingsTab::ConfigFile => &[(SettingsTab::ConfigFile, t.config_nav), (SettingsTab::Logs, t.logs_nav)],
                     SettingsTab::About => &[(SettingsTab::About, t.about), (SettingsTab::Changelog, t.changelog_nav), (SettingsTab::Features, t.features_nav)],
                     _ => &[],
@@ -1298,8 +1002,6 @@ impl App {
                     match self.settings_tab {
                         SettingsTab::ConfigFile => self.config_editor_ui(ui, t),
                         SettingsTab::Logs => self.logs_ui(ui, t, &theme),
-                        SettingsTab::Profiles => self.profiles_ui(ui, t),
-                        SettingsTab::Ssh => self.ssh_settings_ui(ui, t, &mut picked),
                         SettingsTab::About => {
                             egui::ScrollArea::vertical().id_salt("settings-about").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
                                 ui.set_width(ui.available_width() - 12.0);
@@ -2350,6 +2052,11 @@ fn terminal_page(ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::S
             ui.add(egui::Slider::new(&mut picked.scrollback, config::SCROLLBACK_LINES).logarithmic(true));
         });
     });
+    card(ui, theme, Some(t.ssh_tab), |ui| {
+        setting_row(ui, theme, t.health_row, Some(t.health_desc), |ui| {
+            toggle(ui, theme, &mut picked.server_health);
+        });
+    });
     card(ui, theme, Some(t.set_typing), |ui| {
         setting_row(ui, theme, t.path_suggestions, Some(t.path_suggestions_desc), |ui| {
             toggle(ui, theme, &mut picked.path_suggestions);
@@ -2365,7 +2072,6 @@ fn terminal_page(ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::S
 /// The entry of the navigation a page is under (pages akin share one).
 fn nav_entry(tab: SettingsTab) -> SettingsTab {
     match tab {
-        SettingsTab::Ssh => SettingsTab::Profiles,
         SettingsTab::Logs => SettingsTab::ConfigFile,
         SettingsTab::Changelog | SettingsTab::Features => SettingsTab::About,
         other => other,

@@ -690,6 +690,18 @@ impl App {
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
             menu_item(ui, t.new_host, TabAction::NewHost, action);
             menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Ssh), action);
+            // The hosts of ~/.ssh/config and of PuTTY not imported yet.
+            let new_ssh = self.new_ssh_config_hosts().map_or(0, |(_, h)| h.len());
+            let new_putty = self.new_putty_hosts().map_or(0, |(_, h)| h.len());
+            if new_ssh + new_putty > 0 {
+                ui.separator();
+            }
+            if new_ssh > 0 {
+                menu_item(ui, &t.ssh_import_menu.replace("{n}", &new_ssh.to_string()), TabAction::ImportSsh(false), action);
+            }
+            if new_putty > 0 {
+                menu_item(ui, &t.ssh_import_putty_menu.replace("{n}", &new_putty.to_string()), TabAction::ImportSsh(true), action);
+            }
         });
         // Beside it, while some are open: close them all.
         if self.tabs.iter().any(|tab| tab.ssh.is_some()) {
@@ -1890,6 +1902,10 @@ impl App {
             Some(TabAction::Split(i, side)) => self.split(ui.ctx(), i, side),
             Some(TabAction::DeleteProfile(id)) => self.delete_profile(id),
             Some(TabAction::NewHost) => self.host_editor = Some(HostEditor::new(SshHost::blank(), true, None)),
+            Some(TabAction::ImportSsh(putty)) => {
+                self.import_ssh(putty);
+                self.save_config();
+            }
             Some(TabAction::EditHost(id)) => {
                 if let Some(host) = self.config.ssh.iter().find(|h| h.id == id) {
                     let group = self.config.groups.iter().find(|g| g.items.contains(&id)).map(|g| g.id);

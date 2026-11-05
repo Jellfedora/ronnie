@@ -545,8 +545,6 @@ pub struct App {
     /// Names being typed in the profiles settings page.
     profile_names: HashMap<Uuid, String>,
     profile_error: Option<&'static str>,
-    /// "Delete imported hosts" was clicked once and waits for confirmation.
-    confirm_delete_imported: bool,
     updater: Updater,
     /// The leaderboards' server: its board, the sync running.
     floor: crate::floor::Floor,
@@ -1099,8 +1097,6 @@ enum SettingsTab {
     Account,
     Appearance,
     Terminal,
-    Profiles,
-    Ssh,
     Claude,
     Music,
     Backup,
@@ -1368,7 +1364,6 @@ impl App {
             item_rename: None,
             profile_names: HashMap::new(),
             profile_error: None,
-            confirm_delete_imported: false,
             updater: Updater::new(),
             floor: Default::default(),
             last_update_check: None,
@@ -1566,8 +1561,7 @@ impl App {
                     "claude" => SettingsTab::Claude,
                     "backup" => SettingsTab::Backup,
                     "shortcuts" => SettingsTab::Shortcuts,
-                    "profiles" => SettingsTab::Profiles,
-                    "ssh" => SettingsTab::Ssh,
+                    "profiles" | "ssh" => SettingsTab::Terminal,
                     "music" => SettingsTab::Music,
                     "config" => SettingsTab::ConfigFile,
                     "about" => SettingsTab::About,
@@ -4105,6 +4099,8 @@ enum TabAction {
     Split(usize, Direction),
     DeleteProfile(Uuid),
     NewHost,
+    /// Hosts imported from ~/.ssh/config (or PuTTY: true).
+    ImportSsh(bool),
     EditHost(Uuid),
     DeleteHost(Uuid),
     OpenItem(Uuid),
