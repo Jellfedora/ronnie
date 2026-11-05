@@ -34,6 +34,42 @@ pub(super) fn gold_line(painter: &egui::Painter, rect: Rect) {
     let y = rect.center().y;
     painter.hline(rect.x_range(), y, Stroke::new(rect.height().max(3.0), GOLD.gamma_multiply(0.18)));
     painter.hline(rect.x_range(), y, Stroke::new(1.5, GOLD));
+    // A glint running along it now and then (1.4 s every 7), its place along by its own position so
+    // that the lines don't all shine at once.
+    let ctx = painter.ctx();
+    let now = ctx.input(|i| i.time) + (rect.min.x * 0.003 + rect.min.y * 0.002) as f64;
+    let into = now % 7.0;
+    if into < 1.4 {
+        let k = (into / 1.4) as f32;
+        let x = rect.min.x - 40.0 + (rect.width() + 80.0) * k;
+        let clip = painter.with_clip_rect(rect.expand2(Vec2::new(0.0, 3.0)).intersect(painter.clip_rect()));
+        for (w, a) in [(46.0, 0.12), (24.0, 0.3), (10.0, 0.7)] {
+            clip.hline(x - w / 2.0..=x + w / 2.0, y, Stroke::new(if w > 30.0 { 4.0 } else { 2.0 }, Color32::from_rgb(0xff, 0xf2, 0xc8).gamma_multiply(a)));
+        }
+        ctx.request_repaint();
+    } else {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(7.0 - into));
+    }
+}
+
+/// A curl of gold from corner `c`: a line along the edge `e` (away from the corner), `n` pointing into
+/// the pane, then a small spiral turning inward.
+fn curl(painter: &egui::Painter, c: Pos2, e: Vec2, n: Vec2) {
+    let stroke = Stroke::new(1.3, GOLD);
+    let from = c + n * 2.5 + e * 7.0;
+    let to = c + n * 2.5 + e * 17.0;
+    painter.line_segment([from, to], stroke);
+    let centre = to + n * 3.2;
+    let start = (to - centre).normalized();
+    // Turning toward the edge's way first, then inward.
+    let turn = |a: f32| Vec2::new(start.x * a.cos() - start.y * a.sin(), start.x * a.sin() + start.y * a.cos());
+    let sign = if turn(0.3).dot(e) > start.dot(e) { 1.0 } else { -1.0 };
+    let pts: Vec<Pos2> = (0..=14).map(|k| {
+        let t = k as f32 / 14.0;
+        centre + turn(sign * t * 4.4) * 3.2 * (1.0 - t * 0.55)
+    }).collect();
+    painter.add(egui::Shape::line(pts, stroke));
+    painter.circle_filled(from, 1.3, GOLD);
 }
 
 /// The focused pane framed in gold, a soft glow inward, a small diamond at each corner.
@@ -42,9 +78,14 @@ pub(super) fn frame(painter: &egui::Painter, r: Rect) {
         painter.rect_stroke(r.shrink(1.0 + k as f32), 4.0, Stroke::new(1.0, GOLD.gamma_multiply(alpha)), egui::StrokeKind::Inside);
     }
     let r = r.shrink(1.5);
-    for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
+    for (c, sx, sy) in [(r.left_top(), 1.0, 1.0), (r.right_top(), -1.0, 1.0), (r.left_bottom(), 1.0, -1.0), (r.right_bottom(), -1.0, -1.0)] {
+        // Two curls from each corner, along both edges, then a diamond on the corner.
+        curl(painter, c, Vec2::new(sx, 0.0), Vec2::new(0.0, sy));
+        curl(painter, c, Vec2::new(0.0, sy), Vec2::new(sx, 0.0));
         let d = 4.5;
+        let c = c + Vec2::new(sx, sy) * 2.0;
         painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, -d), c + Vec2::new(d, 0.0), c + Vec2::new(0.0, d), c + Vec2::new(-d, 0.0)], GOLD, Stroke::NONE));
+        painter.circle_filled(c, 1.2, SCARLET);
     }
 }
 
@@ -149,94 +190,213 @@ pub(super) fn castle_rect(rect: Rect) -> Rect {
     Rect::from_min_max(Pos2::new(rect.min.x + rect.width() * 0.18, rect.max.y - 70.0), Pos2::new(rect.min.x + rect.width() * 0.86, rect.max.y - 14.0))
 }
 
-/// The castle at night at the foot of `rect` (the sidebar's panel): the sky darkening upward, stars,
-/// the moon, the castle and its lit windows over the lake, floating candles; now and then the Snitch,
-/// and an owl with a letter. When to paint again (seconds).
+/// The castle at night at the foot of `rect` (the sidebar's panel), painted in layers: the sky and its
+/// violet haze, stars, the moon in its halo with clouds drifting across, the mountains paler with the
+/// distance, the castle on its rock (stone walls lit on the moon's side, cone roofs, battlements, a
+/// viaduct, the great hall, arched windows glowing), the lake with the moon's path and the windows'
+/// reflections, mist drifting; candles in their halos, gold dust; now and then a shooting star,
+/// fireworks, the Snitch, an owl with a letter, a Patronus galloping. When to paint again (seconds).
 pub(super) fn scene(painter: &egui::Painter, rect: Rect, now: f64) -> f32 {
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     let tm = now as f32;
-    // The sky, fading into the sidebar at the top.
-    let mut mesh = egui::Mesh::default();
-    let (top, low) = (NIGHT.gamma_multiply(0.0), NIGHT);
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(rect.left_bottom(), low);
-    mesh.colored_vertex(rect.right_bottom(), low);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
-    painter.add(mesh);
-    stars(&painter, Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - 40.0)), 22, 31, now);
-    // The moon, a crescent.
-    let moon = Pos2::new(rect.min.x + rect.width() * 0.84, rect.min.y + rect.height() * 0.3);
-    painter.circle_filled(moon, 16.0, Color32::from_rgb(0xf6, 0xee, 0xd0).gamma_multiply(0.08));
-    painter.circle_filled(moon, 9.0, Color32::from_rgb(0xf6, 0xee, 0xd0));
-    painter.circle_filled(moon + Vec2::new(-3.5, -2.0), 8.0, NIGHT.gamma_multiply(0.97));
-
-    // The lake, the castle's reflection in it.
-    let shore = rect.max.y - 14.0;
-    painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, shore), rect.max), 0.0, Color32::from_rgb(0x08, 0x0c, 0x1c));
-    for k in 0..6 {
-        let y = shore + 3.0 + k as f32 * 2.0;
-        let x = rect.min.x + noise(k * 13 + 5) * rect.width() + (tm * 0.6 + k as f32).sin() * 6.0;
-        painter.hline(x - 10.0..=x + 10.0, y, Stroke::new(0.8, WINDOW.gamma_multiply(0.15)));
+    let (w, x0) = (rect.width(), rect.min.x);
+    let shore = rect.max.y - 18.0;
+    let base = shore - 10.0;
+    // The sky: night blue fading into the sidebar at the top, a violet haze low on the horizon.
+    vgrad(&painter, Rect::from_min_max(rect.min, Pos2::new(rect.max.x, shore)), NIGHT.gamma_multiply(0.0), NIGHT);
+    vgrad(&painter, Rect::from_min_max(Pos2::new(rect.min.x, base - 60.0), Pos2::new(rect.max.x, shore)), Color32::TRANSPARENT, Color32::from_rgb(0x3a, 0x2c, 0x5a).gamma_multiply(0.55));
+    stars(&painter, Rect::from_min_max(rect.min, Pos2::new(rect.max.x, base - 30.0)), 30, 31, now);
+    // The moon: its halo, its disc, darker seas on it.
+    let moon = Pos2::new(x0 + w * 0.84, rect.min.y + rect.height() * 0.26);
+    let moonlight = Color32::from_rgb(0xf4, 0xee, 0xd8);
+    glow(&painter, moon, 34.0, moonlight, 0.5);
+    painter.circle_filled(moon, 8.5, moonlight);
+    for (dx, dy, r) in [(-2.5, -1.5, 2.2), (2.0, 2.5, 1.6), (2.8, -2.6, 1.0), (-1.0, 3.2, 1.1)] {
+        painter.circle_filled(moon + Vec2::new(dx, dy), r, Color32::from_rgb(0xd8, 0xd0, 0xb8));
+    }
+    // Wisps of cloud across the moon, drifting.
+    for k in 0..3 {
+        let x = x0 + ((tm * (3.0 + k as f32) + k as f32 * 90.0) % (w + 120.0)) - 60.0;
+        let y = moon.y - 6.0 + k as f32 * 9.0;
+        soft_ellipse(&painter, Pos2::new(x, y), Vec2::new(30.0, 3.5), Color32::from_rgb(0x8a, 0x86, 0xa8), 0.18);
     }
 
-    // The castle: a hill, then the towers, each a wall and a pointed roof, the great hall between.
-    let w = rect.width();
-    let x0 = rect.min.x;
-    let hill = vec![Pos2::new(x0 + w * 0.08, shore), Pos2::new(x0 + w * 0.25, shore - 12.0), Pos2::new(x0 + w * 0.6, shore - 16.0), Pos2::new(x0 + w * 0.92, shore)];
-    painter.add(egui::Shape::convex_polygon(hill, STONE, Stroke::NONE));
-    // (x, width, height, roof) in the sidebar's width and in points.
-    let towers: [(f32, f32, f32, f32); 7] = [(0.22, 9.0, 34.0, 12.0), (0.31, 12.0, 46.0, 16.0), (0.42, 8.0, 30.0, 10.0), (0.5, 14.0, 58.0, 20.0), (0.6, 10.0, 40.0, 14.0), (0.7, 12.0, 50.0, 17.0), (0.8, 8.0, 28.0, 10.0)];
-    let base = shore - 12.0;
-    painter.rect_filled(Rect::from_min_max(Pos2::new(x0 + w * 0.24, base - 22.0), Pos2::new(x0 + w * 0.78, base)), 0.0, STONE);
-    // The great hall's roof.
-    painter.add(egui::Shape::convex_polygon(vec![Pos2::new(x0 + w * 0.34, base - 22.0), Pos2::new(x0 + w * 0.47, base - 32.0), Pos2::new(x0 + w * 0.6, base - 22.0)], STONE, Stroke::NONE));
-    for (k, &(fx, tw, th, roof)) in towers.iter().enumerate() {
-        let cx = x0 + w * fx;
-        let wall = Rect::from_min_max(Pos2::new(cx - tw / 2.0, base - th), Pos2::new(cx + tw / 2.0, base));
-        painter.rect_filled(wall, 0.0, STONE);
-        painter.add(egui::Shape::convex_polygon(vec![Pos2::new(cx - tw / 2.0 - 1.5, wall.min.y), Pos2::new(cx, wall.min.y - roof), Pos2::new(cx + tw / 2.0 + 1.5, wall.min.y)], STONE, Stroke::NONE));
-        // A flag on the highest.
-        if k == 3 {
-            let top = Pos2::new(cx, wall.min.y - roof);
-            painter.line_segment([top, top - Vec2::new(0.0, 8.0)], Stroke::new(0.8, STONE));
-            let wave = (tm * 3.0).sin() * 1.2;
-            painter.add(egui::Shape::convex_polygon(vec![top - Vec2::new(0.0, 8.0), top + Vec2::new(8.0, -6.0 + wave), top - Vec2::new(0.0, 4.0)], SCARLET, Stroke::NONE));
-        }
-        // Its windows, lit, some flickering.
-        let rows = (th / 12.0) as u32;
-        for r in 0..rows {
-            let s = k as u32 * 17 + r * 5;
-            if noise(s) < 0.35 {
+    // A shooting star, every 17 s.
+    let shoot = (now + 6.0) % 17.0;
+    if shoot < 0.9 {
+        let k = (shoot / 0.9) as f32;
+        let from = Pos2::new(rect.min.x + rect.width() * 0.15, rect.min.y + rect.height() * 0.08);
+        let head = from + Vec2::new(rect.width() * 0.55, rect.height() * 0.22) * k;
+        let tail = head - Vec2::new(26.0, 10.5);
+        let fade = (1.0 - k).min(k * 5.0);
+        painter.line_segment([tail, head], Stroke::new(1.2, Color32::WHITE.gamma_multiply(0.7 * fade)));
+        painter.circle_filled(head, 1.6, Color32::WHITE.gamma_multiply(fade));
+    }
+    // Fireworks over the castle, every 31 s: a rocket up, then a burst in scarlet and gold.
+    let fire = (now + 20.0) % 31.0;
+    if fire < 2.6 {
+        for (k, delay, fx, high) in [(0u32, 0.0f64, 0.38f32, 0.3f32), (1, 0.5, 0.66, 0.2)] {
+            let t = (fire - delay) as f32;
+            if t < 0.0 {
                 continue;
             }
-            let flicker = 0.75 + 0.25 * (tm * (1.0 + noise(s + 1) * 3.0) + noise(s + 2) * TAU).sin();
-            let p = Pos2::new(cx, wall.min.y + 6.0 + r as f32 * 11.0);
-            painter.rect_filled(Rect::from_center_size(p, Vec2::new(2.2, 3.4)), 0.8, WINDOW.gamma_multiply(flicker));
-            painter.circle_filled(p, 3.5, WINDOW.gamma_multiply(0.08 * flicker));
+            let base = Pos2::new(rect.min.x + rect.width() * fx, rect.max.y - 40.0);
+            let top = Pos2::new(base.x, rect.min.y + rect.height() * high);
+            if t < 0.6 {
+                let p = base + (top - base) * (t / 0.6);
+                painter.circle_filled(p, 1.4, GOLD);
+                painter.line_segment([p, p + Vec2::new(0.0, 8.0)], Stroke::new(1.0, GOLD.gamma_multiply(0.4)));
+            } else if t < 2.1 {
+                let a = (t - 0.6) / 1.5;
+                for j in 0..22u32 {
+                    let ang = j as f32 / 22.0 * TAU + k as f32;
+                    let d = 4.0 + 26.0 * (1.0 - (1.0 - a).powi(2)) * (0.8 + noise(j + k * 40) * 0.4);
+                    let p = top + Vec2::angled(ang) * d + Vec2::new(0.0, a * a * 14.0);
+                    let color = if j % 2 == 0 { GOLD } else { Color32::from_rgb(0xff, 0x4a, 0x3a) };
+                    painter.circle_filled(p, 1.3, color.gamma_multiply(1.0 - a));
+                    painter.circle_filled(p, 3.2, color.gamma_multiply(0.15 * (1.0 - a)));
+                }
+            }
         }
     }
-    // The great hall's tall windows.
+
+    // The mountains behind, paler with the distance.
+    let far: Vec<Pos2> = (0..=24).map(|k| { let t = k as f32 / 24.0; Pos2::new(x0 + w * t, base - 26.0 - 14.0 * (t * 7.0 + 1.0).sin().abs() - 6.0 * (t * 19.0).sin()) }).collect();
+    ridge(&painter, &far, shore, Color32::from_rgb(0x2c, 0x28, 0x46));
+    let near: Vec<Pos2> = (0..=24).map(|k| { let t = k as f32 / 24.0; Pos2::new(x0 + w * t, base - 8.0 - 10.0 * (t * 5.0 + 2.0).sin().abs()) }).collect();
+    ridge(&painter, &near, shore, Color32::from_rgb(0x1c, 0x18, 0x2e));
+
+    // The castle: the rock it stands on, the viaduct to the left, the great hall, the towers.
+    let rock: Vec<Pos2> = (0..=16).map(|k| { let t = k as f32 / 16.0; Pos2::new(x0 + w * (0.16 + t * 0.72), base + 2.0 - 8.0 * (t * std::f32::consts::PI).sin() - (t * 23.0).sin() * 1.2) }).collect();
+    ridge(&painter, &rock, shore, Color32::from_rgb(0x16, 0x12, 0x20));
+    // The viaduct: its deck, its arches' piers, lit along the top.
+    let deck_y = base - 6.0;
+    painter.rect_filled(Rect::from_min_max(Pos2::new(x0, deck_y), Pos2::new(x0 + w * 0.24, deck_y + 3.0)), 0.0, STONE);
+    painter.hline(x0..=x0 + w * 0.24, deck_y, Stroke::new(0.7, moonlight.gamma_multiply(0.25)));
     for k in 0..5 {
-        let p = Pos2::new(x0 + w * (0.38 + k as f32 * 0.045), base - 11.0);
-        let flicker = 0.8 + 0.2 * (tm * 2.0 + k as f32).sin();
-        painter.rect_filled(Rect::from_center_size(p, Vec2::new(2.4, 7.0)), 1.0, WINDOW.gamma_multiply(flicker));
+        let x = x0 + 4.0 + k as f32 * w * 0.05;
+        painter.rect_filled(Rect::from_min_max(Pos2::new(x, deck_y), Pos2::new(x + 2.2, shore)), 0.0, STONE);
+    }
+    // The great hall: its wall, battlements, its roof lit on the moon's side, its tall arched windows.
+    let hall = Rect::from_min_max(Pos2::new(x0 + w * 0.3, base - 24.0), Pos2::new(x0 + w * 0.66, base));
+    stone_wall(&painter, hall, moonlight);
+    let ridge_y = hall.min.y - 12.0;
+    painter.add(egui::Shape::convex_polygon(vec![Pos2::new(hall.min.x - 1.0, hall.min.y), Pos2::new(hall.min.x + 6.0, ridge_y), Pos2::new(hall.max.x - 6.0, ridge_y), Pos2::new(hall.max.x + 1.0, hall.min.y)], Color32::from_rgb(0x1e, 0x1a, 0x2c), Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(vec![Pos2::new(hall.max.x - 6.0, ridge_y), Pos2::new(hall.max.x + 1.0, hall.min.y), Pos2::new(hall.max.x - 14.0, hall.min.y)], Color32::from_rgb(0x34, 0x30, 0x4c), Stroke::NONE));
+    painter.hline(hall.min.x + 6.0..=hall.max.x - 6.0, ridge_y, Stroke::new(0.8, moonlight.gamma_multiply(0.35)));
+    let mut lit: Vec<(Pos2, f32)> = vec![];
+    for k in 0..6 {
+        let p = Pos2::new(hall.min.x + 6.0 + k as f32 * (hall.width() - 12.0) / 5.0, hall.center().y + 2.0);
+        let flicker = 0.8 + 0.2 * (tm * 2.0 + k as f32 * 1.3).sin();
+        arched_window(&painter, p, Vec2::new(2.6, 8.0), flicker);
+        lit.push((p, flicker));
+    }
+    // The towers: (place, width, height, roof's height, battlements instead of a roof).
+    let towers: [(f32, f32, f32, f32, bool); 8] = [(0.2, 9.0, 30.0, 13.0, false), (0.27, 7.0, 40.0, 15.0, false), (0.36, 12.0, 52.0, 0.0, true), (0.48, 13.0, 66.0, 24.0, false), (0.57, 8.0, 44.0, 16.0, false), (0.66, 11.0, 56.0, 20.0, false), (0.75, 9.0, 38.0, 0.0, true), (0.83, 7.0, 30.0, 12.0, false)];
+    for (k, &(fx, tw, th, roof, flat)) in towers.iter().enumerate() {
+        let cx = x0 + w * fx;
+        let wall = Rect::from_min_max(Pos2::new(cx - tw / 2.0, base - th), Pos2::new(cx + tw / 2.0, base));
+        stone_wall(&painter, wall, moonlight);
+        if flat {
+            // Battlements.
+            let n = (tw / 3.0) as i32;
+            for j in 0..=n {
+                if j % 2 == 0 {
+                    let x = wall.min.x + j as f32 * tw / n as f32;
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(x - 1.0, wall.min.y - 2.5), Vec2::new(2.0, 2.5)), 0.0, STONE);
+                }
+            }
+        } else {
+            // A cone: its shadowed side, its side lit by the moon, a rim of light, a finial.
+            let apex = Pos2::new(cx + tw * 0.05, wall.min.y - roof);
+            painter.add(egui::Shape::convex_polygon(vec![Pos2::new(wall.min.x - 1.8, wall.min.y), apex, Pos2::new(cx + 0.5, wall.min.y)], Color32::from_rgb(0x1a, 0x16, 0x28), Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(vec![Pos2::new(cx + 0.5, wall.min.y), apex, Pos2::new(wall.max.x + 1.8, wall.min.y)], Color32::from_rgb(0x3a, 0x34, 0x54), Stroke::NONE));
+            painter.line_segment([apex, Pos2::new(wall.max.x + 1.8, wall.min.y)], Stroke::new(0.8, moonlight.gamma_multiply(0.45)));
+            painter.line_segment([apex, apex - Vec2::new(0.0, 4.0)], Stroke::new(0.8, Color32::from_rgb(0x8a, 0x80, 0xa0)));
+            // A banner on the highest, waving.
+            if k == 3 {
+                let top = apex - Vec2::new(0.0, 4.0);
+                painter.line_segment([top, top - Vec2::new(0.0, 7.0)], Stroke::new(0.8, Color32::from_rgb(0x8a, 0x80, 0xa0)));
+                let pts: Vec<Pos2> = (0..=6).map(|j| { let t = j as f32 / 6.0; top - Vec2::new(0.0, 7.0) + Vec2::new(t * 10.0, (tm * 4.0 - t * 3.0).sin() * 1.3 * t) }).collect();
+                let mut flag = pts.clone();
+                flag.extend(pts.iter().rev().map(|p| *p + Vec2::new(0.0, 3.6 - (p.x - top.x) * 0.12)));
+                painter.add(egui::Shape::convex_polygon(flag, SCARLET, Stroke::NONE));
+                painter.circle_filled(top - Vec2::new(-4.0, 5.3), 0.9, GOLD);
+            }
+        }
+        // Its windows, some lit, flickering.
+        let rows = (th / 11.0) as u32;
+        for r in 0..rows {
+            let s = k as u32 * 17 + r * 5;
+            if noise(s) < 0.3 {
+                continue;
+            }
+            let flicker = 0.7 + 0.3 * (tm * (1.0 + noise(s + 1) * 3.0) + noise(s + 2) * TAU).sin();
+            let p = Pos2::new(cx + (noise(s + 3) - 0.5) * tw * 0.3, wall.min.y + 7.0 + r as f32 * 10.0);
+            arched_window(&painter, p, Vec2::new(1.8, 3.6), flicker);
+            lit.push((p, flicker));
+        }
     }
 
-    // Floating candles, bobbing, their flames flickering.
+    // The lake: dark water, the moon's path of light, the windows' reflections trembling.
+    vgrad(&painter, Rect::from_min_max(Pos2::new(rect.min.x, shore), rect.max), Color32::from_rgb(0x14, 0x16, 0x30), Color32::from_rgb(0x06, 0x08, 0x16));
+    painter.hline(rect.x_range(), shore, Stroke::new(0.8, moonlight.gamma_multiply(0.18)));
+    for k in 0..9 {
+        let y = shore + 2.0 + k as f32 * 1.8;
+        let half = 9.0 - k as f32 * 0.5 + (tm * 2.0 + k as f32).sin() * 2.0;
+        let x = moon.x + (tm * 1.3 + k as f32 * 0.7).sin() * 1.5;
+        painter.hline(x - half..=x + half, y, Stroke::new(0.9, moonlight.gamma_multiply(0.35 - k as f32 * 0.03)));
+    }
+    for (p, flicker) in &lit {
+        let depth = base - p.y;
+        let y = shore + 2.0 + depth * 0.25;
+        if y < rect.max.y - 1.0 {
+            let wobble = (tm * 3.0 + p.x * 0.3).sin() * 1.2;
+            painter.hline(p.x - 1.6 + wobble..=p.x + 1.6 + wobble, y, Stroke::new(0.9, WINDOW.gamma_multiply(0.35 * flicker)));
+        }
+    }
+    // Mist drifting over the water and the castle's foot.
+    for k in 0..6 {
+        let speed = 4.0 + k as f32 * 1.5;
+        let x = x0 + ((tm * speed + k as f32 * 70.0) % (w + 160.0)) - 80.0;
+        let y = shore - 3.0 + (k % 3) as f32 * 4.0;
+        soft_ellipse(&painter, Pos2::new(x, y), Vec2::new(46.0, 5.0), Color32::from_rgb(0xb8, 0xb4, 0xd4), 0.12);
+    }
+
+    // Floating candles, bobbing, their flames flickering, each in its halo.
     for k in 0..5u32 {
         let x = x0 + w * (0.1 + noise(k * 3 + 1) * 0.8);
         let y = rect.min.y + rect.height() * (0.12 + noise(k * 3 + 2) * 0.25) + (tm * 0.8 + k as f32).sin() * 3.0;
         painter.rect_filled(Rect::from_min_size(Pos2::new(x - 1.5, y), Vec2::new(3.0, 9.0)), 0.5, Color32::from_rgb(0xf2, 0xe8, 0xd0));
         let flame = Pos2::new(x + (tm * 7.0 + k as f32).sin() * 0.5, y - 2.5);
-        painter.circle_filled(flame, 5.0, WINDOW.gamma_multiply(0.12));
+        glow(&painter, flame, 12.0, WINDOW, 0.9);
         painter.add(egui::Shape::convex_polygon(vec![flame + Vec2::new(0.0, -3.5), flame + Vec2::new(1.5, 0.5), flame + Vec2::new(-1.5, 0.5)], WINDOW, Stroke::NONE));
+    }
+
+    // Gold dust drifting up, twinkling.
+    for k in 0..14u32 {
+        let speed = 6.0 + noise(k + 300) * 8.0;
+        let y = rect.max.y - ((tm * speed + noise(k + 310) * rect.height()) % rect.height());
+        let x = x0 + noise(k + 320) * w + (tm * 0.7 + k as f32).sin() * 6.0;
+        let tw = 0.4 + 0.6 * ((tm * 2.0 + k as f32 * 1.7).sin() * 0.5 + 0.5);
+        painter.circle_filled(Pos2::new(x, y), 0.9, GOLD.gamma_multiply(0.7 * tw));
+        painter.circle_filled(Pos2::new(x, y), 2.6, GOLD.gamma_multiply(0.1 * tw));
+    }
+    // A Patronus, a silver stag, galloping across the shore every 45 s.
+    let stag_into = (now + 30.0) % 45.0;
+    let mut again_stag = false;
+    if stag_into < 5.0 {
+        let p = (stag_into / 5.0) as f32;
+        let dir = if ((now + 30.0) / 45.0) as i64 % 2 == 0 { 1.0 } else { -1.0 };
+        let (from, to) = (rect.min.x - 30.0, rect.max.x + 30.0);
+        let x = if dir > 0.0 { from + (to - from) * p } else { to - (to - from) * p };
+        patronus(&painter, Pos2::new(x, shore - 12.0), dir, tm);
+        again_stag = true;
     }
 
     // The Snitch: 9 s every 21, darting on loops, its wings a blur.
     let into = (now + 4.0) % 21.0;
-    let mut again = 0.12;
+    let mut again: f32 = 0.12;
     if into < 9.0 {
         let p = into as f32;
         let fade = (p * 2.0).min(1.0).min((9.0 - p) * 2.0);
@@ -255,7 +415,137 @@ pub(super) fn scene(painter: &egui::Painter, rect: Rect, now: f64) -> f32 {
         owl(&painter, Pos2::new(x, y), dir, tm);
         again = 1.0 / 40.0;
     }
-    again
+    // The dust and the candles move all along; the rest when it shows.
+    if again_stag || shoot < 0.9 || fire < 2.6 {
+        again = 1.0 / 40.0;
+    }
+    again.min(1.0 / 20.0)
+}
+
+/// A Patronus stag at `c` (its body's middle), running `dir`-ward: made of light, motes shimmering
+/// along its shape (its body, neck, head, antlers, legs in a gallop), a halo around it, wisps left
+/// behind.
+fn patronus(painter: &egui::Painter, c: Pos2, dir: f32, tm: f32) {
+    let silver = Color32::from_rgb(0xc8, 0xec, 0xff);
+    let at = |x: f32, y: f32| c + Vec2::new(x * dir, y);
+    glow(painter, c + Vec2::new(0.0, -4.0), 34.0, silver, 0.9);
+    // Wisps trailing behind, curling and fading.
+    for k in 0..18 {
+        let back = k as f32 * 2.6 + (tm * 40.0) % 2.6;
+        let p = at(-12.0 - back, (k as f32 * 0.9 - tm * 4.0).sin() * (2.0 + k as f32 * 0.25) - 2.0);
+        let fade = 1.0 - k as f32 / 18.0;
+        painter.circle_filled(p, 2.4 * fade + 0.4, silver.gamma_multiply(0.08 * fade));
+        painter.circle_filled(p, 0.8, silver.gamma_multiply(0.55 * fade));
+    }
+    // Its shape, as segments to scatter motes along.
+    let swing = (tm * 13.0).sin();
+    let mut lines: Vec<(Pos2, Pos2, f32)> = vec![];
+    for (hip, phase) in [(-7.0f32, 0.0f32), (-4.5, 1.6), (5.5, 3.1), (8.0, 4.7)] {
+        let s = (tm * 13.0 + phase).sin();
+        let knee = at(hip + s * 3.0, 6.5);
+        lines.push((at(hip, 2.0), knee, 0.9));
+        lines.push((knee, at(hip + s * 4.5 - 1.5, 12.0), 0.8));
+    }
+    lines.push((at(7.0, -2.5), at(11.0, -8.5), 1.6));
+    lines.push((at(10.0, -10.0), at(16.5, -8.0), 1.2));
+    for (a, b) in [((10.5, -10.5), (8.0, -16.0)), ((8.0, -16.0), (4.5, -19.5)), ((8.8, -14.0), (11.5, -18.5)), ((12.0, -10.5), (14.5, -16.5)), ((14.5, -16.5), (18.0, -19.0)), ((13.8, -14.5), (12.0, -18.0))] {
+        lines.push((at(a.0, a.1), at(b.0, b.1), 0.6));
+    }
+    lines.push((at(-10.0, -1.5), at(-13.0, -3.5 + swing), 0.8));
+    // The body: motes filling an ellipse.
+    for k in 0..46u32 {
+        let a = noise(k + 500) * TAU;
+        let r = noise(k + 510).sqrt();
+        let jitter = Vec2::new((tm * 9.0 + k as f32).sin(), (tm * 7.0 + k as f32 * 1.3).cos()) * 0.5;
+        let p = at(a.cos() * r * 10.0, a.sin() * r * 4.6 + swing * 0.4) + jitter;
+        let tw = 0.6 + 0.4 * (tm * 6.0 + k as f32).sin();
+        painter.circle_filled(p, 1.1, silver.gamma_multiply(0.75 * tw));
+    }
+    // The limbs, neck, head and antlers: motes along each line, a faint stroke under.
+    for (k, (a, b, w)) in lines.iter().enumerate() {
+        painter.line_segment([*a, *b], Stroke::new(w * 2.6, silver.gamma_multiply(0.12)));
+        let n = ((*b - *a).length() / 1.6) as usize + 1;
+        for j in 0..=n {
+            let t = j as f32 / n as f32;
+            let s = (k * 31 + j) as f32;
+            let jitter = Vec2::new((tm * 11.0 + s).sin(), (tm * 8.0 + s * 1.7).cos()) * 0.35;
+            painter.circle_filled(*a + (*b - *a) * t + jitter, 0.55 + w * 0.35, silver.gamma_multiply(0.85));
+        }
+    }
+    // An eye, brighter.
+    painter.circle_filled(at(12.5, -9.5), 0.9, Color32::WHITE);
+}
+
+/// A rect filled from `top` to `bottom`.
+fn vgrad(painter: &egui::Painter, r: Rect, top: Color32, bottom: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(r.left_top(), top);
+    mesh.colored_vertex(r.right_top(), top);
+    mesh.colored_vertex(r.left_bottom(), bottom);
+    mesh.colored_vertex(r.right_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(mesh);
+}
+
+/// A skyline `pts` (left to right) filled down to `bottom`.
+fn ridge(painter: &egui::Painter, pts: &[Pos2], bottom: f32, color: Color32) {
+    let mut mesh = egui::Mesh::default();
+    for p in pts {
+        mesh.colored_vertex(*p, color);
+        mesh.colored_vertex(Pos2::new(p.x, bottom), color);
+    }
+    for k in 0..pts.len().saturating_sub(1) as u32 {
+        let i = k * 2;
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i + 1, i + 3, i + 2);
+    }
+    painter.add(mesh);
+}
+
+/// A soft light: rings fading outward, `r` its reach.
+fn glow(painter: &egui::Painter, c: Pos2, r: f32, color: Color32, strength: f32) {
+    for (k, a) in [(1.0, 0.04), (0.72, 0.06), (0.5, 0.09), (0.32, 0.14)] {
+        painter.circle_filled(c, r * k, color.gamma_multiply(a * strength));
+    }
+}
+
+/// A soft blur of an ellipse (mist, a wisp of cloud): layers growing fainter outward.
+fn soft_ellipse(painter: &egui::Painter, c: Pos2, half: Vec2, color: Color32, strength: f32) {
+    for (k, a) in [(1.0, 0.3), (0.75, 0.35), (0.5, 0.35)] {
+        let pts: Vec<Pos2> = (0..18).map(|j| { let t = j as f32 / 18.0 * TAU; c + Vec2::new(t.cos() * half.x * k, t.sin() * half.y * k) }).collect();
+        painter.add(egui::Shape::convex_polygon(pts, color.gamma_multiply(a * strength), Stroke::NONE));
+    }
+}
+
+/// A stone wall: dark, courses of stone faintly marked, its right side lit by the moon.
+fn stone_wall(painter: &egui::Painter, r: Rect, moonlight: Color32) {
+    painter.rect_filled(r, 0.0, STONE);
+    let lit = Rect::from_min_max(Pos2::new(r.max.x - (r.width() * 0.3).max(1.5), r.min.y), r.max);
+    painter.rect_filled(lit, 0.0, Color32::from_rgb(0x2c, 0x26, 0x3e));
+    painter.vline(r.max.x - 0.4, r.y_range(), Stroke::new(0.7, moonlight.gamma_multiply(0.28)));
+    let mut y = r.min.y + 3.0;
+    let mut k = 0;
+    while y < r.max.y {
+        painter.hline(r.min.x..=r.max.x, y, Stroke::new(0.5, Color32::BLACK.gamma_multiply(0.25)));
+        let off = if k % 2 == 0 { 0.0 } else { 2.0 };
+        let mut x = r.min.x + off;
+        while x < r.max.x {
+            painter.vline(x, y - 3.0..=y, Stroke::new(0.4, Color32::BLACK.gamma_multiply(0.18)));
+            x += 4.0;
+        }
+        y += 3.0;
+        k += 1;
+    }
+}
+
+/// A lit window, arched, `size` its width and height, in a warm halo.
+fn arched_window(painter: &egui::Painter, c: Pos2, size: Vec2, flicker: f32) {
+    glow(painter, c, size.y * 2.2, WINDOW, 0.9 * flicker);
+    let body = Rect::from_center_size(c + Vec2::new(0.0, size.x * 0.25), Vec2::new(size.x, size.y - size.x * 0.5));
+    painter.rect_filled(body, 0.0, WINDOW.gamma_multiply(flicker));
+    painter.circle_filled(Pos2::new(c.x, body.min.y), size.x / 2.0, WINDOW.gamma_multiply(flicker));
+    painter.circle_filled(c, size.x * 0.3, Color32::from_rgb(0xff, 0xf0, 0xc0).gamma_multiply(flicker));
 }
 
 /// The Golden Snitch at `c`, `r` its radius: a gold ball, its silver wings beating.
@@ -303,7 +593,12 @@ pub(super) struct Wand {
     rng: u64,
     /// A spell cast (a click) where, when.
     cast: Option<(Pos2, f64)>,
+    /// Now and then a spell's name rising from a click: which, where, when.
+    word: Option<(&'static str, Pos2, f64)>,
 }
+
+/// The spells whose name may rise from a click.
+const SPELLS: [&str; 10] = ["Lumos !", "Alohomora !", "Wingardium Leviosa !", "Accio café !", "Expecto Patronum !", "Reparo !", "Riddikulus !", "Nox !", "Finite Incantatem !", "Sudo Maxima !"];
 
 impl Wand {
     fn random(&mut self) -> f32 {
@@ -330,6 +625,11 @@ impl Wand {
             }
             if ctx.input(|i| i.pointer.any_pressed()) {
                 self.cast = Some((tip, now));
+                // One click in six, a spell's name.
+                if self.random() < 1.0 / 6.0 {
+                    let k = (self.random() * SPELLS.len() as f32) as usize % SPELLS.len();
+                    self.word = Some((SPELLS[k], tip, now));
+                }
                 for k in 0..18 {
                     let a = k as f32 / 18.0 * TAU + self.random() * 0.3;
                     let s = 60.0 + self.random() * 70.0;
@@ -363,6 +663,22 @@ impl Wand {
                 painter.circle_filled(p, 10.0 * (1.0 - k), Color32::WHITE.gamma_multiply(0.25 * (1.0 - k)));
             } else {
                 self.cast = None;
+            }
+        }
+        // The spell's name, rising and fading, gold edged in scarlet.
+        if let Some((word, p, when)) = self.word {
+            let k = ((now - when) / 1.3) as f32;
+            if k < 1.0 {
+                let at = p + Vec2::new(14.0, -14.0 - k * 26.0);
+                let alpha = (1.0 - k).min(k * 6.0);
+                let font = FontId::proportional(15.0);
+                for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                    painter.text(at + Vec2::new(dx, dy), Align2::LEFT_CENTER, word, font.clone(), SCARLET.gamma_multiply(alpha));
+                }
+                painter.text(at, Align2::LEFT_CENTER, word, font, GOLD.gamma_multiply(alpha));
+                ctx.request_repaint();
+            } else {
+                self.word = None;
             }
         }
         if let Some(tip) = wand {
@@ -440,4 +756,54 @@ pub(super) fn sorting(painter: &egui::Painter, screen: Rect, t: f32, words: &str
 
 pub(super) fn paint_bolt(painter: &egui::Painter, c: Pos2, h: f32) {
     bolt(painter, c, h, GOLD_DARK.lerp_to_gamma(GOLD, 0.6));
+}
+
+/// The Marauder's Map along the foot of `area` (the terminals) every 70 s: footprints walking across,
+/// each one fading after a moment, a parchment tag over the walker with its name.
+pub(super) fn footprints(ctx: &egui::Context, area: Rect, name: &str) {
+    let now = ctx.input(|i| i.time);
+    let into = (now + 25.0) % 70.0;
+    const WALK: f64 = 14.0;
+    if into > WALK + 2.5 {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(70.0 - into));
+        return;
+    }
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("marauder"))).with_clip_rect(area);
+    let rightward = ((now + 25.0) / 70.0) as i64 % 2 == 0;
+    let ink = Color32::from_rgb(0xe8, 0xd6, 0xa8);
+    let step = 16.0;
+    let y = area.max.y - 14.0;
+    let span = area.width() + 40.0;
+    let steps = (span / step) as usize;
+    let mut walker = None;
+    for k in 0..steps {
+        let placed = k as f64 / steps as f64 * WALK;
+        let age = (into - placed) as f32;
+        if age < 0.0 {
+            break;
+        }
+        let along = area.min.x - 20.0 + k as f32 * step;
+        let x = if rightward { along } else { area.max.x + area.min.x - along };
+        let side = if k % 2 == 0 { -3.5 } else { 3.5 };
+        let p = Pos2::new(x, y + side);
+        walker = Some(p);
+        let alpha = (1.0 - age / 2.5).max(0.0);
+        if alpha <= 0.0 {
+            continue;
+        }
+        let dir = if rightward { 1.0 } else { -1.0 };
+        // A sole, then its toes ahead.
+        let sole: Vec<Pos2> = (0..12).map(|j| { let a = j as f32 / 12.0 * TAU; p + Vec2::new(a.cos() * 3.6, a.sin() * 1.8) }).collect();
+        painter.add(egui::Shape::convex_polygon(sole, ink.gamma_multiply(0.75 * alpha), Stroke::NONE));
+        for t in 0..3 {
+            painter.circle_filled(p + Vec2::new(dir * 4.8, (t as f32 - 1.0) * 1.3), 0.8, ink.gamma_multiply(0.75 * alpha));
+        }
+    }
+    if let Some(p) = walker.filter(|_| into < WALK) {
+        let galley = painter.layout_no_wrap(name.to_owned(), FontId::proportional(11.0), Color32::from_rgb(0x3a, 0x24, 0x14));
+        let tag = Rect::from_center_size(p - Vec2::new(0.0, 18.0), galley.size() + Vec2::new(12.0, 4.0));
+        painter.rect(tag, 3.0, Color32::from_rgb(0xf0, 0xe0, 0xb8), Stroke::new(1.0, Color32::from_rgb(0x8a, 0x60, 0x30)), egui::StrokeKind::Inside);
+        painter.galley(tag.center() - galley.size() / 2.0, galley, Color32::BLACK);
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(60));
 }

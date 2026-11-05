@@ -5331,6 +5331,12 @@ impl App {
                 }
             });
         self.sheep_walk(ui.ctx());
+        if self.theme.wizard
+            && let Some(area) = self.terminals_rect
+        {
+            let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you).to_owned();
+            wizard::footprints(ui.ctx(), area, &name);
+        }
 
         if dialogs_here {
             self.settings_window(ui.ctx());

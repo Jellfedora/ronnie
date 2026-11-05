@@ -1785,7 +1785,7 @@ impl App {
         }
         if self.theme.wizard {
             // Gryffindor: the castle at night, the candles, the Snitch, the owl, just above the cards.
-            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 120.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
             let now = ui.input(|i| i.time);
             let again = super::wizard::scene(ui.painter(), field, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
