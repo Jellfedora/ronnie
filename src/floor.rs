@@ -318,11 +318,11 @@ impl Floor {
     }
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::config::Config::builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(15))).build().new_agent()
 }
 
-const USER_AGENT: &str = concat!("ronnie/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("ronnie/", env!("CARGO_PKG_VERSION"));
 
 fn board(agent: &ureq::Agent, url: &str, account: Option<&FloorAccount>) -> Result<(Vec<Entry>, Option<WireEntry>), ureq::Error> {
     #[derive(Deserialize)]

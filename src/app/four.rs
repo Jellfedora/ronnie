@@ -21,6 +21,7 @@ pub(super) enum HomeGame {
     Larsen,
     President,
     BugHunt,
+    Fishing,
 }
 
 /// A disc falling into place, since `at`.

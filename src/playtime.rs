@@ -1,5 +1,5 @@
 //! The games during working hours: one game of Speed Metal, one of Puissance 4, three of the
-//! minesweeper, one run of Ronnie Run, one song of Riff Hero, one show of Backstage and one game of Bug Hunt a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
+//! minesweeper, one run of Ronnie Run, one song of Riff Hero, one show of Backstage and one game of Bug Hunt a morning and an afternoon, 10 candidates caught at the fishing, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
 //! 18:00 — 17:20 on Fridays — and at the weekend). Not a setting: Ronnie is for work first.
 //!
 //! What was played is kept in the config file, sealed (an HMAC of this machine and user): edited
@@ -15,6 +15,8 @@ use crate::config::GameUsage;
 pub const BLOB_SECS: u32 = 10 * 60;
 /// Games of the minesweeper a half-day (one game is soon over).
 pub const MINES_GAMES: u32 = 3;
+/// Candidates caught at the fishing a half-day.
+pub const FISH_CATCHES: u32 = 10;
 
 /// A half-day of work.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,7 +60,7 @@ pub fn checked(usage: &mut GameUsage, now: NaiveDateTime) -> Option<Period> {
     let wanted = match &p {
         // Out of working hours nothing is limited: a record to trust again from here.
         None if !valid => Some(fresh("")),
-        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, mines_games: MINES_GAMES, runner: true, riff: true, backstage: true, larsen: true, president: true, bughunt: true, seal: String::new() }),
+        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, mines_games: MINES_GAMES, runner: true, riff: true, backstage: true, larsen: true, president: true, bughunt: true, fish: FISH_CATCHES, seal: String::new() }),
         Some(p) if usage.period != p.key => Some(fresh(&p.key)),
         _ => None,
     };
@@ -101,6 +103,9 @@ fn seal(usage: &GameUsage) -> String {
     }
     if usage.bughunt {
         message.push_str("|bughunt");
+    }
+    if usage.fish > 0 {
+        message.push_str(&format!("|fish {}", usage.fish));
     }
     hmac(format!("ronnie-playtime-7f3a9c|{who}").as_bytes(), message.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -186,6 +191,21 @@ mod tests {
         usage.mines_games = 1;
         checked(&mut usage, monday);
         assert!(usage.mines && usage.mines_games == MINES_GAMES && usage.four);
+    }
+
+    #[test]
+    fn the_fish_caught_are_sealed() {
+        let monday = on(2026, 10, 12, 9, 0);
+        let mut usage = GameUsage::default();
+        checked(&mut usage, monday);
+        usage.fish = 4;
+        reseal(&mut usage);
+        checked(&mut usage, monday);
+        assert!(usage.fish == 4 && !usage.four);
+        // Some taken back by hand: all caught.
+        usage.fish = 1;
+        checked(&mut usage, monday);
+        assert!(usage.fish == FISH_CATCHES && usage.four);
     }
 
     fn on(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {

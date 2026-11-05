@@ -3,13 +3,13 @@
 
 use super::*;
 use super::four::HomeGame;
-use crate::playtime::{reseal, Period, BLOB_SECS, MINES_GAMES};
+use crate::playtime::{reseal, Period, BLOB_SECS, FISH_CATCHES, MINES_GAMES};
 
 impl App {
     /// The half-day of work under way, what was played in it checked (see `crate::playtime::checked`).
     /// Development builds, even in release, are never limited (the games are to be tried as often as
     /// needed).
-    fn work_period(&mut self) -> Option<Period> {
+    pub(super) fn work_period(&mut self) -> Option<Period> {
         if !crate::config::OFFICIAL {
             return None;
         }
@@ -31,6 +31,7 @@ impl App {
             HomeGame::Larsen => usage.larsen,
             HomeGame::President => usage.president,
             HomeGame::BugHunt => usage.bughunt,
+            HomeGame::Fishing => usage.fish >= FISH_CATCHES,
         };
         used.then_some(p)
     }
@@ -59,13 +60,23 @@ impl App {
             HomeGame::Larsen => &mut usage.larsen,
             HomeGame::President => &mut usage.president,
             HomeGame::BugHunt => &mut usage.bughunt,
-            HomeGame::Blob | HomeGame::Mines => return,
+            HomeGame::Blob | HomeGame::Mines | HomeGame::Fishing => return,
         };
         if !*played {
             *played = true;
             reseal(usage);
             self.save_config();
         }
+    }
+
+    /// A candidate hired at the fishing: counted in the half-day.
+    pub(super) fn count_fish(&mut self) {
+        if self.work_period().is_none() {
+            return;
+        }
+        let usage = &mut self.config.settings.game_usage;
+        usage.fish = (usage.fish + 1).min(FISH_CATCHES);
+        reseal(usage);
     }
 
     /// `dt` seconds more on Ronnie.io's page; the seconds it has left in the half-day (none: free).
@@ -115,6 +126,7 @@ impl App {
             HomeGame::Larsen => super::larsen::paint_larsen_icon(painter, icon, &theme, 2.6),
             HomeGame::President => super::president::paint_president_icon(painter, icon, &theme, 2.6),
             HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(painter, icon, &theme, 2.6),
+            HomeGame::Fishing => super::fishing::paint_fishing_icon(painter, icon, &theme, 2.6),
         }
         paint_metal(painter, Pos2::new(c.x, c.y - 50.0), Align2::CENTER_CENTER, t.playtime_title, 44.0, theme.accent, 1.0);
         let name = match game {
@@ -128,6 +140,7 @@ impl App {
             HomeGame::Larsen => t.larsen_name,
             HomeGame::President => t.president_name,
             HomeGame::BugHunt => t.bughunt_name,
+            HomeGame::Fishing => t.fishing_name,
         };
         let why = match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),
@@ -171,6 +184,10 @@ impl App {
             }
             // Against the computer only, for now: no board.
             HomeGame::President => return,
+            HomeGame::Fishing => {
+                let n = settings.fish_cards.len() as u32;
+                (&mut self.fishing.floor, bests(n, t.fishing_collection, "{n}", format!("{n}/{}", crate::fishing::FISH.len())), |s| s.to_string())
+            }
             HomeGame::BugHunt => (&mut self.bughunt.floor, bests(settings.bughunt_best, t.bughunt_best, "{s}", settings.bughunt_best.to_string()), |s| s.to_string()),
             HomeGame::Four | HomeGame::Larsen => {
                 let id = if game == HomeGame::Four { "puissance-4" } else { "larsen" };

@@ -62,6 +62,7 @@ impl App {
                     HomeGame::Larsen => t.arcade_larsen,
                     HomeGame::President => t.arcade_president,
                     HomeGame::BugHunt => t.arcade_bughunt,
+                    HomeGame::Fishing => t.fishing_arcade,
                 };
                 let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 52.0, card.center().y), Some(card.min.x + 100.0), card.width() - 120.0) };
                 let scale = if wide { 2.8 } else { 2.0 };
@@ -76,6 +77,7 @@ impl App {
                     HomeGame::Larsen => super::larsen::paint_larsen_icon(&painter, icon, &theme, scale),
                     HomeGame::President => super::president::paint_president_icon(&painter, icon, &theme, scale),
                     HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(&painter, icon, &theme, scale),
+                    HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, scale),
                 }
                 let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
                 let desc_galley = painter.layout(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);

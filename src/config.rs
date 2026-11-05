@@ -680,6 +680,9 @@ pub struct Settings {
     /// Bug Hunt: the highest wave reached.
     #[serde(default)]
     pub bughunt_best_wave: u32,
+    /// La pêche aux talents: the cards of the candidates caught, by id (`crate::fishing::FISH`).
+    #[serde(default)]
+    pub fish_cards: std::collections::BTreeMap<String, FishCard>,
     /// A round of Ronnie.io reached `theme::JURASSIC_UNLOCK` (since the Jurassic Park theme exists: a
     /// best made before doesn't count).
     #[serde(default)]
@@ -782,6 +785,17 @@ fn default_projects_port() -> u16 {
     crate::projects::DEFAULT_PORT
 }
 
+/// A candidate's card, at the fishing: how many caught, the biggest, the shiny ones, the first.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct FishCard {
+    pub count: u32,
+    pub best_cm: u32,
+    pub shiny: u32,
+    /// When it was first caught (Unix seconds).
+    pub first_at: i64,
+}
+
 /// The games played in a half-day of work.
 /// (Each field defaults: a field deleted by hand doesn't break the config, the seal catches it.)
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -805,6 +819,8 @@ pub struct GameUsage {
     pub president: bool,
     /// Bug Hunt.
     pub bughunt: bool,
+    /// The candidates caught at the fishing (`crate::playtime::FISH_CATCHES` at most).
+    pub fish: u32,
     /// Its HMAC (`crate::playtime`): an edit by hand shows.
     #[serde(default)]
     pub seal: String,
@@ -1312,7 +1328,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, bughunt_best: 0, bughunt_best_wave: 0, jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default() }
     }
 }
 

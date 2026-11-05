@@ -5,6 +5,8 @@ mod askpass;
 mod backstage;
 mod blob;
 mod bughunt;
+mod fishing;
+mod pond;
 mod awake;
 mod claude;
 mod config;
