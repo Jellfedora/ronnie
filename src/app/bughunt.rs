@@ -143,7 +143,7 @@ impl App {
         let width = body.width().min(if wide { 860.0 } else { 420.0 });
         let left_w = if wide { 420.0 } else { width };
         let x0 = body.center().x - width / 2.0;
-        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 430.0f32.min(body.height())));
+        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 450.0f32.min(body.height())));
         let painter = ui.painter().clone();
         painter.rect(card, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
         let left = card.min.x + 20.0;
@@ -159,6 +159,8 @@ impl App {
             y += 36.0;
         }
         painter.text(Pos2::new(left, y - 6.0), Align2::LEFT_CENTER, t.bughunt_dive, FontId::proportional(12.5), theme.text_muted);
+        y += 18.0;
+        painter.text(Pos2::new(left, y - 6.0), Align2::LEFT_CENTER, t.bughunt_boss_note, FontId::proportional(12.5), theme.ansi[1]);
         y += 28.0;
         // The fixes.
         painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.bughunt_fixes_title, FontId::proportional(14.0), theme.text);
@@ -197,8 +199,10 @@ impl App {
         // The world's board: beside, or under on a narrow page.
         let board = if wide { Rect::from_min_max(Pos2::new(card.max.x + 32.0, body.min.y + 6.0), Pos2::new(x0 + width, body.max.y)) } else { Rect::from_min_max(Pos2::new(x0, card.max.y + 20.0), Pos2::new(x0 + width, body.max.y)) };
         if board.height() > 60.0 {
-            let best = (self.config.settings.bughunt_best > 0).then(|| t.bughunt_best.replace("{s}", &self.config.settings.bughunt_best.to_string()));
-            if self.game_board(ui, board, &theme, self.bughunt.floor.board(), best, |s| s.to_string()) {
+            let settings = &self.config.settings;
+            let best = (settings.bughunt_best > 0).then(|| format!("{}  ·  {}", t.bughunt_best.replace("{s}", &settings.bughunt_best.to_string()), t.bughunt_best_wave.replace("{n}", &settings.bughunt_best_wave.to_string())));
+            let wave = |e: &crate::floor::GameEntry| e.details.get("wave").and_then(serde_json::Value::as_u64).map(|w| t.bughunt_wave.replace("{n}", &w.to_string()).to_lowercase());
+            if self.game_board_noted(ui, board, &theme, self.bughunt.floor.board(), best, |s| s.to_string(), &wave) {
                 self.ask_pseudo();
             }
         }
@@ -214,8 +218,11 @@ impl App {
             return;
         }
         self.bughunt.record = score > self.config.settings.bughunt_best;
-        if self.bughunt.record {
-            self.config.settings.bughunt_best = score;
+        // The highest wave reached, whatever the score: what floor shows beside it.
+        let wave = wave.max(self.config.settings.bughunt_best_wave);
+        if self.bughunt.record || wave > self.config.settings.bughunt_best_wave {
+            self.config.settings.bughunt_best = self.config.settings.bughunt_best.max(score);
+            self.config.settings.bughunt_best_wave = wave;
             self.save_config();
         }
         // Online only with a pseudo.
@@ -288,6 +295,34 @@ impl App {
                 painter.circle_stroke(at(b.x, b.y), 19.0 * scale, Stroke::new(1.0, bug_color(b.kind, theme).gamma_multiply(0.35)));
             }
         }
+        // The boss: never quite where it seems (two ghosts beside it), vanishing and showing up again
+        // elsewhere, flashing when hit; its life on top.
+        if let Some(b) = &g.boss {
+            let k = scale * 3.2;
+            let color = if b.flash > 0.0 { Color32::WHITE } else { theme.ansi[1] };
+            let shown = 1.0 - b.blink / world::BLINK;
+            let jitter = ((now * 23.0).sin() * 3.0) as f32;
+            let draw = |x: f32, alpha: f32| {
+                if alpha <= 0.02 {
+                    return;
+                }
+                let c = at(x, b.y);
+                paint_bug_in(&painter, c + Vec2::new(-4.0 - jitter, 0.0) * scale, k, Kind::Spider, g.beat * 0.6, theme, theme.ansi[6].gamma_multiply(0.3 * alpha));
+                paint_bug_in(&painter, c + Vec2::new(4.0 + jitter, 0.0) * scale, k, Kind::Spider, g.beat * 0.6, theme, theme.ansi[5].gamma_multiply(0.3 * alpha));
+                paint_bug_in(&painter, c, k, Kind::Spider, g.beat * 0.6, theme, color.gamma_multiply(alpha));
+            };
+            if b.blink > 0.0 {
+                draw(b.from_x, 1.0 - shown);
+                draw(b.x, shown);
+            } else {
+                draw(b.x, 1.0);
+            }
+            let bar = Rect::from_center_size(at(world::W / 2.0, 46.0), Vec2::new(260.0, 7.0) * scale);
+            painter.rect_filled(bar, 3.0, theme.tab_hover);
+            let left = Rect::from_min_size(bar.min, Vec2::new(bar.width() * b.hp as f32 / b.max_hp as f32, bar.height()));
+            painter.rect_filled(left, 3.0, theme.ansi[1]);
+            painter.text(at(world::W / 2.0, 60.0), Align2::CENTER_TOP, "HEISENBUG", FontId::monospace(10.5 * scale.max(0.7)), theme.ansi[1].gamma_multiply(0.8));
+        }
         // The fixes falling.
         for d in &g.drops {
             paint_power(&painter, at(d.x, d.y), scale, d.power, theme, now);
@@ -344,12 +379,13 @@ impl App {
             paint_metal(&painter, at(world::W / 2.0, world::H * 0.45), Align2::CENTER_CENTER, text, 40.0 * scale.max(0.6), color, 1.0);
         };
         if g.over {
-            big(t.bughunt_prod, theme.ansi[1]);
+            big(if g.invaded { t.bughunt_prod } else { t.bughunt_crashed }, theme.ansi[1]);
         } else if self.bughunt.paused {
             painter.rect_filled(field, 10.0, theme.bg.gamma_multiply(0.55));
             big(t.bughunt_paused, theme.text);
         } else if g.banner > 0.0 {
-            big(&t.bughunt_wave.replace("{n}", &g.wave.to_string()), theme.accent.gamma_multiply((g.banner / 0.4).min(1.0)));
+            let title = if g.boss.is_some() { t.bughunt_boss.to_owned() } else { t.bughunt_wave.replace("{n}", &g.wave.to_string()) };
+            big(&title, theme.accent.gamma_multiply((g.banner / 0.4).min(1.0)));
         }
     }
 }
@@ -365,7 +401,11 @@ fn bug_color(kind: Kind, theme: &Theme) -> Color32 {
 /// A bug, facing down, its middle at `c`: a moth flapping its wings, a beetle in its shell walking, a
 /// spider on its eight legs. `phase`: where it is in its beat.
 fn paint_bug(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, phase: f32, theme: &Theme) {
-    let color = bug_color(kind, theme);
+    paint_bug_in(painter, c, scale, kind, phase, theme, bug_color(kind, theme));
+}
+
+/// A bug in `color`.
+fn paint_bug_in(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, phase: f32, theme: &Theme, color: Color32) {
     let at = |x: f32, y: f32| c + Vec2::new(x, y) * scale;
     let line = |a: (f32, f32), b: (f32, f32), w: f32| painter.line_segment([at(a.0, a.1), at(b.0, b.1)], Stroke::new(w * scale, color));
     let swing = (phase * std::f32::consts::TAU).sin();

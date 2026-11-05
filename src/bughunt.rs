@@ -3,7 +3,9 @@
 //! leave the ranks to dive at the debugger. The debugger, at the bottom, moves and fires patches; four
 //! firewalls shelter it from the exceptions and wear away under them (its own patches go out through
 //! them). A bug squashed now and then drops
-//! a fix: a triple shot, a rapid fire, a shield. Units are the field's (y down); the page scales them.
+//! a fix: a triple shot, a rapid fire, a shield. Every fifth wave, a boss alone: the Heisenbug, big,
+//! sweeping the top, firing in fans, vanishing to show up elsewhere and sending moths to dive. Units
+//! are the field's (y down); the page scales them.
 
 /// The field.
 pub const W: f32 = 640.0;
@@ -87,7 +89,36 @@ pub struct Bug {
     pub x: f32,
     pub y: f32,
     pub dive: Option<Dive>,
+    /// Sent by the boss: diving once, gone off the bottom (no place in the ranks).
+    pub minion: bool,
 }
+
+/// Every fifth wave, the Heisenbug: across the top, its fans of exceptions, now and then gone and back
+/// elsewhere, moths sent to dive.
+#[derive(Clone, Copy, Debug)]
+pub struct Boss {
+    pub x: f32,
+    pub y: f32,
+    pub hp: u32,
+    pub max_hp: u32,
+    /// Which boss (1 at wave 5, 2 at wave 10...).
+    pub level: u32,
+    vx: f32,
+    t: f32,
+    fire_in: f32,
+    blink_in: f32,
+    spawn_in: f32,
+    /// Seconds left of its vanishing (patches go through it), from `BLINK`.
+    pub blink: f32,
+    /// Where it was before vanishing.
+    pub from_x: f32,
+    /// Seconds left of its flash, just hit.
+    pub flash: f32,
+}
+
+/// The boss's half-size, how long it vanishes.
+pub const BOSS_HALF: (f32, f32) = (54.0, 36.0);
+pub const BLINK: f32 = 0.45;
 
 /// A patch fired, going up.
 #[derive(Clone, Copy, Debug)]
@@ -210,7 +241,10 @@ pub struct Game {
     /// How far the bugs' legs and wings are in their beat.
     pub beat: f32,
     pub kills: u32,
+    pub boss: Option<Boss>,
     pub over: bool,
+    /// Over because the ranks reached production (else: no lives left).
+    pub invaded: bool,
     rng: u64,
 }
 
@@ -240,7 +274,9 @@ impl Game {
             dive_in: 0.0,
             beat: 0.0,
             kills: 0,
+            boss: None,
             over: false,
+            invaded: false,
             rng: seed | 1,
         };
         game.next_wave();
@@ -267,7 +303,15 @@ impl Game {
         self.fx = (W - (COLS - 1) as f32 * CELL_W) / 2.0;
         self.fy = 86.0 + (self.wave - 1).min(5) as f32 * 8.0;
         self.dir = 1.0;
-        self.bugs = (0..ROWS).flat_map(|row| (0..COLS).map(move |col| Bug { kind: Kind::of_row(row), col, row, alive: true, x: 0.0, y: 0.0, dive: None })).collect();
+        if self.wave.is_multiple_of(5) {
+            // The boss, alone.
+            let level = self.wave / 5;
+            let hp = 40 + 15 * (level - 1);
+            self.bugs.clear();
+            self.boss = Some(Boss { x: W / 2.0, y: 150.0, hp, max_hp: hp, level, vx: 110.0 + 15.0 * level as f32, t: 0.0, fire_in: 1.5, blink_in: 5.0, spawn_in: 3.0, blink: 0.0, from_x: W / 2.0, flash: 0.0 });
+        } else {
+            self.bugs = (0..ROWS).flat_map(|row| (0..COLS).map(move |col| Bug { kind: Kind::of_row(row), col, row, alive: true, x: 0.0, y: 0.0, dive: None, minion: false })).collect();
+        }
         self.place_ranks();
         self.walls = (0..4).map(|k| Wall::new(W * (k as f32 + 1.0) / 5.0)).collect();
         self.shots.clear();
@@ -318,9 +362,10 @@ impl Game {
         self.march(dt);
         self.dives(dt);
         self.bug_fire(dt);
+        self.boss_step(dt);
         self.bolts_step(dt);
         self.collide();
-        if !self.over && self.alive() == 0 {
+        if !self.over && self.alive() == 0 && self.boss.is_none() {
             self.next_wave();
         }
     }
@@ -439,7 +484,11 @@ impl Game {
                 let along = (d.t / 1.8).min(1.0);
                 let x = d.from.0 + (d.target - d.from.0) * along + (d.t * 3.2).sin() * 70.0;
                 let y = d.from.1 + speed * d.t - 40.0 * (d.t * 4.0).min(std::f32::consts::PI).sin();
-                if y > H + 30.0 {
+                if y > H + 30.0 && bug.minion {
+                    self.bugs[k].alive = false;
+                    self.bugs[k].dive = None;
+                    (x, y)
+                } else if y > H + 30.0 {
                     d.back = true;
                     self.bugs[k].dive = Some(d);
                     (x.clamp(20.0, W - 20.0), -30.0)
@@ -514,6 +563,17 @@ impl Game {
                 self.squash(b);
                 continue;
             }
+            if let Some(boss) = self.boss.as_mut().filter(|b| b.blink <= 0.0 && (b.x - s.x).abs() < BOSS_HALF.0 && (b.y - s.y).abs() < BOSS_HALF.1) {
+                boss.hp = boss.hp.saturating_sub(1);
+                boss.flash = 0.08;
+                let (bx, by, dead) = (s.x, s.y, boss.hp == 0);
+                self.shots.swap_remove(k);
+                self.burst(bx, by, Some(Kind::Spider), 2);
+                if dead {
+                    self.boss_down();
+                }
+                continue;
+            }
             if let Some(b) = self.bolts.iter().position(|b| (b.x - s.x).abs() < 6.0 && (b.y - s.y).abs() < 12.0) {
                 self.shots.swap_remove(k);
                 self.bolts.swap_remove(b);
@@ -565,10 +625,72 @@ impl Game {
                 // The ranks reached production.
                 self.lives = 0;
                 self.over = true;
+                self.invaded = true;
                 self.burst(self.x, PLAYER_Y, None, 30);
                 return;
             }
         }
+    }
+
+    /// The boss across the top, swaying; its fans of exceptions, its vanishing, its moths.
+    fn boss_step(&mut self, dt: f32) {
+        let Some(mut b) = self.boss else { return };
+        b.t += dt;
+        b.flash = (b.flash - dt).max(0.0);
+        b.blink = (b.blink - dt).max(0.0);
+        // Faster as it weakens.
+        let rage = 1.0 + (1.0 - b.hp as f32 / b.max_hp as f32) * 0.8;
+        b.x += b.vx * rage * dt;
+        let edge = BOSS_HALF.0 + 10.0;
+        if (b.x < edge && b.vx < 0.0) || (b.x > W - edge && b.vx > 0.0) {
+            b.vx = -b.vx;
+            b.x = b.x.clamp(edge, W - edge);
+        }
+        b.y = 150.0 + (b.t * 0.9).sin() * 26.0;
+        b.fire_in -= dt * rage;
+        if b.fire_in <= 0.0 {
+            b.fire_in = (1.7 - 0.12 * b.level as f32).max(0.9);
+            let n = 3 + b.level.min(3) as usize;
+            for k in 0..n {
+                let vx = (k as f32 - (n - 1) as f32 / 2.0) * 70.0;
+                self.bolts.push(Bolt { x: b.x, y: b.y + BOSS_HALF.1 - 6.0, vx });
+            }
+        }
+        b.blink_in -= dt;
+        if b.blink_in <= 0.0 {
+            b.blink_in = 4.0 + self.random() * 3.0;
+            b.blink = BLINK;
+            b.from_x = b.x;
+            b.x = edge + self.random() * (W - 2.0 * edge);
+        }
+        b.spawn_in -= dt;
+        if b.spawn_in <= 0.0 {
+            b.spawn_in = (4.0 - 0.3 * b.level as f32).max(2.2);
+            for side in [-1.0, 1.0] {
+                let (x, y) = (b.x + side * 30.0, b.y + 20.0);
+                let dive = Dive { t: 0.0, from: (x, y), target: self.x + side * 40.0, back: false, fired: false };
+                self.bugs.push(Bug { kind: Kind::Moth, col: 0, row: 0, alive: true, x, y, dive: Some(dive), minion: true });
+            }
+        }
+        self.boss = Some(b);
+    }
+
+    /// The boss down: its points, its moths squashed with it, a fix for sure.
+    fn boss_down(&mut self) {
+        let Some(b) = self.boss.take() else { return };
+        self.score += 500 * b.level;
+        self.kills += 1;
+        for _ in 0..4 {
+            let (dx, dy) = ((self.random() - 0.5) * 80.0, (self.random() - 0.5) * 50.0);
+            self.burst(b.x + dx, b.y + dy, Some(Kind::Spider), 14);
+        }
+        let minions: Vec<(f32, f32)> = self.bugs.iter().filter(|m| m.alive).map(|m| (m.x, m.y)).collect();
+        for (x, y) in minions {
+            self.burst(x, y, Some(Kind::Moth), 6);
+        }
+        self.bugs.clear();
+        let power = [Power::Triple, Power::Rapid, Power::Shield][self.below(3)];
+        self.drops.push(Drop { x: b.x, y: b.y, power });
     }
 
     /// Bug `k` squashed: its points (twice as many diving), its sparks, maybe a fix.
@@ -689,6 +811,14 @@ mod tests {
     }
 
     #[test]
+    fn the_last_life_lost_ends_the_game_but_not_by_production() {
+        let mut g = Game::new(3);
+        g.lives = 1;
+        g.hit();
+        assert!(g.over && !g.invaded);
+    }
+
+    #[test]
     fn the_last_bug_squashed_brings_the_next_wave() {
         let mut g = Game::new(4);
         for b in g.bugs.iter_mut().skip(1) {
@@ -708,7 +838,38 @@ mod tests {
         g.fy = PLAYER_Y - (ROWS - 1) as f32 * CELL_H;
         g.place_ranks();
         g.collide();
-        assert!(g.over);
+        assert!(g.over && g.invaded);
+    }
+
+    #[test]
+    fn every_fifth_wave_the_boss_then_its_points() {
+        let mut g = Game::new(8);
+        while g.wave < 4 {
+            g.bugs.clear();
+            g.banner = 0.0;
+            g.step(DT, idle());
+        }
+        assert!(g.boss.is_none());
+        g.bugs.clear();
+        g.banner = 0.0;
+        g.step(DT, idle());
+        assert_eq!(g.wave, 5);
+        let boss = g.boss.expect("a boss at wave 5");
+        assert!(g.bugs.is_empty());
+        // Its moths come and go; hit until down.
+        g.banner = 0.0;
+        g.invincible = 1000.0;
+        let before = g.score;
+        for _ in 0..boss.max_hp {
+            let b = g.boss.unwrap();
+            g.boss.as_mut().unwrap().blink = 0.0;
+            g.shots.push(Shot { x: b.x, y: b.y, vx: 0.0 });
+            g.collide();
+        }
+        assert!(g.boss.is_none());
+        assert!(g.score >= before + 500);
+        g.step(DT, idle());
+        assert_eq!(g.wave, 6);
     }
 
     /// Whole games, firing at random: they end, and nothing goes out of the field.

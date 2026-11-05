@@ -120,6 +120,12 @@ impl App {
     /// A game's board from floor, beside its page: the player's best (`best`, worded), then floor's
     /// best rounds (`score` words each one); without a pseudo, why and a button to pick one (true: clicked).
     pub(super) fn game_board(&self, ui: &mut Ui, area: Rect, theme: &Theme, board: Option<&[crate::floor::GameEntry]>, best: Option<String>, score: fn(u32) -> String) -> bool {
+        self.game_board_noted(ui, area, theme, board, best, score, &|_| None)
+    }
+
+    /// The same, each line with a note before its score (`note` words it from the line: Bug Hunt's wave).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn game_board_noted(&self, ui: &mut Ui, area: Rect, theme: &Theme, board: Option<&[crate::floor::GameEntry]>, best: Option<String>, score: fn(u32) -> String, note: &dyn Fn(&crate::floor::GameEntry) -> Option<String>) -> bool {
         let t = self.t();
         let painter = ui.painter_at(area);
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
@@ -155,6 +161,9 @@ impl App {
             painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, format!("{}.", entry.rank), FontId::monospace(13.0), theme.text_muted);
             painter.text(Pos2::new(area.min.x + 30.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
             painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, score(entry.score), FontId::monospace(13.0), color);
+            if let Some(note) = note(entry) {
+                painter.text(Pos2::new(area.max.x - 76.0, y + 1.0), Align2::RIGHT_TOP, note, FontId::proportional(12.0), theme.text_muted);
+            }
             y += 22.0;
         }
         false

@@ -1,5 +1,5 @@
 //! The games during working hours: one game of Speed Metal, one of Puissance 4, three of the
-//! minesweeper, one run of Ronnie Run, one song of Riff Hero and one show of Backstage a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
+//! minesweeper, one run of Ronnie Run, one song of Riff Hero, one show of Backstage and one game of Bug Hunt a morning and an afternoon, and 10 minutes of Ronnie.io. Free outside them (before 8:30, 12:00 to 14:00, after
 //! 18:00 — 17:20 on Fridays — and at the weekend). Not a setting: Ronnie is for work first.
 //!
 //! What was played is kept in the config file, sealed (an HMAC of this machine and user): edited
