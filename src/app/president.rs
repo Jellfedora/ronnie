@@ -530,6 +530,7 @@ impl App {
         // Online: the players to invite to the player's table, or back to it.
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
         let live = &self.versus;
+        let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
         let mut action = None;
         let mut back_to_table = false;
         let mut online = |ui: &mut Ui| {
@@ -545,7 +546,7 @@ impl App {
             }
             ui.label(egui::RichText::new(t.president_invite_hint).size(13.0).color(theme.text_muted));
             ui.add_space(10.0);
-            action = invite_list(ui, live, &[], pseudo.as_deref(), t, &theme);
+            action = invite_list(ui, live, &faces, &[], pseudo.as_deref(), t, &theme);
         };
         let mut rules_card = |ui: &mut Ui| {
             ui.label(egui::RichText::new(t.larsen_rules_title).size(16.0).strong());
@@ -717,6 +718,7 @@ impl App {
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
         let (mut action, mut start) = (None, false);
         let live = &self.versus;
+        let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
         Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(12.0).inner_margin(18.0).show(&mut child, |ui| {
             ui.set_width(width - 38.0);
             let title = if table.hosting() { t.president_table.to_owned() } else { t.president_host_table.replace("{n}", &host) };
@@ -752,7 +754,7 @@ impl App {
                     ui.label(egui::RichText::new(t.president_invite_more).size(13.0).color(theme.text_muted));
                     ui.add_space(6.0);
                     let taken: Vec<&str> = table.seats.iter().filter_map(|s| s.name.as_deref()).chain(table.invited.iter().flatten().map(String::as_str)).collect();
-                    action = invite_list(ui, live, &taken, pseudo.as_deref(), t, &theme);
+                    action = invite_list(ui, live, &faces, &taken, pseudo.as_deref(), t, &theme);
                 }
             } else {
                 ui.label(egui::RichText::new(t.president_wait_host.replace("{n}", &host)).size(13.5).color(theme.text_muted));
@@ -995,7 +997,8 @@ impl App {
 
 /// The players online to invite to the table (not those in `taken`, seated or invited): without a
 /// pseudo, a button to pick one; floor not reached, or nobody.
-fn invite_list(ui: &mut Ui, live: &crate::live::Live, taken: &[&str], pseudo: Option<&str>, t: &Strings, theme: &Theme) -> Option<LobbyAction> {
+#[allow(clippy::too_many_arguments)]
+fn invite_list(ui: &mut Ui, live: &crate::live::Live, faces: &super::frames::Faces, taken: &[&str], pseudo: Option<&str>, t: &Strings, theme: &Theme) -> Option<LobbyAction> {
     if pseudo.is_none() {
         ui.label(egui::RichText::new(t.four_need_pseudo).size(13.0).color(theme.text_muted));
         ui.add_space(8.0);
@@ -1024,7 +1027,7 @@ fn invite_list(ui: &mut Ui, live: &crate::live::Live, taken: &[&str], pseudo: Op
         for player in players {
             ui.horizontal(|ui| {
                 ui.set_min_height(30.0);
-                ui.label(egui::RichText::new("●").size(10.0).color(theme.ansi[2]));
+                super::frames::row_avatar(ui, 10.0, &player.name, player.id.as_deref(), player.avatar.as_deref(), player.frame.as_deref(), faces, theme);
                 ui.label(egui::RichText::new(&player.name).size(13.5));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if player.busy {

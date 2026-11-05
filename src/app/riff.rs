@@ -367,12 +367,13 @@ impl App {
             }
         };
         let live = &self.versus;
+        let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
         let mut action = None;
         let mut battle = |ui: &mut Ui| {
-            action = players_ui(ui, live, t.riff_battle, pseudo.as_deref(), t, &theme);
+            action = players_ui(ui, live, &faces, t.riff_battle, pseudo.as_deref(), t, &theme);
             ui.add_space(6.0);
             ui.label(egui::RichText::new(t.riff_battle_text).size(12.5).color(theme.text_muted));
-            wins_ui(ui, live, "riff-hero", t.riff_wins, pseudo.as_deref(), t, &theme);
+            wins_ui(ui, live, &faces, "riff-hero", t.riff_wins, pseudo.as_deref(), t, &theme);
         };
         if wide {
             child.horizontal_top(|ui| {

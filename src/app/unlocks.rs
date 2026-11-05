@@ -6,7 +6,7 @@ use super::*;
 
 /// One thing a game unlocks: what, how, and done or how far (`progress` of `need`).
 struct Unlock {
-    what: &'static str,
+    what: String,
     how: String,
     done: bool,
     progress: Option<(u32, u32)>,
@@ -21,15 +21,22 @@ impl App {
         match game {
             HomeGame::SpeedMetal => {
                 let best = s.typing_scores.first().map_or(0, |s| s.letters);
-                vec![Unlock { what: t.unlock_metal, how: t.unlock_metal_how.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()), done: best >= crate::theme::METAL_UNLOCK, progress: Some((best, crate::theme::METAL_UNLOCK)), info: false }]
+                vec![Unlock { what: t.unlock_metal.into(), how: t.unlock_metal_how.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()), done: best >= crate::theme::METAL_UNLOCK, progress: Some((best, crate::theme::METAL_UNLOCK)), info: false }]
             }
             HomeGame::Blob => vec![
-                Unlock { what: t.unlock_jurassic, how: t.unlock_jurassic_how.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string()), done: s.jurassic_unlocked, progress: Some((s.blob_best, crate::theme::JURASSIC_UNLOCK)), info: false },
-                Unlock { what: t.unlock_skins, how: t.unlock_skins_how.to_owned(), done: false, progress: None, info: true },
+                Unlock { what: t.unlock_jurassic.into(), how: t.unlock_jurassic_how.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string()), done: s.jurassic_unlocked, progress: Some((s.blob_best, crate::theme::JURASSIC_UNLOCK)), info: false },
+                Unlock { what: t.unlock_skins.into(), how: t.unlock_skins_how.to_owned(), done: false, progress: None, info: true },
             ],
-            HomeGame::Mines => vec![Unlock { what: t.unlock_wizz, how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false }],
-            HomeGame::Four => vec![Unlock { what: t.unlock_claude, how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false }],
-            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars, how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false }],
+            HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false }],
+            HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false }],
+            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false }],
+            HomeGame::BugHunt => super::frames::FRAMES
+                .iter()
+                .map(|f| {
+                    let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
+                    Unlock { what, how: t.frame_how.replace("{n}", &f.wave.to_string()), done: super::frames::unlocked(f, s.bughunt_best_wave), progress: Some((s.bughunt_best_wave, f.wave)), info: false }
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -66,7 +73,7 @@ impl App {
                     ui.horizontal(|ui| {
                         let (mark, color) = if u.done { ("✓", theme.ansi[2]) } else if u.info { ("•", theme.text_muted) } else { ("•", theme.accent) };
                         ui.label(egui::RichText::new(mark).size(13.5).strong().color(color));
-                        ui.label(egui::RichText::new(u.what).size(13.5).strong().color(theme.text));
+                        ui.label(egui::RichText::new(&u.what).size(13.5).strong().color(theme.text));
                     });
                     let mut how = u.how.clone();
                     if let (Some((have, need)), false) = (u.progress, u.done) {
@@ -80,7 +87,7 @@ impl App {
 }
 
 /// A padlock, closed or open.
-fn paint_padlock(painter: &egui::Painter, c: Pos2, open: bool, color: Color32) {
+pub(super) fn paint_padlock(painter: &egui::Painter, c: Pos2, open: bool, color: Color32) {
     let body = Rect::from_center_size(c + Vec2::new(0.0, 2.5), Vec2::new(10.0, 8.0));
     painter.rect_filled(body, 1.5, color);
     let lift = if open { -2.5 } else { 0.0 };

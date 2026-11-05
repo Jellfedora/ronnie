@@ -23,9 +23,31 @@ const MATCH_EVERY: f64 = 1.0;
 /// Another player online.
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 pub struct Online {
+    /// Its id, avatar version and frame (an older floor: none).
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub frame: Option<String>,
     pub name: String,
     /// In a match.
     pub busy: bool,
+}
+
+/// A line of a board of online wins: who (their id, avatar version and frame), how many.
+#[derive(Clone, Deserialize, Debug, PartialEq)]
+pub struct WinLine {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(rename = "score")]
+    pub wins: u32,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub frame: Option<String>,
 }
 
 /// An invitation received.
@@ -321,7 +343,7 @@ enum Event {
     Table(Box<Table>),
     /// The table watched is gone from floor.
     TableGone,
-    Board(&'static str, Vec<(String, u32)>),
+    Board(&'static str, Vec<WinLine>),
     /// floor refused (its message).
     Refused(String),
     /// floor answered, or not.
@@ -352,8 +374,8 @@ pub struct Live {
     /// The table of the Président the player sits at, for floor; the one watched (the page shows it).
     pub seated: Option<String>,
     pub table: Option<Table>,
-    /// The boards of online wins (name, wins), by game, when fetched.
-    pub boards: HashMap<&'static str, Vec<(String, u32)>>,
+    /// The boards of online wins, by game, when fetched.
+    pub boards: HashMap<&'static str, Vec<WinLine>>,
     /// floor answered (None: not asked yet).
     pub reachable: Option<bool>,
     /// What floor refused last (shown until the next action).
@@ -782,17 +804,12 @@ fn run(url: &str, token: &str, cmds: &mpsc::Receiver<Cmd>, events: &mpsc::Sender
             }
             Some(Cmd::Board(game)) => {
                 #[derive(Deserialize)]
-                struct Row {
-                    name: Option<String>,
-                    score: u32,
-                }
-                #[derive(Deserialize)]
                 struct Board {
-                    entries: Vec<Row>,
+                    entries: Vec<WinLine>,
                 }
                 let board = agent.get(format!("{url}/v1/games/{game}/leaderboard")).query("limit", "10").call().ok().and_then(|mut r| r.body_mut().read_json::<Board>().ok());
                 if let Some(b) = board {
-                    out.push(Event::Board(game, b.entries.into_iter().map(|r| (r.name.unwrap_or_default(), r.score)).collect()));
+                    out.push(Event::Board(game, b.entries));
                 }
             }
             None => {}
@@ -878,7 +895,7 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, frame: None, name: Some(name) }
         };
         let (a, b) = (account(format!("Dio{stamp}")), account(format!("Ozzy{stamp}")));
         let (mut dio, mut ozzy) = (Live::default(), Live::default());
@@ -931,7 +948,7 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, frame: None, name: Some(name) }
         };
         let (a, b) = (account(format!("Lars{stamp}")), account(format!("Kirk{stamp}")));
         let (mut lars, mut kirk) = (Live::default(), Live::default());
@@ -991,7 +1008,7 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, frame: None, name: Some(name) }
         };
         let accounts = [account(format!("Angus{stamp}")), account(format!("Bon{stamp}")), account(format!("Cliff{stamp}"))];
         let mut lives: [Live; 3] = Default::default();

@@ -164,7 +164,7 @@ impl App {
                 self.poll_floor();
                 self.floor.sync(&ctx, now, Some(60.0), account.as_ref());
                 let pseudo = crate::floor::pseudo(account.as_ref());
-                let scores = crate::floor::shown(self.floor.board(), &self.config.settings.typing_scores, pseudo);
+                let scores = self.faced(crate::floor::shown(self.floor.board(), &self.config.settings.typing_scores, pseudo));
                 let board = Rect::from_min_size(area.min, Vec2::new(area.width(), (104.0 + scores.len().max(1) as f32 * 28.0).min(area.height())));
                 super::game::paint_board(&ui.painter_at(area), board, &scores, None, &theme, t, 1.0, now);
                 return;
@@ -181,7 +181,8 @@ impl App {
                     self.versus.fetch_board(id);
                 }
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
-                super::four::wins_ui(&mut child, &self.versus, id, t.four_wins, pseudo.as_deref(), t, &theme);
+                let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
+                super::four::wins_ui(&mut child, &self.versus, &faces, id, t.four_wins, pseudo.as_deref(), t, &theme);
                 return;
             }
             HomeGame::Blob => (self.blob.floor.get_or_insert_with(|| crate::floor::GameFloor::new("ronnie-io", false)), bests(settings.blob_best, t.blob_best, "{n}", settings.blob_best.to_string()), |s| s.to_string()),

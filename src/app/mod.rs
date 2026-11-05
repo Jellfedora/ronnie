@@ -33,6 +33,7 @@ mod four;
 mod larsen;
 mod president;
 mod bughunt;
+mod frames;
 mod game;
 mod git;
 mod home;

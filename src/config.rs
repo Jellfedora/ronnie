@@ -987,6 +987,9 @@ pub struct FloorAccount {
     /// Its avatar's version on floor (none: its initial is drawn).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+    /// The frame worn around it (`app::frames`), kept on floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
 }
 
 /// Places kept on the leaderboard.

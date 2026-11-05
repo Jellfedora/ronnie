@@ -45,6 +45,9 @@ pub struct Member {
     /// Its avatar's version on floor (none: its initial).
     #[serde(default)]
     pub avatar: Option<String>,
+    /// The frame it wears around it (`app::frames`).
+    #[serde(default)]
+    pub frame: Option<String>,
 }
 
 /// A reaction to a message: an emoji, and the players who reacted so.
@@ -857,6 +860,12 @@ impl Talk {
         self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).and_then(|m| m.avatar.clone())
     }
 
+    /// A player's frame, from what floor sent last.
+    pub fn frame_of(&self, id: &str) -> Option<String> {
+        let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
+        self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).and_then(|m| m.frame.clone())
+    }
+
     /// Said in a conversation (floor sends it back to everyone in it, the player included).
     /// The player's reaction to a message, added (`on`) or taken back.
     pub fn react(&mut self, room: &str, message: i64, emoji: &str, on: bool) {
@@ -1342,7 +1351,7 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: serde_json::Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, name: Some(name) }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, frame: None, name: Some(name) }
         };
         let accounts = [account(format!("Dio{stamp}")), account(format!("Ozzy{stamp}")), account(format!("Lemmy{stamp}"))];
         let mut talks = [Talk::default(), Talk::default(), Talk::default()];

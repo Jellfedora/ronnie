@@ -1460,7 +1460,7 @@ impl App {
             let name = a.name.clone().unwrap_or_default();
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-                super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, &name, false, face.as_ref(), theme);
+                super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, &name, false, face.as_ref(), a.frame.as_deref(), theme);
                 ui.add_space(12.0);
                 ui.vertical(|ui| {
                     ui.add_space(6.0);

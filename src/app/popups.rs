@@ -1097,6 +1097,7 @@ enum Asked {
     Rename,
     Password,
     Avatar,
+    Frame,
     SignOut,
 }
 
@@ -1196,6 +1197,7 @@ impl App {
                 self.save_config();
                 match (asked, &mut self.pseudo_prompt) {
                     (Some(Asked::Avatar), Some(p)) => p.notice = Some(t.account_avatar_saved),
+                    (Some(Asked::Frame), Some(p)) => p.notice = Some(t.frame_saved),
                     (Some(Asked::Rename), Some(p)) => p.notice = Some(t.account_saved),
                     // Signed in or up: done.
                     _ => self.pseudo_prompt = None,
@@ -1245,6 +1247,7 @@ impl App {
         let own = account.as_ref().and_then(|a| a.name.clone());
         let face = account.as_ref().and_then(|a| self.avatars.get(ctx, Some(a), &a.id, a.avatar.as_deref()));
         let now = ctx.input(|i| i.time);
+        let best_wave = self.config.settings.bughunt_best_wave;
         let Some(prompt) = &mut self.pseudo_prompt else { return };
         let mode = prompt.mode;
         // Whether the pseudo is free (signing up, renaming), asked once the typing pauses (not one's own).
@@ -1283,7 +1286,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), egui::Sense::hover());
-                    super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, own.as_deref().unwrap_or("?"), false, face.as_ref(), &theme);
+                    super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, own.as_deref().unwrap_or("?"), false, face.as_ref(), account.as_ref().and_then(|a| a.frame.as_deref()), &theme);
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
                         ui.add_space(4.0);
@@ -1295,6 +1298,39 @@ impl App {
                             asked = Some(Asked::Avatar);
                         }
                     });
+                });
+                // The frame around it: none, or one unlocked in the games (the others locked, how said).
+                ui.add_space(12.0);
+                caption(ui, t.frame_title);
+                ui.add_space(4.0);
+                let worn = account.as_ref().and_then(|a| a.frame.clone());
+                ui.horizontal(|ui| {
+                    let choices = std::iter::once(None).chain(super::frames::FRAMES.iter().map(Some));
+                    for def in choices {
+                        let id = def.map(|d| d.id);
+                        let open = def.is_none_or(|d| super::frames::unlocked(d, best_wave));
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(52.0), egui::Sense::click());
+                        let picked = worn.as_deref() == id;
+                        let hot = open && resp.hovered();
+                        if picked || hot {
+                            ui.painter().rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(if picked { 2.0 } else { 1.0 }, if picked { theme.accent } else { theme.tab_hover }), egui::StrokeKind::Inside);
+                        }
+                        super::talk::paint_avatar(ui.painter(), rect.center(), 15.0, own.as_deref().unwrap_or("?"), false, face.as_ref(), id, &theme);
+                        if !open {
+                            ui.painter().rect_filled(rect.shrink(2.0), 10.0, theme.chrome_bg.gamma_multiply(0.7));
+                            super::unlocks::paint_padlock(ui.painter(), rect.center(), false, theme.text_muted);
+                        }
+                        let name = id.map_or(t.frame_none, |id| super::frames::frame_name(t, id));
+                        let tip = match def {
+                            Some(d) if !open => format!("{name}\n{}", t.frame_how.replace("{n}", &d.wave.to_string())),
+                            _ => name.to_owned(),
+                        };
+                        let resp = resp.on_hover_text(tip);
+                        if open && !picked && !busy && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            go = Some(AccountAsk::Frame(id.map(str::to_owned)));
+                            asked = Some(Asked::Frame);
+                        }
+                    }
                 });
                 ui.add_space(14.0);
             } else {

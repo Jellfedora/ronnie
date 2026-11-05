@@ -99,7 +99,7 @@ impl App {
             self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref());
         }
         let pseudo = crate::floor::pseudo(settings.floor.as_ref());
-        let board = crate::floor::shown(self.floor.board(), &settings.typing_scores, pseudo);
+        let board = self.faced(crate::floor::shown(self.floor.board(), &settings.typing_scores, pseudo));
         let best = settings.typing_scores.first().map_or(0, |s| s.letters);
         let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, pseudo.unwrap_or(&settings.player_name));
         // During a round the sidebar folds away, and unfolds after (if it was open).
@@ -591,7 +591,7 @@ impl App {
         let account = self.config.settings.floor.clone().filter(|_| pseudo.is_some());
         let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
         if let (Some(face), Some(name)) = (&face, &pseudo) {
-            super::talk::paint_avatar(&painter, avatar, 18.0, name, false, Some(face), &theme);
+            super::talk::paint_avatar(&painter, avatar, 18.0, name, false, Some(face), account.as_ref().and_then(|a| a.frame.as_deref()), &theme);
         } else {
             painter.circle_filled(avatar, 18.0, theme.accent.gamma_multiply(if pseudo.is_some() { 1.0 } else { 0.25 }));
             let initial = pseudo.as_deref().and_then(|p| p.chars().next()).map_or("?".to_owned(), |c| c.to_uppercase().to_string());
