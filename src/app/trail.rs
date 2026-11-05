@@ -24,6 +24,8 @@ pub(super) struct Trail {
     last: Option<Pos2>,
     rng: u64,
     hue: f32,
+    /// The way gone since the last spark (a slow pointer still leaves some, at any frame rate).
+    carry: f32,
 }
 
 /// Whether it is unlocked.
@@ -52,7 +54,9 @@ impl Trail {
     pub(super) fn step(&mut self, at: Option<Pos2>, dt: f32) {
         if let (Some(at), Some(last)) = (at, self.last) {
             let way = at - last;
-            let n = ((way.length() / 5.0) as usize).min(8);
+            self.carry += way.length();
+            let n = ((self.carry / 5.0) as usize).min(8);
+            self.carry = if n == 8 { 0.0 } else { self.carry % 5.0 };
             for k in 0..n {
                 if self.sparks.len() >= MAX {
                     break;
