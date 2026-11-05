@@ -11,8 +11,13 @@ impl App {
         ui.painter_at(rect).rect_filled(rect, 0.0, theme.bg);
 
         let games = self.games_list();
+        // What is still to unlock, game by game, and in all.
+        let rewards: Vec<Option<(usize, usize)>> = games.iter().map(|(g, _, _)| self.unlocks_count(*g)).collect();
+        let (left_all, total_all) = rewards.iter().flatten().fold((0, 0), |(l, t), (a, b)| (l + a, t + b));
+
         // The cards in rows of as many as fit (the last one centered): tall when their rows fit the page,
-        // else flatter; the page scrolls when even those don't fit.
+        // else flat ones, as few columns as fit the page's height, the page scrolling only when even
+        // the narrowest don't.
         let n = games.len();
         let gap = 20.0;
         let title_h = 96.0;
@@ -20,10 +25,20 @@ impl App {
         let rows = |cols: usize| n.div_ceil(cols) as f32;
         let tall_cols = columns(200.0);
         let wide = 56.0 + title_h + rows(tall_cols) * (290.0 + gap) <= rect.height();
-        let cols = if wide { tall_cols } else { columns(360.0) };
-        let card_size = if wide { Vec2::new(((rect.width() - 96.0 - (cols - 1) as f32 * gap) / cols as f32).min(280.0), 290.0) } else { Vec2::new(((rect.width() - 48.0 - (cols - 1) as f32 * gap) / cols as f32).min(520.0), 104.0) };
+        let (cols, card_size, gap, title_h) = if wide {
+            (tall_cols, Vec2::new(((rect.width() - 96.0 - (tall_cols - 1) as f32 * gap) / tall_cols as f32).min(280.0), 290.0), gap, title_h)
+        } else {
+            let (gap, title_h) = (14.0, 78.0);
+            let room_h = rect.height() - 40.0 - title_h - 16.0;
+            let width = |cols: usize| ((rect.width() - 48.0 - (cols - 1) as f32 * gap) / cols as f32).min(520.0);
+            let height = |cols: usize| ((room_h - (rows(cols) - 1.0) * gap) / rows(cols)).min(128.0);
+            let fits = (1..=n).take_while(|&c| c == 1 || width(c) >= 270.0).find(|&c| height(c) >= 92.0);
+            let most = (1..=n).take_while(|&c| c == 1 || width(c) >= 270.0).last().unwrap_or(1);
+            let cols = fits.unwrap_or(most);
+            (cols, Vec2::new(width(cols), height(cols).max(92.0)), gap, title_h)
+        };
         let block = Vec2::new(cols as f32 * card_size.x + (cols - 1) as f32 * gap, rows(cols) * (card_size.y + gap) - gap);
-        let content_h = (56.0 + title_h + block.y + 24.0).max(rect.height());
+        let content_h = (40.0 + title_h + block.y + 16.0).max(rect.height());
 
         let (mut open, mut new_window, mut back) = (None, None, false);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
@@ -35,12 +50,21 @@ impl App {
             let back_rect = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
             back = ui.put(back_rect, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0)).clicked();
 
-            let top = (rect.center().y - (block.y + title_h) / 2.0).max(rect.min.y + 56.0);
-            paint_metal(&painter, Pos2::new(rect.center().x, top + 34.0), Align2::CENTER_CENTER, t.cat_games, 46.0, theme.accent, 1.0);
-            painter.text(Pos2::new(rect.center().x, top + 78.0), Align2::CENTER_CENTER, t.arcade_subtitle, FontId::proportional(13.5), theme.text_muted);
+            let top = (rect.center().y - (block.y + title_h) / 2.0).max(rect.min.y + 40.0);
+            let (title_size, sub_y) = if wide { (46.0, 78.0) } else { (36.0, 58.0) };
+            paint_metal(&painter, Pos2::new(rect.center().x, top + title_size * 0.7), Align2::CENTER_CENTER, t.cat_games, title_size, theme.accent, 1.0);
+            // The subtitle, and the rewards unlocked in all.
+            let mut job = egui::text::LayoutJob::default();
+            job.append(t.arcade_subtitle, 0.0, egui::TextFormat::simple(FontId::proportional(13.0), theme.text_muted));
+            if total_all > 0 {
+                let color = if left_all == 0 { theme.ansi[2] } else { theme.accent };
+                job.append(&t.arcade_rewards.replace("{n}", &(total_all - left_all).to_string()).replace("{max}", &total_all.to_string()), 14.0, egui::TextFormat::simple(FontId::proportional(13.0), color));
+            }
+            let galley = painter.layout_job(job);
+            painter.galley(Pos2::new(rect.center().x - galley.size().x / 2.0, top + sub_y - galley.size().y / 2.0), galley, theme.text_muted);
 
             let origin = Pos2::new(rect.center().x - block.x / 2.0, top + title_h);
-            for (k, (game, name, note)) in games.into_iter().enumerate() {
+            for (k, ((game, name, note), reward)) in games.into_iter().zip(rewards.iter().copied()).enumerate() {
                 let (row, col) = (k / cols, k % cols);
                 // The last row, shorter, centered.
                 let in_row = (n - row * cols).min(cols);
@@ -64,8 +88,8 @@ impl App {
                     HomeGame::BugHunt => t.arcade_bughunt,
                     HomeGame::Fishing => t.fishing_arcade,
                 };
-                let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 52.0, card.center().y), Some(card.min.x + 100.0), card.width() - 120.0) };
-                let scale = if wide { 2.8 } else { 2.0 };
+                let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 44.0, card.center().y), Some(card.min.x + 84.0), card.width() - 100.0) };
+                let scale = if wide { 2.8 } else { 1.8 };
                 match game {
                     HomeGame::SpeedMetal => paint_metal(&painter, icon, Align2::CENTER_CENTER, "R", 20.0 * scale, theme.accent, 1.0),
                     HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, scale),
@@ -80,28 +104,67 @@ impl App {
                     HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, scale),
                 }
                 let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
-                let desc_galley = painter.layout(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);
+                // Its rewards: how many still to unlock (a padlock), or all of them.
+                let reward_text = reward.map(|(left, _)| if left == 0 { (t.unlock_all_done.to_owned(), theme.ansi[2], true) } else { (t.unlock_left.replace("{n}", &left.to_string()), theme.accent, false) });
+                let paint_reward = |p: Pos2, centered: bool| {
+                    if let Some((text, color, done)) = &reward_text {
+                        let galley = painter.layout_no_wrap(text.clone(), FontId::proportional(12.0), *color);
+                        let w = galley.size().x + 18.0;
+                        let x = if centered { p.x - w / 2.0 } else { p.x };
+                        super::unlocks::paint_padlock(&painter, Pos2::new(x + 5.0, p.y), *done, *color);
+                        painter.galley(Pos2::new(x + 18.0, p.y - galley.size().y / 2.0), galley, *color);
+                    }
+                };
+                let elided;
                 match text_left {
                     None => {
                         painter.text(Pos2::new(card.center().x, card.min.y + 150.0), Align2::CENTER_CENTER, name, FontId::proportional(20.0), name_color);
                         let mut job = egui::text::LayoutJob::simple(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);
                         job.halign = egui::Align::Center;
+                        job.wrap.max_rows = 3;
                         let galley = painter.layout_job(job);
+                        elided = galley.elided;
                         let desc_bottom = card.min.y + 174.0 + galley.size().y;
                         painter.galley(Pos2::new(card.center().x, card.min.y + 174.0), galley, theme.text_muted);
-                        // Under the description, however many lines it takes.
+                        // Under the description, however many lines it takes; the rewards at the bottom.
                         if let Some(note) = &note {
-                            painter.text(Pos2::new(card.center().x, (desc_bottom + 16.0).max(card.max.y - 24.0)), Align2::CENTER_CENTER, note, FontId::proportional(12.5), theme.accent);
+                            painter.text(Pos2::new(card.center().x, desc_bottom + 14.0), Align2::CENTER_CENTER, note, FontId::proportional(12.5), theme.accent);
                         }
+                        paint_reward(Pos2::new(card.center().x, card.max.y - 18.0), true);
                     }
                     Some(x) => {
-                        painter.text(Pos2::new(x, card.min.y + 26.0), Align2::LEFT_CENTER, name, FontId::proportional(18.0), name_color);
-                        painter.galley(Pos2::new(x, card.min.y + 44.0), desc_galley, theme.text_muted);
+                        painter.text(Pos2::new(x, card.min.y + 24.0), Align2::LEFT_CENTER, name, FontId::proportional(17.0), name_color);
                         if let Some(note) = &note {
-                            painter.text(Pos2::new(card.max.x - 16.0, card.min.y + 26.0), Align2::RIGHT_CENTER, note, FontId::proportional(12.5), theme.accent);
+                            painter.text(Pos2::new(card.max.x - 16.0, card.min.y + 24.0), Align2::RIGHT_CENTER, note, FontId::proportional(12.5), theme.accent);
                         }
+                        // As many lines of the description as fit above the rewards.
+                        let bottom = if reward_text.is_some() { card.max.y - 30.0 } else { card.max.y - 10.0 };
+                        let lines = (((bottom - card.min.y - 40.0) / 16.0).floor() as usize).max(1);
+                        let mut job = egui::text::LayoutJob::simple(desc.to_owned(), FontId::proportional(12.5), theme.text_muted, text_w);
+                        job.wrap.max_rows = lines;
+                        let galley = painter.layout_job(job);
+                        elided = galley.elided;
+                        painter.galley(Pos2::new(x, card.min.y + 40.0), galley, theme.text_muted);
+                        paint_reward(Pos2::new(x, card.max.y - 17.0), false);
                     }
                 }
+                // Hovered: the whole description if cut, and what it unlocks.
+                let resp = if elided || reward.is_some() {
+                    resp.on_hover_ui(|ui| {
+                        ui.set_max_width(340.0);
+                        if elided {
+                            ui.add(egui::Label::new(egui::RichText::new(desc).size(12.5).color(theme.text)).wrap());
+                        }
+                        if reward.is_some() {
+                            if elided {
+                                ui.add_space(8.0);
+                            }
+                            self.unlocks_ui(ui, game);
+                        }
+                    })
+                } else {
+                    resp
+                };
                 if resp.clicked() {
                     open = Some(game);
                 }

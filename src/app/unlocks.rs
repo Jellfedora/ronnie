@@ -85,8 +85,30 @@ impl App {
         egui::Area::new(ui.id().with(("unlocks-list", game as u8))).order(egui::Order::Tooltip).fixed_pos(Pos2::new(pill.min.x, pill.min.y - 8.0)).pivot(Align2::LEFT_BOTTOM).show(ui.ctx(), |ui| {
             Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
                 ui.set_max_width(340.0);
+                self.unlocks_list_ui(ui, &items);
+            });
+        });
+    }
+
+    /// What a game unlocks still and in all (None: nothing).
+    pub(super) fn unlocks_count(&self, game: HomeGame) -> Option<(usize, usize)> {
+        let items: Vec<Unlock> = self.unlocks(game).into_iter().filter(|u| !u.info).collect();
+        (!items.is_empty()).then(|| (items.iter().filter(|u| !u.done).count(), items.len()))
+    }
+
+    /// The list of what a game unlocks, for a tooltip (nothing for a game that unlocks nothing).
+    pub(super) fn unlocks_ui(&self, ui: &mut Ui, game: HomeGame) {
+        let items = self.unlocks(game);
+        if !items.is_empty() {
+            self.unlocks_list_ui(ui, &items);
+        }
+    }
+
+    fn unlocks_list_ui(&self, ui: &mut Ui, items: &[Unlock]) {
+        let t = self.t();
+        let theme = &self.theme;
                 ui.label(egui::RichText::new(t.unlock_title).size(12.0).color(theme.text_muted));
-                for u in &items {
+                for u in items {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         let (mark, color) = if u.done { ("✓", theme.ansi[2]) } else if u.info { ("•", theme.text_muted) } else { ("•", theme.accent) };
@@ -99,8 +121,6 @@ impl App {
                     }
                     ui.add(egui::Label::new(egui::RichText::new(if u.done && u.progress.is_some() { t.unlock_done.to_owned() } else { how }).size(12.0).color(theme.text_muted)).wrap());
                 }
-            });
-        });
     }
 }
 
