@@ -5493,6 +5493,15 @@ impl App {
         if self.theme.wizard {
             self.wand.frame(ui.ctx());
         }
+        // Gryffindor, won when Claude's weekly quota is used up (read every few seconds).
+        if !self.config.settings.wizard_unlocked
+            && self.claude.current().and_then(|u| u.seven_day).is_some_and(|w| w.used_now(crate::claude::now()) >= 99.5)
+        {
+            self.config.settings.wizard_unlocked = true;
+            self.save_config();
+            let t = self.t();
+            self.push_toast(Toast { ok: true, title: t.wizard_unlocked_title.to_owned(), body: t.wizard_unlocked_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
+        }
     }
 }
 

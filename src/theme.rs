@@ -87,7 +87,7 @@ pub const OFFICE_UNLOCK: u32 = 30_000;
 pub fn office_unlocked(riff_bests: &[u32]) -> bool {
     riff_bests.iter().any(|&b| b >= OFFICE_UNLOCK)
 }
-/// Gryffindor (free).
+/// Gryffindor, won by using up Claude's weekly quota.
 pub const WIZARD_THEME: &str = "gryffondor";
 /// The themes with their own touches, most won in the games, shown apart in the settings.
 pub const SPECIAL_THEMES: [&str; 5] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, WIZARD_THEME];
@@ -403,8 +403,8 @@ impl Preset {
     /// Still locked, with this best score at the typing game, and whether a round of Ronnie.io unlocked
     /// the park, whether Larsen unlocked hyperspace, and whether the fishing's binder is full (never in
     /// a dev build, to try them).
-    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office))
+    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
     }
 
     /// The preset with this id, or the default one.
