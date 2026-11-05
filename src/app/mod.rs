@@ -4261,6 +4261,7 @@ impl App {
     fn tool_windows_ui(&mut self, ctx: &egui::Context) {
         let t = self.t();
         let theme = self.theme.clone();
+        let find = self.config.settings.shortcuts.find_text.parse();
         let mut k = 0;
         while k < self.tool_windows.len() {
             let w = &mut self.tool_windows[k];
@@ -4269,6 +4270,11 @@ impl App {
             ctx.show_viewport_immediate(w.viewport, builder, |ui, _| {
                 let rect = ui.max_rect();
                 ui.painter().rect_filled(rect, 0.0, theme.bg);
+                match &mut w.tool {
+                    // ⌘ F: the search, as in a tab (the editor and the viewer take it themselves there).
+                    Tool::Files(fm, _) if fm.editor.is_none() && fm.viewer.is_none() && fm.image.is_none() && find.is_some_and(|f| ui.input_mut(|i| i.consume_shortcut(&f))) => fm.open_search(),
+                    _ => {}
+                }
                 match &mut w.tool {
                     Tool::Files(fm, host) => match fm.ui(ui, rect, &theme, t, &w.title) {
                         files::FilesAction::ShowTerminal => close = true,
