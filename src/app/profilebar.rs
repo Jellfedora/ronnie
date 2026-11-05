@@ -52,6 +52,8 @@ impl App {
         painter.rect_filled(rect, 0.0, theme.chrome_bg);
         if theme.jurassic {
             super::jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 6.0), rect.max));
+        } else if theme.hyperspace {
+            super::hyperspace::beam(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max), theme.accent);
         } else {
             painter.hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(1.0, theme.tab_hover));
         }

@@ -29,6 +29,7 @@ impl App {
             ],
             HomeGame::Mines => vec![Unlock { what: t.unlock_wizz, how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false }],
             HomeGame::Four => vec![Unlock { what: t.unlock_claude, how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false }],
+            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars, how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false }],
             _ => Vec::new(),
         }
     }

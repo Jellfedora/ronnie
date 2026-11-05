@@ -58,7 +58,7 @@ pub fn checked(usage: &mut GameUsage, now: NaiveDateTime) -> Option<Period> {
     let wanted = match &p {
         // Out of working hours nothing is limited: a record to trust again from here.
         None if !valid => Some(fresh("")),
-        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, mines_games: MINES_GAMES, runner: true, riff: true, backstage: true, seal: String::new() }),
+        Some(p) if !valid => Some(GameUsage { period: p.key.clone(), speed_metal: true, four: true, blob_secs: BLOB_SECS, mines: true, mines_games: MINES_GAMES, runner: true, riff: true, backstage: true, larsen: true, seal: String::new() }),
         Some(p) if usage.period != p.key => Some(fresh(&p.key)),
         _ => None,
     };
@@ -92,6 +92,9 @@ fn seal(usage: &GameUsage) -> String {
     }
     if usage.backstage {
         message.push_str("|backstage");
+    }
+    if usage.larsen {
+        message.push_str("|larsen");
     }
     hmac(format!("ronnie-playtime-7f3a9c|{who}").as_bytes(), message.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }

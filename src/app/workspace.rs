@@ -145,10 +145,15 @@ impl App {
                 None => resp,
             };
             let hovered = resp.contains_pointer();
+            // Star Wars: the saber lights up as the tab opens.
+            let lit = if theme.hyperspace { painter.ctx().animate_bool_with_time(key.with("saber"), on, 0.35) } else { 0.0 };
             if on {
                 painter.rect_filled(r, 0.0, theme.bg);
                 if theme.jurassic {
                     super::jurassic::hazard(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
+                } else if theme.hyperspace {
+                    // Star Wars: a lightsaber over the active tab, lit as it opens.
+                    super::hyperspace::saber_along(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 5.0)), lit, theme.accent);
                 } else {
                     painter.hline(r.x_range(), r.min.y + 1.0, Stroke::new(2.0, theme.accent));
                 }

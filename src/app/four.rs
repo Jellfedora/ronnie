@@ -18,6 +18,7 @@ pub(super) enum HomeGame {
     Runner,
     Riff,
     Backstage,
+    Larsen,
 }
 
 /// A disc falling into place, since `at`.
@@ -88,7 +89,7 @@ fn disc_color(theme: &Theme, who: u8) -> Color32 {
     if who == 1 { theme.ansi[1] } else { theme.ansi[3] }
 }
 
-fn level_name(t: &Strings, level: Level) -> &'static str {
+pub(super) fn level_name(t: &Strings, level: Level) -> &'static str {
     match level {
         Level::Easy => t.four_easy,
         Level::Medium => t.four_medium,
@@ -101,6 +102,7 @@ fn invite_texts(t: &Strings, game: Option<&str>) -> (&'static str, &'static str)
     match game {
         Some("ronnie-io") => (t.blob_name, t.blob_invited),
         Some("riff-hero") => (t.riff_name, t.riff_invited),
+        Some("larsen") => (t.larsen_name, t.larsen_invited),
         _ => (t.four_name, t.four_invited),
     }
 }
@@ -264,8 +266,14 @@ impl App {
             self.four.followed = Some(game.id.clone());
             if game.riff() {
                 self.open_riff_battle();
+            } else if game.larsen() {
+                self.four.leave_online();
+                self.riff.leave_battle();
+                self.larsen.start_online();
+                self.open_larsen();
             } else {
                 self.riff.leave_battle();
+                self.larsen.leave_online();
                 self.four.mode = Mode::Online;
                 self.open_four();
             }
@@ -279,6 +287,7 @@ impl App {
         let game = match invite.game.as_deref() {
             Some("ronnie-io") => HomeGame::Blob,
             Some("riff-hero") => HomeGame::Riff,
+            Some("larsen") => HomeGame::Larsen,
             _ => HomeGame::Four,
         };
         let t = self.t();
@@ -295,6 +304,7 @@ impl App {
                 match game {
                     HomeGame::Blob => super::blob::paint_blob_icon(ui.painter(), rect.center(), &theme, 1.2),
                     HomeGame::Riff => super::riff::paint_riff_icon(ui.painter(), rect.center(), &theme, 1.2),
+                    HomeGame::Larsen => super::larsen::paint_larsen_icon(ui.painter(), rect.center(), &theme, 1.2),
                     _ => paint_four_icon(ui.painter(), rect.center(), &theme, 1.2),
                 }
                 ui.label(egui::RichText::new(name).size(18.0).strong());
@@ -324,9 +334,17 @@ impl App {
                 self.versus.accept(&invite.id);
                 self.open_riff_battle();
             }
+            Some(true) if game == HomeGame::Larsen => {
+                self.versus.accept(&invite.id);
+                self.four.leave_online();
+                self.riff.leave_battle();
+                self.larsen.start_online();
+                self.open_larsen();
+            }
             Some(true) => {
                 self.versus.accept(&invite.id);
                 self.riff.leave_battle();
+                self.larsen.leave_online();
                 self.four.mode = Mode::Online;
                 self.four.seen = None;
                 self.open_four();
@@ -346,7 +364,7 @@ impl App {
         // A game under way is the half-day of work's; once played, the lobby gives way.
         let in_game = match &self.four.mode {
             Mode::Ai(game) => game.winner.is_none(),
-            Mode::Online => self.versus.game.as_ref().is_some_and(|g| !g.over && !g.riff()),
+            Mode::Online => self.versus.game.as_ref().is_some_and(|g| !g.over && g.four()),
             Mode::Lobby => false,
         };
         if in_game {
@@ -361,14 +379,14 @@ impl App {
         let now = ui.input(|i| i.time);
         paint_metal(ui.painter(), Pos2::new(rect.center().x, rect.min.y + 50.0), Align2::CENTER_CENTER, t.four_name, 40.0, theme.accent, 1.0);
         // Back: from a game to the lobby, from the lobby home (not during an online match: give up first).
-        let playing_online = matches!(self.four.mode, Mode::Online) && self.versus.game.as_ref().is_some_and(|g| !g.over && !g.riff());
+        let playing_online = matches!(self.four.mode, Mode::Online) && self.versus.game.as_ref().is_some_and(|g| !g.over && g.four());
         if !playing_online {
             let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
             if ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0)).clicked() {
                 match self.four.mode {
                     Mode::Lobby => self.home_game = false,
                     Mode::Online => {
-                        self.versus.unwatch(false);
+                        self.versus.unwatch("puissance-4");
                         self.four.mode = Mode::Lobby;
                     }
                     Mode::Ai(_) => self.four.mode = Mode::Lobby,
@@ -551,7 +569,7 @@ impl App {
     fn four_online(&mut self, ui: &mut Ui, body: Rect, now: f64) {
         let t = self.t();
         let theme = self.theme.clone();
-        let Some(game) = self.versus.game.clone().filter(|g| !g.riff()) else {
+        let Some(game) = self.versus.game.clone().filter(|g| g.four()) else {
             // Waiting for floor's first answer (an invitation just accepted).
             let at = body.center();
             if let Some(e) = &self.versus.refused {
@@ -674,7 +692,7 @@ fn column_key(ui: &Ui) -> Option<usize> {
 /// The status line and the two players (with their discs' colors) above the grid; where the grid goes.
 /// `turn`: whose disc pulses. `over`: the status pops, larger, in the metal letters.
 #[allow(clippy::too_many_arguments)]
-fn game_header(ui: &Ui, body: Rect, status: &str, color: Color32, names: &[String; 2], turn: Option<u8>, over: bool, theme: &Theme) -> Rect {
+pub(super) fn game_header(ui: &Ui, body: Rect, status: &str, color: Color32, names: &[String; 2], turn: Option<u8>, over: bool, theme: &Theme) -> Rect {
     let painter = ui.painter();
     let now = ui.input(|i| i.time);
     let at = Pos2::new(body.center().x, body.min.y + 6.0);
@@ -723,7 +741,7 @@ fn keys_hint(ui: &Ui, body: Rect, t: &Strings, theme: &Theme) {
 }
 
 /// The button under the grid; `strong`: filled with the accent.
-fn bottom_button(ui: &mut Ui, body: Rect, text: &str, theme: &Theme, strong: bool) -> bool {
+pub(super) fn bottom_button(ui: &mut Ui, body: Rect, text: &str, theme: &Theme, strong: bool) -> bool {
     let at = Rect::from_center_size(Pos2::new(body.center().x, body.max.y - 36.0), Vec2::new(170.0, 36.0));
     let button = if strong {
         egui::Button::new(egui::RichText::new(text).size(14.0).strong().color(theme.bg)).fill(theme.accent)

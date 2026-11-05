@@ -1901,8 +1901,10 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked) {
-                            let how = if preset.id == crate::theme::JURASSIC_THEME {
+                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked) {
+                            let how = if preset.id == crate::theme::HYPERSPACE_THEME {
+                                t.theme_locked_larsen.to_owned()
+                            } else if preset.id == crate::theme::JURASSIC_THEME {
                                 t.theme_locked_blob.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string())
                             } else {
                                 t.theme_locked.replace("{n}", &crate::theme::METAL_UNLOCK.to_string())
