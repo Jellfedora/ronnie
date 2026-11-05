@@ -36,7 +36,7 @@ const PARTS: [&str; 24] = [
 ];
 
 /// What was done, day by day.
-#[derive(Serialize, Deserialize, Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Journal {
     /// By day ("2026-10-28").
     #[serde(default)]
@@ -430,6 +430,91 @@ pub struct Report {
     pub empty: bool,
     /// The parts of the note the user's instructions leave out (the week's total among them).
     pub hidden: Hidden,
+    /// The week's total with this day in it (see `week_total`), empty when left out.
+    pub total: String,
+}
+
+/// The week's total of `week` with `report`'s day in it, as the user's `rules` want it (written again by
+/// Claude): empty when they leave it out. Runs Claude: off the interface's thread.
+pub fn week_total(mut journal: Journal, report: &Report, week: NaiveDate, lang: Lang, rules: &Rules) -> String {
+    if report.hidden.total {
+        return String::new();
+    }
+    journal.days.entry(key(report.date)).or_default().facts = Some(report.facts.clone());
+    rewritten(&total(&journal, week, lang), &rules.text, Part::Total)
+}
+
+/// A part of the note Claude writes again.
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Day,
+    Total,
+}
+
+/// `text` (a day's section, or the week's total: its heading first) as the user's `rules` want it,
+/// written again by Claude, its heading kept (Ronnie finds the day by it); as it is without rules, or
+/// when Claude didn't answer. Claude's answers kept for each text, not asked twice.
+fn rewritten(text: &str, rules: &str, part: Part) -> String {
+    let rules = rules.trim();
+    if rules.is_empty() {
+        return text.to_owned();
+    }
+    let (heading, body) = text.split_once('\n').unwrap_or((text, ""));
+    let body = body.trim();
+    if body.is_empty() {
+        return text.to_owned();
+    }
+    use sha2::{Digest, Sha256};
+    let id: String = Sha256::digest(format!("{RULES_VERSION}\n{rules}\n{body}").as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    let mut cache = load_cache();
+    let today = key(Local::now().date_naive());
+    let answer = match cache.rewritten.get(&id) {
+        Some((answer, _)) => Some(answer.clone()),
+        None => rewrite_by_claude(heading, body, rules, part),
+    };
+    let Some(answer) = answer else { return text.to_owned() };
+    cache.rewritten.insert(id, (answer.clone(), today));
+    let oldest = key(Local::now().date_naive() - Duration::days(KEEP_DAYS));
+    cache.rewritten.retain(|_, (_, day)| *day >= oldest);
+    save_cache(&cache);
+    match (answer.is_empty(), part) {
+        (true, Part::Total) => String::new(),
+        (true, Part::Day) => heading.to_owned(),
+        (false, _) => format!("{heading}\n\n{answer}"),
+    }
+}
+
+/// `body` (under `heading`) written again by Claude as the user's `rules` say: empty when nothing of it
+/// is to stay, None when Claude didn't answer.
+fn rewrite_by_claude(heading: &str, body: &str, rules: &str, part: Part) -> Option<String> {
+    let what = match part {
+        Part::Day => "la section d'une journée",
+        Part::Total => "le bilan de la semaine (à la fin de la note)",
+    };
+    let prompt = format!(
+        "Ronnie (le terminal de l'utilisateur) écrit chaque soir une note de récap de sa semaine de travail, en Markdown, \
+         pour la réunion d'équipe. Voici {what}, sous le titre « {heading} ». Réécris-la en appliquant toutes les consignes \
+         de l'utilisateur ci-dessous qui la concernent. Les projets du texte sont déjà ceux à compter (ceux à exclure en sont \
+         déjà retirés, ceux à renommer renommés) : garde-les tous. Ne change rien de ce que les consignes ne touchent pas, \
+         n'invente aucun fait, garde le Markdown. Réponds uniquement par le texte réécrit, sans le titre, sans bloc de code ni \
+         commentaire ; si rien ne doit en rester, réponds uniquement VIDE.\n\n\
+         Consignes de l'utilisateur :\n{rules}\n\nTexte :\n{body}\n"
+    );
+    rewrite_answer(&ask_claude(&prompt)?, heading)
+}
+
+/// Claude's text of `rewrite_by_claude`, without a code block around it nor the heading said again:
+/// empty when nothing is to stay, None when it said nothing.
+fn rewrite_answer(answer: &str, heading: &str) -> Option<String> {
+    let mut text = answer.trim();
+    if text.starts_with("```") {
+        text = text.split_once('\n').map_or("", |(_, rest)| rest).trim_end().trim_end_matches("```").trim();
+    }
+    let text = text.strip_prefix(heading.trim()).unwrap_or(text).trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(if text.trim_end_matches('.').to_uppercase() == "VIDE" { String::new() } else { text.to_owned() })
 }
 
 /// The user's instructions for the recap, and what Claude needs to apply them.
@@ -653,7 +738,11 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &Rules) -> Report {
     while out.last().is_some_and(String::is_empty) {
         out.pop();
     }
-    Report { date, section: out.join("\n"), facts, empty, hidden }
+    let mut section = out.join("\n");
+    if !empty {
+        section = rewritten(&section, &rules.text, Part::Day);
+    }
+    Report { date, section, facts, empty, hidden, total: String::new() }
 }
 
 /// The day's figures, for fun.
@@ -1321,6 +1410,10 @@ struct Cache {
     hidden_rules: String,
     #[serde(default)]
     hidden: Option<Hidden>,
+    /// The texts Claude wrote again (by their instructions and text, see `rewritten`): its answer, the
+    /// day it was last wanted.
+    #[serde(default)]
+    rewritten: BTreeMap<String, (String, String)>,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -1583,6 +1676,14 @@ mod tests {
         assert_eq!(project_answer("EXCLU".into()), None);
         assert_eq!(project_answer("exclu.".into()), None);
         assert_eq!(project_answer("-".into()), None);
+    }
+
+    #[test]
+    fn rewrite_answers() {
+        assert_eq!(rewrite_answer("```markdown\n**acqpa** · 3 min\n```", "## Mardi"), Some("**acqpa** · 3 min".into()));
+        assert_eq!(rewrite_answer("## Mardi\n\n**acqpa**", "## Mardi"), Some("**acqpa**".into()));
+        assert_eq!(rewrite_answer("VIDE", "## Bilan"), Some(String::new()));
+        assert_eq!(rewrite_answer("  ", "## Bilan"), None);
     }
 
     #[test]

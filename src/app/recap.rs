@@ -142,12 +142,14 @@ impl App {
             && let Some(date) = due.first().copied()
         {
             let day = self.recap.journal.days.get(&recap::key(date)).cloned().unwrap_or_default();
+            let journal = self.recap.journal.clone();
             let lang = self.config.settings.language;
             let ctx = ctx.clone();
             self.recap.job = std::thread::Builder::new()
                 .name("recap".into())
                 .spawn(move || {
-                    let report = recap::report(date, &day, lang, &rules);
+                    let mut report = recap::report(date, &day, lang, &rules);
+                    report.total = recap::week_total(journal, &report, recap::week_start(date), lang, &rules);
                     ctx.request_repaint();
                     report
                 })
@@ -186,7 +188,7 @@ impl App {
 
     /// A day's section into its week's note (made if need be, in the "Récaps" folder), the week's
     /// total under it written again.
-    fn recap_write(&mut self, report: Report) {
+    fn recap_write(&mut self, mut report: Report) {
         let lang = self.config.settings.language;
         let week = recap::week_start(report.date);
         let week_key = recap::key(week);
@@ -213,8 +215,9 @@ impl App {
             return;
         }
         let title = recap::title(week, lang);
-        // Left out by the user's instructions: the former one taken out of the note.
-        let total = if report.hidden.total { String::new() } else { recap::total(&self.recap.journal, week, lang) };
+        // Made with the section (Claude writes it again as the user's instructions say); empty, left
+        // out by them: the former one taken out of the note.
+        let total = std::mem::take(&mut report.total);
         let id = self.recap.journal.notes.get(&week_key).copied();
         let (old_section, old_total) = (self.recap.journal.sections.get(&day_key).cloned(), self.recap.journal.totals.get(&week_key).cloned());
         let mut done = None;
