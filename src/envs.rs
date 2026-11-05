@@ -163,21 +163,24 @@ pub fn system_nginx() -> Option<PathBuf> {
 /// A program of the system (outside Windows, where none is used): on the PATH, or where Homebrew
 /// and the Linux packages put it.
 pub fn system_program(name: &str) -> Option<PathBuf> {
-    if cfg!(windows) {
-        return None;
-    }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain(["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin"].map(PathBuf::from))
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
+    system_programs(name).next()
+}
+
+/// Every program `name` of the system, in the order `system_program` looks.
+fn system_programs(name: &str) -> impl Iterator<Item = PathBuf> + '_ {
+    let path = if cfg!(windows) { Default::default() } else { std::env::var_os("PATH").unwrap_or_default() };
+    let usual: &[&str] = if cfg!(windows) { &[] } else { &["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin"] };
+    std::env::split_paths(&path).collect::<Vec<_>>().into_iter().chain(usual.iter().map(PathBuf::from)).map(move |d| d.join(name)).filter(|p| p.is_file())
 }
 
 /// A program of a database's version: in its `bin` (or `scripts`) folder, the first of `names` there
 /// (MariaDB renamed its programs, keeping the old names a while); for the system's, on the PATH.
 fn db_program(kind: Kind, version: &str, names: &[&str]) -> Option<PathBuf> {
     if version == SYSTEM {
-        return names.iter().find_map(|n| system_program(n));
+        // MariaDB keeps MySQL's names (`mysqld`, `mysql`): the system's MySQL isn't one with
+        // `mariadbd` beside it (Homebrew's mariadb@10.6, its folder on the PATH).
+        let mariadb = |p: &PathBuf| p.parent().is_some_and(|d| d.join("mariadbd").is_file() || d.join("mariadb").is_file());
+        return names.iter().flat_map(|n| system_programs(n)).find(|p| kind != Kind::Mysql || !mariadb(p));
     }
     let dir = dir(kind, version)?;
     names.iter().flat_map(|n| [dir.join("bin").join(exe(n)), dir.join("scripts").join(n)]).find(|p| p.is_file())
