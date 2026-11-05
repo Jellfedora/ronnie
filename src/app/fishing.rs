@@ -48,6 +48,8 @@ pub(super) struct Fishing {
     /// A word under the scene (the candidate lost...), until then.
     message: Option<(String, f64)>,
     held: bool,
+    /// When the line was let go (the cast's swing and the float's flight drawn from it).
+    cast_at: f64,
     acc: f32,
     rng: u64,
     pub(super) pond: crate::pond::Pond,
@@ -56,7 +58,7 @@ pub(super) struct Fishing {
 
 impl Default for Fishing {
     fn default() -> Self {
-        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
+        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, cast_at: 0.0, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
     }
 }
 
@@ -149,6 +151,46 @@ fn scene_colors(hour: u32) -> (Color32, Color32, Color32, bool) {
 /// Where fisher `spot` stands.
 fn spot_x(spot: usize) -> f32 {
     W * (spot as f32 + 0.5) / SPOTS as f32
+}
+
+/// The rod: its length (from the hand), its angle from upright at rest, pulled back over the
+/// shoulder, thrown forward, and waiting.
+const ROD: f32 = 78.0;
+const ROD_REST: f32 = 0.21;
+const ROD_BACK: f32 = -0.62;
+const ROD_FORWARD: f32 = 0.98;
+const ROD_WAIT: f32 = 0.45;
+/// The forward swing's time, and when in it the line goes (the float flying from the tip).
+const THROW: f32 = 0.2;
+const LET_GO: f32 = 0.11;
+/// The float's flight: longer the further it goes.
+const FLIGHT_BASE: f32 = 0.45;
+const FLIGHT_PER_CAST: f32 = 0.5;
+
+/// How the player's rod moves: still, pulled back as the cast charges, or thrown `t` s ago.
+#[derive(Clone, Copy)]
+enum Swing {
+    Still,
+    Back(f32),
+    Thrown { from: f32, t: f32 },
+}
+
+fn ease_out(k: f32) -> f32 {
+    1.0 - (1.0 - k.clamp(0.0, 1.0)).powi(3)
+}
+
+/// The rod `t` s after a cast of `from`: whipped forward from where it was pulled back, then
+/// springing to rest in front, and how much its middle lags behind its tip.
+fn rod_angle(from: f32, t: f32) -> (f32, f32) {
+    let back = ROD_REST - (ROD_REST - ROD_BACK) * ease_out(from);
+    if t < THROW {
+        let k = ease_out(t / THROW);
+        (back + (ROD_FORWARD - back) * k, 0.22 * (1.0 - k))
+    } else {
+        let s = t - THROW;
+        let wobble = (-s * 5.0).exp() * (s * 15.0).cos();
+        (ROD_WAIT + (ROD_FORWARD - ROD_WAIT) * wobble, 0.1 * wobble)
+    }
 }
 
 /// Where a line's float is, cast so far.
@@ -262,6 +304,7 @@ impl App {
                     let cast = power.max(0.05);
                     let wait = 2.5 + (super::game::random(&mut self.fishing.rng) % 7000) as f32 / 1000.0;
                     self.fishing.phase = Phase::Waiting { cast, bite_in: wait };
+                    self.fishing.cast_at = now;
                 }
             }
             Phase::Waiting { cast, bite_in } => {
@@ -494,7 +537,7 @@ impl App {
         for f in &rows {
             let shirt = theme.ansi[1 + (f.name.bytes().map(u32::from).sum::<u32>() as usize % 6)];
             let (cast, bend) = (f.cast, f.state == Line::Reel);
-            self.paint_fisher(&painter, at, scale, f.spot, &f.name, shirt, false, f.state, cast, bend, now);
+            self.paint_fisher(&painter, at, scale, f.spot, &f.name, shirt, false, f.state, cast, bend, Swing::Still, now);
             // Their catch, a moment over their head.
             if let Some(c) = f.catch.as_ref().filter(|c| c.ago + (now - self.fishing.pond.at) * 1000.0 < SHOWN_MS)
                 && let Some(k) = crate::fishing::by_id(&c.fish)
@@ -516,7 +559,12 @@ impl App {
             Phase::Charging { .. } => (Line::Idle, 0.0),
             _ => self.fishing.line(),
         };
-        self.paint_fisher(&painter, at, scale, me, name, theme.accent, true, line, cast, matches!(self.fishing.phase, Phase::Reeling { .. }), now);
+        let swing = match &self.fishing.phase {
+            Phase::Charging { power, .. } => Swing::Back(*power),
+            Phase::Waiting { cast, .. } if now - self.fishing.cast_at < 3.0 => Swing::Thrown { from: *cast, t: (now - self.fishing.cast_at) as f32 },
+            _ => Swing::Still,
+        };
+        self.paint_fisher(&painter, at, scale, me, name, theme.accent, true, line, cast, matches!(self.fishing.phase, Phase::Reeling { .. }), swing, now);
 
         // The cast charging: a gauge beside the player.
         if let Phase::Charging { power, .. } = &self.fishing.phase {
@@ -604,8 +652,7 @@ impl App {
     /// A fisher on the bank at `spot`: a figure with a cap in `shirt`, its rod, its line and float
     /// where `line` is; their name under them.
     #[allow(clippy::too_many_arguments)]
-    fn paint_fisher(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, spot: usize, name: &str, shirt: Color32, me: bool, line: Line, cast: f32, bend: bool, now: f64) {
-        let theme = &self.theme;
+    fn paint_fisher(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, spot: usize, name: &str, shirt: Color32, me: bool, line: Line, cast: f32, bend: bool, swing: Swing, now: f64) {
         let x = spot_x(spot);
         let tm = now as f32;
         let skin = hex(0xf0c8a0);
@@ -622,17 +669,92 @@ impl App {
         painter.line_segment([at(x + 6.0, FEET - 50.0), hand], stroke(3.0, shirt));
         // The rod: upright out of the water, bent toward the float in a fight.
         let in_water = line != Line::Idle;
-        let tip = if !in_water {
-            at(x + 30.0, FEET - 120.0)
-        } else if bend {
-            at(x + 44.0, FEET - 86.0 + (tm * 18.0).sin() * 3.0)
-        } else {
-            at(x + 46.0, FEET - 110.0)
+        // The rod swung: drawn by its angle (from upright, toward the water) about the hand, its
+        // middle lagging behind the tip as it whips.
+        let rod_at = |angle: f32, lag: f32| {
+            let (hx, hy) = (x + 14.0, FEET - 44.0);
+            let tip = at(hx + ROD * angle.sin(), hy - ROD * angle.cos());
+            let mid = at(hx + ROD * 0.5 * (angle + lag).sin(), hy - ROD * 0.5 * (angle + lag).cos());
+            (tip, mid)
         };
-        let mid = if bend { at(x + 34.0, FEET - 92.0) } else { Pos2::new((hand.x + tip.x) / 2.0, (hand.y + tip.y) / 2.0) };
+        let swung = match swing {
+            Swing::Back(power) => Some(rod_at(ROD_REST - (ROD_REST - ROD_BACK) * ease_out(power), -0.06 * power)),
+            Swing::Thrown { from, t } => {
+                let (angle, lag) = rod_angle(from, t);
+                Some(rod_at(angle, lag))
+            }
+            Swing::Still => None,
+        };
+        let (tip, mid) = if let Some(swung) = swung {
+            swung
+        } else {
+            let tip = if !in_water {
+                rod_at(ROD_REST, 0.0).0
+            } else if bend {
+                at(x + 44.0, FEET - 86.0 + (tm * 18.0).sin() * 3.0)
+            } else {
+                rod_at(ROD_WAIT, 0.0).0
+            };
+            (tip, if bend { at(x + 34.0, FEET - 92.0) } else { Pos2::new((hand.x + tip.x) / 2.0, (hand.y + tip.y) / 2.0) })
+        };
         painter.add(egui::Shape::line(vec![hand, mid, tip], stroke(2.0, hex(0x6a4a2a))));
+        // Pulled back: the float dangling under the tip.
+        if let Swing::Back(_) = swing {
+            let fp = tip + Vec2::new(0.0, 10.0 * scale);
+            painter.line_segment([tip, fp], stroke(0.8, Color32::WHITE.gamma_multiply(0.7)));
+            painter.circle_filled(fp, 4.0 * scale, hex(0xe0453a));
+        }
+        // Thrown: the float flying in an arc from the tip to where it lands, then a splash.
+        if let (Swing::Thrown { from, t }, Line::Wait) = (swing, line) {
+            let flight = FLIGHT_BASE + FLIGHT_PER_CAST * from;
+            let landed = t - LET_GO - flight;
+            if landed < 0.0 {
+                let fp = if t < LET_GO {
+                    tip + Vec2::new(0.0, 10.0 * scale)
+                } else {
+                    let (angle, _) = rod_angle(from, LET_GO);
+                    let start = Pos2::new(x + 14.0 + ROD * angle.sin(), FEET - 44.0 - ROD * angle.cos() + 10.0);
+                    let end = float_at(spot, from);
+                    let u = ((t - LET_GO) / flight).clamp(0.0, 1.0);
+                    let high = 40.0 + 90.0 * from;
+                    at(start.x + (end.x - start.x) * u, start.y + (end.y - start.y) * u - 4.0 * high * u * (1.0 - u))
+                };
+                let middle = Pos2::new((tip.x + fp.x) / 2.0, (tip.y + fp.y) / 2.0 + 3.0 * scale);
+                painter.add(egui::Shape::line(vec![tip, middle, fp], stroke(0.8, Color32::WHITE.gamma_multiply(0.7))));
+                painter.circle_filled(fp, 4.0 * scale, hex(0xe0453a));
+                painter.circle_filled(fp - Vec2::new(0.0, 3.0 * scale), 2.5 * scale, Color32::WHITE);
+                return self.paint_fisher_name(painter, at, scale, x, name, me);
+            }
+            // The splash: rings spreading, drops thrown up and falling back.
+            let float = float_at(spot, from);
+            if landed < 0.9 {
+                for (k, delay) in [0.0f32, 0.18].into_iter().enumerate() {
+                    let a = landed - delay;
+                    if a > 0.0 {
+                        let fade = (1.0 - a / 0.72).max(0.0);
+                        let radius = 5.0 + a * 34.0 - k as f32 * 2.0;
+                        painter.add(egui::Shape::ellipse_stroke(at(float.x, float.y + 2.0), Vec2::new(radius, radius * 0.35) * scale, Stroke::new(1.3, Color32::WHITE.gamma_multiply(0.8 * fade))));
+                    }
+                }
+                if landed < 0.45 {
+                    for k in 0..7 {
+                        let dx = (k as f32 - 3.0) * 5.0;
+                        let up = 70.0 + (k * 37 % 5) as f32 * 14.0;
+                        let (px, py) = (float.x + dx * landed * 6.0, float.y - up * landed + 260.0 * landed * landed);
+                        painter.circle_filled(at(px, py), 1.6 * scale, Color32::WHITE.gamma_multiply(0.85 * (1.0 - landed / 0.45)));
+                    }
+                }
+            }
+        }
         if in_water {
             let mut float = float_at(spot, cast);
+            // Just landed: it sinks and bobs back up, less and less.
+            if let Swing::Thrown { from, t } = swing {
+                let landed = t - LET_GO - FLIGHT_BASE - FLIGHT_PER_CAST * from;
+                if landed >= 0.0 {
+                    float.y += (landed * 13.0).sin() * 5.0 * (-landed * 3.5).exp();
+                }
+            }
             let mut dip = 0.0;
             match line {
                 Line::Wait => float.y += (tm * 2.2 + spot as f32).sin() * 1.5,
@@ -641,8 +763,12 @@ impl App {
                 Line::Idle => {}
             }
             let fp = at(float.x, float.y + dip);
-            // A slack line waiting, taut in a fight.
-            let sag = if bend { 0.0 } else { 16.0 };
+            // A slack line waiting (slackening as the float settles), taut in a fight.
+            let settled = match swing {
+                Swing::Thrown { from, t } => ((t - LET_GO - FLIGHT_BASE - FLIGHT_PER_CAST * from) / 0.6).clamp(0.0, 1.0),
+                _ => 1.0,
+            };
+            let sag = if bend { 0.0 } else { 3.0 + 13.0 * settled };
             let middle = Pos2::new((tip.x + fp.x) / 2.0, (tip.y + fp.y) / 2.0 + sag * scale);
             painter.add(egui::Shape::line(vec![tip, middle, fp], stroke(0.8, Color32::WHITE.gamma_multiply(0.7))));
             painter.circle_filled(fp, 4.0 * scale, hex(0xe0453a));
@@ -655,7 +781,12 @@ impl App {
                 paint_metal(painter, at(x, FEET - 100.0), Align2::CENTER_CENTER, "!", 30.0 * scale.max(0.6), hex(0xffd23a), 1.0);
             }
         }
-        // The name, under them.
+        self.paint_fisher_name(painter, at, scale, x, name, me);
+    }
+
+    /// A fisher's name, under them.
+    fn paint_fisher_name(&self, painter: &egui::Painter, at: impl Fn(f32, f32) -> Pos2, scale: f32, x: f32, name: &str, me: bool) {
+        let theme = &self.theme;
         let color = if me { theme.accent } else { Color32::WHITE };
         let galley = painter.layout_no_wrap(name.to_owned(), FontId::proportional(12.0 * scale.max(0.75)), color);
         let tag = Rect::from_center_size(at(x, FEET + 22.0), galley.size() + Vec2::new(12.0, 4.0));
