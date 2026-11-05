@@ -562,15 +562,39 @@ pub fn valid_site_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && !name.starts_with('.') && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) && !name.to_lowercase().starts_with("wamp")
 }
 
-/// A new WordPress in the folder of the projects, as `name`: its newest version downloaded (in French
+/// WordPress's versions to install: the newest of each of its last lines, the newest first (7.1.4,
+/// 7.0.8, 6.9.11...).
+pub fn wordpress_versions() -> Result<Vec<String>> {
+    let url = "https://api.wordpress.org/core/stable-check/1.0/";
+    let text = ureq::get(url).header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION"))).call().with_context(|| format!("{url} unreachable"))?.body_mut().read_to_string()?;
+    let all: BTreeMap<String, String> = serde_json::from_str(&text).context("WordPress's list unreadable")?;
+    let mut newest: BTreeMap<(u64, u64), String> = BTreeMap::new();
+    for version in all.into_keys().filter(|v| safe_wp_version(v)) {
+        let (major, minor, _, _) = envs::parse(&version);
+        if newest.get(&(major, minor)).is_none_or(|v| envs::parse(&version) > envs::parse(v)) {
+            newest.insert((major, minor), version);
+        }
+    }
+    Ok(newest.into_values().rev().take(8).collect())
+}
+
+/// A WordPress version's name: "7.1.4", "6.9".
+fn safe_wp_version(version: &str) -> bool {
+    !version.is_empty() && version.len() < 12 && version.chars().all(|c| c.is_ascii_digit() || c == '.') && !version.contains("..") && !version.starts_with('.')
+}
+
+/// A new WordPress in the folder of the projects, as `name`: its `version` downloaded (in French
 /// for `french`), its database made empty on `db` (started for it, then stopped unless something runs
 /// on it), its `wp-config.php` written (root without a password, as WAMP has it). WordPress's own
 /// install page does the rest: the site's title, its administrator. Put together aside, then moved in
 /// place. Its folder; blocking.
-pub fn new_wordpress(stack: &std::sync::Mutex<Stack>, dir: &Path, name: &str, db: &Db, french: bool) -> Result<PathBuf> {
+pub fn new_wordpress(stack: &std::sync::Mutex<Stack>, dir: &Path, name: &str, version: &str, db: &Db, french: bool) -> Result<PathBuf> {
     let name = name.trim();
     if !valid_site_name(name) {
         bail!("{name:?} can't be a folder's name");
+    }
+    if !safe_wp_version(version) {
+        bail!("invalid WordPress version {version}");
     }
     let target = dir.join(name);
     if target.exists() {
@@ -580,10 +604,10 @@ pub fn new_wordpress(stack: &std::sync::Mutex<Stack>, dir: &Path, name: &str, db
     let staging = dir.join(format!(".{name}.new"));
     let _ = std::fs::remove_dir_all(&staging);
     let result = (|| {
-        let url = if french { "https://fr.wordpress.org/latest-fr_FR.zip" } else { "https://wordpress.org/latest.zip" };
+        let url = format!("https://downloads.wordpress.org/release/{}wordpress-{version}.zip", if french { "fr_FR/" } else { "" });
         let agent: ureq::Agent = ureq::config::Config::builder().timeout_connect(Some(Duration::from_secs(15))).timeout_global(Some(Duration::from_secs(600))).build().new_agent();
         let zip = agent
-            .get(url)
+            .get(&url)
             .header("User-Agent", concat!("ronnie/", env!("CARGO_PKG_VERSION")))
             .call()
             .with_context(|| format!("{url} unreachable"))?
@@ -591,7 +615,7 @@ pub fn new_wordpress(stack: &std::sync::Mutex<Stack>, dir: &Path, name: &str, db
             .with_config()
             .limit(200 * 1024 * 1024)
             .read_to_vec()
-            .context("WordPress's download failed")?;
+            .with_context(|| format!("WordPress {version}'s download failed"))?;
         zip::ZipArchive::new(std::io::Cursor::new(zip)).context("WordPress's archive unreadable")?.extract(&staging).context("WordPress's archive unreadable")?;
         let site = staging.join("wordpress");
         if !site.join("wp-settings.php").is_file() {
