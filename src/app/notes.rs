@@ -375,6 +375,12 @@ impl Notes {
         }
     }
 
+    /// Whether the note `id` is there, not in the bin (or it can't be told: no note at all, perhaps
+    /// not read).
+    pub(super) fn alive(&self, id: Uuid) -> bool {
+        self.store.notes.is_empty() || self.note(id).is_some_and(|n| n.trashed.is_none())
+    }
+
     fn note(&self, id: Uuid) -> Option<&Note> {
         self.store.notes.iter().find(|n| n.id == id)
     }

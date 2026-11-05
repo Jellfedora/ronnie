@@ -128,6 +128,12 @@ impl App {
         if self.recap.forced.is_some_and(|d| d != today) {
             self.recap.forced = None;
         }
+        let rules = self.recap_rules();
+        // A week's note deleted, or the instructions changed: its days written again, whole.
+        let notes = &self.notes;
+        if self.recap.journal.redo(today, &rules.text_key(), |id| notes.alive(id)) {
+            self.recap.dirty = true;
+        }
         let mut due = self.recap.journal.due(now, self.config.settings.recap.hour);
         if self.recap.forced.is_some() && !due.contains(&today) {
             due.push(today);
@@ -137,7 +143,6 @@ impl App {
         {
             let day = self.recap.journal.days.get(&recap::key(date)).cloned().unwrap_or_default();
             let lang = self.config.settings.language;
-            let rules = self.config.settings.recap.rules.clone();
             let ctx = ctx.clone();
             self.recap.job = std::thread::Builder::new()
                 .name("recap".into())
@@ -149,6 +154,34 @@ impl App {
                 .ok();
         }
         self.recap_save();
+    }
+
+    /// The user's instructions for the recap, with the saved tabs (their groups, their name) of each
+    /// project, by which the user may name it.
+    fn recap_rules(&self) -> recap::Rules {
+        let text = self.config.settings.recap.rules.clone();
+        if text.trim().is_empty() {
+            return recap::Rules::default();
+        }
+        let groups = &self.config.groups;
+        let mut places = Vec::new();
+        for profile in &self.config.profiles {
+            let mut names = vec![profile.name(self.t().untitled).to_owned()];
+            let mut group = groups.iter().find(|g| g.local && g.items.contains(&profile.id));
+            // Up to the top of the section, a sub-group's parent before it (and no loop).
+            while let Some(g) = group.filter(|_| names.len() < 16) {
+                names.insert(0, g.name.clone());
+                group = g.parent.and_then(|p| groups.iter().find(|g| g.id == p));
+            }
+            let place = names.join(" › ");
+            for cwd in profile.tab.layout.cwds().into_iter().flatten() {
+                let root = crate::worklog::project_of(&cwd).display().to_string();
+                if !places.contains(&(root.clone(), place.clone())) {
+                    places.push((root, place.clone()));
+                }
+            }
+        }
+        recap::Rules { text, places }
     }
 
     /// A day's section into its week's note (made if need be, in the "Récaps" folder), the week's
@@ -180,7 +213,8 @@ impl App {
             return;
         }
         let title = recap::title(week, lang);
-        let total = recap::total(&self.recap.journal, week, lang);
+        // Left out by the user's instructions: the former one taken out of the note.
+        let total = if report.hidden.total { String::new() } else { recap::total(&self.recap.journal, week, lang) };
         let id = self.recap.journal.notes.get(&week_key).copied();
         let (old_section, old_total) = (self.recap.journal.sections.get(&day_key).cloned(), self.recap.journal.totals.get(&week_key).cloned());
         let mut done = None;

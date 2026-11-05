@@ -53,6 +53,9 @@ pub struct Journal {
     pub sections: BTreeMap<String, String>,
     #[serde(default)]
     pub totals: BTreeMap<String, String>,
+    /// The user's instructions the current week's days were written with (see `Rules::text_key`).
+    #[serde(default)]
+    pub rules: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -198,6 +201,40 @@ impl Journal {
     /// The days to write now (at `hour` o'clock): those before today not written yet (Ronnie was closed
     /// at that hour), written while they went on, or worked on again after (the evening), and today once
     /// the hour has come. The oldest first, within the last two weeks.
+    /// The days to write again, whole: those of a week whose note is gone (deleted, in the bin: `alive`
+    /// says it isn't), in a new note, and those of the current week when the user's instructions changed
+    /// (`rules`: their `Rules::text_key`).
+    pub fn redo(&mut self, today: NaiveDate, rules: &str, alive: impl Fn(Uuid) -> bool) -> bool {
+        let mut weeks: Vec<NaiveDate> = self.notes.iter().filter(|(_, id)| !alive(**id)).filter_map(|(k, _)| parse_key(k)).collect();
+        for week in &weeks {
+            self.notes.remove(&key(*week));
+            self.totals.remove(&key(*week));
+        }
+        if self.rules.as_deref() != Some(rules) {
+            // The first time (an older Ronnie wrote no rules): the week written again all the same, its
+            // days perhaps written without them.
+            self.rules = Some(rules.to_owned());
+            weeks.push(week_start(today));
+        }
+        let changed = !weeks.is_empty();
+        for week in weeks {
+            for k in 0..7 {
+                let day = key(week + Duration::days(k));
+                if self.written.remove(&day) {
+                    // Its former text no longer looked for in a new note.
+                    if !self.notes.contains_key(&key(week)) {
+                        self.sections.remove(&day);
+                    }
+                    if let Some(d) = self.days.get_mut(&day) {
+                        d.written_seconds = None;
+                        d.written_on = None;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     pub fn due(&self, now: chrono::NaiveDateTime, hour: u32) -> Vec<NaiveDate> {
         let today = now.date();
         let from = today - Duration::days(14);
@@ -391,6 +428,65 @@ pub struct Report {
     pub facts: Facts,
     /// Nothing done that day: no project, server, database or game.
     pub empty: bool,
+    /// The parts of the note the user's instructions leave out (the week's total among them).
+    pub hidden: Hidden,
+}
+
+/// The user's instructions for the recap, and what Claude needs to apply them.
+#[derive(Clone, Default)]
+pub struct Rules {
+    pub text: String,
+    /// The folders of the panes of each saved tab, with the groups it is in and its name ("Perso ›
+    /// Ronnie"): the user may name a project by them.
+    pub places: Vec<(String, String)>,
+}
+
+impl Rules {
+    /// What the projects' names depend on: their answers asked again when it changes.
+    pub fn key(&self) -> String {
+        if self.text.trim().is_empty() {
+            return String::new();
+        }
+        let mut places: Vec<String> = self.places.iter().map(|(cwd, place)| format!("{cwd}\t{place}")).collect();
+        places.sort();
+        format!("{RULES_VERSION}\n{}\n{}", self.text.trim(), places.join("\n"))
+    }
+
+    /// What the note's parts depend on: the days of the week written again when it changes.
+    pub fn text_key(&self) -> String {
+        format!("{RULES_VERSION}\n{}", self.text.trim())
+    }
+
+    /// The saved tabs whose panes are in the project at `path` (in it, or in a folder of it).
+    fn places_of(&self, path: &str) -> Vec<&str> {
+        let path = same_key(path);
+        let mut out: Vec<&str> = Vec::new();
+        for (cwd, place) in &self.places {
+            let cwd = same_key(cwd);
+            let root = same_key(&crate::worklog::project_of(Path::new(&cwd)).display().to_string());
+            let sep = std::path::MAIN_SEPARATOR;
+            if (root == path || cwd == path || cwd.starts_with(&format!("{path}{sep}"))) && !out.contains(&place.as_str()) {
+                out.push(place);
+            }
+        }
+        out
+    }
+}
+
+/// Changed when the way Claude is asked changes: its former answers are asked again.
+const RULES_VERSION: &str = "2";
+
+/// The parts of the note the user's instructions leave out.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Hidden {
+    #[serde(default)]
+    pub servers: bool,
+    #[serde(default)]
+    pub databases: bool,
+    #[serde(default)]
+    pub figures: bool,
+    #[serde(default)]
+    pub total: bool,
 }
 
 /// The section of `date`: its time from the journal's `day`, its commits from git (where they went:
@@ -399,7 +495,7 @@ pub struct Report {
 /// this computer. The projects worked on in Ronnie that day and those Claude worked in (their time
 /// then Claude's, when Ronnie didn't count it), named and left out as the user's `rules` for Claude
 /// say. Runs git and Claude, reaches the European Central Bank: off the interface's thread.
-pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &str) -> Report {
+pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &Rules) -> Report {
     let mut works: HashMap<String, Work> = HashMap::new();
     for (path, seconds) in day.projects.iter().filter(|(_, s)| **s >= 60) {
         let work = works.entry(same_key(path)).or_insert_with(|| Work { path: path.clone(), ..Default::default() });
@@ -425,6 +521,7 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &str) -> Report {
     let mut cache = load_cache();
     let paths: Vec<String> = works.values().map(|w| w.path.clone()).chain(day.projects.keys().cloned()).collect();
     let named = cache.name(&paths, rules);
+    let hidden = cache.hidden(&rules.text);
     let name = |path: &str| named.get(&same_key(path)).cloned().unwrap_or_else(|| Some(name_of(path)));
     works.retain(|_, w| name(&w.path).is_some());
     for work in works.values_mut() {
@@ -531,22 +628,23 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &str) -> Report {
         items.sort_by_key(|(_, s)| std::cmp::Reverse(**s));
         items.iter().map(|(name, s)| format!("{name} ({})", duration(**s))).collect::<Vec<_>>().join(", ")
     };
-    let servers = list(&day.servers);
+    let servers = if hidden.servers { String::new() } else { list(&day.servers) };
     if !servers.is_empty() {
         out.push(if fr { format!("**Serveurs** : {servers}") } else { format!("**Servers**: {servers}") });
     }
-    let databases = list(&day.databases);
+    let databases = if hidden.databases { String::new() } else { list(&day.databases) };
     if !databases.is_empty() {
         out.push(if fr { format!("**Bases de données** : {databases}") } else { format!("**Databases**: {databases}") });
     }
-    let empty = works.is_empty() && servers.is_empty() && databases.is_empty() && day.games < 60;
+    // Nothing to show: what was done left out too (the games are said in the figures).
+    let empty = works.is_empty() && servers.is_empty() && databases.is_empty() && (day.games < 60 || hidden.figures);
     if empty {
         out.push(if fr {
             "Rien de noté pour l'instant : un projet apparaît après une minute de travail dans Ronnie, un commit ou une minute avec Claude.".to_owned()
         } else {
             "Nothing noted yet: a project shows after a minute of work in Ronnie, a commit or a minute with Claude.".to_owned()
         });
-    } else {
+    } else if !hidden.figures {
         if out.last().is_some_and(|l| !l.is_empty()) {
             out.push(String::new());
         }
@@ -555,7 +653,7 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &str) -> Report {
     while out.last().is_some_and(String::is_empty) {
         out.pop();
     }
-    Report { date, section: out.join("\n"), facts, empty }
+    Report { date, section: out.join("\n"), facts, empty, hidden }
 }
 
 /// The day's figures, for fun.
@@ -831,7 +929,7 @@ pub fn upsert(text: &str, title: &str, section: &str, old_section: Option<&str>,
     } else {
         anchor += insert(&mut lines, anchor, &new);
     }
-    if put_total {
+    if put_total && !total.trim().is_empty() {
         insert(&mut lines, anchor, &block(total));
     }
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
@@ -1218,6 +1316,11 @@ struct Cache {
     rules: String,
     #[serde(default)]
     named: BTreeMap<String, Option<String>>,
+    /// The parts the instructions in `hidden_rules` leave out.
+    #[serde(default)]
+    hidden_rules: String,
+    #[serde(default)]
+    hidden: Option<Hidden>,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -1277,13 +1380,13 @@ impl Cache {
     /// The projects of `paths` as the user's `rules` want them, by folder (`same_key`): their name,
     /// None to leave them out. Claude asked once for each folder (again when the rules change); those
     /// it didn't answer for are missing, as they are.
-    fn name(&mut self, paths: &[String], rules: &str) -> BTreeMap<String, Option<String>> {
-        let rules = rules.trim();
-        if self.rules != rules {
-            self.rules = rules.to_owned();
+    fn name(&mut self, paths: &[String], rules: &Rules) -> BTreeMap<String, Option<String>> {
+        let key = rules.key();
+        if self.rules != key {
+            self.rules = key;
             self.named.clear();
         }
-        if rules.is_empty() {
+        if self.rules.is_empty() {
             return BTreeMap::new();
         }
         let mut seen = BTreeSet::new();
@@ -1291,11 +1394,28 @@ impl Cache {
         if !missing.is_empty() {
             for (path, answer) in missing.iter().zip(named_by_claude(&missing, rules)) {
                 if let Some(answer) = answer {
-                    self.named.insert(same_key(path), (answer != "-").then_some(answer));
+                    self.named.insert(same_key(path), answer);
                 }
             }
         }
         paths.iter().filter_map(|p| Some((same_key(p), self.named.get(&same_key(p))?.clone()))).collect()
+    }
+}
+
+impl Cache {
+    /// The parts of the note the user's `rules` leave out: Claude asked once (again when they change);
+    /// none left out when it didn't answer (asked again next time).
+    fn hidden(&mut self, rules: &str) -> Hidden {
+        let rules = rules.trim();
+        if rules.is_empty() {
+            return Hidden::default();
+        }
+        let key = format!("{RULES_VERSION}\n{rules}");
+        if self.hidden_rules != key || self.hidden.is_none() {
+            self.hidden_rules = key;
+            self.hidden = hidden_by_claude(rules);
+        }
+        self.hidden.unwrap_or_default()
     }
 }
 
@@ -1341,19 +1461,57 @@ fn translated(subjects: &[&str]) -> Vec<Option<String>> {
     numbered(ask_claude(&prompt).as_deref().unwrap_or_default(), subjects.len())
 }
 
-/// The projects of `paths` as the user's `rules` want them, by Claude, in their order: the name to
-/// show, "-" to leave one out; None where it didn't answer.
-fn named_by_claude(paths: &[&String], rules: &str) -> Vec<Option<String>> {
+/// The projects of `paths` as the user's `rules` want them, by Claude, in their order: Some(name) to
+/// show, Some(None) to leave one out; None where it didn't answer.
+fn named_by_claude(paths: &[&String], rules: &Rules) -> Vec<Option<Option<String>>> {
     let mut prompt = format!(
-        "Voici les projets d'une journée de travail, pour le récap de la semaine : chacun son numéro, le nom affiché et son dossier. \
-         Applique les consignes de l'utilisateur. Réponds uniquement par une ligne par projet : son numéro, un point, puis le nom \
-         à afficher (le nom affiché tel quel s'il n'y a rien à changer), ou « - » si le projet ne doit pas compter, sans rien d'autre.\n\n\
-         Consignes de l'utilisateur :\n{rules}\n\nProjets :\n"
+        "Voici les projets d'une journée de travail, pour le récap de la semaine : chacun son numéro, le nom affiché, son dossier \
+         et, s'il y en a, les onglets enregistrés de Ronnie (le terminal de l'utilisateur) qui l'ouvrent, précédés des groupes \
+         où ils sont rangés (« Perso › Ronnie » : l'onglet Ronnie du groupe Perso). L'utilisateur peut désigner un projet par son \
+         nom, son dossier ou ces groupes et onglets. Applique ses consignes sur les projets ; ignore celles qui portent sur autre \
+         chose (les rubriques de la note).\n\
+         Réponds uniquement par une ligne par projet : son numéro, un point, une espace, puis soit EXCLU si le projet ne doit pas \
+         compter, soit le nom à afficher (le nom affiché tel quel s'il n'y a rien à changer), sans tiret, puce ni rien d'autre.\n\n\
+         Consignes de l'utilisateur :\n{}\n\nProjets :\n",
+        rules.text.trim()
     );
     for (i, path) in paths.iter().enumerate() {
-        prompt += &format!("{}. {} ({path})\n", i + 1, name_of(path));
+        let places = rules.places_of(path);
+        let places = if places.is_empty() { String::new() } else { format!(", onglets : {}", places.join(", ")) };
+        prompt += &format!("{}. {} (dossier {path}{places})\n", i + 1, name_of(path));
     }
-    numbered(ask_claude(&prompt).as_deref().unwrap_or_default(), paths.len())
+    numbered(ask_claude(&prompt).as_deref().unwrap_or_default(), paths.len()).into_iter().map(|a| a.map(project_answer)).collect()
+}
+
+/// A project's name as Claude answered it, None to leave it out: a list's dash or bullet before it,
+/// quotes around it, aren't of the name.
+fn project_answer(answer: String) -> Option<String> {
+    let name = answer.trim_start_matches(['-', '–', '—', '•', '*', ' ']).trim().trim_matches(['«', '»', '"', '*', '`']).trim();
+    let out = name.is_empty() || answer.trim() == "-" || ["EXCLU", "EXCLUE", "EXCLUS", "EXCLURE"].contains(&name.trim_end_matches('.').to_uppercase().as_str());
+    (!out).then(|| name.to_owned())
+}
+
+/// The parts of the note the user's `rules` say to leave out, by Claude; None when it didn't answer.
+fn hidden_by_claude(rules: &str) -> Option<Hidden> {
+    let prompt = format!(
+        "Une note de récap de la semaine a ces rubriques :\n\
+         - SERVEURS : la ligne « Serveurs » de chaque journée (le temps passé sur chaque serveur SSH)\n\
+         - BASES : la ligne « Bases de données » de chaque journée (le temps passé sur chaque base)\n\
+         - CHIFFRES : « Les chiffres du jour » de chaque journée (temps devant Ronnie, commits, demandes et tokens de Claude, coût, \
+         électricité, pause dans les jeux)\n\
+         - BILAN : le « Bilan de la semaine » à la fin de la note\n\n\
+         Quelles rubriques les consignes de l'utilisateur ci-dessous demandent-elles d'enlever ? Ignore les consignes sur les \
+         projets. Réponds uniquement par leurs mots-clés séparés par des virgules, ou AUCUNE, sans rien d'autre.\n\n\
+         Consignes de l'utilisateur :\n{rules}\n"
+    );
+    hidden_answer(&ask_claude(&prompt)?)
+}
+
+/// Claude's answer of `hidden_by_claude`: None when it says nothing understood.
+fn hidden_answer(answer: &str) -> Option<Hidden> {
+    let answer = answer.to_uppercase();
+    let hidden = Hidden { servers: answer.contains("SERVEURS"), databases: answer.contains("BASES"), figures: answer.contains("CHIFFRES"), total: answer.contains("BILAN") };
+    (hidden != Hidden::default() || answer.contains("AUCUNE")).then_some(hidden)
 }
 
 /// The `n` numbered lines of Claude's answer ("1. ..."), in their order; None where one is missing.
@@ -1416,6 +1574,63 @@ pub fn ask_claude(prompt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_answers() {
+        assert_eq!(project_answer("acqpa".into()), Some("acqpa".into()));
+        assert_eq!(project_answer("- central-presse".into()), Some("central-presse".into()));
+        assert_eq!(project_answer("« Mon site (API) »".into()), Some("Mon site (API)".into()));
+        assert_eq!(project_answer("EXCLU".into()), None);
+        assert_eq!(project_answer("exclu.".into()), None);
+        assert_eq!(project_answer("-".into()), None);
+    }
+
+    #[test]
+    fn hidden_answers() {
+        assert_eq!(hidden_answer("SERVEURS, CHIFFRES, BILAN"), Some(Hidden { servers: true, databases: false, figures: true, total: true }));
+        assert_eq!(hidden_answer("AUCUNE"), Some(Hidden::default()));
+        assert_eq!(hidden_answer("je ne sais pas"), None);
+    }
+
+    #[test]
+    fn places_of_a_project() {
+        let rules = Rules { text: "x".into(), places: vec![("/w/perso/bipbip".into(), "Perso › Ronnie".into()), ("/w/caplaser/acqpa".into(), "Caplaser › Acqpa".into())] };
+        assert_eq!(rules.places_of("/w/perso/bipbip"), vec!["Perso › Ronnie"]);
+        assert!(rules.places_of("/w/perso").is_empty() || rules.places_of("/w/perso") == vec!["Perso › Ronnie"]);
+        assert!(rules.places_of("/w/other").is_empty());
+    }
+
+    #[test]
+    fn redo_a_deleted_week() {
+        let mut journal = Journal::default();
+        let week = d(2026, 11, 3);
+        journal.notes.insert(key(week), Uuid::new_v4());
+        journal.rules = Some("r".into());
+        for k in 0..3 {
+            let day = key(week + Duration::days(k));
+            journal.written.insert(day.clone());
+            journal.sections.insert(day.clone(), "x".into());
+            journal.days.insert(day, Day { written_on: Some("2026-11-04".into()), ..Default::default() });
+        }
+        assert!(!journal.redo(d(2026, 11, 5), "r", |_| true));
+        assert_eq!(journal.written.len(), 3);
+        assert!(journal.redo(d(2026, 11, 5), "r", |_| false));
+        assert!(journal.written.is_empty() && journal.sections.is_empty() && journal.notes.is_empty());
+        // The instructions changed: the week again, its sections replaced in the note still there.
+        journal.notes.insert(key(week), Uuid::new_v4());
+        journal.written.insert(key(week));
+        journal.sections.insert(key(week), "x".into());
+        assert!(journal.redo(d(2026, 11, 5), "r2", |_| true));
+        assert!(journal.written.is_empty());
+        assert_eq!(journal.sections.len(), 1);
+    }
+
+    #[test]
+    fn total_left_out() {
+        let text = "# W\n\n## Mardi\n\nold\n\n## Bilan de la semaine\n\n- t\n";
+        let up = upsert(text, "W", "## Mardi\n\nnew", Some("## Mardi\n\nold"), "", Some("## Bilan de la semaine\n\n- t"));
+        assert_eq!(up.text, "# W\n\n## Mardi\n\nnew\n");
+    }
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -1526,11 +1741,11 @@ Voilà.", 3), vec![Some("Ma boutique".to_owned()), Some("-".to_owned()), None]);
         let mut day = Day::default();
         // Under a minute in a project: nothing to say.
         day.projects.insert("C:\\www\\nowhere".into(), 30);
-        let report = report(d(2026, 10, 31), &day, Lang::Fr, "");
+        let report = report(d(2026, 10, 31), &day, Lang::Fr, &Rules::default());
         assert!(report.empty);
         assert_eq!(Facts { projects: None, ..report.facts }, Facts::default());
         day.servers.insert("Apache 12".into(), 600);
-        assert!(!super::report(d(2026, 10, 31), &day, Lang::Fr, "").empty);
+        assert!(!super::report(d(2026, 10, 31), &day, Lang::Fr, &Rules::default()).empty);
     }
 
     #[test]
