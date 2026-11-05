@@ -19,9 +19,27 @@ pub(super) enum TextMenu {
 /// The menu on `resp`, the TextEdit `id` editing `text` (`editable`: cut and paste offered).
 pub(super) fn text_menu(resp: &Response, id: Id, text: &mut String, editable: bool, t: &Strings) -> TextMenu {
     let mut out = TextMenu::None;
+    // A right click puts the text field's cursor where it is (egui does so for any button), which
+    // would lose the selection to copy: the one before it is kept, and put back.
+    let ctx = resp.ctx.clone();
+    let (kept_id, open_id) = (id.with("menu-selection"), id.with("menu-open"));
+    let was_open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    let right_click = resp.hovered() && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    let kept = ctx.data(|d| d.get_temp::<CCursorRange>(kept_id));
+    if right_click {
+        if let Some(range) = kept.filter(|r| r.primary.index != r.secondary.index)
+            && let Some(mut state) = egui::TextEdit::load_state(&ctx, id)
+        {
+            state.cursor.set_char_range(Some(range));
+            state.store(&ctx, id);
+        }
+    } else if !was_open && let Some(range) = egui::TextEdit::load_state(&ctx, id).and_then(|s| s.cursor.char_range()) {
+        ctx.data_mut(|d| d.insert_temp(kept_id, range));
+    }
+    let mut open = false;
     resp.context_menu(|ui| {
+        open = true;
         ui.set_min_width(180.0);
-        let ctx = ui.ctx().clone();
         let mut state = egui::TextEdit::load_state(&ctx, id).unwrap_or_default();
         let (a, b) = state.cursor.char_range().map_or((0, 0), |r| {
             let (x, y) = (r.primary.index.0, r.secondary.index.0);
@@ -73,5 +91,6 @@ pub(super) fn text_menu(resp: &Response, id: Id, text: &mut String, editable: bo
             ctx.memory_mut(|m| m.request_focus(id));
         }
     });
+    ctx.data_mut(|d| d.insert_temp(open_id, open));
     out
 }

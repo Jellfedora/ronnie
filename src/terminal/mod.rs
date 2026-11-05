@@ -884,7 +884,12 @@ impl Terminal {
                 }
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     self.v_press_seen |= key == Key::V;
-                    if let Some(bytes) = input::key_to_bytes(key, modifiers, mode) {
+                    // Claude Code: Shift+Enter goes to the line, as Alt+Enter does (what its /terminal-setup
+                    // sets up in other terminals); shells keep it an Enter.
+                    let claude = self.activity.program.as_deref().is_some_and(crate::claude::is_claude);
+                    if key == Key::Enter && modifiers.shift && !modifiers.alt && !modifiers.command && claude {
+                        self.write_user(b"\x1b\r");
+                    } else if let Some(bytes) = input::key_to_bytes(key, modifiers, mode) {
                         self.write_user(&bytes);
                     }
                 }
