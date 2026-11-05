@@ -629,6 +629,7 @@ impl App {
         if game.over && game.moves >= 2 && !self.config.settings.four_online_played {
             self.config.settings.four_online_played = true;
             self.save_config();
+            self.push_toast(super::Toast { ok: true, title: t.claude_unlocked.to_owned(), body: t.claude_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
         }
         // The chat on the right, the game in what's left.
         let chat_w = (body.width() * 0.3).clamp(200.0, 300.0);
