@@ -1450,7 +1450,7 @@ struct Look {
     wear: &'static [Wear],
 }
 
-const LOOKS: [Look; 37] = [
+const LOOKS: [Look; 38] = [
     Look { body: 0xb8c4cc, belly: 0xeef2f4, fins: 0xd8504a, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Badge] },
     Look { body: 0xd2dce6, belly: 0xf4f8fa, fins: 0xa8b8c8, aspect: 0.32, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap] },
     Look { body: 0xa6b84c, belly: 0xe8e2b0, fins: 0xe88a3a, aspect: 0.42, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Glasses, Wear::Headset] },
@@ -1486,6 +1486,7 @@ const LOOKS: [Look; 37] = [
     Look { body: 0x6a6ab0, belly: 0xd6d6f2, fins: 0x4a4a90, aspect: 0.26, pattern: Pattern::Patches, whiskers: false, wear: &[Wear::Beard, Wear::Glasses] },
     Look { body: 0xc87a9a, belly: 0xf2dce6, fins: 0x9a4a6a, aspect: 0.44, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Bun, Wear::Glasses, Wear::Pearls] },
     Look { body: 0xe8c070, belly: 0xfaeccc, fins: 0xc09040, aspect: 0.28, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Beard, Wear::Phone] },
+    Look { body: 0xe8a868, belly: 0xfbe6cc, fins: 0xc07a3a, aspect: 0.36, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Badge, Wear::Mug] },
     Look { body: 0x5a7ab8, belly: 0xdfe6f0, fins: 0x3a5a90, aspect: 0.4, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap, Wear::Mop] },
     Look { body: 0xf2c94c, belly: 0xfff0b0, fins: 0xe8a020, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Wool] },
 ];
