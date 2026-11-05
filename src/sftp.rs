@@ -86,6 +86,10 @@ pub enum Request {
     /// Saves an edited file in place (keeping its owner and permissions). Unless `force`, refused when it
     /// changed on the server since it was read (its modification time is no longer `mtime`).
     WriteFile { path: String, data: Vec<u8>, mtime: Option<i64>, force: bool },
+    /// The paths under `root` whose name matches `pattern` (see `name_matches`), for a server that runs no
+    /// commands: Found as they come, the last with `done`. Hidden items and node_modules are skipped
+    /// unless `hidden`. Cancelled like the long changes.
+    Find { id: u64, root: String, pattern: String, hidden: bool },
 }
 
 #[derive(Debug)]
@@ -113,6 +117,8 @@ pub enum Event {
     FileRead { path: String, result: Result<(Vec<u8>, Option<i64>), String> },
     /// A file saved: its new modification time, or why it wasn't (`conflict`: it changed on the server).
     FileWritten { path: String, result: Result<Option<i64>, String>, conflict: bool },
+    /// Paths found by Find (and whether each is a folder); `done` on the last batch.
+    Found { id: u64, hits: Vec<(String, bool)>, done: Option<Result<(), String>> },
     /// The connection is over (with ssh's last words, if any).
     Closed(String),
 }
@@ -121,7 +127,7 @@ impl Request {
     /// The line in the queue of transfers and long changes.
     fn id(&self) -> Option<u64> {
         match self {
-            Request::Download { id, .. } | Request::Upload { id, .. } | Request::Remove { id, .. } | Request::Chmod { id, .. } | Request::Move { id, .. } | Request::Copy { id, .. } => Some(*id),
+            Request::Download { id, .. } | Request::Upload { id, .. } | Request::Remove { id, .. } | Request::Chmod { id, .. } | Request::Move { id, .. } | Request::Copy { id, .. } | Request::Find { id, .. } => Some(*id),
             _ => None,
         }
     }
@@ -324,6 +330,16 @@ impl Connection {
                         emit.send(Event::FileWritten { path, result, conflict });
                         Ok(())
                     }
+                    Request::Find { id, root, pattern, hidden } => {
+                        let (sftp, emit, cancels) = (sftp.clone(), emit.clone(), session_cancels.clone());
+                        tokio::spawn(async move {
+                            let cancel = cancels.lock().unwrap().get(&id).cloned().unwrap_or_default();
+                            let result = find(&sftp, &root, &pattern, hidden, id, &emit, &cancel).await.map_err(|e| format!("{e:#}"));
+                            cancels.lock().unwrap().remove(&id);
+                            emit.send(Event::Found { id, hits: Vec::new(), done: Some(result) });
+                        });
+                        Ok(())
+                    }
                     job @ (Request::Download { .. } | Request::Upload { .. }) => {
                         let _ = jobs.send(job);
                         Ok(())
@@ -403,6 +419,77 @@ fn entry(name: String, attrs: &FileAttributes) -> Entry {
 pub fn valid_name(name: &str) -> bool {
     let forbidden: &[char] = if cfg!(windows) { &['/', '\\', '\0', ':', '*', '?', '"', '<', '>', '|'] } else { &['/', '\0'] };
     !name.is_empty() && name != "." && name != ".." && !name.contains(forbidden)
+}
+
+/// The file search's test of a name: `pattern` with `*` or `?` is a wildcard pattern for the whole name,
+/// otherwise a part of it; case is ignored.
+pub fn name_matches(pattern: &str, name: &str) -> bool {
+    let (p, n) = (pattern.to_lowercase(), name.to_lowercase());
+    if !p.contains(['*', '?']) {
+        return n.contains(&p);
+    }
+    let (p, n): (Vec<char>, Vec<char>) = (p.chars().collect(), n.chars().collect());
+    // Greedy match, going back to the last star on a miss.
+    let (mut i, mut j, mut star, mut mark) = (0, 0, None, 0);
+    while j < n.len() {
+        if i < p.len() && (p[i] == '?' || p[i] == n[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some(i);
+            mark = j;
+            i += 1;
+        } else if let Some(s) = star {
+            i = s + 1;
+            mark += 1;
+            j = mark;
+        } else {
+            return false;
+        }
+    }
+    p[i..].iter().all(|&c| c == '*')
+}
+
+/// Most hits a search gives.
+pub const MAX_FOUND: usize = 1000;
+
+/// Find, through SFTP: a folder after the other, the hits sent every few hundred milliseconds.
+async fn find(sftp: &SftpSession, root: &str, pattern: &str, hidden: bool, id: u64, emit: &Emitter, cancel: &AtomicBool) -> Result<()> {
+    let mut queue = std::collections::VecDeque::from([(root.to_owned(), 0)]);
+    let (mut batch, mut found, mut last) = (Vec::new(), 0, Instant::now());
+    while let Some((dir, depth)) = queue.pop_front() {
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "cancelled");
+        // A folder that can't be read is skipped, as find does.
+        let Ok(items) = sftp.read_dir(dir.clone()).await else { continue };
+        for item in items {
+            let name = item.file_name();
+            if !valid_name(&name) || (!hidden && (name.starts_with('.') || name == "node_modules")) {
+                continue;
+            }
+            let path = join(&dir, &name);
+            let attrs = item.metadata();
+            let is_dir = attrs.is_dir() && !attrs.is_symlink();
+            if name_matches(pattern, &name) {
+                batch.push((path.clone(), is_dir));
+                found += 1;
+                if found >= MAX_FOUND {
+                    emit.send(Event::Found { id, hits: batch, done: None });
+                    return Ok(());
+                }
+            }
+            if is_dir && depth < MAX_DEPTH {
+                queue.push_back((path, depth + 1));
+            }
+        }
+        if !batch.is_empty() && last.elapsed() > Duration::from_millis(250) {
+            emit.send(Event::Found { id, hits: std::mem::take(&mut batch), done: None });
+            last = Instant::now();
+        }
+    }
+    if !batch.is_empty() {
+        emit.send(Event::Found { id, hits: batch, done: None });
+    }
+    Ok(())
 }
 
 /// Limits on a recursive walk, against endless or huge trees (a hostile server can claim anything).
@@ -1186,6 +1273,49 @@ mod tests {
             assert!(Instant::now() < deadline, "no error for an existing name");
             std::thread::sleep(Duration::from_millis(20));
         }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The file search of a server running no commands: by name, hidden items and node_modules skipped.
+    #[test]
+    fn finds_names() {
+        if server().is_none() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("ronnie-find-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("www/app")).unwrap();
+        std::fs::create_dir_all(base.join("node_modules/x")).unwrap();
+        std::fs::create_dir_all(base.join(".cache")).unwrap();
+        for f in ["www/app/Index.php", "www/readme.md", "node_modules/x/index.php", ".cache/index.php"] {
+            std::fs::write(base.join(f), b"").unwrap();
+        }
+        let root = base.canonicalize().unwrap().display().to_string();
+        let conn = connect();
+        wait(&conn, |e| matches!(e, Event::Connected { .. }));
+        let find = |id: u64, pattern: &str, hidden: bool| {
+            conn.send(Request::Find { id, root: root.clone(), pattern: pattern.into(), hidden });
+            let mut hits = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                for e in conn.poll() {
+                    if let Event::Found { id: i, hits: more, done } = e
+                        && i == id
+                    {
+                        hits.extend(more.into_iter().map(|(p, d)| (p.strip_prefix(&root).unwrap().to_owned(), d)));
+                        if let Some(done) = done {
+                            done.unwrap();
+                            hits.sort();
+                            return hits;
+                        }
+                    }
+                }
+                assert!(Instant::now() < deadline, "timed out");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        assert_eq!(find(1, "*.php", false), vec![("/www/app/Index.php".to_owned(), false)]);
+        assert_eq!(find(2, "index", true).len(), 3);
+        assert_eq!(find(3, "app", false), vec![("/www/app".to_owned(), true)]);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

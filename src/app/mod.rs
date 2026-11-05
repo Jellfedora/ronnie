@@ -28,6 +28,7 @@ mod drive;
 mod easter;
 mod editor;
 mod files;
+mod filesearch;
 mod four;
 mod larsen;
 mod president;
@@ -75,6 +76,7 @@ mod scorecard;
 mod sidebar;
 mod emojis;
 mod talk;
+mod textmenu;
 mod tour;
 mod tree;
 mod workspace;
@@ -2914,6 +2916,16 @@ impl App {
                 }
                 ShortcutAction::ClosePane => {
                     editor.request_close();
+                    false
+                }
+                _ => true,
+            });
+        }
+        // The file manager itself: ⌘ F searches under the folder of the panel last clicked.
+        if let Some(files) = self.tabs.get_mut(self.active).filter(|t| t.show_files).and_then(|t| t.files.as_mut()).filter(|f| f.editor.is_none() && f.viewer.is_none() && f.image.is_none()) {
+            fired.retain(|a| match a {
+                ShortcutAction::FindText => {
+                    files.open_search();
                     false
                 }
                 _ => true,

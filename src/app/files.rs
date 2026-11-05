@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use super::*;
 use super::editor::{Editor, EditorAction};
+use super::filesearch::{Hit, Search, State as SearchState};
 use super::imageview::{viewable, ImageAction, ImageView};
 use super::perms::{perm_ui, PermEdit};
 use super::viewer::{Viewer, ViewerAction};
@@ -62,11 +63,13 @@ struct Panel {
     /// Items just moved or sent into a folder (its path, their names): selected there once listed, to
     /// be seen at a glance.
     arrived: Option<(String, HashSet<String>)>,
+    /// The search under this folder, shown in place of the listing while open.
+    search: Option<Box<Search>>,
 }
 
 impl Panel {
     fn new(path: String) -> Self {
-        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, marquee: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false), arrived: None }
+        Self { path_text: path.clone(), path, entries: Vec::new(), selected: HashSet::new(), anchor: None, marquee: None, sort: (SortBy::Name, true), loading: false, order: Vec::new(), order_for: None, generation: 0, completion: (0, false), arrived: None, search: None }
     }
 
     fn set_entries(&mut self, entries: Vec<Entry>) {
@@ -961,6 +964,11 @@ impl FileManager {
                         view.arrived(ctx, &path, result.map(|(data, _)| data));
                     } else if let Some(editor) = self.editor.as_mut().filter(|e| e.remote && e.path == path) {
                         editor.loaded(result, t);
+                    }
+                }
+                Event::Found { id, hits, done } => {
+                    if let Some(search) = self.remote.search.as_mut().filter(|s| s.sftp == Some(id)) {
+                        search.found(hits, done);
                     }
                 }
                 Event::FileWritten { path, result, conflict } => {
@@ -1883,6 +1891,10 @@ impl FileManager {
         }
 
         let connected = matches!(self.status, Status::Ready);
+        if !connected && self.remote.search.is_some() {
+            self.close_search(Side::Remote);
+        }
+        self.drive_searches(ui.ctx(), t);
         let local_out = self.panel_ui(ui, left.shrink(6.0), Side::Local, theme, t, connected);
         self.apply(local_out, t);
         if !local_only {
@@ -1934,6 +1946,10 @@ impl FileManager {
                 let selection = panel.selection();
                 if ui.add_enabled(can_create && !selection.is_empty(), egui::Button::new("📦")).on_hover_text(t.files_compress_hint).clicked() {
                     out.compress = Some(selection);
+                }
+                let searching = panel.search.is_some();
+                if ui.add_enabled(side == Side::Local || connected, egui::Button::new("🔍").selected(searching)).on_hover_text(format!("{}   {}", t.files_search_hint, super::editor::shortcut_hint('F'))).clicked() {
+                    out.search_toggle = true;
                 }
                 ui.add_enabled_ui(can_create, |ui| {
                     ui.menu_button("＋", |ui| {
@@ -2007,6 +2023,14 @@ impl FileManager {
                 }
             });
         });
+
+        // The search, in place of the listing.
+        if let Some(search) = panel.search.as_deref_mut() {
+            let area = Rect::from_min_max(Pos2::new(inner.min.x, head.max.y + 2.0), inner.max);
+            search_ui(ui, area, search, side, show_hidden, active, theme, t, &mut out);
+            out.side = Some(side);
+            return out;
+        }
 
         // Column headers.
         let cols = Columns::new(inner.width(), side == Side::Remote);
@@ -2395,10 +2419,140 @@ impl FileManager {
         out
     }
 
+    /// ⌘ F: the search of the panel last clicked (its field focused if already open).
+    pub fn open_search(&mut self) {
+        let side = if self.host.is_none() { Side::Local } else { self.active };
+        if side == Side::Remote && !matches!(self.status, Status::Ready) {
+            return;
+        }
+        self.active = side;
+        match &mut self.panel(side).search {
+            Some(search) => search.focus = true,
+            None => self.open_search_on(side),
+        }
+    }
+
+    fn open_search_on(&mut self, side: Side) {
+        let panel = self.panel(side);
+        panel.search = Some(Box::new(Search::new(panel.path.clone())));
+        self.active = side;
+    }
+
+    fn close_search(&mut self, side: Side) {
+        if let Some(mut search) = self.panel(side).search.take() {
+            search.stop();
+            if let (Some(id), Some(conn)) = (search.sftp, &self.conn) {
+                conn.cancel(id);
+            }
+        }
+    }
+
+    /// Starts the panels' searches when due, and takes what they found.
+    fn drive_searches(&mut self, ctx: &egui::Context, t: &Strings) {
+        let hidden = self.show_hidden;
+        for side in [Side::Local, Side::Remote] {
+            let panel = if side == Side::Local { &mut self.local } else { &mut self.remote };
+            let root = panel.path.clone();
+            let Some(search) = panel.search.as_deref_mut() else { continue };
+            if search.poll() {
+                // The server runs no commands: by name through SFTP; the text can't be searched.
+                if search.content {
+                    search.finish(Err(t.files_search_no_content.to_owned()));
+                    continue;
+                }
+                let (root, pattern) = (search.root.clone(), search.query.trim().to_owned());
+                let id = self.next_id;
+                self.next_id += 1;
+                if let Some(search) = self.panel(side).search.as_deref_mut() {
+                    search.sftp = Some(id);
+                }
+                self.send(Request::Find { id, root, pattern, hidden });
+                continue;
+            }
+            if !search.due(&root, hidden) {
+                continue;
+            }
+            let old = search.sftp.take();
+            match side {
+                Side::Local => search.start_local(hidden, ctx),
+                Side::Remote => match &self.ssh_host {
+                    Some(host) => search.start_remote(host, self.askpass.as_ref(), hidden, ctx),
+                    None => search.finish(Err(String::new())),
+                },
+            }
+            if let (Some(id), Some(conn)) = (old, &self.conn) {
+                conn.cancel(id);
+            }
+        }
+    }
+
+    /// A hit opened: a folder is gone into, a file opened as a double click in a local tab would (at its
+    /// line for a search in the text).
+    fn open_hit(&mut self, side: Side, hit: Hit, t: &Strings) {
+        if hit.is_dir {
+            self.close_search(side);
+            self.open_dir(side, hit.path);
+            return;
+        }
+        let name = Self::name_of(side, &hit.path);
+        if viewable(&name) {
+            // Previewed among its folder's images, once listed.
+            self.reveal_hit(side, &hit);
+            return;
+        }
+        if side == Side::Local && crate::openwith::is_binary(std::path::Path::new(&hit.path)) {
+            crate::openwith::open(std::path::Path::new(&hit.path));
+            return;
+        }
+        let size = if side == Side::Local { std::fs::metadata(&hit.path).map_or(0, |m| m.len()) } else { 0 };
+        if size > sftp::MAX_EDIT {
+            self.viewer = Some(Box::new(Viewer::new(false, hit.path.clone(), name, size)));
+            return;
+        }
+        let mut editor = Box::new(Editor::opening(side == Side::Remote, hit.path.clone(), name));
+        if let Some((line, _)) = &hit.line {
+            let query = self.panel(side).search.as_ref().map(|s| s.query.trim().to_owned());
+            editor.reveal_once_loaded(*line, query);
+        }
+        match side {
+            Side::Local => editor.loaded(read_local_file(&hit.path, t), t),
+            Side::Remote => self.send(Request::ReadFile(hit.path.clone())),
+        }
+        self.editor = Some(editor);
+    }
+
+    /// A hit shown in its folder, selected; the search closes.
+    fn reveal_hit(&mut self, side: Side, hit: &Hit) {
+        let dir = Self::parent_of(side, &hit.path);
+        let name = Self::name_of(side, &hit.path);
+        self.close_search(side);
+        self.open_dir(side, dir.clone());
+        let panel = self.panel(side);
+        if panel.path == dir && panel.entries.iter().any(|e| e.name == name) {
+            panel.selected = HashSet::from([name.clone()]);
+            panel.anchor = Some(name);
+        } else {
+            panel.arriving(&dir, [name]);
+        }
+    }
+
     fn apply(&mut self, out: PanelOut, t: &Strings) {
         let Some(side) = out.side else { return };
         if out.focus {
             self.active = side;
+        }
+        if out.search_toggle {
+            if self.panel(side).search.is_some() {
+                self.close_search(side);
+            } else {
+                self.open_search_on(side);
+            }
+        }
+        if let Some(hit) = out.found_open {
+            self.open_hit(side, hit, t);
+        }
+        if let Some(hit) = out.found_reveal {
+            self.reveal_hit(side, &hit);
         }
         if let Some(path) = out.go.filter(|p| !p.is_empty()) {
             self.open_dir(side, path);
@@ -3150,6 +3304,164 @@ struct PanelOut {
     extract: Option<Vec<String>>,
     /// Files from the Finder, and the folder they were dropped into.
     imported: Option<(Vec<std::path::PathBuf>, String)>,
+    /// The search: opened or closed (the 🔍 button).
+    search_toggle: bool,
+    /// A hit to open (a folder: gone into; a file: in the editor), or to show in its folder.
+    found_open: Option<Hit>,
+    found_reveal: Option<Hit>,
+}
+
+/// A panel's search: the field, what it searches, the hits. Keys while typing: ↑ ↓ pick a hit, Enter
+/// opens it (or searches now), Escape closes.
+#[allow(clippy::too_many_arguments)]
+fn search_ui(ui: &mut Ui, area: Rect, search: &mut Search, side: Side, hidden: bool, active: bool, theme: &Theme, t: &Strings, out: &mut PanelOut) {
+    let field_id = egui::Id::new(("files-search", side as u8));
+    let mut moved = false;
+    let bar = Rect::from_min_size(area.min, Vec2::new(area.width(), 26.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+        if ui.small_button("✕").on_hover_text(t.files_search_close).clicked() {
+            out.search_toggle = true;
+        }
+        if ui.checkbox(&mut search.content, egui::RichText::new(t.files_search_content).size(12.5)).changed() {
+            search.touch();
+            search.focus = true;
+        }
+        let hint = if search.content { t.files_search_text_hint } else { t.files_search_name_hint };
+        let field = ui.add(egui::TextEdit::singleline(&mut search.query).id(field_id).hint_text(hint).font(FontId::proportional(13.0)).desired_width(f32::INFINITY));
+        if std::mem::take(&mut search.focus) {
+            field.request_focus();
+        }
+        if field.changed() {
+            search.touch();
+        }
+        if field.has_focus() || field.lost_focus() {
+            let (escape, down, up, enter) = ui.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::Escape), i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::ArrowUp), i.key_pressed(Key::Enter)));
+            let count = search.hits.len();
+            if escape {
+                out.search_toggle = true;
+            }
+            if down && count > 0 {
+                search.selected = Some(search.selected.map_or(0, |s| (s + 1).min(count - 1)));
+                moved = true;
+            }
+            if up && count > 0 {
+                search.selected = Some(search.selected.map_or(0, |s| s.saturating_sub(1)));
+                moved = true;
+            }
+            if enter && field.lost_focus() {
+                match search.selected.and_then(|i| search.hits.get(i)) {
+                    Some(hit) if !search.waiting() => out.found_open = Some(hit.clone()),
+                    _ => search.now(),
+                }
+                search.focus = true;
+            }
+        }
+        if field.clicked() || field.gained_focus() {
+            out.focus = true;
+        }
+    });
+    if search.waiting() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+    }
+
+    // Where, and how it went.
+    let status = Rect::from_min_size(Pos2::new(area.min.x, bar.max.y + 2.0), Vec2::new(area.width(), 18.0));
+    let small = FontId::proportional(11.5);
+    let dir = search.root.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|d| !d.is_empty()).unwrap_or(&search.root);
+    let mut place = t.files_search_in.replace("{dir}", dir);
+    if !hidden {
+        place = format!("{place} · {}", t.files_search_skipped);
+    }
+    let n = search.hits.len();
+    let (state, color) = match &search.state {
+        SearchState::Idle => (String::new(), theme.text_muted),
+        SearchState::Running => (format!("{}  {}", t.files_search_running, if n > 0 { n.to_string() } else { String::new() }), theme.accent),
+        SearchState::Done { full: true } => (t.files_search_full.replace("{n}", &n.to_string()), theme.ansi[3]),
+        SearchState::Done { .. } if n == 0 => (t.files_search_none.to_owned(), theme.text_muted),
+        SearchState::Done { .. } => (t.files_search_count.replace("{n}", &n.to_string()), theme.text_muted),
+        SearchState::Failed(e) => (e.clone(), theme.ansi[1]),
+    };
+    let right = ui.painter().text(Pos2::new(status.max.x - 2.0, status.center().y), Align2::RIGHT_CENTER, &state, small.clone(), color);
+    let mut job = egui::text::LayoutJob::simple_singleline(place, small, theme.text_muted);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right.min.x - status.min.x - 12.0).max(40.0));
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(Pos2::new(status.min.x + 2.0, status.center().y - galley.size().y / 2.0), galley, theme.text_muted);
+    if search.running() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    }
+
+    // The hits.
+    let list = Rect::from_min_max(Pos2::new(area.min.x, status.max.y + 4.0), area.max);
+    ui.painter().hline(list.x_range(), list.min.y - 2.0, Stroke::new(1.0, theme.tab_hover));
+    let row_h = if search.content { 38.0 } else { 22.0 };
+    let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
+    let hits = &search.hits;
+    let mut picked = None;
+    egui::ScrollArea::vertical().id_salt(("files-search-list", side as u8)).auto_shrink(false).show_rows(&mut list_ui, row_h, hits.len(), |ui, range| {
+        for i in range {
+            let hit = &hits[i];
+            let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+            let selected = search.selected == Some(i);
+            if selected && moved {
+                ui.scroll_to_rect(row, None);
+            }
+            let fill = if selected { theme.accent.gamma_multiply(if active { 0.30 } else { 0.18 }) } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
+            ui.painter().rect_filled(row, 3.0, fill);
+            let top = Pos2::new(row.min.x, row.min.y + 11.0);
+            let rel = search.relative(&hit.path);
+            let (folder, name) = match rel.rfind(['/', '\\']) {
+                Some(cut) => (&rel[..=cut], &rel[cut + 1..]),
+                None => ("", rel),
+            };
+            paint_file_icon(ui.painter(), Rect::from_center_size(Pos2::new(row.min.x + 13.0, top.y), Vec2::splat(15.0)), name, hit.is_dir, false, None, theme);
+            let mut job = egui::text::LayoutJob::default();
+            job.append(&display_name(name), 0.0, egui::TextFormat::simple(FontId::proportional(13.0), theme.text));
+            if !folder.is_empty() {
+                job.append(&format!("   {}", display_name(folder.trim_end_matches(['/', '\\']))), 0.0, egui::TextFormat::simple(FontId::proportional(11.5), theme.text_muted));
+            }
+            job.wrap = egui::text::TextWrapping::truncate_at_width(row.width() - 34.0);
+            let galley = ui.painter().layout_job(job);
+            ui.painter().galley(Pos2::new(row.min.x + 26.0, top.y - galley.size().y / 2.0), galley, theme.text);
+            if let Some((number, line)) = &hit.line {
+                let mut job = egui::text::LayoutJob::default();
+                job.append(&format!("{number}  "), 0.0, egui::TextFormat::simple(FontId::monospace(11.0), theme.accent.gamma_multiply(0.9)));
+                job.append(line, 0.0, egui::TextFormat::simple(FontId::monospace(11.5), theme.text_muted));
+                job.wrap = egui::text::TextWrapping::truncate_at_width(row.width() - 34.0);
+                let galley = ui.painter().layout_job(job);
+                ui.painter().galley(Pos2::new(row.min.x + 26.0, row.min.y + 27.0 - galley.size().y / 2.0), galley, theme.text);
+            }
+            let resp = resp.on_hover_text(&hit.path);
+            if resp.clicked() || resp.secondary_clicked() {
+                picked = Some(i);
+            }
+            if resp.double_clicked() {
+                out.found_open = Some(hit.clone());
+            }
+            resp.context_menu(|ui| {
+                ui.set_min_width(200.0);
+                if ui.button(t.open).clicked() {
+                    out.found_open = Some(hit.clone());
+                    ui.close();
+                }
+                if ui.button(t.files_search_reveal).clicked() {
+                    out.found_reveal = Some(hit.clone());
+                    ui.close();
+                }
+                if ui.button(t.files_copy_path).clicked() {
+                    ui.ctx().copy_text(hit.path.clone());
+                    ui.close();
+                }
+                if side == Side::Local && ui.button(t.open_location).clicked() {
+                    config::reveal(std::path::Path::new(&hit.path));
+                    ui.close();
+                }
+            });
+        }
+    });
+    if let Some(i) = picked {
+        search.selected = Some(i);
+        out.focus = true;
+    }
 }
 
 /// Column positions of a panel of `width`: narrow panels drop the date, then the permissions.
@@ -3174,7 +3486,7 @@ impl Columns {
 }
 
 /// Single quotes for sh.
-fn sh_quote(s: &str) -> String {
+pub(super) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

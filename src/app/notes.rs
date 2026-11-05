@@ -1224,6 +1224,7 @@ impl Notes {
         let mut changed = false;
         let mut new_cursor = None;
         let mut shown = None;
+        let mut paste_other = false;
         egui::ScrollArea::vertical().id_salt(("notes-text", id)).auto_shrink(false).show(&mut child, |ui| {
             ui.horizontal_top(|ui| {
                 ui.add_space(side);
@@ -1242,6 +1243,12 @@ impl Notes {
                     .layouter(&mut layouter)
                     .show(ui);
                 changed = out.response.changed();
+                // Right click: cut, copy, paste, select all.
+                match super::textmenu::text_menu(&out.response, editor_id, &mut note.text, !trashed, t) {
+                    super::textmenu::TextMenu::Changed => changed = true,
+                    super::textmenu::TextMenu::PasteOther => paste_other = true,
+                    super::textmenu::TextMenu::None => {}
+                }
                 let cursor = out.cursor_range.map(|r| r.primary.index.0);
                 if changed
                     && enter
@@ -1269,6 +1276,10 @@ impl Notes {
         }
         if changed {
             self.changed(ui);
+        }
+        // "Paste" from the menu with an image on the clipboard, as ⌘ V does.
+        if paste_other {
+            self.paste_image(ui, id, t);
         }
         if let Some(byte) = hits.toggle
             && let Some(note) = self.note_mut(id)
@@ -1335,18 +1346,25 @@ impl Notes {
         }
         // ⌘ V with an image and no text on the clipboard (egui only pastes text).
         let pasted = focused && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.command)));
-        if pasted
-            && let Ok(mut clipboard) = arboard::Clipboard::new()
+        if !added.is_empty() {
+            self.put_files(ui, id, added);
+        }
+        if pasted {
+            self.paste_image(ui, id, t);
+        }
+    }
+
+    /// The clipboard's image (when it holds no text: egui pastes that), kept with the notes and put in
+    /// the note at the cursor.
+    fn paste_image(&mut self, ui: &Ui, id: Uuid, t: &Strings) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new()
             && clipboard.get_text().map_or(true, |s| s.is_empty())
             && let Ok(image) = clipboard.get_image()
         {
             match save_image(image) {
-                Ok(md) => added.push(md),
+                Ok(md) => self.put_files(ui, id, vec![md]),
                 Err(e) => self.notify(ui, t.notes_attach_error.replace("{file}", "image").replace("{e}", &e)),
             }
-        }
-        if !added.is_empty() {
-            self.put_files(ui, id, added);
         }
     }
 

@@ -995,7 +995,7 @@ mod tests {
         };
         let accounts = [account(format!("Angus{stamp}")), account(format!("Bon{stamp}")), account(format!("Cliff{stamp}"))];
         let mut lives: [Live; 3] = Default::default();
-        let mut until = |what: &str, lives: &mut [Live; 3], done: &dyn Fn(&[Live; 3]) -> bool| {
+        let until = |what: &str, lives: &mut [Live; 3], done: &dyn Fn(&[Live; 3]) -> bool| {
             let start = Instant::now();
             while !done(lives) {
                 assert!(start.elapsed() < Duration::from_secs(30), "waiting for: {what}");

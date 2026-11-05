@@ -93,6 +93,8 @@ pub(super) struct Editor {
     /// Lines cut with ⌃ K, pasted back with ⌃ U (like nano), and the revision they were cut at: cut
     /// again right away, the next lines are added to them.
     cut: (String, u64),
+    /// Once loaded: the line to show (from 1), and the text to search (a hit of the file search).
+    reveal: Option<(usize, Option<String>)>,
 }
 
 const MONO: f32 = 13.0;
@@ -133,6 +135,7 @@ impl Editor {
             saving_revision: 0,
             progress: None,
             cut: (String::new(), u64::MAX),
+            reveal: None,
         }
     }
 
@@ -164,6 +167,12 @@ impl Editor {
                 self.conflict = false;
                 self.error = None;
                 self.focus = true;
+                if let Some((line, query)) = self.reveal.take() {
+                    self.go_to_line(line);
+                    if let Some(query) = query {
+                        self.find = Some(Find { query, replace: String::new(), case: false, show_replace: false, focus: false, current: None, missed: false });
+                    }
+                }
             }
             // A reload that failed keeps the text being edited.
             Err(e) if matches!(self.state, State::Ready) => self.error = Some(e),
@@ -400,7 +409,7 @@ impl Editor {
                     }
                 });
             }
-            State::Ready => self.text_ui(ui, body, theme),
+            State::Ready => self.text_ui(ui, body, theme, t),
         }
 
         // The shortcuts, laid out in columns like nano's.
@@ -736,18 +745,31 @@ impl Editor {
                 }
             });
         });
-        if let (Some(line), Some(big)) = (target, self.big.as_mut()) {
-            big.set_cursor(Pos { line: line.clamp(1, lines) - 1, col: 0 }, false);
-        } else if let Some(line) = target {
-            let line = line.clamp(1, lines);
-            let start: usize = self.text.split('\n').take(line - 1).map(|l| l.chars().count() + 1).sum();
-            self.select = Some((start, start));
+        if let Some(line) = target {
+            self.go_to_line(line);
         }
         if close {
             self.goto = None;
             self.focus = true;
         }
         r.max.y
+    }
+
+    /// Puts the cursor at the start of `line` (from 1), shown.
+    fn go_to_line(&mut self, line: usize) {
+        let lines = self.big.as_ref().map_or_else(|| self.text.split('\n').count(), |b| b.lines.len());
+        if let Some(big) = self.big.as_mut() {
+            big.set_cursor(Pos { line: line.clamp(1, lines) - 1, col: 0 }, false);
+        } else {
+            let line = line.clamp(1, lines);
+            let start: usize = self.text.split('\n').take(line - 1).map(|l| l.chars().count() + 1).sum();
+            self.select = Some((start, start));
+        }
+    }
+
+    /// Once the file is loaded, shows `line` and searches `query`.
+    pub fn reveal_once_loaded(&mut self, line: usize, query: Option<String>) {
+        self.reveal = Some((line, query));
     }
 
     /// Applies a pending selection to the text field's state.
@@ -945,7 +967,7 @@ impl Editor {
     }
 
     /// The text with its line numbers.
-    fn text_ui(&mut self, ui: &mut Ui, body: Rect, theme: &Theme) {
+    fn text_ui(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, t: &Strings) {
         let ctx = ui.ctx().clone();
         let id = self.text_id();
         if let Some(big) = &mut self.big {
@@ -1021,6 +1043,10 @@ impl Editor {
                     .layouter(&mut layouter)
                     .show(ui);
                 changed = out.response.changed();
+                // Right click: cut, copy, paste, select all.
+                if super::textmenu::text_menu(&out.response, id, text, true, t) == super::textmenu::TextMenu::Changed {
+                    changed = true;
+                }
                 cursor = out.cursor_range.map(|r| r.primary.index.0);
                 let origin = out.galley_pos;
 
@@ -1141,7 +1167,7 @@ impl Editor {
 }
 
 /// "⌘ S" on macOS, "Ctrl+S" elsewhere.
-fn shortcut_hint(key: char) -> String {
+pub(super) fn shortcut_hint(key: char) -> String {
     if cfg!(target_os = "macos") { format!("⌘ {key}") } else { format!("Ctrl+{key}") }
 }
 
