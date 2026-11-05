@@ -1105,6 +1105,7 @@ enum SettingsTab {
     Features,
     Changelog,
     About,
+    Rewards,
 }
 
 /// A shortcut that can be changed in the settings.
@@ -1563,6 +1564,7 @@ impl App {
                     "music" => SettingsTab::Music,
                     "config" => SettingsTab::ConfigFile,
                     "about" => SettingsTab::About,
+                    "rewards" => SettingsTab::Rewards,
                     _ => SettingsTab::General,
                 };
             }

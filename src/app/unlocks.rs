@@ -5,39 +5,51 @@ use super::four::HomeGame;
 use super::*;
 
 /// One thing a game unlocks: what, how, and done or how far (`progress` of `need`).
-struct Unlock {
-    what: String,
-    how: String,
-    done: bool,
-    progress: Option<(u32, u32)>,
+pub(super) struct Unlock {
+    pub(super) what: String,
+    pub(super) how: String,
+    pub(super) done: bool,
+    pub(super) progress: Option<(u32, u32)>,
     /// Said for information (unlocked elsewhere on the page): not counted.
-    info: bool,
+    pub(super) info: bool,
+    /// What switches it on, once unlocked (None: on by itself).
+    pub(super) reward: Option<Reward>,
+}
+
+/// How an unlocked thing is put to use.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Reward {
+    Theme(&'static str),
+    Trail,
+    Sheep,
+    /// An avatar frame, worn from the account.
+    Frame,
 }
 
 impl App {
-    fn unlocks(&self, game: HomeGame) -> Vec<Unlock> {
+    pub(super) fn unlocks(&self, game: HomeGame) -> Vec<Unlock> {
         let t = self.t();
         let s = &self.config.settings;
         match game {
             HomeGame::SpeedMetal => {
                 let best = s.typing_scores.first().map_or(0, |s| s.letters);
-                vec![Unlock { what: t.unlock_metal.into(), how: t.unlock_metal_how.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()), done: best >= crate::theme::METAL_UNLOCK, progress: Some((best, crate::theme::METAL_UNLOCK)), info: false }]
+                vec![Unlock { what: t.unlock_metal.into(), how: t.unlock_metal_how.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()), done: best >= crate::theme::METAL_UNLOCK, progress: Some((best, crate::theme::METAL_UNLOCK)), info: false, reward: Some(Reward::Theme(crate::theme::METAL_THEME)) }]
             }
             HomeGame::Blob => vec![
-                Unlock { what: t.unlock_jurassic.into(), how: t.unlock_jurassic_how.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string()), done: s.jurassic_unlocked, progress: Some((s.blob_best, crate::theme::JURASSIC_UNLOCK)), info: false },
-                Unlock { what: t.unlock_skins.into(), how: t.unlock_skins_how.to_owned(), done: false, progress: None, info: true },
+                Unlock { what: t.unlock_jurassic.into(), how: t.unlock_jurassic_how.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string()), done: s.jurassic_unlocked, progress: Some((s.blob_best, crate::theme::JURASSIC_UNLOCK)), info: false, reward: Some(Reward::Theme(crate::theme::JURASSIC_THEME)) },
+                Unlock { what: t.unlock_skins.into(), how: t.unlock_skins_how.to_owned(), done: false, progress: None, info: true, reward: None },
             ],
-            HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false }],
-            HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false }],
-            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false }],
+            HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false, reward: None }],
+            HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false, reward: None }],
+            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::HYPERSPACE_THEME)) }],
             HomeGame::Runner => {
                 let need = super::trail::TRAIL_METERS;
-                vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false }]
+                vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false, reward: Some(Reward::Trail) }]
             }
             HomeGame::BugHunt | HomeGame::Fishing => {
                 let frames = super::frames::FRAMES.iter().filter(|f| matches!(f.need, super::frames::Need::Wave(_)) == (game == HomeGame::BugHunt)).map(|f| {
                     let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
-                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false }
+                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame) }
                 });
                 if game == HomeGame::BugHunt {
                     return frames.collect();
@@ -48,9 +60,9 @@ impl App {
                 let hires: u32 = s.fish_cards.values().map(|c| c.count).sum();
                 let sheep = super::office::sheep_unlocked(s);
                 let mut list = vec![
-                    Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &all.to_string()), done: !crate::config::OFFICIAL || species >= all, progress: Some((species, all)), info: false },
-                    Unlock { what: t.unlock_sheep.into(), how: t.unlock_sheep_how.to_owned(), done: sheep, progress: None, info: false },
-                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false },
+                    Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &all.to_string()), done: !crate::config::OFFICIAL || species >= all, progress: Some((species, all)), info: false, reward: Some(Reward::Theme(crate::theme::OFFICE_THEME)) },
+                    Unlock { what: t.unlock_sheep.into(), how: t.unlock_sheep_how.to_owned(), done: sheep, progress: None, info: false, reward: Some(Reward::Sheep) },
+                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false, reward: None },
                 ];
                 list.extend(frames);
                 list

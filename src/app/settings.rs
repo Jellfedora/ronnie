@@ -1206,37 +1206,34 @@ impl App {
                     ui.label(egui::RichText::new(t.settings).size(17.0).strong());
                 });
                 ui.add_space(18.0);
-                ui.spacing_mut().item_spacing.y = 4.0;
-                let pages = [
-                    (SettingsTab::General, "⚙", t.general),
-                (SettingsTab::Account, "@", t.account_nav),
-                    (SettingsTab::Appearance, "🎨", t.appearance),
-                    (SettingsTab::Terminal, ">_", t.set_terminal),
-                    (SettingsTab::Shortcuts, "⌨", t.shortcuts),
-                    (SettingsTab::Profiles, "▣", t.manage_profiles),
-                    (SettingsTab::Ssh, "🖧", t.ssh_tab),
-                    (SettingsTab::Claude, "✳", t.set_claude),
-                    (SettingsTab::Music, "♫", t.music_nav),
-                    (SettingsTab::Backup, "💾", t.backup_section),
-                    (SettingsTab::ConfigFile, "{ }", t.config_nav),
-                    (SettingsTab::Logs, "☰", t.logs_nav),
+                ui.spacing_mut().item_spacing.y = 3.0;
+                // The pages in four groups; pages akin share an entry (their tabs on the page).
+                let groups: [&[(SettingsTab, &str, &str)]; 4] = [
+                    &[(SettingsTab::General, "⚙", t.general), (SettingsTab::Appearance, "🎨", t.appearance), (SettingsTab::Terminal, ">_", t.set_terminal), (SettingsTab::Shortcuts, "⌨", t.shortcuts)],
+                    &[(SettingsTab::Profiles, "▣", t.nav_profiles_ssh), (SettingsTab::Claude, "✳", t.set_claude)],
+                    &[(SettingsTab::Rewards, "🏆", t.set_rewards), (SettingsTab::Music, "♫", t.music_nav)],
+                    &[(SettingsTab::Account, "@", t.account_nav), (SettingsTab::Backup, "💾", t.backup_section), (SettingsTab::ConfigFile, "{ }", t.nav_advanced)],
                 ];
-                for (tab, icon, label) in pages {
-                    if nav_item(ui, &theme, icon, label, self.settings_tab == tab) {
-                        self.settings_tab = tab;
+                let current = nav_entry(self.settings_tab);
+                for (k, (pages, name)) in groups.into_iter().zip(t.settings_groups.split('|')).enumerate() {
+                    if k > 0 {
+                        ui.add_space(8.0);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new(name.to_uppercase()).size(10.5).strong().color(theme.text_muted.gamma_multiply(0.8)).extra_letter_spacing(0.6));
+                    });
+                    for &(tab, icon, label) in pages {
+                        if nav_item(ui, &theme, icon, label, current == tab) {
+                            self.settings_tab = tab;
+                        }
                     }
                 }
-                // "Features", "What's new" and "About" at the bottom, apart (drawn upwards: About last).
+                // "About" at the bottom, apart (its tabs: what's new, the features).
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(4.0);
-                    if nav_item(ui, &theme, "i", t.about, self.settings_tab == SettingsTab::About) {
+                    if nav_item(ui, &theme, "i", t.about, current == SettingsTab::About) {
                         self.settings_tab = SettingsTab::About;
-                    }
-                    if nav_item(ui, &theme, "✦", t.changelog_nav, self.settings_tab == SettingsTab::Changelog) {
-                        self.settings_tab = SettingsTab::Changelog;
-                    }
-                    if nav_item(ui, &theme, "★", t.features_nav, self.settings_tab == SettingsTab::Features) {
-                        self.settings_tab = SettingsTab::Features;
                     }
                 });
             });
@@ -1260,6 +1257,7 @@ impl App {
                     SettingsTab::Features => (t.features_nav, t.sub_features),
                     SettingsTab::Changelog => (t.changelog_nav, t.sub_changelog),
                     SettingsTab::About => (t.about, t.sub_about),
+                    SettingsTab::Rewards => (t.set_rewards, t.sub_rewards),
                 };
                 // Title and subtitle, with the close button at the right.
                 let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
@@ -1270,8 +1268,30 @@ impl App {
                 if ui.put(x_rect, x).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     close = true;
                 }
+                // Pages sharing an entry: their tabs.
+                let tabs: &[(SettingsTab, &str)] = match nav_entry(self.settings_tab) {
+                    SettingsTab::Profiles => &[(SettingsTab::Profiles, t.manage_profiles), (SettingsTab::Ssh, t.ssh_tab)],
+                    SettingsTab::ConfigFile => &[(SettingsTab::ConfigFile, t.config_nav), (SettingsTab::Logs, t.logs_nav)],
+                    SettingsTab::About => &[(SettingsTab::About, t.about), (SettingsTab::Changelog, t.changelog_nav), (SettingsTab::Features, t.features_nav)],
+                    _ => &[],
+                };
+                let mut top = head.max.y + 18.0;
+                if !tabs.is_empty() {
+                    let mut x = inner.min.x;
+                    for &(tab, label) in tabs {
+                        let on = self.settings_tab == tab;
+                        let w = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(13.0), theme.text).size().x + 28.0;
+                        let r = Rect::from_min_size(Pos2::new(x, top - 6.0), Vec2::new(w, 28.0));
+                        let b = egui::Button::new(egui::RichText::new(label).size(13.0).color(if on { theme.bg } else { theme.text })).fill(if on { theme.accent } else { theme.bg }).corner_radius(14.0);
+                        if ui.put(r, b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.settings_tab = tab;
+                        }
+                        x += w + 8.0;
+                    }
+                    top += 36.0;
+                }
                 // The page's content, in its own area under the header.
-                let body = Rect::from_min_max(Pos2::new(inner.min.x, head.max.y + 18.0), inner.max);
+                let body = Rect::from_min_max(Pos2::new(inner.min.x, top), inner.max);
                 ui.scope_builder(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                     ui.set_clip_rect(body.expand2(Vec2::new(8.0, 0.0)));
                     let height = body.height();
@@ -1310,6 +1330,9 @@ impl App {
                         }
                         SettingsTab::Claude => {
                             egui::ScrollArea::vertical().id_salt("settings-claude").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.claude_page(ui, t, &theme, &mut picked));
+                        }
+                        SettingsTab::Rewards => {
+                            egui::ScrollArea::vertical().id_salt("settings-rewards").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.rewards_page(ui, t, &theme, &mut picked));
                         }
                         SettingsTab::Backup => {
                             egui::ScrollArea::vertical().id_salt("settings-backup").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.backup_page(ui, t, &theme, &mut picked));
@@ -1375,25 +1398,6 @@ impl App {
                 }
             });
         });
-        // What the games unlocked, to switch off.
-        let (trail, sheep) = (super::trail::unlocked(picked.runner_best), super::office::sheep_unlocked(picked));
-        if trail || sheep {
-            card(ui, theme, Some(t.set_rewards), |ui| {
-                if trail {
-                    setting_row(ui, theme, t.trail_setting, Some(t.trail_setting_desc), |ui| {
-                        toggle(ui, theme, &mut picked.cursor_trail);
-                    });
-                }
-                if trail && sheep {
-                    divider(ui, theme);
-                }
-                if sheep {
-                    setting_row(ui, theme, t.sheep_setting, Some(t.sheep_setting_desc), |ui| {
-                        toggle(ui, theme, &mut picked.sheep);
-                    });
-                }
-            });
-        }
         card(ui, theme, Some(t.set_home), |ui| {
             setting_row(ui, theme, t.home_tips_setting, Some(t.home_tips_setting_desc), |ui| {
                 toggle(ui, theme, &mut picked.home_tips);
@@ -2358,6 +2362,82 @@ fn terminal_page(ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::S
 }
 
 /// A page of the settings in the side navigation. Returns whether it was clicked.
+/// The entry of the navigation a page is under (pages akin share one).
+fn nav_entry(tab: SettingsTab) -> SettingsTab {
+    match tab {
+        SettingsTab::Ssh => SettingsTab::Profiles,
+        SettingsTab::Logs => SettingsTab::ConfigFile,
+        SettingsTab::Changelog | SettingsTab::Features => SettingsTab::About,
+        other => other,
+    }
+}
+
+impl App {
+    /// "Rewards" page: everything the games unlock, game by game: done (and then switched on here: a
+    /// theme worn, the trail, the sheep, a frame from the account) or how to get it and how far.
+    fn rewards_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+        let games = self.games_list();
+        let all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
+        let counted = all.iter().flat_map(|(_, u)| u.iter()).filter(|u| !u.info);
+        let (done, total) = counted.fold((0, 0), |(d, n), u| (d + u.done as usize, n + 1));
+        ui.label(egui::RichText::new(t.arcade_rewards.replace("{n}", &done.to_string()).replace("{max}", &total.to_string())).size(13.5).color(if done == total { theme.ansi[2] } else { theme.accent }));
+        ui.add_space(12.0);
+        let mut account = false;
+        for (name, items) in all {
+            card(ui, theme, Some(name), |ui| {
+                for (k, u) in items.iter().enumerate() {
+                    if k > 0 {
+                        divider(ui, theme);
+                    }
+                    let mark = if u.done { "✓" } else if u.info { "•" } else { "🔒" };
+                    let title = format!("{mark}  {}", u.what);
+                    let desc = if u.done {
+                        match u.reward {
+                            Some(super::unlocks::Reward::Trail) => t.trail_setting_desc.to_owned(),
+                            Some(super::unlocks::Reward::Sheep) => t.sheep_setting_desc.to_owned(),
+                            _ => t.unlock_done.to_owned(),
+                        }
+                    } else {
+                        match u.progress {
+                            Some((have, need)) => format!("{} ({})", u.how, t.unlock_best.replace("{n}", &have.min(need).to_string())),
+                            None => u.how.clone(),
+                        }
+                    };
+                    setting_row(ui, theme, &title, Some(&desc), |ui| {
+                        if !u.done {
+                            if let (Some((have, need)), false) = (u.progress, u.info) {
+                                ui.label(egui::RichText::new(format!("{} / {}", have.min(need), need)).size(12.5).color(theme.text_muted));
+                            }
+                            return;
+                        }
+                        match u.reward {
+                            Some(super::unlocks::Reward::Theme(id)) => {
+                                if picked.theme == id {
+                                    ui.label(egui::RichText::new(t.reward_worn).size(12.5).color(theme.ansi[2]));
+                                } else if ui.button(t.reward_wear).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    picked.theme = id.to_owned();
+                                }
+                            }
+                            Some(super::unlocks::Reward::Trail) => {
+                                toggle(ui, theme, &mut picked.cursor_trail);
+                            }
+                            Some(super::unlocks::Reward::Sheep) => {
+                                toggle(ui, theme, &mut picked.sheep);
+                            }
+                            Some(super::unlocks::Reward::Frame) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
+                            None => {}
+                        }
+                    });
+                }
+            });
+            ui.add_space(14.0);
+        }
+        if account {
+            self.ask_pseudo();
+        }
+    }
+}
+
 fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
     let fill = if selected { theme.tab_active } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
