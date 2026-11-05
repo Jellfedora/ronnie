@@ -306,7 +306,8 @@ impl App {
                 }
             }
             Phase::Caught { at, .. } => {
-                if (pressed && now - *at > 0.8) || now - *at > 6.0 {
+                // Stays until put away (a press, once the hand let go of the reel): time to read it.
+                if pressed && now - *at > 1.2 {
                     self.fishing.phase = Phase::Idle;
                 }
             }
@@ -327,7 +328,8 @@ impl App {
             Phase::Charging { .. } => t.fishing_cast.to_owned(),
             Phase::Waiting { .. } => t.fishing_wait.to_owned(),
             Phase::Bite { .. } => t.fishing_bite.to_owned(),
-            Phase::Reeling { .. } | Phase::Caught { .. } => t.fishing_help.to_owned(),
+            Phase::Reeling { .. } => t.fishing_help.to_owned(),
+            Phase::Caught { .. } => t.fishing_put_away.to_owned(),
         };
         let color = if matches!(self.fishing.phase, Phase::Bite { .. }) { theme.accent } else { theme.text_muted };
         ui.painter().text(Pos2::new(field.center().x, field.max.y + 18.0), Align2::CENTER_CENTER, hint, FontId::proportional(13.0), color);
