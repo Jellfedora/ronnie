@@ -1126,23 +1126,36 @@ impl App {
         egui::Popup::menu(&plus).width(210.0).show(|ui| {
             menu_item(ui, t.db_new_connection, TabAction::NewDb, action);
             menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Databases), action);
+            ui.separator();
+            menu_item(ui, t.sql_import_menu, TabAction::ImportSql, action);
             if !crate::projects::wamp_data().is_empty() {
-                ui.separator();
                 menu_item(ui, t.db_import_wamp, TabAction::ImportWamp, action);
+            }
+            if crate::projects::local_sites_file().is_some() {
+                menu_item(ui, t.local_import_menu, TabAction::ImportLocal, action);
             }
         });
         *y += SECTION_HEADER_H;
         // WAMP's databases: their import under way, or the button to import them.
-        if let Some((step, fraction)) = self.wamp_import_state() {
-            let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, if fraction.is_some() { 48.0 } else { 34.0 }));
+        if let Some((step, fraction, time_left)) = self.wamp_import_state() {
+            ui.ctx().request_repaint_after(Duration::from_millis(300));
+            let height = match (fraction.is_some(), time_left.is_empty()) {
+                (false, _) => 34.0,
+                (true, true) => 48.0,
+                (true, false) => 64.0,
+            };
+            let r = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, height));
             painter.rect_filled(r, 8.0, self.theme.accent.gamma_multiply(0.08));
             let galley = painter.layout_no_wrap(step, FontId::proportional(12.0), self.theme.text);
             painter.galley(Pos2::new(r.min.x + 30.0, r.min.y + 17.0 - galley.size().y / 2.0), galley, self.theme.text);
             ui.put(Rect::from_center_size(Pos2::new(r.min.x + 15.0, r.min.y + 17.0), Vec2::splat(14.0)), egui::Spinner::new().size(13.0));
             if let Some(fraction) = fraction {
-                let bar = Rect::from_min_size(Pos2::new(r.min.x + 10.0, r.max.y - 14.0), Vec2::new(row_w - 20.0, 5.0));
+                let bar = Rect::from_min_size(Pos2::new(r.min.x + 10.0, r.min.y + 34.0), Vec2::new(row_w - 20.0, 5.0));
                 painter.rect_filled(bar, 2.5, self.theme.tab_hover);
                 painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * fraction, bar.height())), 2.5, self.theme.accent);
+                if !time_left.is_empty() {
+                    painter.text(Pos2::new(bar.min.x, bar.max.y + 6.0), egui::Align2::LEFT_TOP, format!("{:.0} %  ·  {time_left}", fraction * 100.0), FontId::proportional(11.0), self.theme.text_muted);
+                }
             }
             *y += r.height() + 6.0;
         } else if self.wamp_to_import() {
@@ -1955,6 +1968,8 @@ impl App {
                 self.db_editor = Some(DbEditor::new(c, true));
             }
             Some(TabAction::ImportWamp) => self.wamp_import_start(),
+            Some(TabAction::ImportLocal) => self.local_import_open(),
+            Some(TabAction::ImportSql) => self.sql_import_open(None),
             Some(TabAction::OpenDb(id)) => self.open_db(id),
             Some(TabAction::EditDb(id)) => {
                 if let Some(c) = self.config.databases.iter().find(|c| c.id == id) {

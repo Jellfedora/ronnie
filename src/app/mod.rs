@@ -59,6 +59,9 @@ mod upload;
 mod dev;
 mod envs;
 mod wamp;
+mod imports;
+mod projlogs;
+mod xdebug;
 mod projects;
 mod modules;
 mod arcade;
@@ -4109,6 +4112,10 @@ enum TabAction {
     AddLocalDb,
     /// WAMP's databases imported (`super::wamp`).
     ImportWamp,
+    /// Local's sites taken over (see imports.rs).
+    ImportLocal,
+    /// A .sql file loaded into a new database of Ronnie's.
+    ImportSql,
     OpenDb(Uuid),
     EditDb(Uuid),
     DeleteDb(Uuid),
@@ -5339,6 +5346,7 @@ impl App {
             self.blob_frame(ui.ctx());
             self.riff_frame(ui.ctx());
             self.pseudo_window(ui.ctx());
+            self.imports_windows(ui.ctx());
         }
         self.poll_uploads();
 
@@ -5444,6 +5452,7 @@ impl eframe::App for App {
         self.envs_poll();
         self.wamp_import_poll();
         self.projects_poll();
+        self.imports_poll();
         self.projects_restart_poll();
         self.procs.poll();
         self.modules_poll();

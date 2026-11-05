@@ -450,6 +450,8 @@ pub(super) struct DbView {
     selected: HashSet<usize>,
     /// Tables ticked on a database's page (to drop or empty them), and that database.
     ticked: (String, HashSet<String>),
+    /// The tables of a database searched by name (its page; Ctrl+F): the database, the text.
+    table_search: (String, String),
     /// Text searched in the table's columns (applied with Enter), and what is typed.
     search: String,
     search_typed: String,
@@ -467,6 +469,8 @@ pub(super) struct DbView {
     notice: Option<Notice>,
     /// The transfer going on is an import (an error then leaves what came before it applied).
     transfer_import: bool,
+    /// How long the transfer still takes.
+    transfer_eta: crate::eta::Eta,
     /// Queries run and changes made, the latest first; the text searched in it.
     history: Vec<super::sql::Entry>,
     history_filter: String,
@@ -572,6 +576,7 @@ impl DbView {
             gzip: true,
             selected: HashSet::new(),
             ticked: (String::new(), HashSet::new()),
+            table_search: (String::new(), String::new()),
             search: String::new(),
             search_typed: String::new(),
             detail: None,
@@ -584,6 +589,7 @@ impl DbView {
             next_tag: 0,
             notice: None,
             transfer_import: false,
+            transfer_eta: Default::default(),
             history: super::sql::load(conn.id),
             history_filter: String::new(),
             running_entry: None,
@@ -1105,6 +1111,7 @@ impl DbView {
         self.transfer = Some((what, 0.0, String::new()));
         self.transfer_done = None;
         self.transfer_import = import;
+        self.transfer_eta = Default::default();
     }
 
     /// A query's rows written to a .csv file chosen by the user.
@@ -1658,7 +1665,8 @@ impl DbView {
         if let Some((what, fraction, on)) = self.transfer.clone() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(egui::RichText::new(format!("{what}  ·  {on}")).size(12.5));
+                let left = self.transfer_eta.said(fraction, t);
+                ui.label(egui::RichText::new(if left.is_empty() { format!("{what}  ·  {on}") } else { format!("{what}  ·  {on}  ·  {left}") }).size(12.5));
                 if ui.small_button(format!("■  {}", t.db_stop)).clicked() {
                     if let Some(conn) = &self.conn {
                         conn.cancel_transfer();
@@ -1799,9 +1807,31 @@ impl DbView {
             return;
         };
         let size: u64 = tables.iter().map(|x| x.size).sum();
-        let (mut export, mut import, mut new_table) = (false, false, false);
+        let all = tables.len();
+        // The search: its own for each database; the tables whose name (or comment) holds it.
+        if self.table_search.0 != d {
+            self.table_search = (d.clone(), String::new());
+        }
+        let wanted = self.table_search.1.trim().to_lowercase();
+        let full = tables.clone();
+        let tables: Vec<TableInfo> = if wanted.is_empty() { tables } else { tables.into_iter().filter(|x| x.name.to_lowercase().contains(&wanted) || x.comment.to_lowercase().contains(&wanted)).collect() };
+        let (mut export, mut import, mut new_table, mut open_first) = (false, false, false, false);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{}  ·  {}", t.db_tables_count.replace("{n}", &tables.len().to_string()), format_size(size, t))).size(12.5).color(theme.text_muted));
+            let id = egui::Id::new(("db-table-search", &d));
+            let find = ui.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::F)));
+            let resp = ui.add(egui::TextEdit::singleline(&mut self.table_search.1).id(id).hint_text(format!("🔍  {}", t.db_tables_search)).desired_width(220.0).margin(Vec2::new(8.0, 5.0)));
+            if find {
+                resp.request_focus();
+            }
+            if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                self.table_search.1.clear();
+            }
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                open_first = true;
+            }
+            ui.add_space(8.0);
+            let count = if wanted.is_empty() { t.db_tables_count.replace("{n}", &all.to_string()) } else { t.db_tables_found.replace("{n}", &tables.len().to_string()).replace("{all}", &all.to_string()) };
+            ui.label(egui::RichText::new(format!("{count}  ·  {}", format_size(size, t))).size(12.5).color(theme.text_muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let busy = self.transfer.is_some();
                 let mssql = self.dialect.mssql();
@@ -1830,15 +1860,24 @@ impl DbView {
         if new_table {
             self.new_table_dialog(&d);
         }
+        if open_first
+            && !wanted.is_empty()
+            && let Some(first) = tables.first()
+        {
+            let name = first.name.clone();
+            self.select_table(&d, &name);
+            return;
+        }
         ui.add_space(8.0);
         // Tables ticked: drop or empty them all at once. Ticks don't follow to another database, and
         // forget tables that are gone.
         if self.ticked.0 != d {
             self.ticked = (d.clone(), HashSet::new());
         }
-        self.ticked.1.retain(|name| tables.iter().any(|x| &x.name == name));
+        // Those hidden by the search stay ticked (only the gone ones are forgotten).
+        self.ticked.1.retain(|name| full.iter().any(|x| &x.name == name));
         if !self.ticked.1.is_empty() {
-            let ticked: Vec<&TableInfo> = tables.iter().filter(|x| self.ticked.1.contains(&x.name)).collect();
+            let ticked: Vec<&TableInfo> = full.iter().filter(|x| self.ticked.1.contains(&x.name)).collect();
             let emptied = ticked.iter().filter(|x| !x.view).count();
             let (mut drop, mut empty) = (false, false);
             Frame::NONE.fill(theme.accent.gamma_multiply(0.1)).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.4))).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
@@ -1900,7 +1939,8 @@ impl DbView {
         let mut ticked: HashSet<usize> = tables.iter().enumerate().filter(|(_, x)| self.ticked.1.contains(&x.name)).map(|(i, _)| i).collect();
         let extras = GridExtras { selection: Some(&mut ticked), ..Default::default() };
         let out = grid_with(ui, egui::Id::new(("db-tables", &d)), theme, &columns, &rows, None, ui.available_height(), extras);
-        self.ticked.1 = ticked.into_iter().map(|i| tables[i].name.clone()).collect();
+        let hidden: Vec<String> = self.ticked.1.iter().filter(|name| !tables.iter().any(|x| &x.name == *name)).cloned().collect();
+        self.ticked.1 = ticked.into_iter().map(|i| tables[i].name.clone()).chain(hidden).collect();
         if let Some((row, _)) = out.clicked {
             let name = tables[row].name.clone();
             self.select_table(&d, &name);
