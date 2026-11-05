@@ -896,7 +896,8 @@ impl App {
         let touring = self.tour.is_some();
         let screen = ctx.content_rect();
         let size = Vec2::new(SETTINGS_WIDTH.min(screen.width() - 60.0).max(640.0), SETTINGS_HEIGHT.min(screen.height() - 80.0).max(380.0));
-        let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(Stroke::new(1.0, theme.tab_hover));
+        let edge = if theme.wizard { Stroke::new(1.2, super::wizard::GOLD.gamma_multiply(0.7)) } else { Stroke::new(1.0, theme.tab_hover) };
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(edge);
         let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(190)).show(ctx, |ui| {
             // Same size on every page: pages scroll inside, the window never jumps around.
             let (whole, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -904,6 +905,12 @@ impl App {
             let content = Rect::from_min_max(Pos2::new(nav.max.x, whole.min.y), whole.max);
             ui.painter().rect_filled(nav, egui::CornerRadius { nw: 14, sw: 14, ne: 0, se: 0 }, theme.bg);
             ui.painter().vline(nav.max.x, nav.y_range(), Stroke::new(1.0, theme.tab_hover));
+            if theme.wizard {
+                // Gryffindor: curls at the window's corners, a gold rule beside the navigation.
+                super::wizard::corners(ui.painter(), whole.shrink(5.0));
+                ui.painter().vline(nav.max.x, nav.y_range().shrink(30.0), Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.5)));
+                super::wizard::diamond(ui.painter(), Pos2::new(nav.max.x, nav.center().y), 3.2);
+            }
 
             // Navigation.
             ui.scope_builder(egui::UiBuilder::new().max_rect(nav.shrink2(Vec2::new(12.0, 20.0))).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
@@ -966,7 +973,11 @@ impl App {
                 };
                 // Title and subtitle, with the close button at the right.
                 let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
-                ui.painter().text(head.left_top(), Align2::LEFT_TOP, title, FontId::proportional(22.0), theme.text);
+                let title_galley = ui.painter().text(head.left_top(), Align2::LEFT_TOP, title, FontId::proportional(22.0), theme.text);
+                if theme.wizard {
+                    // Gryffindor: an ornament after the page's title.
+                    super::wizard::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x + 6.0, title_galley.min.y), Pos2::new(head.max.x - 10.0, title_galley.max.y)), title_galley.max.x + 10.0);
+                }
                 ui.painter().text(head.left_top() + Vec2::new(0.0, 32.0), Align2::LEFT_TOP, subtitle, FontId::proportional(13.0), theme.text_muted);
                 let x_rect = Rect::from_min_size(Pos2::new(head.max.x - 28.0, head.min.y), Vec2::splat(28.0));
                 let x = egui::Button::new(egui::RichText::new("✕").size(15.0).color(theme.text_muted)).frame_when_inactive(false).corner_radius(6.0);
@@ -2221,6 +2232,9 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
     let fill = if selected { theme.tab_active } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, 8.0, fill);
+    if selected && theme.wizard {
+        super::wizard::active_nav(ui.painter(), rect);
+    }
     if selected {
         ui.painter().rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)), 2.0, theme.accent);
     }
@@ -2254,6 +2268,17 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
 
 /// A small heading over a group of settings.
 fn section_title(ui: &mut Ui, theme: &Theme, title: &str) {
+    if theme.wizard {
+        // Gryffindor: a gold diamond before, a gold line fading out after.
+        let resp = ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8))
+        });
+        let r = resp.response.rect;
+        super::wizard::title_marks(ui.painter(), Rect::from_min_max(r.min, Pos2::new(ui.max_rect().max.x, r.max.y)), resp.inner.rect.max.x);
+        ui.add_space(8.0);
+        return;
+    }
     ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
     ui.add_space(8.0);
 }
@@ -2263,10 +2288,17 @@ fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut U
     if let Some(title) = title {
         section_title(ui, theme, title);
     }
-    Frame::NONE.fill(theme.bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(18, 6)).show(ui, |ui| {
+    let edge = if theme.wizard { Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.3)) } else { Stroke::new(1.0, theme.tab_hover) };
+    let shown = Frame::NONE.fill(theme.bg).stroke(edge).corner_radius(10.0).inner_margin(egui::Margin::symmetric(18, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui);
     });
+    if theme.wizard {
+        // Gryffindor: a diamond on the card's top corners.
+        let r = shown.response.rect;
+        super::wizard::diamond(ui.painter(), Pos2::new(r.min.x + 10.0, r.min.y), 2.6);
+        super::wizard::diamond(ui.painter(), Pos2::new(r.max.x - 10.0, r.min.y), 2.6);
+    }
     ui.add_space(26.0);
 }
 

@@ -77,7 +77,11 @@ pub(super) fn frame(painter: &egui::Painter, r: Rect) {
     for (k, alpha) in [0.95, 0.4, 0.2, 0.1, 0.04].into_iter().enumerate() {
         painter.rect_stroke(r.shrink(1.0 + k as f32), 4.0, Stroke::new(1.0, GOLD.gamma_multiply(alpha)), egui::StrokeKind::Inside);
     }
-    let r = r.shrink(1.5);
+    corners(painter, r.shrink(1.5));
+}
+
+/// Gold curls and a diamond at each corner of `r`.
+pub(super) fn corners(painter: &egui::Painter, r: Rect) {
     for (c, sx, sy) in [(r.left_top(), 1.0, 1.0), (r.right_top(), -1.0, 1.0), (r.left_bottom(), 1.0, -1.0), (r.right_bottom(), -1.0, -1.0)] {
         // Two curls from each corner, along both edges, then a diamond on the corner.
         curl(painter, c, Vec2::new(sx, 0.0), Vec2::new(0.0, sy));
@@ -909,4 +913,32 @@ pub(super) fn title_marks(painter: &egui::Painter, rect: Rect, text_end: f32) {
         let t1 = (k + 1) as f32 / n as f32;
         painter.hline(from + (to - from) * t0..=from + (to - from) * t1, y, Stroke::new(0.8, GOLD.gamma_multiply(0.5 * (1.0 - t0))));
     }
+}
+
+/// A small gold diamond at `c`, `d` its half-size.
+pub(super) fn diamond(painter: &egui::Painter, c: Pos2, d: f32) {
+    painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, -d), c + Vec2::new(d, 0.0), c + Vec2::new(0.0, d), c + Vec2::new(-d, 0.0)], GOLD, Stroke::NONE));
+}
+
+/// Gold diamonds along `x` at height `y`, every `every` points.
+pub(super) fn diamonds_along(painter: &egui::Painter, x: egui::Rangef, y: f32, every: f32) {
+    let mut at = x.min + every / 2.0;
+    while at < x.max {
+        diamond(painter, Pos2::new(at, y), 2.6);
+        at += every;
+    }
+}
+
+/// The tab shown in the bar of tabs: a gold outline, a warm glow under it, a diamond on its top
+/// middle.
+pub(super) fn active_chip(painter: &egui::Painter, r: Rect) {
+    glow(painter, Pos2::new(r.center().x, r.max.y), r.width() * 0.45, GOLD, 0.5);
+    painter.rect_stroke(r, 8.0, Stroke::new(1.0, GOLD.gamma_multiply(0.75)), egui::StrokeKind::Inside);
+    diamond(painter, Pos2::new(r.center().x, r.min.y + 0.5), 2.8);
+}
+
+/// A settings entry picked: a warm glow and a gold outline.
+pub(super) fn active_nav(painter: &egui::Painter, r: Rect) {
+    glow(painter, Pos2::new(r.min.x + 22.0, r.center().y), 26.0, GOLD, 0.6);
+    painter.rect_stroke(r, 8.0, Stroke::new(1.0, GOLD.gamma_multiply(0.55)), egui::StrokeKind::Inside);
 }

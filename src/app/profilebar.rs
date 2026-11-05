@@ -54,6 +54,7 @@ impl App {
             super::jurassic::hazard(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 6.0), rect.max));
         } else if theme.wizard {
             super::wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+            super::wizard::diamonds_along(&painter, rect.x_range(), rect.max.y - 1.5, 160.0);
         } else if theme.hyperspace {
             super::hyperspace::beam(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max), theme.accent);
         } else {
@@ -184,7 +185,10 @@ impl App {
                 // The capsule; the one a profile would be dropped into, outlined.
                 let target = dragging_profile && drop.as_ref().is_some_and(|(_, a)| matches!(a, TabAction::DropItem(_, g, _) if *g == group));
                 clip.rect_filled(seg.rect, 11.0, theme.bg.gamma_multiply(if dragged_group { 0.25 } else { 0.55 }));
-                clip.rect_stroke(seg.rect, 11.0, Stroke::new(1.0, if target { theme.accent.gamma_multiply(0.8) } else { theme.tab_hover.gamma_multiply(0.8) }), egui::StrokeKind::Inside);
+                clip.rect_stroke(seg.rect, 11.0, Stroke::new(1.0, if target { theme.accent.gamma_multiply(0.8) } else if theme.wizard { super::wizard::GOLD.gamma_multiply(0.3) } else { theme.tab_hover.gamma_multiply(0.8) }), egui::StrokeKind::Inside);
+                if theme.wizard {
+                    super::wizard::diamond(&clip, Pos2::new(seg.rect.min.x, seg.rect.center().y), 2.4);
+                }
             }
             if let Some(gi) = seg.group {
                 let label = Rect::from_min_size(Pos2::new(seg.rect.min.x + SEG_PAD, cy - CHIP_H / 2.0), Vec2::new(seg.label_w, CHIP_H));
@@ -530,6 +534,9 @@ impl App {
         }
         let renamed = self.chip_rename(ui, index, id, text_rect.intersect(area), action);
         self.paint_chip(ui, painter, r, if renamed { "" } else { &name }, color, index, active, hovered);
+        if active && theme.wizard {
+            super::wizard::active_chip(painter, r);
+        }
         // Open: ✕ on hover (or shown); a long command ended in it meanwhile: a green or red dot there.
         if let Some(i) = index {
             if (hovered || active) && !renamed && area.contains_rect(close_rect) {
