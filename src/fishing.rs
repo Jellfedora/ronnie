@@ -33,9 +33,9 @@ impl Rarity {
         match self {
             Rarity::Common => 100.0,
             Rarity::Uncommon => 40.0,
-            Rarity::Rare => 12.0,
-            Rarity::VeryRare => 4.0,
-            Rarity::Legendary => 0.8,
+            Rarity::Rare => 14.0,
+            Rarity::VeryRare => 7.0,
+            Rarity::Legendary => 4.0,
         }
     }
 
@@ -74,7 +74,7 @@ pub enum When {
     Morning,
     /// 12:00 to 18:00.
     Afternoon,
-    /// 18:00 to 5:00.
+    /// 16:00 to 5:00 (the end of the working day too).
     Evening,
     /// 5:00 to 18:00.
     Day,
@@ -86,27 +86,20 @@ impl When {
     }
 }
 
-/// The time of day an hour is in: 0 the morning, 1 the afternoon, 2 the evening (and the night).
-pub fn time_of_day(hour: u32) -> usize {
-    match hour {
-        5..=11 => 0,
-        12..=17 => 1,
-        _ => 2,
-    }
-}
-
 impl When {
     pub fn bites(self, hour: u32) -> bool {
-        let tod = time_of_day(hour);
         match self {
             When::Any => true,
-            When::Morning => tod == 0,
-            When::Afternoon => tod == 1,
-            When::Evening => tod == 2,
-            When::Day => tod < 2,
+            When::Morning => (5..12).contains(&hour),
+            When::Afternoon => (12..18).contains(&hour),
+            When::Evening => !(5..16).contains(&hour),
+            When::Day => (5..18).contains(&hour),
         }
     }
 }
+
+/// Hires in a row with no new card: the next one is a card not caught yet (among those biting).
+pub const PITY: u32 = 30;
 
 /// A fish of the pond. Its name in `i18n` (`fishing_names`, in this order).
 #[derive(Clone, Copy, Debug)]
@@ -233,6 +226,11 @@ pub struct Lure {
 /// The fish that bites at `hour`, a cast thrown with `power` (0 to 1: near the bank the commons,
 /// far out the rarer ones, a bit bigger), with `lure`; and its size in centimeters.
 pub fn pick(rng: &mut u64, hour: u32, power: f32, lure: Lure) -> (usize, u32) {
+    pick_among(rng, hour, power, lure, |_| true).unwrap_or((0, FISH[0].min_cm))
+}
+
+/// As `pick`, among the fish `wanted` says (None: none of them bites now).
+pub fn pick_among(rng: &mut u64, hour: u32, power: f32, lure: Lure, wanted: impl Fn(usize) -> bool) -> Option<(usize, u32)> {
     let power = power.clamp(0.0, 1.0);
     let weight = |f: &Fish| {
         let mut w = f.rarity.weight();
@@ -251,7 +249,10 @@ pub fn pick(rng: &mut u64, hour: u32, power: f32, lure: Lure) -> (usize, u32) {
             _ => w,
         }
     };
-    let biting: Vec<usize> = (0..FISH.len()).filter(|&k| FISH[k].when.bites(hour)).collect();
+    let biting: Vec<usize> = (0..FISH.len()).filter(|&k| FISH[k].when.bites(hour) && wanted(k)).collect();
+    if biting.is_empty() {
+        return None;
+    }
     let total: f32 = biting.iter().map(|&k| weight(&FISH[k])).sum();
     let mut roll = unit(rng) * total;
     let mut which = biting[0];
@@ -267,7 +268,7 @@ pub fn pick(rng: &mut u64, hour: u32, power: f32, lure: Lure) -> (usize, u32) {
     let push = power * 0.25 + if lure.bait == Some(Bait::Salary) { 0.2 } else { 0.0 };
     let t = (unit(rng).powf(1.8) * (1.0 - push) + push * unit(rng)).clamp(0.0, 1.0);
     let size = f.min_cm + ((f.max_cm - f.min_cm) as f32 * t).round() as u32;
-    (which, size.clamp(f.min_cm, f.max_cm))
+    Some((which, size.clamp(f.min_cm, f.max_cm)))
 }
 
 /// Where the catch starts.
@@ -443,7 +444,10 @@ mod tests {
         // Each one turns up in the end, the golden one too.
         assert!(seen.iter().all(|&s| s), "{seen:?}");
         // Only in the evening.
-        assert!(!When::Evening.bites(10) && When::Evening.bites(23) && When::Evening.bites(3));
+        assert!(!When::Evening.bites(10) && When::Evening.bites(16) && When::Evening.bites(23) && When::Evening.bites(3));
+        // Only those not caught yet, when asked.
+        assert_eq!(pick_among(&mut rng, 9, 0.5, Lure::default(), |k| k == 0).map(|f| f.0), Some(0));
+        assert_eq!(pick_among(&mut rng, 9, 0.5, Lure::default(), |k| FISH[k].when == When::Evening), None);
         assert_eq!(by_id("directeur"), Some(12));
         // The fairs: some quarters of an hour, never more than 4 minutes.
         let fairs = (0..96).filter(|q| job_fair(q * 900 + 10).is_some()).count();

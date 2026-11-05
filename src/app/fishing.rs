@@ -80,6 +80,8 @@ pub(super) struct Fishing {
     aim: f32,
     float: Pos2,
     sound: Option<super::blob::Sound>,
+    /// « Comment ça marche ? » open over the pond.
+    help: bool,
     acc: f32,
     rng: u64,
     pub(super) pond: crate::pond::Pond,
@@ -88,7 +90,7 @@ pub(super) struct Fishing {
 
 impl Default for Fishing {
     fn default() -> Self {
-        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
+        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, help: false, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
     }
 }
 
@@ -348,7 +350,7 @@ impl App {
     fn fishing_pond(&mut self, ui: &mut Ui, body: Rect, now: f64) {
         let t = self.t();
         let theme = self.theme.clone();
-        let room = Vec2::new(body.width(), body.height() - 52.0);
+        let room = Vec2::new(body.width(), body.height() - 76.0);
         let scale = (room.x / W).min(room.y / H).max(0.2);
         let field = Rect::from_min_size(Pos2::new(body.center().x - W * scale / 2.0, body.min.y), Vec2::new(W, H) * scale);
 
@@ -358,7 +360,7 @@ impl App {
         // A press on a bait's button is for the button, not the rod.
         let baits = self.bait_rects(field, scale);
         let on_bait = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| baits.iter().any(|(_, r)| r.contains(p)));
-        let held = ui.input(|i| free && (i.key_down(Key::Space) || i.key_down(Key::Enter))) || (resp.is_pointer_button_down_on() && !on_bait);
+        let held = !self.fishing.help && (ui.input(|i| free && (i.key_down(Key::Space) || i.key_down(Key::Enter))) || (resp.is_pointer_button_down_on() && !on_bait));
         let pressed = held && !self.fishing.held;
         let released = !held && self.fishing.held;
         self.fishing.held = held;
@@ -505,10 +507,7 @@ impl App {
             Phase::Caught { .. } => t.fishing_put_away.to_owned(),
         };
         let alarm = matches!(&self.fishing.phase, Phase::Bite { .. }) || matches!(&self.fishing.phase, Phase::Reeling { reel, .. } if reel.offer > 0.0);
-        let color = if alarm { theme.accent } else { theme.text_muted };
-        ui.painter().text(Pos2::new(field.center().x, field.max.y + 18.0), Align2::CENTER_CENTER, hint, FontId::proportional(13.0), color);
-        // What the bubbles are, under it.
-        ui.painter().text(Pos2::new(field.center().x, field.max.y + 38.0), Align2::CENTER_CENTER, t.fishing_shoal, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.8));
+        self.fishing_tips(ui, field, &hint, alarm, now);
 
         // The baits won: one put on the hook (out of a cast), used one a cast.
         let idle = matches!(self.fishing.phase, Phase::Idle);
@@ -530,6 +529,93 @@ impl App {
         }
     }
 
+    /// Under the scene: what to do now in a pill (lit when it's urgent); then the hours of the
+    /// candidates (the ones now lit, hovered who bites then), the bubbles, and « Comment ça marche ? ».
+    fn fishing_tips(&mut self, ui: &mut Ui, field: Rect, hint: &str, alarm: bool, now: f64) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let painter = ui.painter().clone();
+        let galley = painter.layout_no_wrap(hint.to_owned(), FontId::proportional(13.0), if alarm { theme.bg } else { theme.text });
+        let pill = Rect::from_center_size(Pos2::new(field.center().x, field.max.y + 22.0), galley.size() + Vec2::new(36.0, 12.0));
+        let pulse = if alarm { 0.75 + 0.25 * ((now * 8.0).sin() as f32) } else { 1.0 };
+        painter.rect(pill, 14.0, if alarm { theme.accent.gamma_multiply(pulse) } else { theme.chrome_bg }, Stroke::new(1.0, if alarm { theme.accent } else { theme.tab_hover }), egui::StrokeKind::Inside);
+        painter.circle_filled(Pos2::new(pill.min.x + 13.0, pill.center().y), 3.0, if alarm { theme.bg } else { theme.accent });
+        painter.galley(Pos2::new(pill.min.x + 24.0, pill.center().y - galley.size().y / 2.0), galley, theme.text);
+
+        // The hours: morning, afternoon, evening (from 4 pm), each lit when it is now.
+        let h = hour();
+        let periods = [(5..12).contains(&h), (12..18).contains(&h), !(5..16).contains(&h)];
+        let samples = [9, 14, 20];
+        let names: Vec<&str> = t.fishing_periods.split('|').collect();
+        let font = FontId::proportional(12.0);
+        let mut chips: Vec<(String, bool, Option<u32>)> = names.iter().zip(periods).zip(samples).map(|((n, on), at)| (n.to_string(), on, Some(at))).collect();
+        chips.push((t.fishing_shoal.to_owned(), false, None));
+        let widths: Vec<f32> = chips.iter().map(|(text, _, _)| painter.layout_no_wrap(text.clone(), font.clone(), theme.text).size().x + 22.0).collect();
+        let help_w = painter.layout_no_wrap(t.fishing_how.to_owned(), font.clone(), theme.text).size().x + 26.0;
+        let total = widths.iter().sum::<f32>() + help_w + 8.0 * chips.len() as f32;
+        let mut x = field.center().x - total / 2.0;
+        let y = field.max.y + 56.0;
+        for ((text, on, at), w) in chips.into_iter().zip(widths) {
+            let r = Rect::from_min_size(Pos2::new(x, y - 12.0), Vec2::new(w, 24.0));
+            let resp = ui.interact(r, ui.id().with(("fishing-hours", x as i32)), Sense::hover());
+            painter.rect(r, 12.0, if on { theme.accent.gamma_multiply(0.18) } else { Color32::TRANSPARENT }, Stroke::new(1.0, if on { theme.accent.gamma_multiply(0.8) } else { theme.tab_hover }), egui::StrokeKind::Inside);
+            painter.text(r.center(), Align2::CENTER_CENTER, text, font.clone(), if on { theme.text } else { theme.text_muted });
+            if let Some(at) = at {
+                // Who bites then: the cards caught by name, the others in question marks.
+                let cards = &self.config.settings.fish_cards;
+                let biting: Vec<String> = FISH.iter().enumerate().filter(|(_, f)| f.when.bites(at) && f.when != When::Any).map(|(k, f)| if cards.contains_key(f.id) { card_text(t, k).name.to_owned() } else { t.fishing_unknown.to_owned() }).collect();
+                resp.on_hover_text(format!("{}\n{}", t.fishing_period_tip, biting.join(", ")));
+            }
+            x += w + 8.0;
+        }
+        let r = Rect::from_min_size(Pos2::new(x, y - 12.0), Vec2::new(help_w, 24.0));
+        let b = egui::Button::new(egui::RichText::new(t.fishing_how).size(12.0).color(if self.fishing.help { theme.bg } else { theme.accent })).fill(if self.fishing.help { theme.accent } else { theme.chrome_bg }).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.7))).corner_radius(12.0);
+        if ui.put(r, b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.fishing.help = !self.fishing.help;
+        }
+
+        // The rules, over the pond.
+        if self.fishing.help {
+            if ui.input(|i| i.key_pressed(Key::Escape)) {
+                self.fishing.help = false;
+            }
+            ui.painter().rect_filled(field, 0.0, Color32::from_black_alpha(150));
+            let size = Vec2::new((field.width() - 40.0).min(720.0), field.height() - 30.0);
+            let mut close = false;
+            egui::Area::new(ui.id().with("fishing-help")).order(egui::Order::Foreground).fixed_pos(field.center()).pivot(Align2::CENTER_CENTER).show(ui.ctx(), |ui| {
+                Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(14.0).inner_margin(20.0).show(ui, |ui| {
+                    ui.set_width(size.x - 40.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(t.fishing_how).size(18.0).strong().color(theme.text));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close = ui.button(t.fishing_got_it).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                        });
+                    });
+                    ui.add_space(10.0);
+                    egui::ScrollArea::vertical().max_height(size.y - 90.0).show(ui, |ui| {
+                        let rules: Vec<(&str, &str)> = t.fishing_rules.lines().filter_map(|l| l.split_once('|')).collect();
+                        let cols = if size.x > 560.0 { 2 } else { 1 };
+                        egui::Grid::new("fishing-rules").num_columns(cols).spacing([24.0, 14.0]).show(ui, |ui| {
+                            for (k, (title, text)) in rules.iter().enumerate() {
+                                ui.vertical(|ui| {
+                                    ui.set_width((size.x - 40.0 - 24.0 * (cols - 1) as f32) / cols as f32);
+                                    ui.label(egui::RichText::new(format!("{}  {title}", k + 1)).size(13.5).strong().color(theme.accent));
+                                    ui.add(egui::Label::new(egui::RichText::new(*text).size(12.5).color(theme.text_muted)).wrap());
+                                });
+                                if k % cols == cols - 1 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    });
+                });
+            });
+            if close {
+                self.fishing.help = false;
+            }
+        }
+    }
+
     /// The baits' buttons: those the player has, one under the other at the scene's top left.
     fn bait_rects(&self, field: Rect, scale: f32) -> Vec<(Bait, Rect)> {
         let have = Bait::ALL.into_iter().filter(|b| self.config.settings.fish_baits.get(b.id()).is_some_and(|&n| n > 0));
@@ -545,7 +631,11 @@ impl App {
         let hot = in_bubbles(unix, float);
         let bait = self.fishing_take_bait();
         let rng = &mut self.fishing.rng;
-        let (fish, size) = crate::fishing::pick(rng, hour(), power, Lure { bait, hot });
+        // After a long run with no new card, one not caught yet (if one bites now).
+        let lure = Lure { bait, hot };
+        let cards = &self.config.settings.fish_cards;
+        let fresh = (self.config.settings.fish_dry >= crate::fishing::PITY).then(|| crate::fishing::pick_among(rng, hour(), power, lure, |k| !cards.contains_key(FISH[k].id))).flatten();
+        let (fish, size) = fresh.unwrap_or_else(|| crate::fishing::pick(rng, hour(), power, lure));
         let seed = super::game::random(rng);
         let shiny = super::game::random(rng).is_multiple_of(SHINY_ONE_IN);
         // Patience: 7 to 18 s, sooner with tickets resto, in the bubbles, at a job fair.
@@ -621,6 +711,7 @@ impl App {
         if new {
             card.first_at = chrono::Utc::now().timestamp();
         }
+        self.config.settings.fish_dry = if new { 0 } else { self.config.settings.fish_dry + 1 };
         // A bait won: with each new card, else one hire in three.
         let r = super::game::random(&mut self.fishing.rng);
         let bait = (new || r.is_multiple_of(3)).then(|| Bait::ALL[(r >> 8) as usize % Bait::ALL.len()]);
