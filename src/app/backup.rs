@@ -333,7 +333,9 @@ fn prepare(path: &Path, manifest: &Manifest, password: &str, t: &Strings) -> Res
         Some(bytes)
     };
     let text = read("config.json").ok_or_else(|| t.backup_bad_file.to_owned())?;
-    let mut config = Config::from_json(&String::from_utf8_lossy(&text)).map_err(|e| format!("config.json : {e}"))?;
+    // An export made before the seals keeps its rewards.
+    let legacy = older_than_seals(&manifest.version);
+    let mut config = Config::from_json_sealed(&String::from_utf8_lossy(&text), legacy).map_err(|e| format!("config.json : {e}"))?;
     let mut session = match read("session.json") {
         Some(bytes) => Some(serde_json::from_slice::<Session>(&bytes).map_err(|e| format!("session.json : {e}"))?),
         None => None,
@@ -880,6 +882,13 @@ impl App {
             Err(e) => self.error = Some(e),
         }
     }
+}
+
+/// Whether an export's version is older than the rewards' seals (0.44.0).
+fn older_than_seals(version: &str) -> bool {
+    let parts: Vec<u32> = version.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+    let v = |k: usize| parts.get(k).copied().unwrap_or(0);
+    (v(0), v(1), v(2)) < (0, 44, 0)
 }
 
 #[cfg(test)]

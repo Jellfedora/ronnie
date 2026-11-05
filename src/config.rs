@@ -407,12 +407,46 @@ impl Config {
         serde_json::to_string_pretty(self).expect("config serializes")
     }
 
+    /// The config as the editor shows it: without the rewards and their seal.
+    pub fn to_json_public(&self) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(&self.to_json()).expect("config serializes");
+        if let Some(map) = value.as_object_mut() {
+            for key in REWARD_KEYS.iter().chain(["rewards_seal"].iter()) {
+                map.remove(*key);
+            }
+        }
+        serde_json::to_string_pretty(&value).expect("config serializes")
+    }
+
+    /// The config the editor wrote (`text`, without the rewards), with this one's rewards back.
+    pub fn from_public_json(&self, text: &str) -> Result<Self, serde_json::Error> {
+        let mut value: serde_json::Value = serde_json::from_str(text)?;
+        let ours: serde_json::Value = serde_json::from_str(&self.to_json()).expect("config serializes");
+        if let (Some(map), Some(from)) = (value.as_object_mut(), ours.as_object()) {
+            for key in REWARD_KEYS {
+                match from.get(key) {
+                    Some(v) => map.insert(key.to_owned(), v.clone()),
+                    None => map.remove(key),
+                };
+            }
+        }
+        seal_rewards(&mut value);
+        Self::from_json(&serde_json::to_string(&value)?)
+    }
+
     /// Parses the config; the error names the line and column of the mistake. Entries this version
     /// can't read (a profile, host or group written by a newer version, say) don't make the whole file
     /// fail: they are kept aside under "unreadable_<list>" and written back as they were. An unknown
     /// language falls back to the default one.
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        Self::from_json_sealed(text, false)
+    }
+
+    /// As `from_json`, the rewards kept only if their seal holds (`legacy`: or if there is none, as
+    /// written before seals).
+    pub fn from_json_sealed(text: &str, legacy: bool) -> Result<Self, serde_json::Error> {
         let mut value: serde_json::Value = serde_json::from_str(text)?;
+        check_rewards(&mut value, legacy);
         if let Some(map) = value.as_object_mut() {
             if map.get("language").is_some_and(|l| serde_json::from_value::<Lang>(l.clone()).is_err()) {
                 map.remove("language");
@@ -422,6 +456,61 @@ impl Config {
             set_aside::<Group>(map, "groups");
         }
         serde_json::from_value(value)
+    }
+}
+
+/// The settings that record what the games unlocked: sealed, so that editing them by hand undoes them.
+pub const REWARD_KEYS: [&str; 17] = [
+    "typing_scores", "blob_best", "mines_best", "runner_best", "riff_bests", "backstage_best", "bughunt_best", "bughunt_best_wave", "fish_cards", "fish_baits", "fish_dry",
+    "jurassic_unlocked", "hyperspace_unlocked", "four_online_played", "wizard_unlocked", "open_streak", "open_last",
+];
+
+/// The seal's key, kept apart from its mask (so it isn't one plain string in the binary).
+const SEAL_KEY: [u8; 32] = [
+    0x5e, 0x91, 0x2c, 0xd7, 0x08, 0xb3, 0x6f, 0x4a, 0xe1, 0x37, 0x9c, 0x02, 0x7d, 0xc8, 0x55, 0xaa, 0x13, 0xf6, 0x48, 0x8b, 0x2e, 0xd0, 0x61, 0x9f, 0x3c, 0x75, 0xe9, 0x04, 0xb7, 0x5a, 0x86, 0x1d,
+];
+const SEAL_MASK: [u8; 32] = [
+    0x33, 0x4e, 0xa7, 0x19, 0xc2, 0x6d, 0x90, 0xf5, 0x28, 0x8b, 0x5c, 0xe3, 0x07, 0xba, 0x41, 0x9e, 0xd6, 0x2f, 0x73, 0x08, 0xac, 0x55, 0xe1, 0x3b, 0x92, 0x6e, 0x0f, 0xc4, 0x7a, 0xb9, 0x24, 0xd3,
+];
+
+/// The seal over the rewards in `value` (the config as JSON): an HMAC of their values, in order.
+fn rewards_seal(value: &serde_json::Value) -> String {
+    use hmac::Mac;
+    let key: Vec<u8> = SEAL_KEY.iter().zip(SEAL_MASK).map(|(k, m)| k ^ m).collect();
+    let fields: Vec<serde_json::Value> = REWARD_KEYS.iter().map(|k| value.get(*k).cloned().unwrap_or(serde_json::Value::Null)).collect();
+    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(&key).expect("any key length");
+    mac.update(b"ronnie-rewards-v1");
+    mac.update(serde_json::to_string(&fields).unwrap_or_default().as_bytes());
+    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Seals the rewards in `value` (the config as JSON).
+fn seal_rewards(value: &mut serde_json::Value) {
+    let seal = rewards_seal(value);
+    if let Some(map) = value.as_object_mut() {
+        map.insert("rewards_seal".to_owned(), serde_json::Value::String(seal));
+    }
+}
+
+/// The rewards in `value` reset when their seal doesn't hold (missing: only when `legacy`, written
+/// before seals, are they kept).
+fn check_rewards(value: &mut serde_json::Value, legacy: bool) {
+    let seal = value.get("rewards_seal").and_then(|s| s.as_str()).unwrap_or_default().to_owned();
+    if seal.is_empty() && legacy {
+        return;
+    }
+    if !seal.is_empty() && seal == rewards_seal(value) {
+        return;
+    }
+    if let Some(map) = value.as_object_mut() {
+        let tampered = REWARD_KEYS.iter().any(|k| map.contains_key(*k));
+        for key in REWARD_KEYS {
+            map.remove(key);
+        }
+        map.remove("rewards_seal");
+        if tampered {
+            crate::log::info("config: the rewards' seal didn't hold, they are reset");
+        }
     }
 }
 
@@ -447,7 +536,9 @@ pub fn load_config() -> Result<Config> {
     let path = config_path();
     if let Some(path) = path.as_ref().filter(|p| p.exists()) {
         let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut config = Config::from_json(&text).with_context(|| format!("reading {}", path.display()))?;
+        // Written before the seals (never sealed here yet): its rewards are kept, then sealed.
+        let legacy = !path.with_file_name(SEALED_MARK).exists();
+        let mut config = Config::from_json_sealed(&text, legacy).with_context(|| format!("reading {}", path.display()))?;
         config.normalize();
         return Ok(config);
     }
@@ -703,6 +794,9 @@ pub struct Settings {
     pub open_streak: u32,
     #[serde(default)]
     pub open_last: String,
+    /// The seal over the rewards' settings (`REWARD_KEYS`): edited by hand, they are reset.
+    #[serde(default)]
+    pub rewards_seal: String,
     /// The special themes' music (Gryffindor's opening tune), whatever the games' sounds.
     #[serde(default = "default_true")]
     pub theme_music: bool,
@@ -1362,7 +1456,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_dry: 0, theme_music: true, wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_dry: 0, theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
     }
 }
 
@@ -1505,8 +1599,18 @@ pub fn save_config_file(path: &Path, config: &Config) -> Result<()> {
     if stale && path.exists() {
         let _ = fs::copy(path, &backup);
     }
-    save(path, config)
+    let mut value: serde_json::Value = serde_json::from_str(&config.to_json())?;
+    seal_rewards(&mut value);
+    save(path, &value)?;
+    let mark = path.with_file_name(SEALED_MARK);
+    if !mark.exists() {
+        let _ = fs::write(mark, "");
+    }
+    Ok(())
 }
+
+/// Beside the config once it was sealed: from then on, a config with no seal has its rewards reset.
+const SEALED_MARK: &str = ".rewards-sealed";
 
 /// Creates `dir` (and its parents) accessible by the user only.
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
@@ -1718,5 +1822,38 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("\"color\":\"#f7768e\""), "{json}");
         assert_eq!(serde_json::from_str::<Profile>(&json).unwrap(), p);
+    }
+
+    /// The rewards hold while their seal does: edited by hand, or their seal taken away, they are
+    /// reset; written before seals, they are kept; the editor never shows them and keeps them.
+    #[test]
+    fn rewards_are_sealed() {
+        let mut config = Config::default();
+        config.settings.jurassic_unlocked = true;
+        config.settings.riff_bests = vec![0, 49_000];
+        let mut value: serde_json::Value = serde_json::from_str(&config.to_json()).unwrap();
+        seal_rewards(&mut value);
+        let sealed = serde_json::to_string(&value).unwrap();
+        let back = Config::from_json(&sealed).unwrap();
+        assert!(back.settings.jurassic_unlocked && back.settings.riff_bests == vec![0, 49_000]);
+
+        let edited = sealed.replace("49000", "99000");
+        let back = Config::from_json(&edited).unwrap();
+        assert!(!back.settings.jurassic_unlocked && back.settings.riff_bests.is_empty(), "edited: reset");
+
+        let mut unsealed = value.clone();
+        unsealed.as_object_mut().unwrap().remove("rewards_seal");
+        let text = serde_json::to_string(&unsealed).unwrap();
+        assert!(!Config::from_json(&text).unwrap().settings.jurassic_unlocked, "no seal: reset");
+        assert!(Config::from_json_sealed(&text, true).unwrap().settings.jurassic_unlocked, "before seals: kept");
+
+        let public = back_with(&sealed).to_json_public();
+        assert!(!public.contains("jurassic_unlocked") && !public.contains("rewards_seal"));
+        let edited = back_with(&sealed).from_public_json(&public.replace("\"show_cwd\": true", "\"show_cwd\": false")).unwrap();
+        assert!(edited.settings.jurassic_unlocked && !edited.settings.show_cwd, "the editor keeps them");
+    }
+
+    fn back_with(text: &str) -> Config {
+        Config::from_json(text).unwrap()
     }
 }

@@ -1980,7 +1980,7 @@ impl App {
     }
 
     pub(super) fn config_editor_ui(&mut self, ui: &mut Ui, t: &Strings) {
-        let current = self.config.to_json();
+        let current = self.config.to_json_public();
         let editor = self.editor.get_or_insert_with(|| ConfigEditor::new(current.clone()));
         if editor.text == editor.base && editor.base != current {
             // Nothing typed: follow changes made elsewhere (renamed tab, outside edit...).
@@ -2032,7 +2032,7 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add_enabled(dirty, egui::Button::new(egui::RichText::new(t.save).size(14.0)).min_size(Vec2::new(110.0, 30.0))).clicked() {
-                    match Config::from_json(&editor.text) {
+                    match self.config.from_public_json(&editor.text) {
                         Ok(config) => apply = Some(config),
                         Err(e) => editor.error = Some(e.to_string()),
                     }
@@ -2047,7 +2047,7 @@ impl App {
             self.config_writable = !self.read_only;
             self.save_config();
             // Show the file as written (normalized formatting, defaults filled in).
-            self.editor = Some(ConfigEditor::new(self.config.to_json()));
+            self.editor = Some(ConfigEditor::new(self.config.to_json_public()));
         }
     }
 }
