@@ -1,5 +1,5 @@
 //! Bug Hunt's world: bugs come down in ranks toward production, marching from side to side and a row
-//! lower at each edge, faster as they thin out; they drop exceptions, and from the second wave some
+//! lower at each edge, faster as they thin out; they drop exceptions, and from the third wave some
 //! leave the ranks to dive at the debugger. The debugger, at the bottom, moves and fires patches; four
 //! firewalls shelter it and wear away under the shots of both sides. A bug squashed now and then drops
 //! a fix: a triple shot, a rapid fire, a shield. Units are the field's (y down); the page scales them.
@@ -23,7 +23,7 @@ pub const CELL_H: f32 = 40.0;
 /// A bug's half-size.
 pub const BUG_HALF: (f32, f32) = (16.0, 13.0);
 /// How far the ranks come down at an edge.
-const STEP_DOWN: f32 = 18.0;
+const STEP_DOWN: f32 = 10.0;
 const MARGIN: f32 = 14.0;
 
 /// A firewall: its cells across, down, and their size.
@@ -264,7 +264,7 @@ impl Game {
             self.lives = (self.lives + 1).min(5);
         }
         self.fx = (W - (COLS - 1) as f32 * CELL_W) / 2.0;
-        self.fy = 112.0 + (self.wave - 1).min(6) as f32 * 14.0;
+        self.fy = 86.0 + (self.wave - 1).min(5) as f32 * 8.0;
         self.dir = 1.0;
         self.bugs = (0..ROWS).flat_map(|row| (0..COLS).map(move |col| Bug { kind: Kind::of_row(row), col, row, alive: true, x: 0.0, y: 0.0, dive: None })).collect();
         self.place_ranks();
@@ -291,7 +291,7 @@ impl Game {
     /// The ranks' speed: faster with each wave, and much faster as they thin out.
     fn march_speed(&self) -> f32 {
         let left = self.alive() as f32 / (COLS * ROWS) as f32;
-        (30.0 + 7.0 * (self.wave - 1).min(8) as f32) * (1.0 + 4.5 * (1.0 - left).powi(2))
+        (24.0 + 5.0 * (self.wave - 1).min(8) as f32) * (1.0 + 3.0 * (1.0 - left).powi(2))
     }
 
     /// `dt` seconds more.
@@ -413,7 +413,7 @@ impl Game {
         self.place_ranks();
     }
 
-    /// From the second wave, a bug leaves the ranks now and then (two at most) and dives.
+    /// From the third wave, a bug leaves the ranks now and then (two at most) and dives.
     fn dives(&mut self, dt: f32) {
         let player = self.x;
         for k in 0..self.bugs.len() {
@@ -456,14 +456,14 @@ impl Game {
             self.bugs[k].x = x;
             self.bugs[k].y = y;
         }
-        if self.wave < 2 {
+        if self.wave < 3 {
             return;
         }
         self.dive_in -= dt;
         if self.dive_in > 0.0 {
             return;
         }
-        self.dive_in = (5.5 - 0.45 * self.wave as f32).max(1.6) + self.random() * 2.0;
+        self.dive_in = (6.5 - 0.4 * self.wave as f32).max(2.2) + self.random() * 2.0;
         if self.bugs.iter().filter(|b| b.dive.is_some()).count() >= 2 {
             return;
         }
@@ -488,7 +488,7 @@ impl Game {
         if self.fire_in > 0.0 {
             return;
         }
-        self.fire_in = (1.05 - 0.08 * self.wave as f32).max(0.32) * (0.5 + self.random());
+        self.fire_in = (1.5 - 0.08 * self.wave as f32).max(0.5) * (0.5 + self.random());
         let cols: Vec<usize> = (0..COLS).filter_map(|c| self.bottom_of(c)).collect();
         if cols.is_empty() {
             return;
