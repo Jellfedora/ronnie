@@ -30,6 +30,10 @@ impl App {
             HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false }],
             HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false }],
             HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false }],
+            HomeGame::Runner => {
+                let need = super::trail::TRAIL_METERS;
+                vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false }]
+            }
             HomeGame::BugHunt => super::frames::FRAMES
                 .iter()
                 .map(|f| {

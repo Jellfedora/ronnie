@@ -143,6 +143,9 @@ impl App {
         }
 
         self.paint_stage(ui, stage, scale, &theme, now);
+        if !self.runner.running() {
+            self.unlocks_pill(ui, rect, HomeGame::Runner);
+        }
 
         // Under the stage: how the run ended, or how to start one; the keys below. Played enough this
         // half-day of work: when the next one can be run, instead.
@@ -181,6 +184,11 @@ impl App {
         }
         self.runner.record = meters > self.config.settings.runner_best;
         if self.runner.record {
+            // The pointer's trail, unlocked: said.
+            if self.config.settings.runner_best < super::trail::TRAIL_METERS && meters >= super::trail::TRAIL_METERS {
+                let t = self.t();
+                self.push_toast(super::Toast { ok: true, title: t.trail_unlocked.to_owned(), body: t.trail_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+            }
             self.config.settings.runner_best = meters;
             self.save_config();
         }

@@ -1375,6 +1375,14 @@ impl App {
                 }
             });
         });
+        // What the games unlocked, to switch off.
+        if super::trail::unlocked(picked.runner_best) {
+            card(ui, theme, Some(t.set_rewards), |ui| {
+                setting_row(ui, theme, t.trail_setting, Some(t.trail_setting_desc), |ui| {
+                    toggle(ui, theme, &mut picked.cursor_trail);
+                });
+            });
+        }
         card(ui, theme, Some(t.set_home), |ui| {
             setting_row(ui, theme, t.home_tips_setting, Some(t.home_tips_setting_desc), |ui| {
                 toggle(ui, theme, &mut picked.home_tips);
