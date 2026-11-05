@@ -19,9 +19,9 @@ impl App {
         let columns = |min_w: f32| (((rect.width() - 96.0 + gap) / (min_w + gap)).floor() as usize).clamp(1, n);
         let rows = |cols: usize| n.div_ceil(cols) as f32;
         let tall_cols = columns(200.0);
-        let wide = 56.0 + title_h + rows(tall_cols) * (270.0 + gap) <= rect.height();
+        let wide = 56.0 + title_h + rows(tall_cols) * (290.0 + gap) <= rect.height();
         let cols = if wide { tall_cols } else { columns(360.0) };
-        let card_size = if wide { Vec2::new(((rect.width() - 96.0 - (cols - 1) as f32 * gap) / cols as f32).min(280.0), 270.0) } else { Vec2::new(((rect.width() - 48.0 - (cols - 1) as f32 * gap) / cols as f32).min(520.0), 104.0) };
+        let card_size = if wide { Vec2::new(((rect.width() - 96.0 - (cols - 1) as f32 * gap) / cols as f32).min(280.0), 290.0) } else { Vec2::new(((rect.width() - 48.0 - (cols - 1) as f32 * gap) / cols as f32).min(520.0), 104.0) };
         let block = Vec2::new(cols as f32 * card_size.x + (cols - 1) as f32 * gap, rows(cols) * (card_size.y + gap) - gap);
         let content_h = (56.0 + title_h + block.y + 24.0).max(rect.height());
 
@@ -83,9 +83,11 @@ impl App {
                         let mut job = egui::text::LayoutJob::simple(desc.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);
                         job.halign = egui::Align::Center;
                         let galley = painter.layout_job(job);
+                        let desc_bottom = card.min.y + 174.0 + galley.size().y;
                         painter.galley(Pos2::new(card.center().x, card.min.y + 174.0), galley, theme.text_muted);
+                        // Under the description, however many lines it takes.
                         if let Some(note) = &note {
-                            painter.text(Pos2::new(card.center().x, card.max.y - 24.0), Align2::CENTER_CENTER, note, FontId::proportional(12.5), theme.accent);
+                            painter.text(Pos2::new(card.center().x, (desc_bottom + 16.0).max(card.max.y - 24.0)), Align2::CENTER_CENTER, note, FontId::proportional(12.5), theme.accent);
                         }
                     }
                     Some(x) => {
