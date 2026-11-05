@@ -143,7 +143,7 @@ impl App {
         let width = body.width().min(if wide { 860.0 } else { 420.0 });
         let left_w = if wide { 420.0 } else { width };
         let x0 = body.center().x - width / 2.0;
-        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 450.0f32.min(body.height())));
+        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 476.0f32.min(body.height())));
         let painter = ui.painter().clone();
         painter.rect(card, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
         let left = card.min.x + 20.0;
@@ -166,7 +166,7 @@ impl App {
         painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.bughunt_fixes_title, FontId::proportional(14.0), theme.text);
         y += 28.0;
         let fixes: Vec<&str> = t.bughunt_fixes.split('|').collect();
-        for (k, power) in [Power::Triple, Power::Rapid, Power::Shield].into_iter().enumerate() {
+        for (k, power) in [Power::Triple, Power::Rapid, Power::Shield, Power::Life].into_iter().enumerate() {
             paint_power(&painter, Pos2::new(left + 18.0, y), 1.1, power, &theme, now);
             painter.text(Pos2::new(left + 48.0, y), Align2::LEFT_CENTER, fixes.get(k).copied().unwrap_or_default(), FontId::proportional(13.0), theme.text_muted);
             y += 26.0;
@@ -465,12 +465,13 @@ fn paint_debugger(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32) 
     painter.text(at(0.0, 7.0), Align2::CENTER_CENTER, ">_", FontId::monospace(8.0 * scale), Color32::from_black_alpha(150));
 }
 
-/// A fix, its middle at `c`: in a rounded capsule, three shots, two arrows, or a ring.
+/// A fix, its middle at `c`: in a rounded capsule, three shots, two arrows, a ring, or a small debugger.
 fn paint_power(painter: &egui::Painter, c: Pos2, scale: f32, power: Power, theme: &Theme, now: f64) {
     let at = |x: f32, y: f32| c + Vec2::new(x, y) * scale;
     let glow = ((now * 5.0).sin() * 0.25 + 0.75) as f32;
     let color = match power {
         Power::Shield => theme.ansi[4],
+        Power::Life => theme.ansi[2],
         _ => theme.accent,
     };
     painter.rect(Rect::from_center_size(c, Vec2::new(22.0, 16.0) * scale), 5.0 * scale, color.gamma_multiply(0.25 * glow), Stroke::new(1.2 * scale, color.gamma_multiply(glow)), egui::StrokeKind::Inside);
@@ -489,6 +490,8 @@ fn paint_power(painter: &egui::Painter, c: Pos2, scale: f32, power: Power, theme
         Power::Shield => {
             painter.circle_stroke(c, 4.5 * scale, stroke);
         }
+        // A small debugger.
+        Power::Life => paint_debugger(painter, c + Vec2::new(0.0, 1.0) * scale, scale * 0.36, color),
     }
 }
 

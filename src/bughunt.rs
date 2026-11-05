@@ -141,7 +141,15 @@ pub enum Power {
     Triple,
     Rapid,
     Shield,
+    /// A life more (very rare; at five lives, points).
+    Life,
 }
+
+/// The odds a bug squashed drops a fix, a moth sent by the boss, a life (very rare).
+const DROP_ODDS: f32 = 0.07;
+const MINION_DROP_ODDS: f32 = 0.3;
+const LIFE_ODDS: f32 = 0.004;
+pub const MAX_LIVES: u32 = 5;
 
 /// A fix falling, to catch.
 #[derive(Clone, Copy, Debug)]
@@ -298,7 +306,7 @@ impl Game {
     fn next_wave(&mut self) {
         self.wave += 1;
         if self.wave > 1 && self.wave % 3 == 1 {
-            self.lives = (self.lives + 1).min(5);
+            self.lives = (self.lives + 1).min(MAX_LIVES);
         }
         self.fx = (W - (COLS - 1) as f32 * CELL_W) / 2.0;
         self.fy = 86.0 + (self.wave - 1).min(5) as f32 * 8.0;
@@ -413,6 +421,8 @@ impl Game {
                 Power::Triple => self.triple = POWER_SECS,
                 Power::Rapid => self.rapid = POWER_SECS,
                 Power::Shield => self.shield = true,
+                Power::Life if self.lives < MAX_LIVES => self.lives += 1,
+                Power::Life => self.score += 200,
             }
             self.score += 50;
         }
@@ -564,13 +574,19 @@ impl Game {
                 continue;
             }
             if let Some(boss) = self.boss.as_mut().filter(|b| b.blink <= 0.0 && (b.x - s.x).abs() < BOSS_HALF.0 && (b.y - s.y).abs() < BOSS_HALF.1) {
+                // Each quarter of its life lost, a fix falls from it.
+                let quarter = |hp: u32| (boss.max_hp - hp) * 4 / boss.max_hp;
+                let before = quarter(boss.hp);
                 boss.hp = boss.hp.saturating_sub(1);
                 boss.flash = 0.08;
-                let (bx, by, dead) = (s.x, s.y, boss.hp == 0);
+                let (bx, by, dead, fix) = (s.x, s.y, boss.hp == 0, quarter(boss.hp) > before);
+                let at = (boss.x, boss.y + BOSS_HALF.1);
                 self.shots.swap_remove(k);
                 self.burst(bx, by, Some(Kind::Spider), 2);
                 if dead {
                     self.boss_down();
+                } else if fix {
+                    self.drop_fix(at.0, at.1);
                 }
                 continue;
             }
@@ -689,8 +705,7 @@ impl Game {
             self.burst(x, y, Some(Kind::Moth), 6);
         }
         self.bugs.clear();
-        let power = [Power::Triple, Power::Rapid, Power::Shield][self.below(3)];
-        self.drops.push(Drop { x: b.x, y: b.y, power });
+        self.drop_fix(b.x, b.y);
     }
 
     /// Bug `k` squashed: its points (twice as many diving), its sparks, maybe a fix.
@@ -701,10 +716,18 @@ impl Game {
         self.kills += 1;
         self.score += b.kind.points() * if b.dive.is_some() { 2 } else { 1 };
         self.burst(b.x, b.y, Some(b.kind), 10);
-        if self.random() < 0.07 {
-            let power = [Power::Triple, Power::Rapid, Power::Shield][self.below(3)];
-            self.drops.push(Drop { x: b.x, y: b.y, power });
+        let r = self.random();
+        if r < LIFE_ODDS {
+            self.drops.push(Drop { x: b.x, y: b.y, power: Power::Life });
+        } else if r < if b.minion { MINION_DROP_ODDS } else { DROP_ODDS } {
+            self.drop_fix(b.x, b.y);
         }
+    }
+
+    /// A fix at random (not a life) falling from a point.
+    fn drop_fix(&mut self, x: f32, y: f32) {
+        let power = [Power::Triple, Power::Rapid, Power::Shield][self.below(3)];
+        self.drops.push(Drop { x, y, power });
     }
 
     /// A firewall cell at a point knocked out, with the next one the shot goes into (`way`: -1 up, 1
@@ -811,6 +834,16 @@ mod tests {
     }
 
     #[test]
+    fn a_life_caught_up_to_five() {
+        let mut g = Game::new(3);
+        for _ in 0..3 {
+            g.drops.push(Drop { x: g.x, y: PLAYER_Y, power: Power::Life });
+            g.drops_step(0.0);
+        }
+        assert_eq!(g.lives, MAX_LIVES);
+    }
+
+    #[test]
     fn the_last_life_lost_ends_the_game_but_not_by_production() {
         let mut g = Game::new(3);
         g.lives = 1;
@@ -868,6 +901,8 @@ mod tests {
         }
         assert!(g.boss.is_none());
         assert!(g.score >= before + 500);
+        // A fix at each quarter of its life, and one when down.
+        assert!(g.drops.len() >= 4, "{} fixes", g.drops.len());
         g.step(DT, idle());
         assert_eq!(g.wave, 6);
     }
