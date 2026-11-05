@@ -1081,13 +1081,9 @@ enum Menu {
     Database,
 }
 
-/// A folder with a "play" in it: the projects.
+/// PHP's logo: its ellipse, "php" inside.
 pub(super) fn paint_projects_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.3, color);
-    let body = Rect::from_center_size(c + Vec2::new(0.0, 1.0), Vec2::new(17.0, 12.0));
-    painter.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Middle);
-    painter.line_segment([body.left_top() + Vec2::new(1.0, 0.0), body.left_top() + Vec2::new(4.0, -3.0)], stroke);
-    painter.line_segment([body.left_top() + Vec2::new(4.0, -3.0), body.left_top() + Vec2::new(8.0, -3.0)], stroke);
-    let play = body.center();
-    painter.add(egui::Shape::convex_polygon(vec![play + Vec2::new(-2.0, -3.0), play + Vec2::new(3.0, 0.0), play + Vec2::new(-2.0, 3.0)], color, Stroke::NONE));
+    let points: Vec<Pos2> = (0..40).map(|k| k as f32 / 40.0 * std::f32::consts::TAU).map(|a| c + Vec2::new(a.cos() * 10.5, a.sin() * 6.5)).collect();
+    painter.add(egui::Shape::closed_line(points, Stroke::new(1.3, color)));
+    painter.text(c + Vec2::new(0.0, -0.5), Align2::CENTER_CENTER, "php", FontId::proportional(9.5), color);
 }
