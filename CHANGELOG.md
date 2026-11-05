@@ -2,6 +2,23 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.43.0] - 2026-11-05
+
+### Nouveautés
+
+- **Larsen**, une bataille navale sur scène, dans les Jeux : chacun installe son matériel en secret (mur d'amplis, batterie, table de mixage, clavier, guitare ; un clic pose une pièce, R la tourne, ou tout au hasard), puis on envoie du larsen chacun son tour sur la scène de l'autre. Contre l'ordinateur en Facile, Moyen ou Difficile, ou en ligne à deux, avec invitations, tchat, revanche et tableau des victoires. Merci à Jonathan !
+- **Le thème Star Wars**, débloqué à Larsen en battant l'ordinateur en Difficile, ou quelqu'un en ligne : sabres laser sous le pane actif et sur l'onglet ouvert, duel au-dessus des paramètres, champ d'étoiles, Étoile de la Mort et droïde en bas de la colonne de gauche, et le saut en hyperespace quand on le choisit. Merci à Jonathan !
+- **Le Président**, un jeu de cartes de 3 à 6 joueurs : contre l'ordinateur (Max, Léa, Sam, Zoé, Tom) en Facile, Moyen ou Difficile, ou en ligne à une table, avec salle d'attente, invitations et tchat. Merci à Jonathan !
+- **Rechercher dans la vue fichiers** : le bouton 🔍 d'un panneau, ou ⌘ F, cherche dans son dossier et tous ses sous-dossiers, sur l'ordinateur comme sur un serveur. Par nom (un bout de nom, ou un motif comme `*.php`), ou dans le texte des fichiers avec « Dans le contenu » : la ligne trouvée s'affiche, et le fichier s'ouvre à cette ligne. Les fichiers cachés et `node_modules` sont ignorés, sauf si les fichiers cachés sont affichés. Sur un serveur, la recherche passe par ses propres commandes, rapides même sur de gros dossiers.
+- **Le clic droit dans les notes et l'éditeur de fichiers** : couper, copier, coller (une image aussi, dans une note) et tout sélectionner.
+- **⇧ Entrée va à la ligne dans Claude Code**, quand il tourne dans un pane, comme ⌥ Entrée.
+- **Le tchat s'ouvre sur la dernière conversation affichée**, même après avoir relancé Ronnie, au lieu d'une page vide.
+
+### Corrections
+
+- Le récap de la semaine suit toutes les consignes données à Claude (y compris sur la façon d'écrire), laisse de côté les parties de la note qu'elles nomment, et nomme un projet par le groupe de ses onglets dans la colonne de gauche. Une note de semaine supprimée, ou des consignes changées, la font réécrire en entier.
+- La barre d'un message du tchat se place au-dessus de sa bulle, sans la recouvrir.
+
 ## [0.42.0] - 2026-11-03
 
 ### Nouveautés
