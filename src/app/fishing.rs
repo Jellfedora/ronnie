@@ -348,7 +348,7 @@ impl App {
     fn fishing_pond(&mut self, ui: &mut Ui, body: Rect, now: f64) {
         let t = self.t();
         let theme = self.theme.clone();
-        let room = Vec2::new(body.width(), body.height() - 34.0);
+        let room = Vec2::new(body.width(), body.height() - 52.0);
         let scale = (room.x / W).min(room.y / H).max(0.2);
         let field = Rect::from_min_size(Pos2::new(body.center().x - W * scale / 2.0, body.min.y), Vec2::new(W, H) * scale);
 
@@ -504,6 +504,8 @@ impl App {
         let alarm = matches!(&self.fishing.phase, Phase::Bite { .. }) || matches!(&self.fishing.phase, Phase::Reeling { reel, .. } if reel.offer > 0.0);
         let color = if alarm { theme.accent } else { theme.text_muted };
         ui.painter().text(Pos2::new(field.center().x, field.max.y + 18.0), Align2::CENTER_CENTER, hint, FontId::proportional(13.0), color);
+        // What the bubbles are, under it.
+        ui.painter().text(Pos2::new(field.center().x, field.max.y + 38.0), Align2::CENTER_CENTER, t.fishing_shoal, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.8));
 
         // The baits won: one put on the hook (out of a cast), used one a cast.
         let idle = matches!(self.fishing.phase, Phase::Idle);
@@ -751,7 +753,6 @@ impl App {
                 painter.circle_stroke(at(spot.x + dx, spot.y + dy * 0.5), (1.5 + phase * 2.5) * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(alpha)));
             }
             painter.add(egui::Shape::ellipse_stroke(at(spot.x, spot.y + 4.0), Vec2::new(HOT_R * 0.7, HOT_R * 0.22) * scale, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.12 * strength))));
-            painter.text(at(spot.x, spot.y + 18.0), Align2::CENTER_TOP, t.fishing_shoal, FontId::proportional(10.5 * scale.max(0.75)), Color32::WHITE.gamma_multiply(0.45 * strength));
         }
         // A job fair: bunting over the far bank, and how long it lasts.
         if let Some(left) = crate::fishing::job_fair(unix as i64) {
