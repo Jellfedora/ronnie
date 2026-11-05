@@ -17,7 +17,7 @@ pub(super) const HUNTER_BADGE: &str = "chasseur";
 
 /// Whether the sheep is unlocked: the legendary card caught (all of it in development).
 pub(super) fn sheep_unlocked(s: &crate::config::Settings) -> bool {
-    let id = crate::fishing::FISH[crate::fishing::FISH.len() - 1].id;
+    let id = crate::fishing::SHEEP;
     !crate::config::OFFICIAL || s.fish_cards.get(id).is_some_and(|c| c.count > 0)
 }
 

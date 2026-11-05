@@ -55,6 +55,9 @@ impl Rarity {
     }
 }
 
+/// The five-legged sheep's id (its card unlocks the sheep).
+pub const SHEEP: &str = "mouton-5-pattes";
+
 /// Candidates hired in all for the « Chasseur de têtes » badge on floor (src/games/peche.js).
 pub const HUNTER: u32 = 100;
 
@@ -126,7 +129,7 @@ const fn fish(id: &'static str, min_cm: u32, max_cm: u32, rarity: Rarity, diffic
 use Behavior::*;
 use Rarity::*;
 
-pub const FISH: [Fish; 36] = [
+pub const FISH: [Fish; 37] = [
     fish("stagiaire", 10, 30, Common, 15.0, Smooth, When::Any),
     fish("alternant", 8, 20, Common, 22.0, Dart, When::Day),
     fish("developpeur", 15, 45, Common, 30.0, Mixed, When::Any),
@@ -163,6 +166,7 @@ pub const FISH: [Fish; 36] = [
     fish("yannick", 60, 150, VeryRare, 82.0, Mixed, When::Evening),
     fish("monique", 60, 140, VeryRare, 84.0, Smooth, When::Morning),
     fish("clement", 70, 160, VeryRare, 88.0, Dart, When::Any),
+    fish("flash", 50, 110, Legendary, 90.0, Mixed, When::Evening),
     fish("mouton-5-pattes", 60, 100, Legendary, 95.0, Mixed, When::Any),
 ];
 
@@ -444,9 +448,9 @@ mod tests {
         let fairs = (0..96).filter(|q| job_fair(q * 900 + 10).is_some()).count();
         assert!((15..50).contains(&fairs), "{fairs}");
         assert_eq!(job_fair(900 * 7 + 300), None);
-        // As floor counts them: 306 for the whole binder, shiny.
+        // As floor counts them: 356 for the whole binder, shiny.
         let all: std::collections::BTreeMap<String, crate::config::FishCard> = FISH.iter().map(|f| (f.id.to_owned(), crate::config::FishCard { count: 1, shiny: 1, ..Default::default() })).collect();
-        assert_eq!(points(&all), 306);
+        assert_eq!(points(&all), 356);
     }
 
     /// Following the fish with the bar catches it; doing nothing loses it.

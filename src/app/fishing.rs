@@ -639,7 +639,7 @@ impl App {
         if species_before < all && species >= all {
             said.push((t.office_unlocked.to_owned(), t.office_unlocked_body.to_owned()));
         }
-        if new && FISH[fish].rarity == Rarity::Legendary {
+        if new && FISH[fish].id == crate::fishing::SHEEP {
             said.push((t.sheep_unlocked.to_owned(), t.sheep_unlocked_body.to_owned()));
         }
         if hires_before < crate::fishing::HUNTER && catches >= crate::fishing::HUNTER {
@@ -1424,6 +1424,7 @@ enum Wear {
     Pearls,
     Mug,
     Phone,
+    Mop,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1446,7 +1447,7 @@ struct Look {
     wear: &'static [Wear],
 }
 
-const LOOKS: [Look; 36] = [
+const LOOKS: [Look; 37] = [
     Look { body: 0xb8c4cc, belly: 0xeef2f4, fins: 0xd8504a, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Badge] },
     Look { body: 0xd2dce6, belly: 0xf4f8fa, fins: 0xa8b8c8, aspect: 0.32, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap] },
     Look { body: 0xa6b84c, belly: 0xe8e2b0, fins: 0xe88a3a, aspect: 0.42, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Glasses, Wear::Headset] },
@@ -1482,6 +1483,7 @@ const LOOKS: [Look; 36] = [
     Look { body: 0x6a6ab0, belly: 0xd6d6f2, fins: 0x4a4a90, aspect: 0.26, pattern: Pattern::Patches, whiskers: false, wear: &[Wear::Beard, Wear::Glasses] },
     Look { body: 0xc87a9a, belly: 0xf2dce6, fins: 0x9a4a6a, aspect: 0.44, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Bun, Wear::Glasses, Wear::Pearls] },
     Look { body: 0xe8c070, belly: 0xfaeccc, fins: 0xc09040, aspect: 0.28, pattern: Pattern::Spots, whiskers: false, wear: &[Wear::Beard, Wear::Phone] },
+    Look { body: 0x5a7ab8, belly: 0xdfe6f0, fins: 0x3a5a90, aspect: 0.4, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap, Wear::Mop] },
     Look { body: 0xf2c94c, belly: 0xfff0b0, fins: 0xe8a020, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Wool] },
 ];
 
@@ -1579,6 +1581,16 @@ pub(super) fn paint_candidate(painter: &egui::Painter, c: Pos2, len: f32, fish: 
                 if shadow.is_none() {
                     let steam = ((now * 3.0).sin() * 1.2) as f32;
                     painter.add(egui::Shape::line(vec![m.center_top() + Vec2::new(0.0, -1.0) * u, m.center_top() + Vec2::new(1.5 + steam, -4.0) * u, m.center_top() + Vec2::new(-0.5 - steam, -7.0) * u], Stroke::new(0.8 * u, Color32::WHITE.gamma_multiply(0.6))));
+                }
+            }
+            Wear::Mop => {
+                // A mop, held up in front, its strands hanging.
+                let (top, foot) = (at(0.75, -1.5), at(1.05, 0.9));
+                painter.line_segment([top, foot], Stroke::new(1.8 * u, ink(0x9a6a3a)));
+                for k in 0..7 {
+                    let dx = (k as f32 - 3.0) * 1.6 * u;
+                    let sway = ((now * 2.0 + k as f64).sin() * 0.8) as f32 * u;
+                    painter.line_segment([foot + Vec2::new(dx * 0.4, 0.0), foot + Vec2::new(dx + sway, 8.0 * u)], Stroke::new(1.4 * u, ink(0xd8d0b8)));
                 }
             }
             Wear::Phone => {
