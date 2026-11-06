@@ -37,13 +37,14 @@ impl App {
                 return;
             }
             // These fold the sidebar themselves, during a run, a song, a show.
-            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing) {
+            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::Coffee | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing) {
                 self.games_drawn.push(self.home_which);
                 return match self.home_which {
                     super::four::HomeGame::Runner => self.runner_page(ui, rect),
                     super::four::HomeGame::Riff => self.riff_page(ui, rect),
                     super::four::HomeGame::BugHunt => self.bughunt_page(ui, rect),
                     super::four::HomeGame::Fishing => self.fishing_page(ui, rect),
+                    super::four::HomeGame::Coffee => self.coffee_page(ui, rect),
                     _ => self.backstage_page(ui, rect),
                 };
             }
@@ -355,6 +356,9 @@ impl App {
                 if self.theme.wizard {
                     super::wizard::active_slot(ui.painter(), slot);
                 }
+                if self.theme.thrones {
+                    super::thrones::active_mark(ui.painter(), slot);
+                }
                 ui.painter().rect_filled(Rect::from_min_size(Pos2::new(strip.min.x + 2.0, slot.min.y + 10.0), Vec2::new(3.0, slot.height() - 20.0)), 1.5, self.theme.accent);
             } else if resp.hovered() {
                 ui.painter().rect_filled(slot, 9.0, self.theme.tab_hover.gamma_multiply(0.75));
@@ -488,6 +492,7 @@ impl App {
                 HomeGame::Runner => super::runner::paint_runner_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Riff => super::riff::paint_riff_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Backstage => super::backstage::paint_backstage_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Coffee => super::coffee::paint_coffee_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Larsen => super::larsen::paint_larsen_icon(&painter, icon, &theme, 1.0),
                 HomeGame::President => super::president::paint_president_icon(&painter, icon, &theme, 1.0),
                 HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(&painter, icon, &theme, 1.0),
@@ -512,7 +517,7 @@ impl App {
     /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
     /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
     /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 11] {
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 12] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
@@ -523,10 +528,12 @@ impl App {
         let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
         let riff_best = self.config.settings.riff_bests.iter().max().filter(|&&b| b > 0).map(u32::to_string);
         let backstage_best = (self.config.settings.backstage_best > 0).then(|| self.config.settings.backstage_best.to_string());
+        let coffee_total: u32 = self.config.settings.coffee_bests.iter().sum();
+        let coffee_best = (coffee_total > 0).then(|| coffee_total.to_string());
         let bughunt_best = (self.config.settings.bughunt_best > 0).then(|| self.config.settings.bughunt_best.to_string());
         let cards = self.config.settings.fish_cards.len();
         let fishing = (cards > 0).then(|| t.fishing_species.replace("{n}", &cards.to_string()).replace("{max}", &crate::fishing::FISH.len().to_string()));
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing)];
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
@@ -553,6 +560,9 @@ impl App {
         if !drawn.contains(&HomeGame::Backstage) {
             self.backstage.leave();
         }
+        if !drawn.contains(&HomeGame::Coffee) {
+            self.coffee.leave();
+        }
         if !drawn.contains(&HomeGame::BugHunt) {
             self.bughunt.leave();
         }
@@ -578,6 +588,7 @@ impl App {
             HomeGame::Runner => self.open_runner(),
             HomeGame::Riff => self.open_riff(),
             HomeGame::Backstage => self.open_backstage(),
+            HomeGame::Coffee => self.open_coffee(),
             HomeGame::Larsen => self.open_larsen(),
             HomeGame::President => self.open_president(),
             HomeGame::BugHunt => self.open_bughunt(),
@@ -1026,6 +1037,8 @@ impl App {
         let r_at = Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0);
         if self.theme.wizard {
             super::wizard::crest(ui.painter(), Rect::from_center_size(r_at, Vec2::new(28.0, 34.0)));
+        } else if self.theme.thrones {
+            super::thrones::throne(ui.painter(), r_at + Vec2::new(0.0, 4.0), 14.0, 1.0);
         } else {
             super::paint_metal(ui.painter(), r_at, Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
         }
@@ -1711,6 +1724,9 @@ impl App {
         // On the left the strip of categories, a shade darker; the panel of the one picked beside it.
         let strip = Rect::from_min_max(whole.min, Pos2::new(whole.min.x + STRIP_W, whole.max.y));
         let bar = Rect::from_min_max(Pos2::new(strip.max.x, whole.min.y), whole.max);
+        if self.theme.thrones {
+            super::thrones::panel_bg(ui.painter(), bar);
+        }
         if self.theme.wizard {
             super::wizard::panel_bg(ui.painter(), bar);
             super::wizard::strip_bg(ui.painter(), strip);
@@ -1802,6 +1818,19 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::hyperspace::droid_rect(field), ui.id().with("droid"), Sense::hover()).on_hover_text("Bip-bou-bip ! Bou-diiip !");
         }
+        if self.theme.thrones {
+            // Game of Thrones: the Wall, its White Walkers and the snow, just above the cards; now and then
+            // the dragon dives down the whole sidebar, above what is in it (and never out of it).
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let now = ui.input(|i| i.time);
+            let again = super::thrones::wall(ui.painter(), field, now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+            let t = ((now - self.dragon_from) % super::thrones::FLIGHT_EVERY) as f32;
+            if t < super::thrones::FLIGHT_SECS {
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dragon"))).with_clip_rect(bar);
+                super::thrones::flight(&painter, bar, t, now);
+            }
+        }
         if self.theme.wizard {
             // Gryffindor: the castle at night, the candles, the Snitch, the owl, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
@@ -1840,6 +1869,9 @@ impl App {
         } else if self.theme.wizard {
             // Gryffindor: a gold line above the settings.
             super::wizard::gold_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else if self.theme.thrones {
+            // Game of Thrones: a line of steel above the settings.
+            super::thrones::iron_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
         } else if self.theme.hyperspace {
             // Star Wars: a duel above the settings.
             let now = ui.input(|i| i.time);
@@ -2232,6 +2264,10 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
     let mut job = egui::text::LayoutJob::default();
     job.append(&title.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(11.0), color: theme.text_muted, extra_letter_spacing: 1.4, ..Default::default() });
     let galley = painter.layout_job(job);
+    if theme.thrones {
+        // Game of Thrones: a rivet and a line of steel after the title.
+        super::thrones::title_marks(painter, rect, rect.min.x + 8.0 + galley.size().x);
+    }
     if theme.wizard {
         // Gryffindor: a gold diamond before, a gold line fading out after.
         let end = rect.min.x + 10.0 + galley.size().x;

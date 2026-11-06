@@ -623,6 +623,12 @@ impl App {
                 super::wizard::gold_line(ui.painter(), band);
                 ui.add_space(10.0);
             }
+            // Game of Thrones: a sword on top, the alert.
+            if self.theme.thrones {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                super::thrones::sword_along(ui.painter(), band, 1.0);
+                ui.add_space(10.0);
+            }
             // Hyperspace: a red beam on top, the alert.
             if self.theme.hyperspace {
                 let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -633,6 +639,8 @@ impl App {
                 super::jurassic::MAGIC_WORD
             } else if self.theme.hyperspace {
                 super::hyperspace::ALERT
+            } else if self.theme.thrones {
+                super::thrones::ALERT
             } else if self.theme.wizard {
                 super::wizard::ALERT
             } else {
@@ -643,6 +651,10 @@ impl App {
                     // Star Wars: the Dark Lord's helmet.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
                     super::hyperspace::helmet(ui.painter(), r);
+                } else if self.theme.thrones {
+                    // Game of Thrones: the Iron Throne.
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                    super::thrones::throne(ui.painter(), r.center() + Vec2::new(0.0, 4.0), 15.0, 1.0);
                 } else if self.theme.wizard {
                     // Gryffindor: a lightning bolt.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());

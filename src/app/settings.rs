@@ -896,8 +896,8 @@ impl App {
         let touring = self.tour.is_some();
         let screen = ctx.content_rect();
         let size = Vec2::new(SETTINGS_WIDTH.min(screen.width() - 60.0).max(640.0), SETTINGS_HEIGHT.min(screen.height() - 80.0).max(380.0));
-        let edge = if theme.wizard { Stroke::new(1.2, super::wizard::GOLD.gamma_multiply(0.7)) } else { Stroke::new(1.0, theme.tab_hover) };
-        let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(14.0).stroke(edge);
+        let edge = if theme.wizard { Stroke::new(1.2, super::wizard::GOLD.gamma_multiply(0.7)) } else if theme.thrones { Stroke::new(1.3, super::thrones::GOLD.gamma_multiply(0.8)) } else { Stroke::new(1.0, theme.tab_hover) };
+        let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(if theme.thrones { 3.0 } else { 14.0 }).stroke(edge);
         let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(190)).show(ctx, |ui| {
             // Same size on every page: pages scroll inside, the window never jumps around.
             let (whole, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -974,6 +974,10 @@ impl App {
                 // Title and subtitle, with the close button at the right.
                 let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
                 let title_galley = ui.painter().text(head.left_top(), Align2::LEFT_TOP, title, FontId::proportional(22.0), theme.text);
+                if theme.thrones {
+                    // Game of Thrones: a rivet and a line of steel after the page's title.
+                    super::thrones::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x, title_galley.min.y), Pos2::new(head.max.x - 36.0, title_galley.max.y)), title_galley.max.x);
+                }
                 if theme.wizard {
                     // Gryffindor: an ornament after the page's title.
                     super::wizard::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x + 6.0, title_galley.min.y), Pos2::new(head.max.x - 10.0, title_galley.max.y)), title_galley.max.x + 10.0);
@@ -1651,9 +1655,11 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked) {
+                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests)) {
                             let how = if preset.id == crate::theme::HYPERSPACE_THEME {
                                 t.theme_locked_larsen.to_owned()
+                            } else if preset.id == crate::theme::THRONES_THEME {
+                                t.theme_locked_coffee.replace("{n}", &crate::coffee::THRONES_UNLOCK.to_string())
                             } else if preset.id == crate::theme::WIZARD_THEME {
                                 t.unlock_wizard_how.replace("{n}", &crate::theme::WIZARD_DAYS.to_string())
                             } else if preset.id == crate::theme::OFFICE_THEME {
@@ -2246,6 +2252,9 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
     if selected && theme.wizard {
         super::wizard::active_nav(ui.painter(), rect);
     }
+    if selected && theme.thrones {
+        super::thrones::active_mark(ui.painter(), rect);
+    }
     if selected {
         ui.painter().rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)), 2.0, theme.accent);
     }
@@ -2279,6 +2288,14 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
 
 /// A small heading over a group of settings.
 fn section_title(ui: &mut Ui, theme: &Theme, title: &str) {
+    if theme.thrones {
+        // Game of Thrones: a rivet and a line of steel after it.
+        let resp = ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
+        let r = resp.rect;
+        super::thrones::title_marks(ui.painter(), Rect::from_min_max(r.min, Pos2::new(ui.max_rect().max.x, r.max.y)), r.max.x);
+        ui.add_space(8.0);
+        return;
+    }
     if theme.wizard {
         // Gryffindor: a gold diamond before, a gold line fading out after.
         let resp = ui.horizontal(|ui| {
@@ -2299,8 +2316,8 @@ fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut U
     if let Some(title) = title {
         section_title(ui, theme, title);
     }
-    let edge = if theme.wizard { Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.3)) } else { Stroke::new(1.0, theme.tab_hover) };
-    let shown = Frame::NONE.fill(theme.bg).stroke(edge).corner_radius(10.0).inner_margin(egui::Margin::symmetric(18, 6)).show(ui, |ui| {
+    let edge = if theme.wizard { Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.3)) } else if theme.thrones { Stroke::new(1.0, super::thrones::GOLD.gamma_multiply(0.35)) } else { Stroke::new(1.0, theme.tab_hover) };
+    let shown = Frame::NONE.fill(theme.bg).stroke(edge).corner_radius(if theme.thrones { 3.0 } else { 10.0 }).inner_margin(egui::Margin::symmetric(18, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui);
     });
@@ -2309,6 +2326,13 @@ fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut U
         let r = shown.response.rect;
         super::wizard::diamond(ui.painter(), Pos2::new(r.min.x + 10.0, r.min.y), 2.6);
         super::wizard::diamond(ui.painter(), Pos2::new(r.max.x - 10.0, r.min.y), 2.6);
+    }
+    if theme.thrones {
+        // Game of Thrones: a rivet in each corner of the card.
+        let r = shown.response.rect.shrink(6.0);
+        for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
+            super::thrones::rivet(ui.painter(), c, 1.8);
+        }
     }
     ui.add_space(26.0);
 }

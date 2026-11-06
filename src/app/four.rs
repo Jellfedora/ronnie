@@ -18,6 +18,7 @@ pub(super) enum HomeGame {
     Runner,
     Riff,
     Backstage,
+    Coffee,
     Larsen,
     President,
     BugHunt,

@@ -3,6 +3,7 @@
 mod app;
 mod askpass;
 mod backstage;
+mod coffee;
 mod blob;
 mod bughunt;
 mod fishing;

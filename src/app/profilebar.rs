@@ -55,6 +55,8 @@ impl App {
         } else if theme.wizard {
             super::wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
             super::wizard::diamonds_along(&painter, rect.x_range(), rect.max.y - 1.5, 160.0);
+        } else if theme.thrones {
+            super::thrones::sword_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), 1.0);
         } else if theme.hyperspace {
             super::hyperspace::beam(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max), theme.accent);
         } else {
@@ -185,7 +187,7 @@ impl App {
                 // The capsule; the one a profile would be dropped into, outlined.
                 let target = dragging_profile && drop.as_ref().is_some_and(|(_, a)| matches!(a, TabAction::DropItem(_, g, _) if *g == group));
                 clip.rect_filled(seg.rect, 11.0, theme.bg.gamma_multiply(if dragged_group { 0.25 } else { 0.55 }));
-                clip.rect_stroke(seg.rect, 11.0, Stroke::new(1.0, if target { theme.accent.gamma_multiply(0.8) } else if theme.wizard { super::wizard::GOLD.gamma_multiply(0.3) } else { theme.tab_hover.gamma_multiply(0.8) }), egui::StrokeKind::Inside);
+                clip.rect_stroke(seg.rect, 11.0, Stroke::new(1.0, if target { theme.accent.gamma_multiply(0.8) } else if theme.wizard { super::wizard::GOLD.gamma_multiply(0.3) } else if theme.thrones { super::thrones::GOLD.gamma_multiply(0.35) } else { theme.tab_hover.gamma_multiply(0.8) }), egui::StrokeKind::Inside);
                 if theme.wizard {
                     super::wizard::diamond(&clip, Pos2::new(seg.rect.min.x, seg.rect.center().y), 2.4);
                 }
@@ -536,6 +538,9 @@ impl App {
         self.paint_chip(ui, painter, r, if renamed { "" } else { &name }, color, index, active, hovered);
         if active && theme.wizard {
             super::wizard::active_chip(painter, r);
+        }
+        if active && theme.thrones {
+            super::thrones::active_mark(painter, r);
         }
         // Open: ✕ on hover (or shown); a long command ended in it meanwhile: a green or red dot there.
         if let Some(i) = index {

@@ -28,6 +28,7 @@ impl App {
             HomeGame::Runner => usage.runner,
             HomeGame::Riff => usage.riff,
             HomeGame::Backstage => usage.backstage,
+            HomeGame::Coffee => usage.coffee,
             HomeGame::Larsen => usage.larsen,
             HomeGame::President => usage.president,
             HomeGame::BugHunt => usage.bughunt,
@@ -57,6 +58,7 @@ impl App {
             HomeGame::Runner => &mut usage.runner,
             HomeGame::Riff => &mut usage.riff,
             HomeGame::Backstage => &mut usage.backstage,
+            HomeGame::Coffee => &mut usage.coffee,
             HomeGame::Larsen => &mut usage.larsen,
             HomeGame::President => &mut usage.president,
             HomeGame::BugHunt => &mut usage.bughunt,
@@ -123,6 +125,7 @@ impl App {
             HomeGame::Runner => super::runner::paint_runner_icon(painter, icon, &theme, 2.6),
             HomeGame::Riff => super::riff::paint_riff_icon(painter, icon, &theme, 2.6),
             HomeGame::Backstage => super::backstage::paint_backstage_icon(painter, icon, &theme, 2.6),
+            HomeGame::Coffee => super::coffee::paint_coffee_icon(painter, icon, &theme, 2.6),
             HomeGame::Larsen => super::larsen::paint_larsen_icon(painter, icon, &theme, 2.6),
             HomeGame::President => super::president::paint_president_icon(painter, icon, &theme, 2.6),
             HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(painter, icon, &theme, 2.6),
@@ -137,6 +140,7 @@ impl App {
             HomeGame::Runner => t.runner_name,
             HomeGame::Riff => t.riff_name,
             HomeGame::Backstage => t.backstage_name,
+            HomeGame::Coffee => t.coffee_name,
             HomeGame::Larsen => t.larsen_name,
             HomeGame::President => t.president_name,
             HomeGame::BugHunt => t.bughunt_name,
@@ -211,6 +215,10 @@ impl App {
                 (&mut self.riff.floors[level], bests(best, t.riff_best, "{s}", best.to_string()), |s| s.to_string())
             }
             HomeGame::Backstage => (&mut self.backstage.floor, bests(settings.backstage_best, t.backstage_best, "{s}", settings.backstage_best.to_string()), |s| s.to_string()),
+            HomeGame::Coffee => {
+                let total: u32 = settings.coffee_bests.iter().sum();
+                (&mut self.coffee.floor, bests(total, t.coffee_best, "{s}", total.to_string()), |s| s.to_string())
+            }
         };
         floor.poll();
         floor.sync(&ctx, now, Some(60.0), account.as_ref());

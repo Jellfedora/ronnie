@@ -460,10 +460,14 @@ impl Config {
 }
 
 /// The settings that record what the games unlocked: sealed, so that editing them by hand undoes them.
-pub const REWARD_KEYS: [&str; 17] = [
+pub const REWARD_KEYS: [&str; 18] = [
     "typing_scores", "blob_best", "mines_best", "runner_best", "riff_bests", "backstage_best", "bughunt_best", "bughunt_best_wave", "fish_cards", "fish_baits", "fish_dry",
     "jurassic_unlocked", "hyperspace_unlocked", "four_online_played", "wizard_unlocked", "open_streak", "open_last",
+    "coffee_bests",
 ];
+/// The rewards the first seals covered. Those added since count only once written: without that, a
+/// config sealed before them would no longer hold, and its rewards would all be reset.
+const FIRST_SEALED: usize = 17;
 
 /// The seal's key, kept apart from its mask (so it isn't one plain string in the binary).
 const SEAL_KEY: [u8; 32] = [
@@ -477,7 +481,8 @@ const SEAL_MASK: [u8; 32] = [
 fn rewards_seal(value: &serde_json::Value) -> String {
     use hmac::Mac;
     let key: Vec<u8> = SEAL_KEY.iter().zip(SEAL_MASK).map(|(k, m)| k ^ m).collect();
-    let fields: Vec<serde_json::Value> = REWARD_KEYS.iter().map(|k| value.get(*k).cloned().unwrap_or(serde_json::Value::Null)).collect();
+    let later = REWARD_KEYS[FIRST_SEALED..].iter().filter_map(|k| value.get(*k).cloned());
+    let fields: Vec<serde_json::Value> = REWARD_KEYS[..FIRST_SEALED].iter().map(|k| value.get(*k).cloned().unwrap_or(serde_json::Value::Null)).chain(later).collect();
     let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(&key).expect("any key length");
     mac.update(b"ronnie-rewards-v1");
     mac.update(serde_json::to_string(&fields).unwrap_or_default().as_bytes());
@@ -771,6 +776,9 @@ pub struct Settings {
     /// Backstage: the best score.
     #[serde(default)]
     pub backstage_best: u32,
+    /// Pause Café: the best score of each level, 0 if it was never finished.
+    #[serde(default)]
+    pub coffee_bests: Vec<u32>,
     /// Bug Hunt: the best score.
     #[serde(default)]
     pub bughunt_best: u32,
@@ -944,6 +952,8 @@ pub struct GameUsage {
     pub president: bool,
     /// Bug Hunt.
     pub bughunt: bool,
+    /// Pause Café.
+    pub coffee: bool,
     /// The candidates caught at the fishing (`crate::playtime::FISH_CATCHES` at most).
     pub fish: u32,
     /// Its HMAC (`crate::playtime`): an edit by hand shows.
@@ -1456,7 +1466,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_dry: 0, theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_dry: 0, theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
     }
 }
 
@@ -1826,6 +1836,22 @@ mod tests {
 
     /// The rewards hold while their seal does: edited by hand, or their seal taken away, they are
     /// reset; written before seals, they are kept; the editor never shows them and keeps them.
+    #[test]
+    fn a_reward_added_later_leaves_older_seals_valid() {
+        let mut config = Config::default();
+        config.settings.jurassic_unlocked = true;
+        let mut value: serde_json::Value = serde_json::from_str(&config.to_json()).unwrap();
+        // As a version before Pause Café wrote it: no such key, its seal over the first rewards alone.
+        value.as_object_mut().unwrap().remove("coffee_bests");
+        seal_rewards(&mut value);
+        let old = serde_json::to_string(&value).unwrap();
+        assert!(Config::from_json(&old).unwrap().settings.jurassic_unlocked);
+        // Added by hand to that config, it no longer holds.
+        value.as_object_mut().unwrap().insert("coffee_bests".to_owned(), serde_json::json!([900, 900, 900]));
+        let edited = Config::from_json(&serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(!edited.settings.jurassic_unlocked && edited.settings.coffee_bests.is_empty());
+    }
+
     #[test]
     fn rewards_are_sealed() {
         let mut config = Config::default();
