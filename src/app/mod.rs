@@ -45,6 +45,7 @@ mod history;
 mod issues;
 mod jurassic;
 mod hyperspace;
+mod thrones;
 mod wizard;
 mod office;
 mod library;
@@ -73,6 +74,7 @@ mod projects;
 mod modules;
 mod arcade;
 mod backstage;
+mod coffee;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
@@ -428,6 +430,8 @@ pub struct App {
     riff: riff::Riff,
     /// Backstage's page.
     backstage: backstage::Backstage,
+    /// Pause Café's page.
+    coffee: coffee::Coffee,
     /// Ronnie.io's page, and its connection to floor.
     blob: blob::Blob,
     /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
@@ -613,6 +617,10 @@ pub struct App {
     splash: Option<f64>,
     /// Star Wars: app time when the jump to hyperspace began (the theme picked or unlocked).
     jump: Option<f64>,
+    /// Game of Thrones: app time when the opening began (the theme picked or won).
+    winter: Option<f64>,
+    /// Game of Thrones: app time the dragon's flights are counted from (the opening's end: it comes at once).
+    dragon_from: f64,
     /// The tour of the features: at the first launch, or asked again from the settings.
     tour: Option<tour::Tour>,
     /// Whether to turn on the shared memory of projects (see `crate::worklog`): asked once, after the tour.
@@ -1303,6 +1311,7 @@ impl App {
             runner: runner::Runner::default(),
             riff: riff::Riff::default(),
             backstage: backstage::Backstage::default(),
+            coffee: coffee::Coffee::default(),
             blob: blob::Blob::default(),
             games_seen: false,
             games_drawn: Vec::new(),
@@ -1426,6 +1435,8 @@ impl App {
             close_confirmed: false,
             splash: Some(f64::NAN),
             jump: None,
+            winter: None,
+            dragon_from: 0.0,
             tour: None,
             worklog_ask: false,
             ctx: cc.egui_ctx.clone(),
@@ -1554,6 +1565,10 @@ impl App {
                 app.splash = None;
                 app.open_riff();
                 app.riff_demo(&riff);
+            }
+            if std::env::var("RONNIE_OPEN_COFFEE").is_ok() {
+                app.splash = None;
+                app.open_coffee();
             }
             if std::env::var("RONNIE_OPEN_BACKSTAGE").is_ok() {
                 app.splash = None;
@@ -2151,6 +2166,9 @@ impl App {
             }
             if config.settings.theme == crate::theme::WIZARD_THEME {
                 self.sorting = Some(f64::NAN);
+            }
+            if config.settings.theme == crate::theme::THRONES_THEME {
+                self.winter = Some(f64::NAN);
             }
         }
         self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
@@ -3276,6 +3294,9 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     if theme.wizard {
         return wizard::logo(painter, rect);
     }
+    if theme.thrones {
+        return thrones::logo(painter, rect);
+    }
     paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
@@ -3772,6 +3793,13 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     if focused && theme.wizard {
         // Gryffindor: a gold line under the bar.
         wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+    }
+    if theme.thrones {
+        // Game of Thrones: a sword drawn under the bar when the pane takes the focus.
+        let lit = ui.ctx().animate_bool_with_time(egui::Id::new(("sword", id)), focused, 0.35);
+        if lit > 0.0 {
+            thrones::sword_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), lit);
+        }
     }
     if theme.hyperspace {
         // Star Wars: a lightsaber under the bar, lit when the pane takes the focus.
@@ -5079,6 +5107,8 @@ impl App {
                         jurassic::fence(ui.painter(), r, &self.theme);
                     } else if split && self.theme.hyperspace {
                         hyperspace::blade(ui.painter(), r, &self.theme);
+                    } else if split && self.theme.thrones {
+                        thrones::frame(ui.painter(), r);
                     } else if split && self.theme.wizard {
                         wizard::frame(ui.painter(), r);
                     } else if split {
@@ -5454,6 +5484,28 @@ impl App {
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("jump")));
             if skip || !hyperspace::jump(&painter, ui.ctx().content_rect(), (now - start) as f32, self.t().hyperspace_intro) {
                 self.jump = None;
+            }
+            ui.ctx().request_repaint();
+        }
+
+        // Game of Thrones: iron brackets on the corners of whichever dialog is open.
+        if self.theme.thrones
+            && let Some(layer) = ui.ctx().memory(|m| m.top_modal_layer())
+            && let Some(rect) = ui.ctx().memory(|m| m.area_rect(layer.id))
+        {
+            thrones::corners(&ui.ctx().layer_painter(layer), rect.shrink(5.0));
+        }
+
+        // Game of Thrones: the Iron Throne in the dark; a click or a key skips it.
+        if let Some(start) = self.winter.filter(|_| main_window) {
+            let now = ui.input(|i| i.time);
+            let start = if start.is_nan() { now } else { start };
+            self.winter = Some(start);
+            let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("winter")));
+            if skip || !thrones::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, self.t().thrones_intro) {
+                self.winter = None;
+                self.dragon_from = now;
             }
             ui.ctx().request_repaint();
         }

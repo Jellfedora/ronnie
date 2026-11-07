@@ -29,6 +29,8 @@ pub struct Theme {
     pub office: bool,
     /// Gryffindor: a wand for the pointer, the house's scarf, the castle at night (see `app::wizard`).
     pub wizard: bool,
+    /// Game of Thrones: the Wall under the snow, a dragon, swords (see `app::thrones`).
+    pub thrones: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -90,8 +92,10 @@ pub fn office_unlocked(riff_bests: &[u32]) -> bool {
 /// Gryffindor, won with Ronnie open `WIZARD_DAYS` days in a row.
 pub const WIZARD_DAYS: u32 = 7;
 pub const WIZARD_THEME: &str = "gryffondor";
+/// Game of Thrones, won by finishing levels of Pause Café.
+pub const THRONES_THEME: &str = "game-of-thrones";
 /// The themes with their own touches, most won in the games, shown apart in the settings.
-pub const SPECIAL_THEMES: [&str; 5] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, WIZARD_THEME];
+pub const SPECIAL_THEMES: [&str; 6] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME];
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -314,6 +318,23 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // Game of Thrones: night over the North, iron for the bars, the ice of the Wall for the accent, the
+    // gold of the crown for the cursor.
+    Preset {
+        id: THRONES_THEME,
+        name: "Game of Thrones",
+        bg: 0x0c1016,
+        fg: 0xdbe1e8,
+        cursor: 0xc9a24b,
+        chrome: 0x151a22,
+        surface: 0x2a313c,
+        accent: 0x8fc7e8,
+        ansi: [
+            0x1c222c, 0xd2452f, 0x6fae72, 0xc9a24b, 0x5f8fc0, 0xa06fb0, 0x7fc4cc, 0xc8d0da, //
+            0x47505e, 0xf0694f, 0x94cc96, 0xe6c273, 0x8fc7e8, 0xc594d4, 0xa6e0e6, 0xf6f8fb,
+        ],
+        dark: true,
+    },
     // Open space: a light office, beige walls and grey carpet, the corporate blue, post-it yellow.
     Preset {
         id: OFFICE_THEME,
@@ -398,14 +419,15 @@ impl Preset {
             hyperspace: self.id == HYPERSPACE_THEME,
             office: self.id == OFFICE_THEME,
             wizard: self.id == WIZARD_THEME,
+            thrones: self.id == THRONES_THEME,
         }
     }
 
     /// Still locked, with this best score at the typing game, and whether a round of Ronnie.io unlocked
     /// the park, whether Larsen unlocked hyperspace, and whether the fishing's binder is full (never in
     /// a dev build, to try them).
-    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
+    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
     }
 
     /// The preset with this id, or the default one.
@@ -449,6 +471,18 @@ impl Theme {
         v.widgets.hovered.weak_bg_fill = mix(self.tab_hover, self.fg, 0.08);
         v.widgets.hovered.bg_fill = mix(self.tab_hover, self.fg, 0.08);
         v.widgets.active.weak_bg_fill = mix(self.tab_hover, self.fg, 0.14);
+        if self.thrones {
+            // Game of Thrones: every window and menu in iron edged with gold, its corners squared.
+            let gold = Color32::from_rgb(201, 162, 75);
+            v.window_stroke = egui::Stroke::new(1.3, gold.gamma_multiply(0.8));
+            v.window_corner_radius = 3.into();
+            v.menu_corner_radius = 3.into();
+            for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+                w.corner_radius = 2.into();
+            }
+            v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, gold.gamma_multiply(0.7));
+            v.widgets.active.bg_stroke = egui::Stroke::new(1.0, gold);
+        }
         v
     }
 }
