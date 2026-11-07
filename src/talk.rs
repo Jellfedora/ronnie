@@ -411,6 +411,8 @@ pub struct News {
     pub departed: Vec<(String, Message)>,
     /// A wizz in a conversation, sent by someone or by the player (room id, the message saying so): the window shakes.
     pub wizzed: Vec<(String, Message)>,
+    /// The dancing pig sent to a conversation, by someone or by the player (room id, the message saying so).
+    pub pigged: Vec<(String, Message)>,
     /// floor refused something (its word).
     pub refused: Option<String>,
     /// floor doesn't know the account: the pseudo is to pick again.
@@ -686,6 +688,9 @@ impl Talk {
                 if m.event.as_deref() == Some("wizz") {
                     news.wizzed.push((room.clone(), m.clone()));
                 }
+                if m.event.as_deref() == Some("pig") {
+                    news.pigged.push((room.clone(), m.clone()));
+                }
                 if m.event.as_deref() == Some("left") && !mine {
                     news.departed.push((room.clone(), m.clone()));
                 }
@@ -897,6 +902,12 @@ impl Talk {
     /// A wizz to a conversation: the others' window shakes (floor sends it back as a `wizz` event).
     pub fn wizz(&mut self, room: &str) {
         self.send(json!({ "t": "wizz", "room": room }));
+    }
+
+    /// The dancing pig to a conversation: it dances on everyone's screen (floor sends it back as a
+    /// `pig` event).
+    pub fn pig(&mut self, room: &str) {
+        self.send(json!({ "t": "pig", "room": room }));
     }
 
     /// The player read a conversation up to this message: floor told (once each step).

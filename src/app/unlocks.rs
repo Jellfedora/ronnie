@@ -43,6 +43,10 @@ impl App {
             ],
             HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false, reward: None }],
             HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false, reward: None }],
+            HomeGame::Backstage => {
+                let need = super::backstage::PIG_UNLOCK;
+                vec![Unlock { what: t.unlock_pig.into(), how: t.unlock_pig_how.replace("{n}", &need.to_string()), done: s.backstage_best >= need, progress: Some((s.backstage_best, need)), info: false, reward: None }]
+            }
             HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::HYPERSPACE_THEME)) }],
             HomeGame::Riff => {
                 let best = s.riff_bests.iter().copied().max().unwrap_or(0);

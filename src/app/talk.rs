@@ -174,6 +174,8 @@ pub(super) struct TalkUi {
     /// The window shaking (a wizz came): since when, and where it was (None: maximized or full
     /// screen, its content shakes instead).
     shake: Option<(Instant, Option<Pos2>)>,
+    /// The pig dancing (pig.rs): since when, who sent it.
+    pub(super) pig: Option<(Instant, String)>,
     /// Someone's face shown large (their id).
     avatar_open: Option<String>,
     /// The conversation whose files are shown, all of them.
@@ -223,6 +225,7 @@ enum HeadIcon {
     Search,
     Media,
     Wizz,
+    Pig,
     Pencil,
     Add,
     Leave,
@@ -249,6 +252,7 @@ fn paint_head_icon(painter: &egui::Painter, c: Pos2, icon: HeadIcon, color: Colo
             let bolt = vec![at(1.5, -8.0), at(-5.0, 1.0), at(-0.5, 1.0), at(-2.0, 8.0), at(5.0, -1.5), at(0.5, -1.5)];
             painter.add(egui::Shape::closed_line(bolt, stroke));
         }
+        HeadIcon::Pig => super::pig::paint_pig_icon(painter, c, color),
         HeadIcon::Pencil => paint_act(painter, c, Act::Edit, color),
         HeadIcon::Erase => paint_act(painter, c, Act::Delete, color),
         HeadIcon::Add => {
@@ -415,6 +419,7 @@ fn event_text(t: &Strings, m: &Message) -> String {
         Some("renamed") if m.text.is_empty() => t.talk_event_unnamed,
         Some("renamed") => t.talk_event_renamed,
         Some("wizz") => t.talk_event_wizz,
+        Some("pig") => t.talk_event_pig,
         _ => "{a}",
     };
     text.replace("{a}", who).replace("{b}", &m.text)
@@ -490,6 +495,25 @@ impl App {
             self.talk_ui.shake = Some((Instant::now() + wait, origin));
         }
         self.talk_shake(ctx);
+        // The dancing pig: as a wizz, Ronnie brought to the front, the conversation shown; it dances
+        // on everyone's screen, the sender's too.
+        for (room, m) in &news.pigged {
+            let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
+            let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
+            let mut wait = Duration::ZERO;
+            if !mine {
+                self.talk_notify(ctx, focused, room.clone(), t.talk_pigged.replace("{n}", &who), String::new());
+                if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    wait = Duration::from_millis(600);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.talk_ui.room = Some(room.clone());
+                self.open_talk_page();
+            }
+            self.talk_ui.pig = Some((Instant::now() + wait, who));
+        }
+        self.talk_pig(ctx);
         // Someone left a group: told of, with those still in it.
         for (room, m) in &news.departed {
             let me = self.talk.me.as_ref().map_or("", |m| m.id.as_str());
@@ -521,6 +545,12 @@ impl App {
     /// why not, or when the next one may go.
     fn send_wizz(&mut self, room: &str) {
         self.talk.wizz(room);
+    }
+
+    /// The dancing pig sent: floor checks it is unlocked (a Backstage game of 1000 points and more with
+    /// this account) and says why not, or when the next one may go.
+    fn send_pig(&mut self, room: &str) {
+        self.talk.pig(room);
     }
 
     /// The window shaken for 2 seconds after a wizz, harder at first, then put back where it was;
@@ -844,6 +874,9 @@ impl App {
             if button(HeadIcon::Wizz, t.talk_wizz) {
                 self.send_wizz(&room.id);
             }
+            if button(HeadIcon::Pig, t.talk_pig) {
+                self.send_pig(&room.id);
+            }
             if button(HeadIcon::Media, t.talk_media) {
                 self.open_media(&room.id);
             }
@@ -876,6 +909,9 @@ impl App {
             }
             if button(HeadIcon::Wizz, t.talk_wizz) {
                 self.send_wizz(&room.id);
+            }
+            if button(HeadIcon::Pig, t.talk_pig) {
+                self.send_pig(&room.id);
             }
             if button(HeadIcon::Pencil, t.talk_rename) {
                 self.talk_ui.renaming = Some((room.id.clone(), room.name.clone().unwrap_or_default()));
@@ -1290,7 +1326,7 @@ impl App {
                 ui.vertical_centered(|ui| {
                     // A wizz stands out: in the accent, bold.
                     let text = egui::RichText::new(format!("{}  ·  {}", event_text(t, m), clock(m.at))).size(12.0).italics();
-                    ui.label(if m.event.as_deref() == Some("wizz") { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
+                    ui.label(if matches!(m.event.as_deref(), Some("wizz" | "pig")) { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
                 });
                 ui.add_space(4.0);
                 prev = None;

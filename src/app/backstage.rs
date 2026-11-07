@@ -8,6 +8,8 @@ use crate::backstage::{Dir, Input, Show, Walker, Who, AMP_SECS, H, PER_RAGE, W};
 
 /// The world moves in steps this long, whatever the frame rate.
 const STEP: f32 = 1.0 / 120.0;
+/// A game of this many points unlocks the chat's dancing pig (pig.rs; floor checks it too).
+pub(super) const PIG_UNLOCK: u32 = 1000;
 
 /// The show under way, or the last one.
 pub(super) struct Backstage {
@@ -197,6 +199,11 @@ impl App {
         let (score, rage, picks) = (show.score, show.rage, show.picked);
         if score == 0 {
             return;
+        }
+        // The first game of PIG_UNLOCK points: the chat's dancing pig unlocked (floor checks it too).
+        if score >= PIG_UNLOCK && self.config.settings.backstage_best < PIG_UNLOCK {
+            let t = self.t();
+            self.push_toast(super::Toast { ok: true, title: t.pig_unlocked.to_owned(), body: t.pig_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
         }
         self.backstage.record = score > self.config.settings.backstage_best;
         if self.backstage.record {

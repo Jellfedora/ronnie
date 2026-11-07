@@ -52,6 +52,7 @@ mod mail;
 mod procs;
 mod mailhtml;
 mod mines;
+mod pig;
 mod riff;
 mod runner;
 mod loading;
