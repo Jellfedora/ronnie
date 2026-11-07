@@ -274,6 +274,47 @@ pub fn pick_among(rng: &mut u64, hour: u32, power: f32, lure: Lure, wanted: impl
 /// Where the catch starts.
 pub const START: f32 = 0.3;
 
+/// The rod, bettered with the budget the duplicates sold bring (`ROD_COSTS[level]` for the next
+/// level): each level eases the fight, the hard candidates most of all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rod {
+    /// How much slower the fish goes (its own time), times its difficulty.
+    pub slow: f32,
+    /// The bar this much longer.
+    pub bar: f32,
+    /// A rival's counter-offer lasts this part of its time.
+    pub offer: f32,
+    /// The catch fills this much faster.
+    pub fill: f32,
+}
+
+/// The rod's levels above the first.
+pub const ROD_LEVELS: u32 = 4;
+/// What each next level costs (k€).
+pub const ROD_COSTS: [u32; ROD_LEVELS as usize] = [30, 80, 150, 300];
+
+impl Rod {
+    pub fn at(level: u32) -> Self {
+        match level.min(ROD_LEVELS) {
+            0 => Rod { slow: 0.0, bar: 0.0, offer: 1.0, fill: 1.0 },
+            1 => Rod { slow: 0.15, bar: 0.0, offer: 1.0, fill: 1.0 },
+            2 => Rod { slow: 0.15, bar: 0.12, offer: 1.0, fill: 1.0 },
+            3 => Rod { slow: 0.25, bar: 0.12, offer: 0.5, fill: 1.0 },
+            _ => Rod { slow: 0.35, bar: 0.2, offer: 0.5, fill: 1.15 },
+        }
+    }
+}
+
+/// A card's duplicates one may sell: those beyond one, the shiny ones kept.
+pub fn sellable(card: &crate::config::FishCard) -> u32 {
+    card.count.saturating_sub(card.sold).saturating_sub(card.shiny.max(1))
+}
+
+/// The duplicates one may sell in `cards`, and what they bring (k€: the rarity's points each).
+pub fn resale(cards: &std::collections::BTreeMap<String, crate::config::FishCard>) -> (u32, u32) {
+    FISH.iter().filter_map(|f| cards.get(f.id).map(|c| (sellable(c), sellable(c) * f.rarity.points()))).fold((0, 0), |(n, k), (a, b)| (n + a, k + b))
+}
+
 /// The fight with a fish that has bitten. Positions on the track from 0 (the bottom) to 1 (the top).
 #[derive(Clone, Debug)]
 pub struct Reel {
@@ -298,15 +339,23 @@ pub struct Reel {
     idle: f32,
     /// Seconds left of a rival's counter-offer: the hire fills slower and empties faster.
     pub offer: f32,
+    rod: Rod,
     rng: u64,
 }
 
 impl Reel {
     /// `risk`: how far it was hooked (0 to 1), far out the bar a little shorter.
-    pub fn new(fish: usize, seed: u64, risk: f32) -> Self {
+    /// `rod`: the rod's level.
+    pub fn new(fish: usize, seed: u64, risk: f32, rod: u32) -> Self {
+        let rod = Rod::at(rod);
         let d = FISH[fish].difficulty / 100.0;
-        let bar_h = (0.30 - d * 0.10) * (1.0 - 0.1 * risk.clamp(0.0, 1.0));
-        Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: FISH[fish].behavior, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, offer: 0.0, rng: seed | 1 }
+        let bar_h = (0.30 - d * 0.10) * (1.0 - 0.1 * risk.clamp(0.0, 1.0)) * (1.0 + rod.bar);
+        Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: FISH[fish].behavior, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, offer: 0.0, rod, rng: seed | 1 }
+    }
+
+    /// A rival's counter-offer of `secs` (shorter with a better rod).
+    pub fn counter_offer(&mut self, secs: f32) {
+        self.offer = secs * self.rod.offer;
     }
 
 
@@ -319,9 +368,11 @@ impl Reel {
     pub fn step(&mut self, dt: f32, held: bool) -> Option<bool> {
         let f = &FISH[self.fish];
         let d = f.difficulty / 100.0;
+        // The fish in its own time, slowed by the rod.
+        let fish_dt = dt * (1.0 - self.rod.slow * d);
 
         // The fish: now and then where to go next, by its kind.
-        self.timer -= dt;
+        self.timer -= fish_dt;
         if self.timer <= 0.0 {
             if f.behavior == Mixed {
                 self.mood = [Smooth, Dart, Sinker, Floater][(unit(&mut self.rng) * 4.0) as usize % 4];
@@ -352,11 +403,11 @@ impl Reel {
             _ => 6.0 + 16.0 * d,
         };
         let damp = 2.0 * pull.sqrt();
-        self.fish_v += ((self.target - self.fish_y) * pull - self.fish_v * damp) * dt;
+        self.fish_v += ((self.target - self.fish_y) * pull - self.fish_v * damp) * fish_dt;
         // Never so fast that the bar (which takes time to get going) cannot follow.
         let top_speed = 0.35 + 0.45 * d;
         self.fish_v = self.fish_v.clamp(-top_speed, top_speed);
-        self.fish_y += self.fish_v * dt;
+        self.fish_y += self.fish_v * fish_dt;
         if !(0.0..=1.0).contains(&self.fish_y) {
             self.fish_y = self.fish_y.clamp(0.0, 1.0);
             self.fish_v = 0.0;
@@ -381,7 +432,7 @@ impl Reel {
         self.offer = (self.offer - dt).max(0.0);
         if self.on_bar() {
             if self.idle < 2.0 {
-                self.progress += 0.17 * dt * if rival { 0.55 } else { 1.0 };
+                self.progress += 0.17 * self.rod.fill * dt * if rival { 0.55 } else { 1.0 };
             }
         } else {
             self.progress -= (0.11 + 0.05 * d) * dt * if rival { 1.6 } else { 1.0 };
@@ -466,7 +517,7 @@ mod tests {
     #[allow(clippy::needless_range_loop)]
     fn followed_caught_left_lost() {
         for fish in 0..FISH.len() {
-            let mut reel = Reel::new(fish, 7 + fish as u64, 0.0);
+            let mut reel = Reel::new(fish, 7 + fish as u64, 0.0, 0);
             let mut end = None;
             for _ in 0..120 * 60 {
                 let held = reel.bar_y + reel.bar_h / 2.0 < reel.fish_y;
@@ -478,7 +529,7 @@ mod tests {
             if FISH[fish].difficulty < 40.0 {
                 assert_eq!(end, Some(true), "{}", FISH[fish].id);
             }
-            let mut reel = Reel::new(fish, 3, 0.0);
+            let mut reel = Reel::new(fish, 3, 0.0, 0);
             reel.fish_y = 0.9;
             let mut end = None;
             for _ in 0..120 * 60 {
@@ -500,6 +551,7 @@ mod rates {
     #[allow(clippy::needless_range_loop)]
     #[ignore = "prints how often a simple player catches each one"]
     fn print_rates() {
+        let rod: u32 = std::env::var("ROD").ok().and_then(|r| r.parse().ok()).unwrap_or(0);
         for fish in 0..FISH.len() {
             let mut won = 0;
             let mut secs = 0.0;
@@ -507,7 +559,7 @@ mod rates {
             let mut fast = 0u32;
             let mut ticks = 0u32;
             for seed in 0..200u64 {
-                let mut reel = Reel::new(fish, seed * 7919 + 1, 0.0);
+                let mut reel = Reel::new(fish, seed * 7919 + 1, 0.0, rod);
                 // Holds when the fish is above the bar's middle, reacting 0.15 s late.
                 let mut seen = vec![reel.fish_y; 18];
                 for k in 0..120 * 90 {

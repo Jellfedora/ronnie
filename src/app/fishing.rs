@@ -51,6 +51,14 @@ struct Hook {
     hot: bool,
 }
 
+/// The page's tabs.
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Pond,
+    Cards,
+    Agency,
+}
+
 enum Phase {
     Idle,
     /// The cast charging: its power goes up and down while held.
@@ -66,8 +74,8 @@ enum Phase {
 
 pub(super) struct Fishing {
     phase: Phase,
-    /// The binder shown rather than the pond.
-    cards: bool,
+    /// The pond, the binder or the agency.
+    tab: Tab,
     /// A card of the binder shown big.
     zoom: Option<usize>,
     /// A word under the scene (the candidate lost...), until then.
@@ -90,7 +98,7 @@ pub(super) struct Fishing {
 
 impl Default for Fishing {
     fn default() -> Self {
-        Self { phase: Phase::Idle, cards: false, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, help: false, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
+        Self { phase: Phase::Idle, tab: Tab::Pond, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, help: false, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
     }
 }
 
@@ -322,23 +330,23 @@ impl App {
 
         // The two tabs: the pond, the binder.
         let have = self.config.settings.fish_cards.len();
-        let tabs = [(false, t.fishing_tab_pond.to_owned()), (true, t.fishing_tab_cards.replace("{n}", &have.to_string()).replace("{max}", &FISH.len().to_string()))];
-        let mut x = rect.center().x - 160.0;
-        for (cards, label) in tabs {
+        let tabs = [(Tab::Pond, t.fishing_tab_pond.to_owned()), (Tab::Cards, t.fishing_tab_cards.replace("{n}", &have.to_string()).replace("{max}", &FISH.len().to_string())), (Tab::Agency, t.fishing_tab_agency.to_owned())];
+        let mut x = rect.center().x - 245.0;
+        for (tab, label) in tabs {
             let r = Rect::from_min_size(Pos2::new(x, rect.min.y + 66.0), Vec2::new(150.0, 28.0));
-            let on = self.fishing.cards == cards;
+            let on = self.fishing.tab == tab;
             let b = egui::Button::new(egui::RichText::new(label).size(13.0).color(if on { theme.bg } else { theme.text })).fill(if on { theme.accent } else { theme.chrome_bg }).corner_radius(14.0);
             if ui.put(r, b).clicked() && !fighting {
-                self.fishing.cards = cards;
+                self.fishing.tab = tab;
                 self.fishing.zoom = None;
             }
             x += 170.0;
         }
         let body = Rect::from_min_max(Pos2::new(rect.min.x + 24.0, rect.min.y + 106.0), Pos2::new(rect.max.x - 24.0, rect.max.y - 16.0));
-        if self.fishing.cards {
-            self.fishing_binder(ui, body, now);
-        } else {
-            self.fishing_pond(ui, body, now);
+        match self.fishing.tab {
+            Tab::Pond => self.fishing_pond(ui, body, now),
+            Tab::Cards => self.fishing_binder(ui, body, now),
+            Tab::Agency => self.fishing_agency(ui, body),
         }
         // What it unlocks (the theme, the sheep, the badge, the frame), out of a fight.
         if !self.fishing.fighting() && self.fishing.zoom.is_none() {
@@ -438,7 +446,7 @@ impl App {
                     let r = super::game::random(&mut self.fishing.rng);
                     let rare = FISH[hook.fish].rarity.index() >= Rarity::Rare.index();
                     let offer_at = if r % 100 < if rare { 35 } else { 12 } { 2.0 + (r >> 8) as f32 % 4000.0 / 1000.0 } else { -1.0 };
-                    self.fishing.phase = Phase::Reeling { cast, reel: Reel::new(hook.fish, hook.seed, cast), hook, t: 0.0, offer_at };
+                    self.fishing.phase = Phase::Reeling { cast, reel: Reel::new(hook.fish, hook.seed, cast, self.config.settings.fish_rod), hook, t: 0.0, offer_at };
                     self.fishing.acc = 0.0;
                 } else if *left <= 0.0 {
                     self.fishing.phase = Phase::Idle;
@@ -449,7 +457,7 @@ impl App {
                 *fight += dt;
                 if *offer_at >= 0.0 && *fight >= *offer_at {
                     *offer_at = -1.0;
-                    reel.offer = OFFER;
+                    reel.counter_offer(OFFER);
                     sfx = Some(&[(220.0, 220.0, 0.14, 0.4), (175.0, 175.0, 0.22, 0.4)]);
                 }
                 self.fishing.acc += dt;
@@ -1360,6 +1368,112 @@ impl App {
     }
 }
 
+impl App {
+    /// The agency: the duplicates placed with clients for budget, the budget spent on better rods.
+    fn fishing_agency(&mut self, ui: &mut Ui, body: Rect) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let (count, value) = crate::fishing::resale(&self.config.settings.fish_cards);
+        let budget = self.config.settings.fish_budget;
+        let level = self.config.settings.fish_rod.min(crate::fishing::ROD_LEVELS);
+        let mut sell = false;
+        let mut buy = None;
+        let width = body.width().min(640.0);
+        let column = Rect::from_min_size(Pos2::new(body.center().x - width / 2.0, body.min.y), Vec2::new(width, body.height()));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(column));
+        egui::ScrollArea::vertical().id_salt("fishing-agency").auto_shrink([false; 2]).show(&mut child, |ui| {
+            ui.set_width(width);
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(t.fishing_budget.replace("{n}", &budget.to_string())).size(18.0).strong().color(theme.accent));
+            ui.add_space(14.0);
+
+            let section = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+                egui::Frame::new().fill(theme.chrome_bg).corner_radius(10.0).inner_margin(14.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    add(ui);
+                });
+            };
+            section(ui, &mut |ui| {
+                ui.label(egui::RichText::new(t.fishing_resale_title).size(15.0).strong().color(theme.text));
+                ui.add_space(4.0);
+                let text = if count > 0 { t.fishing_resale_body.replace("{n}", &count.to_string()).replace("{k}", &value.to_string()) } else { t.fishing_resale_none.to_owned() };
+                ui.label(egui::RichText::new(text).size(13.0).color(theme.text_muted));
+                if count > 0 {
+                    ui.add_space(8.0);
+                    let b = egui::Button::new(egui::RichText::new(t.fishing_resale_button.replace("{k}", &value.to_string())).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(8.0);
+                    if ui.add(b).clicked() {
+                        sell = true;
+                    }
+                }
+            });
+            ui.add_space(14.0);
+            section(ui, &mut |ui| {
+                ui.label(egui::RichText::new(t.fishing_rod_title).size(15.0).strong().color(theme.text));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(t.fishing_rod_body).size(13.0).color(theme.text_muted));
+                ui.add_space(6.0);
+                let names: Vec<&str> = t.fishing_rods.split('|').collect();
+                let effects: Vec<&str> = t.fishing_rod_effects.split('|').collect();
+                for k in 0..=crate::fishing::ROD_LEVELS {
+                    ui.add_space(6.0);
+                    let owned = k <= level;
+                    let fill = if k == level { theme.accent.gamma_multiply(0.18) } else { theme.bg };
+                    egui::Frame::new().fill(fill).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            let mark = if owned { "✓" } else { "·" };
+                            let color = if owned { theme.text } else { theme.text_muted };
+                            ui.label(egui::RichText::new(format!("{mark}  {}", names.get(k as usize).unwrap_or(&""))).size(14.0).strong().color(color));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if k == level {
+                                    ui.label(egui::RichText::new(t.fishing_rod_in_hand).size(12.0).color(theme.accent));
+                                } else if k == level + 1 {
+                                    let cost = crate::fishing::ROD_COSTS[level as usize];
+                                    let can = budget >= cost;
+                                    let b = egui::Button::new(egui::RichText::new(t.fishing_rod_buy.replace("{n}", &cost.to_string())).size(12.0).color(if can { theme.bg } else { theme.text_muted })).fill(if can { theme.accent } else { theme.chrome_bg }).corner_radius(8.0);
+                                    if ui.add_enabled(can, b).clicked() {
+                                        buy = Some(cost);
+                                    }
+                                } else if k > level + 1 {
+                                    ui.label(egui::RichText::new(format!("{} k€", crate::fishing::ROD_COSTS[k as usize - 1])).size(12.0).color(theme.text_muted));
+                                }
+                            });
+                        });
+                        ui.label(egui::RichText::new(*effects.get(k as usize).unwrap_or(&"")).size(12.5).color(theme.text_muted));
+                    });
+                }
+            });
+            ui.add_space(12.0);
+        });
+
+        if sell {
+            let mut sold = 0;
+            let mut earned = 0;
+            for f in FISH.iter() {
+                if let Some(card) = self.config.settings.fish_cards.get_mut(f.id) {
+                    let n = crate::fishing::sellable(card);
+                    card.sold += n;
+                    sold += n;
+                    earned += n * f.rarity.points();
+                }
+            }
+            self.config.settings.fish_budget += earned;
+            self.save_config();
+            self.fishing_sound(&[(880.0, 880.0, 0.06, 0.3), (1319.0, 1319.0, 0.12, 0.3)]);
+            let title = t.fishing_resale_done.replace("{n}", &sold.to_string()).replace("{k}", &earned.to_string());
+            self.push_toast(super::Toast { ok: true, title, body: String::new(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
+        if let Some(cost) = buy {
+            self.config.settings.fish_budget -= cost;
+            self.config.settings.fish_rod = level + 1;
+            self.save_config();
+            self.fishing_sound(hired_sound(Rarity::Rare, false));
+            let rod = t.fishing_rods.split('|').nth(level as usize + 1).unwrap_or_default();
+            self.push_toast(super::Toast { ok: true, title: t.fishing_rod_bought.replace("{rod}", rod), body: String::new(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
+    }
+}
+
 /// A rarity's mark: a circle, a diamond, a star, two stars, a burst.
 fn paint_rarity(painter: &egui::Painter, c: Pos2, s: f32, r: Rarity) {
     let color = rarity_color(r);
@@ -1474,7 +1588,7 @@ pub(super) fn paint_card(painter: &egui::Painter, r: Rect, fish: usize, entry: O
     let bottom = inner.max.y - 9.0 * k;
     painter.text(Pos2::new(inner.min.x + pad, bottom), Align2::LEFT_CENTER, format!("#{:03}/{:03}", fish + 1, FISH.len()), FontId::monospace(8.5 * k), muted);
     if let Some(c) = entry {
-        let mut stats = format!("{}  ·  {}", t.fishing_count.replace("{n}", &c.count.to_string()), t.fishing_best.replace("{n}", &c.best_cm.to_string()));
+        let mut stats = format!("{}  ·  {}", t.fishing_count.replace("{n}", &c.count.saturating_sub(c.sold).to_string()), t.fishing_best.replace("{n}", &c.best_cm.to_string()));
         if c.shiny > 0 {
             stats = format!("✦{}  {stats}", c.shiny);
         }
