@@ -345,7 +345,7 @@ impl Reel {
                 Dart => 0.5 + unit(&mut self.rng) * 0.7,
                 _ => 0.6 + unit(&mut self.rng) * 1.0,
             };
-            self.timer = pause * (1.35 - d * 0.75);
+            self.timer = pause * (1.4 - d * 0.6);
         }
         let pull = match self.mood {
             Dart => 11.0 + 14.0 * d,
@@ -353,6 +353,9 @@ impl Reel {
         };
         let damp = 2.0 * pull.sqrt();
         self.fish_v += ((self.target - self.fish_y) * pull - self.fish_v * damp) * dt;
+        // Never so fast that the bar (which takes time to get going) cannot follow.
+        let top_speed = 0.35 + 0.45 * d;
+        self.fish_v = self.fish_v.clamp(-top_speed, top_speed);
         self.fish_y += self.fish_v * dt;
         if !(0.0..=1.0).contains(&self.fish_y) {
             self.fish_y = self.fish_y.clamp(0.0, 1.0);
@@ -500,6 +503,9 @@ mod rates {
         for fish in 0..FISH.len() {
             let mut won = 0;
             let mut secs = 0.0;
+            let mut peak = 0.0f32;
+            let mut fast = 0u32;
+            let mut ticks = 0u32;
             for seed in 0..200u64 {
                 let mut reel = Reel::new(fish, seed * 7919 + 1, 0.0);
                 // Holds when the fish is above the bar's middle, reacting 0.15 s late.
@@ -508,6 +514,9 @@ mod rates {
                     seen.push(reel.fish_y);
                     let late = seen[seen.len() - 18];
                     let held = reel.bar_y + reel.bar_h / 2.0 < late;
+                    peak = peak.max(reel.fish_v.abs());
+                    fast += (reel.fish_v.abs() > 0.8) as u32;
+                    ticks += 1;
                     if let Some(w) = reel.step(1.0 / 120.0, held) {
                         if w {
                             won += 1;
@@ -517,7 +526,7 @@ mod rates {
                     }
                 }
             }
-            println!("{:16} d={:3} {:3}%  {:.1}s", FISH[fish].id, FISH[fish].difficulty, won / 2, secs / won.max(1) as f32);
+            println!("{:16} d={:3} {:3}%  {:.1}s  peak {:.2}/s  >0.8/s {:.0}%", FISH[fish].id, FISH[fish].difficulty, won / 2, secs / won.max(1) as f32, peak, fast as f32 * 100.0 / ticks as f32);
         }
     }
 }
