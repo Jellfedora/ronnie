@@ -2,6 +2,19 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.45.0] - 2026-11-07
+
+### Nouveautés
+
+- **Pause Café**, un nouveau jeu : les stagiaires traversent l'open space et il faut les amener jusqu'à la machine à café. Dix niveaux, avec à chaque fois un nombre limité de postes à donner (manager, DevOps, comptable, parapluie) et de stagiaires à faire arriver avant la fin du temps. Pause avec P, recommencer avec R ; tes meilleurs scores vont au tableau en ligne. Merci à Jonathan !
+- **Le thème Game of Thrones**, débloqué en finissant 3 niveaux de Pause Café : le titre entre deux épées, des fenêtres de fer et d'or, le Mur sous la neige dans la colonne de gauche avec ses Marcheurs blancs, et un dragon qui pique de temps en temps. Merci à Jonathan !
+- **Le cochon qui danse dans le tchat** : un bouton à côté du wizz, débloqué par une partie de Backstage à 1 000 points ou plus. Le cochon danse 5 secondes au milieu de l'écran de tout le monde dans la conversation. Merci à Jonathan !
+- **L'agence, à la pêche aux talents** : tes candidats en double s'y placent chez des clients contre du budget (un exemplaire de chaque carte et les brillantes restent au vivier). Le budget achète quatre cannes de plus en plus efficaces : les candidats difficiles ralentissent, la barre s'allonge, les contre-offres raccourcissent.
+
+### Corrections
+
+- À la pêche aux talents, les candidats les plus difficiles ne bougent plus trop vite pour que la barre les suive.
+
 ## [0.44.0] - 2026-11-06
 
 ### Nouveautés
