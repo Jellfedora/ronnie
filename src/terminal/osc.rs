@@ -34,6 +34,8 @@ pub struct Shell {
     pub printed: bool,
     /// The first bytes received, for the log when the shell never shows up.
     pub head: Vec<u8>,
+    /// Claude Code ended on the server (`app::sshclaude`'s script says it, with its run's id).
+    pub claude_done: Vec<String>,
 }
 
 /// A command that ran to its end.
@@ -146,13 +148,17 @@ impl Scanner {
                     shell.cwd = Some(path);
                 }
             }
-            Some("1337") => {
-                if let Some(url) = parts.next().and_then(|p| p.strip_prefix("RonnieInput=")) {
+            Some("1337") => match parts.next() {
+                Some(p) if p.starts_with("RonnieInput=") => {
                     let end = parts.any(|p| p == "end=1");
-                    shell.input = Some((percent_decode(url), end));
+                    shell.input = Some((percent_decode(&p["RonnieInput=".len()..]), end));
                     shell.reports_input = true;
                 }
-            }
+                Some(p) if p.starts_with("RonnieClaude=") && shell.claude_done.len() < 16 => {
+                    shell.claude_done.push(p["RonnieClaude=".len()..].to_owned());
+                }
+                _ => {}
+            },
             Some("133") => {
                 shell.integrated = true;
                 match parts.next() {

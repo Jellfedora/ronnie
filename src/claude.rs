@@ -762,22 +762,27 @@ pub struct Session {
 }
 
 /// Where Claude Code keeps the conversations held in `dir`: a folder named after its path, every
-/// character but letters and digits made a "-".
-fn sessions_folder(dir: &Path) -> Option<PathBuf> {
+/// character but letters and digits made a "-", in the `projects` of `root` (None: this machine's
+/// Claude Code; else those brought back from a server, see `app::sshclaude`).
+fn sessions_folder(root: Option<&Path>, dir: &Path) -> Option<PathBuf> {
     let name: String = dir.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    Some(config_dir()?.join("projects").join(name))
+    let root = match root {
+        Some(root) => root.to_path_buf(),
+        None => config_dir()?,
+    };
+    Some(root.join("projects").join(name))
 }
 
 /// The conversations held in `dir`: one file each.
-fn session_files(dir: &Path) -> Vec<PathBuf> {
-    let Some(folder) = sessions_folder(dir) else { return Vec::new() };
+fn session_files(root: Option<&Path>, dir: &Path) -> Vec<PathBuf> {
+    let Some(folder) = sessions_folder(root, dir) else { return Vec::new() };
     let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
     entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "jsonl") && p.is_file()).collect()
 }
 
 /// Claude Code held conversations in `dir` (quick: they aren't read).
-pub fn has_sessions(dir: &Path) -> bool {
-    !session_files(dir).is_empty()
+pub fn has_sessions(root: Option<&Path>, dir: &Path) -> bool {
+    !session_files(root, dir).is_empty()
 }
 
 /// Each conversation read, with when its file changed: read again only once it changed.
@@ -785,9 +790,9 @@ type SessionCache = std::collections::HashMap<PathBuf, (std::time::SystemTime, O
 static SESSIONS: std::sync::Mutex<Option<SessionCache>> = std::sync::Mutex::new(None);
 
 /// The conversations held in `dir`, the latest first (those where nothing was asked left out).
-pub fn sessions(dir: &Path) -> Vec<Session> {
+pub fn sessions(root: Option<&Path>, dir: &Path) -> Vec<Session> {
     let mut list = Vec::new();
-    for path in session_files(dir) {
+    for path in session_files(root, dir) {
         let Ok(changed) = path.metadata().and_then(|m| m.modified()) else { continue };
         let cached = SESSIONS.lock().ok().and_then(|c| c.as_ref()?.get(&path).filter(|(at, _)| *at == changed).map(|(_, s)| s.clone()));
         let session = match cached {
@@ -807,25 +812,30 @@ pub fn sessions(dir: &Path) -> Vec<Session> {
 }
 
 /// Conversation `id` held in `dir`: its file, and its folder (its agents' work, its tools' output…).
-fn session_paths(dir: &Path, id: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+fn session_paths(root: Option<&Path>, dir: &Path, id: &str) -> std::io::Result<(PathBuf, PathBuf)> {
     // A name made of a uuid's characters: nothing outside the folder.
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a conversation"));
     }
-    let folder = sessions_folder(dir).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home folder"))?;
+    let folder = sessions_folder(root, dir).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home folder"))?;
     Ok((folder.join(format!("{id}.jsonl")), folder.join(id)))
 }
 
+/// The file of conversation `id`.
+pub fn session_file(root: Option<&Path>, dir: &Path, id: &str) -> std::io::Result<PathBuf> {
+    Ok(session_paths(root, dir, id)?.0)
+}
+
 /// Renames conversation `id`, as /rename does: a title line added at its end.
-pub fn rename_session(dir: &Path, id: &str, title: &str) -> std::io::Result<()> {
-    let (file, _) = session_paths(dir, id)?;
+pub fn rename_session(root: Option<&Path>, dir: &Path, id: &str, title: &str) -> std::io::Result<()> {
+    let (file, _) = session_paths(root, dir, id)?;
     let mut file = std::fs::OpenOptions::new().append(true).open(file)?;
     writeln!(file, "{}", json!({ "type": "custom-title", "customTitle": title, "sessionId": id }))
 }
 
 /// Deletes conversation `id`, for good.
-pub fn delete_session(dir: &Path, id: &str) -> std::io::Result<()> {
-    let (file, folder) = session_paths(dir, id)?;
+pub fn delete_session(root: Option<&Path>, dir: &Path, id: &str) -> std::io::Result<()> {
+    let (file, folder) = session_paths(root, dir, id)?;
     std::fs::remove_file(file)?;
     match std::fs::remove_dir_all(folder) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),

@@ -11,6 +11,9 @@ use crate::claude::Session;
 /// The conversations of a pane's folder, read in the background as their list opens.
 pub(super) struct History {
     pub(super) pane: PaneId,
+    /// Where the conversations are kept: None, this machine's Claude Code; else those brought back
+    /// from a server (`sshclaude`).
+    root: Option<PathBuf>,
     dir: PathBuf,
     sessions: Arc<Mutex<Option<Vec<Session>>>>,
     filter: String,
@@ -24,17 +27,17 @@ pub(super) struct History {
 }
 
 impl History {
-    pub(super) fn open(pane: PaneId, dir: PathBuf, ctx: &egui::Context) -> Self {
+    pub(super) fn open(pane: PaneId, root: Option<PathBuf>, dir: PathBuf, ctx: &egui::Context) -> Self {
         let sessions = Arc::new(Mutex::new(None));
-        let (found, ctx, folder) = (sessions.clone(), ctx.clone(), dir.clone());
+        let (found, ctx, folder, kept) = (sessions.clone(), ctx.clone(), dir.clone(), root.clone());
         std::thread::spawn(move || {
-            let list = crate::claude::sessions(&folder);
+            let list = crate::claude::sessions(kept.as_deref(), &folder);
             if let Ok(mut found) = found.lock() {
                 *found = Some(list);
             }
             ctx.request_repaint();
         });
-        History { pane, dir, sessions, filter: String::new(), focus: true, renaming: None, deleting: None, error: None }
+        History { pane, root, dir, sessions, filter: String::new(), focus: true, renaming: None, deleting: None, error: None }
     }
 
     /// Conversation `id` named `title` (nothing typed: as it was).
@@ -43,14 +46,14 @@ impl History {
         if title.is_empty() {
             return;
         }
-        match crate::claude::rename_session(&self.dir, id, title) {
+        match crate::claude::rename_session(self.root.as_deref(), &self.dir, id, title) {
             Ok(()) => self.change(|list| list.iter_mut().filter(|s| s.id == id).for_each(|s| s.title = title.to_owned())),
             Err(e) => self.error = Some(e.to_string()),
         }
     }
 
     fn delete(&mut self, id: &str) {
-        match crate::claude::delete_session(&self.dir, id) {
+        match crate::claude::delete_session(self.root.as_deref(), &self.dir, id) {
             Ok(()) => self.change(|list| list.retain(|s| s.id != id)),
             Err(e) => self.error = Some(e.to_string()),
         }

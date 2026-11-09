@@ -106,6 +106,7 @@ impl App {
                 Err(text) => crate::drive::answer(&asked, false, text),
             }
         }
+        self.ssh_claude_poll();
         self.type_waiting();
     }
 

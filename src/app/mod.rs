@@ -20,6 +20,7 @@ use crate::update::{self, Updater};
 mod backup;
 mod bell;
 mod bigtext;
+mod sshclaude;
 mod complete;
 mod blob;
 mod chat;
@@ -486,6 +487,8 @@ pub struct App {
     claude_asks: crate::claude::Asks,
     /// Lines Claude has typed in new panes once their shell is ready, and since when they wait.
     claude_typing: Vec<(PaneId, String, Instant)>,
+    /// Claude Code on SSH servers, its conversations brought back here.
+    ssh_claude: sshclaude::Remote,
     /// The notices not seen yet, for every window (see `bell`), the last one's id, and the window
     /// listing them.
     notices: Vec<bell::Notice>,
@@ -1339,6 +1342,7 @@ impl App {
             claude_notes: Default::default(),
             claude_asks: Default::default(),
             claude_typing: Vec::new(),
+            ssh_claude: Default::default(),
             notices: Vec::new(),
             next_notice: 0,
             bell_open: None,
@@ -3963,6 +3967,18 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         files_menu(&resp, &mut clicks);
         right -= 34.0;
         max_w -= 96.0;
+        // Claude Code on the server, its conversations kept here (`sshclaude`).
+        if claude_button {
+            let at = Rect::from_min_size(Pos2::new(right - 22.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
+            let resp = ui.interact(at, egui::Id::new(("pane-claude-history", id)), Sense::click());
+            if resp.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp)) {
+                ui.painter().rect_filled(at, 5.0, theme.tab_hover);
+            }
+            history::paint_mark(ui, Rect::from_center_size(at.center(), Vec2::splat(15.0)), Color32::WHITE);
+            clicks.claude = Some(resp.on_hover_text(t.ssh_claude_tip).on_hover_cursor(egui::CursorIcon::PointingHand));
+            right -= 30.0;
+            max_w -= 30.0;
+        }
         if let Some((stats, age)) = health {
             if let Some(w) = health_badge(ui, rect, right, id, stats, *age, theme, t) {
                 right -= w + 6.0;
@@ -4827,6 +4843,12 @@ impl App {
                 for &(id, r) in &rects {
                     let Some(term) = tab.panes.get_mut(&id) else { continue };
                     term.remote = !local;
+                    // Claude Code ended on the server: its conversations brought back, wiped there.
+                    if !local && !term.take_claude_done().is_empty() {
+                        if let Some(host) = tab.ssh.and_then(|h| self.config.ssh.iter().find(|x| x.id == h)) {
+                            self.ssh_claude.sweep(ui.ctx(), host.clone(), self.askpass.clone());
+                        }
+                    }
                     term.plain_clipboard = self.config.settings.shortcuts.plain_clipboard;
                     // Startup commands, typed once the shell shows its prompt.
                     if let Some(since) = tab.startup_due.get(&id).copied() {
@@ -4876,7 +4898,7 @@ impl App {
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let node = tab.nodes.get(&id).cloned();
                         let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref(), node.as_deref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, claude_dir.is_some(), &self.theme, strings, &self.config.settings.shortcuts);
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, claude_dir.is_some() || !local, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
                                 // Dropped: stops listening, nothing sent.
@@ -4898,8 +4920,8 @@ impl App {
                         if let (Some(button), Some(dir)) = (&clicks.claude, &claude_dir) {
                             let mut launch = None;
                             if button.clicked() && !egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
-                                if crate::claude::has_sessions(dir) {
-                                    self.claude_history = Some(history::History::open(id, dir.clone(), ui.ctx()));
+                                if crate::claude::has_sessions(None, dir) {
+                                    self.claude_history = Some(history::History::open(id, None, dir.clone(), ui.ctx()));
                                 } else {
                                     self.claude_history = None;
                                     launch = Some(None);
@@ -4919,6 +4941,34 @@ impl App {
                                     // Claude Code there: it gives way, the pane started again. Another
                                     // program: left running, Claude Code in a new pane beside it.
                                     pane_action = Some(PaneAction::Claude(id, session, claude_running));
+                                }
+                            }
+                        }
+                        // Claude Code on the server: its conversations kept here, to take one up again.
+                        if let (Some(button), false, Some(host)) = (&clicks.claude, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|x| x.id == h))) {
+                            let root = sshclaude::root(host.id);
+                            let dir = term.reported_cwd().and_then(|d| self.ssh_claude.absolute(host.id, &d)).map(PathBuf::from);
+                            let mut launch = None;
+                            if button.clicked() && !egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
+                                match (&root, &dir) {
+                                    (Some(root), Some(dir)) if crate::claude::has_sessions(Some(root), dir) => self.claude_history = Some(history::History::open(id, Some(root.clone()), dir.clone(), ui.ctx())),
+                                    _ => {
+                                        self.claude_history = None;
+                                        launch = Some(None);
+                                    }
+                                }
+                            }
+                            if let Some(list) = self.claude_history.as_mut().filter(|h| h.pane == id) {
+                                launch = launch.or(history::menu(button, list, &self.theme, strings));
+                            }
+                            if let Some(session) = launch {
+                                self.claude_history = None;
+                                if term.ready_for_commands(Duration::ZERO, false) {
+                                    let resume = session.as_deref().and_then(|s| crate::claude::session_file(root.as_deref(), dir.as_deref()?, s).ok());
+                                    let texts = sshclaude::Texts { installing: strings.ssh_claude_installing, missing: strings.ssh_claude_missing };
+                                    self.ssh_claude.start(ui.ctx(), host.clone(), self.askpass.clone(), id, session, resume, texts);
+                                } else {
+                                    self.ssh_claude.fail(strings.ssh_claude_not_ready.to_owned());
                                 }
                             }
                         }

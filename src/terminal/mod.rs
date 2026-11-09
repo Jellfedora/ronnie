@@ -419,6 +419,11 @@ impl Terminal {
         reported.or_else(|| self.title.as_deref().and_then(osc::title_path).map(str::to_owned))
     }
 
+    /// The runs of Claude Code that ended on the server since last asked (see `app::sshclaude`).
+    pub fn take_claude_done(&self) -> Vec<String> {
+        self.shell.lock().map(|mut s| std::mem::take(&mut s.claude_done)).unwrap_or_default()
+    }
+
     /// Process id of the program started in the pane (the shell, or ssh).
     pub fn pid(&self) -> Option<u32> {
         self.backend.pid()
