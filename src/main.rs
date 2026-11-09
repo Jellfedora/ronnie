@@ -7,6 +7,7 @@ mod coffee;
 mod blob;
 mod bughunt;
 mod fishing;
+mod fishsave;
 mod pond;
 mod awake;
 mod claude;
