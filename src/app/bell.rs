@@ -145,7 +145,9 @@ impl App {
                         ui.label(egui::RichText::new(t.notices_none).size(12.5).color(theme.text_muted));
                         return;
                     }
-                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    // Anchored by its bottom, the list would only get the room under the bell: it takes the height above it instead.
+                    let tall = (bell.max.y - 90.0).clamp(120.0, 640.0);
+                    egui::ScrollArea::vertical().max_height(tall).min_scrolled_height(tall).show(ui, |ui| {
                         for n in self.notices.iter().rev() {
                             let row = Frame::NONE.inner_margin(egui::Margin::symmetric(8, 7)).corner_radius(8.0).show(ui, |ui| {
                                 ui.set_width(ui.available_width());
