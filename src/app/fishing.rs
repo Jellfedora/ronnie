@@ -94,13 +94,11 @@ pub(super) struct Fishing {
     rng: u64,
     pub(super) pond: crate::pond::Pond,
     pub(super) floor: crate::floor::GameFloor,
-    /// The collection kept on floor, the same on all the player's machines.
-    pub(super) save: crate::fishsave::FishSync,
 }
 
 impl Default for Fishing {
     fn default() -> Self {
-        Self { phase: Phase::Idle, tab: Tab::Pond, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, help: false, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false), save: Default::default() }
+        Self { phase: Phase::Idle, tab: Tab::Pond, zoom: None, message: None, held: false, cast_at: 0.0, aim: 0.0, float: Pos2::ZERO, sound: None, help: false, acc: 0.0, rng: 0, pond: Default::default(), floor: crate::floor::GameFloor::new("peche", false) }
     }
 }
 
@@ -320,12 +318,6 @@ impl App {
         self.fishing.pond.tick(ui.ctx(), now, account.as_ref(), line, cast);
         self.fishing.floor.poll();
         self.fishing.floor.sync(ui.ctx(), now, Some(60.0), account.as_ref());
-        // The collection, the same on all the player's machines: what came from the others, the board told.
-        if self.fishing.save.poll(&mut self.config.settings) {
-            self.save_config();
-            self.fishing_report(now);
-        }
-        self.fishing.save.tick(ui.ctx(), now, &self.config.settings);
 
         if !fighting {
             let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
@@ -692,7 +684,6 @@ impl App {
             s.fish_baits.remove(&id);
             s.fish_bait = None;
         }
-        self.fishing.save.dirty = true;
         self.save_config();
         bait.filter(|_| left.is_some())
     }
@@ -737,10 +728,12 @@ impl App {
         }
         self.fishing.phase = Phase::Caught { fish, size, shiny, new, record, bait, at: now };
         self.count_fish();
-        self.fishing.save.dirty = true;
         self.save_config();
         self.fishing.pond.caught(id, size, shiny);
-        let (_, shinies, catches) = tally(&self.config.settings.fish_cards);
+        let cards = &self.config.settings.fish_cards;
+        let (species, shinies, catches) = tally(cards);
+        let biggest = cards.values().map(|c| c.best_cm).max().unwrap_or(size);
+        let points = crate::fishing::points(cards);
 
         // What it unlocks: said.
         let t = self.t();
@@ -758,22 +751,10 @@ impl App {
             self.push_toast(super::Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
         }
 
-        self.fishing_report(now);
-    }
-
-    /// The collection's points to floor's board.
-    fn fishing_report(&mut self, now: f64) {
-        let cards = &self.config.settings.fish_cards;
-        if cards.is_empty() || crate::floor::pseudo(self.config.settings.floor.as_ref()).is_none() {
-            return;
+        if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
+            self.fishing.floor.finished(crate::floor::GameRound { score: points, details: serde_json::json!({ "points": points, "species": species, "shiny": shinies, "catches": catches, "biggest": biggest }) });
+            self.fishing.floor.sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
         }
-        let species = cards.len() as u32;
-        let shinies = cards.values().filter(|c| c.shiny > 0).count() as u32;
-        let catches: u32 = cards.values().map(|c| c.count).sum();
-        let biggest = cards.values().map(|c| c.best_cm).max().unwrap_or(1).max(1);
-        let points = crate::fishing::points(cards);
-        self.fishing.floor.finished(crate::floor::GameRound { score: points, details: serde_json::json!({ "points": points, "species": species, "shiny": shinies, "catches": catches, "biggest": biggest }) });
-        self.fishing.floor.sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
     }
 
     /// The scene: the sky at this hour, the far bank, the water, the fishers on the near bank (the
@@ -1477,7 +1458,6 @@ impl App {
                 }
             }
             self.config.settings.fish_budget += earned;
-            self.fishing.save.dirty = true;
             self.save_config();
             self.fishing_sound(&[(880.0, 880.0, 0.06, 0.3), (1319.0, 1319.0, 0.12, 0.3)]);
             let title = t.fishing_resale_done.replace("{n}", &sold.to_string()).replace("{k}", &earned.to_string());
@@ -1486,7 +1466,6 @@ impl App {
         if let Some(cost) = buy {
             self.config.settings.fish_budget -= cost;
             self.config.settings.fish_rod = level + 1;
-            self.fishing.save.dirty = true;
             self.save_config();
             self.fishing_sound(hired_sound(Rarity::Rare, false));
             let rod = t.fishing_rods.split('|').nth(level as usize + 1).unwrap_or_default();
