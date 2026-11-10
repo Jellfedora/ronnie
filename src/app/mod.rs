@@ -4844,7 +4844,12 @@ impl App {
                     let Some(term) = tab.panes.get_mut(&id) else { continue };
                     term.remote = !local;
                     // Claude Code ended on the server: its conversations brought back, wiped there.
+                    // The connection lost: no run there any more (brought back at the next click).
+                    if !local && term.has_exited() {
+                        self.ssh_claude.ended(id);
+                    }
                     if !local && !term.take_claude_done().is_empty() {
+                        self.ssh_claude.ended(id);
                         if let Some(host) = tab.ssh.and_then(|h| self.config.ssh.iter().find(|x| x.id == h)) {
                             self.ssh_claude.sweep(ui.ctx(), host.clone(), self.askpass.clone());
                         }
@@ -4949,7 +4954,10 @@ impl App {
                             let root = sshclaude::root(host.id);
                             let dir = term.reported_cwd().and_then(|d| self.ssh_claude.absolute(host.id, &d)).map(PathBuf::from);
                             let mut launch = None;
-                            if button.clicked() && !egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
+                            // Already running here: the terminal brought forward.
+                            if button.clicked() && self.ssh_claude.runs_in(id) {
+                                term.request_focus(ui);
+                            } else if button.clicked() && !egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(button)) {
                                 match (&root, &dir) {
                                     (Some(root), Some(dir)) if crate::claude::has_sessions(Some(root), dir) => self.claude_history = Some(history::History::open(id, Some(root.clone()), dir.clone(), ui.ctx())),
                                     _ => {

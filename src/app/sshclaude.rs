@@ -52,6 +52,8 @@ struct Shared {
     homes: HashMap<Uuid, String>,
     /// Hosts being swept, and whether to sweep again once done.
     sweeping: HashMap<Uuid, bool>,
+    /// The panes where a run was started and hasn't said its end yet.
+    running: std::collections::HashSet<crate::pane::PaneId>,
 }
 
 #[derive(Default)]
@@ -69,6 +71,18 @@ impl Remote {
     /// What happened since last asked.
     pub(super) fn take(&self) -> Vec<Event> {
         self.shared.lock().map(|mut s| std::mem::take(&mut s.events)).unwrap_or_default()
+    }
+
+    /// Claude Code was started in `pane` and hasn't ended yet.
+    pub(super) fn runs_in(&self, pane: crate::pane::PaneId) -> bool {
+        self.shared.lock().is_ok_and(|s| s.running.contains(&pane))
+    }
+
+    /// The run in `pane` ended.
+    pub(super) fn ended(&self, pane: crate::pane::PaneId) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.running.remove(&pane);
+        }
     }
 
     pub(super) fn fail(&self, text: String) {
@@ -101,8 +115,11 @@ impl Remote {
             let go = go_script(&run, session.as_deref().filter(|_| resume.is_some()), &texts);
             let event = match prepare(&host, &askpass, &run, &go, resume.as_deref()) {
                 Ok(home) => {
-                    if let (Ok(mut s), Some(home)) = (shared.lock(), home) {
-                        s.homes.insert(host.id, home);
+                    if let Ok(mut s) = shared.lock() {
+                        if let Some(home) = home {
+                            s.homes.insert(host.id, home);
+                        }
+                        s.running.insert(pane);
                     }
                     Event::Ready { pane, typed: format!("{CLEAR} sh ~/{BASE}/runs/{run}/go\r") }
                 }
