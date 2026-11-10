@@ -30,6 +30,17 @@ pub(super) enum Reward {
 
 impl App {
     pub(super) fn unlocks(&self, game: HomeGame) -> Vec<Unlock> {
+        let mut list = self.unlocks_won(game);
+        // In development, everything is won (to try it all).
+        if !crate::config::OFFICIAL {
+            for u in list.iter_mut().filter(|u| !u.info) {
+                u.done = true;
+            }
+        }
+        list
+    }
+
+    fn unlocks_won(&self, game: HomeGame) -> Vec<Unlock> {
         let t = self.t();
         let s = &self.config.settings;
         match game {

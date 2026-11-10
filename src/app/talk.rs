@@ -1989,7 +1989,7 @@ impl App {
         }
         let busy = self.talk_ui.fixing.as_ref().is_some_and(|(r, ..)| r == room);
         let text = self.talk_ui.drafts.get(room).map(|d| d.trim().to_owned()).unwrap_or_default();
-        let unlocked = self.config.settings.four_online_played;
+        let unlocked = !crate::config::OFFICIAL || self.config.settings.four_online_played;
         let tip = if !unlocked { t.claude_locked } else if installed { t.talk_fix } else { t.talk_fix_missing };
         let installed = installed && unlocked;
         let usable = installed && self.talk.ready() && !text.is_empty() && self.talk_ui.fixing.is_none();

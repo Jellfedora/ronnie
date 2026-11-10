@@ -8,8 +8,9 @@
 //! standard input, one JSON line at each change, and the input closing (Ronnie gone) ends it. The
 //! pointer is read about 60 times a second; the window is only drawn again when something moves.
 //!
-//! The system's own pointer can't be replaced outside Ronnie: the wand and the lightsaber are drawn at
-//! its tip. macOS and Windows; not Linux (no way there to stay above everything for X11 and Wayland both).
+//! With the wand or the lightsaber, the system's pointer is hidden everywhere on macOS (it comes back by
+//! itself when the process ends, even crashing); on Windows it stays, the wand drawn at its tip. macOS
+//! and Windows; not Linux (no way there to stay above everything for X11 and Wayland both).
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -343,6 +344,8 @@ impl eframe::App for Overlay {
             self.trail.paint(&painter, &self.theme);
             busy |= self.trail.alive();
         }
+        // The wand or the lightsaber in place of the system's pointer.
+        os::hide_pointer(self.shown.pointer.is_some());
         match self.shown.pointer {
             Some(Pointer::Wand) => {
                 self.wand.step(local, click, now, dt);
@@ -392,6 +395,40 @@ mod os {
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         fn CFRelease(cf: *const c_void);
+        static kCFBooleanTrue: *const c_void;
+    }
+
+    // The window server's own calls (private, used by the pointer utilities): with this property, a
+    // process hides the pointer even while another one is in front.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn _CGSDefaultConnection() -> i32;
+        fn CGSSetConnectionProperty(cid: i32, target: i32, key: *const c_void, value: *const c_void) -> i32;
+        fn CGDisplayHideCursor(display: u32) -> i32;
+        fn CGDisplayShowCursor(display: u32) -> i32;
+    }
+
+    static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// The system's pointer hidden (`hide`) or shown again (once each: the window server counts them).
+    pub(super) fn hide_pointer(hide: bool) {
+        use std::sync::atomic::Ordering;
+        static ALLOWED: std::sync::Once = std::sync::Once::new();
+        // SAFETY: the window server's calls on our own connection; the key is a CFString kept alive.
+        unsafe {
+            if hide {
+                ALLOWED.call_once(|| {
+                    let key = objc2_foundation::NSString::from_str("SetsCursorInBackground");
+                    let cid = _CGSDefaultConnection();
+                    CGSSetConnectionProperty(cid, cid, objc2::rc::Retained::as_ptr(&key).cast(), kCFBooleanTrue);
+                });
+                if !HIDDEN.swap(true, Ordering::Relaxed) {
+                    CGDisplayHideCursor(0);
+                }
+            } else if HIDDEN.swap(false, Ordering::Relaxed) {
+                CGDisplayShowCursor(0);
+            }
+        }
     }
 
     /// The pointer, in points from the main screen's top left (as the windows are placed).
@@ -488,6 +525,9 @@ mod os {
         Mouse { at: Some(Pos2::new(p.x as f32 / scale, p.y as f32 / scale)), pressed }
     }
 
+    /// Windows keeps its pointer (replacing it system-wide would outlive a crash).
+    pub(super) fn hide_pointer(_hide: bool) {}
+
     /// The screen under `at` (points), and its work area.
     pub(super) fn screen_at(at: Pos2) -> Option<(Rect, Rect)> {
         // Back to pixels: the scales of the screens are tried until one holds the point.
@@ -513,6 +553,8 @@ mod os {
     pub(super) fn mouse() -> Mouse {
         Mouse::default()
     }
+
+    pub(super) fn hide_pointer(_hide: bool) {}
 
     pub(super) fn screen_at(_at: Pos2) -> Option<(Rect, Rect)> {
         None
