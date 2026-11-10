@@ -2211,6 +2211,7 @@ impl App {
                                     Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand)],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword)],
                                     _ => vec![],
                                 };
                                 let mut pointer = None;
@@ -2223,11 +2224,12 @@ impl App {
                                         ui.label(egui::RichText::new(label).size(12.5).color(theme.text));
                                     });
                                 }
-                                // One pointer at a time: the wand or the lightsaber.
-                                if pointer == Some(t.desktop_wand) {
-                                    picked.desktop_fx.saber = false;
-                                } else if pointer == Some(t.desktop_saber) {
-                                    picked.desktop_fx.wand = false;
+                                // One pointer at a time: the wand, the lightsaber or the sword.
+                                if let Some(on) = pointer.filter(|p| [t.desktop_wand, t.desktop_saber, t.desktop_sword].contains(p)) {
+                                    let fx = &mut picked.desktop_fx;
+                                    fx.wand = on == t.desktop_wand;
+                                    fx.saber = on == t.desktop_saber;
+                                    fx.sword = on == t.desktop_sword;
                                 }
                             }
                             if let (Some((have, need)), false, false) = (u.progress, u.done, u.info) {

@@ -945,6 +945,8 @@ pub struct DesktopFx {
     pub droid: bool,
     /// The pointer as a wand (Gryffindor).
     pub wand: bool,
+    /// The pointer as a sword (Game of Thrones).
+    pub sword: bool,
 }
 
 /// A candidate's card, at the fishing: how many caught, the biggest, the shiny ones, the first.

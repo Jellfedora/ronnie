@@ -35,6 +35,28 @@ fn sword(painter: &egui::Painter, a: Pos2, b: Pos2, width: f32) {
     painter.add(egui::Shape::convex_polygon(vec![hilt - across * width * 0.7, hilt + across * width * 0.7, b], STEEL, Stroke::NONE));
 }
 
+/// The pointer as a sword (only for the plain arrow).
+pub(super) fn pointer(ctx: &egui::Context) {
+    let Some(at) = ctx.input(|i| i.pointer.hover_pos()) else { return };
+    if ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Default {
+        return;
+    }
+    ctx.set_cursor_icon(egui::CursorIcon::None);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("sword-pointer")));
+    pointer_sword(&painter, at);
+}
+
+/// The sword of the pointer, its point at `at`, the hilt down and to the right: steel, a gold guard and
+/// pommel, a glint along the blade.
+pub(super) fn pointer_sword(painter: &egui::Painter, at: Pos2) {
+    let dir = Vec2::new(-0.55, -1.0).normalized();
+    let pommel = at - dir * 30.0;
+    sword(painter, pommel, at, 2.4);
+    // The edge catching the light.
+    let hilt = pommel + dir * 7.2;
+    painter.line_segment([hilt + dir * 2.0, at - dir * 3.0], Stroke::new(0.7, Color32::WHITE.gamma_multiply(0.7)));
+}
+
 /// The title in the sidebar, between two swords.
 pub(super) fn logo(painter: &egui::Painter, rect: Rect) {
     let c = rect.center();

@@ -5614,6 +5614,9 @@ impl App {
         if self.theme.wizard && !screen_pointer {
             self.wand.frame(ui.ctx());
         }
+        if self.theme.thrones && !screen_pointer {
+            thrones::pointer(ui.ctx());
+        }
         // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
         let today = chrono::Local::now().date_naive();
         let today_s = today.format("%Y-%m-%d").to_string();

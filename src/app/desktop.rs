@@ -1,5 +1,5 @@
-//! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the wand or the
-//! lightsaber at the pointer, the sheep and the droid walking along the foot of the screen.
+//! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the wand, the lightsaber
+//! or the sword at the pointer, the sheep and the droid walking along the foot of the screen.
 //!
 //! They live in a process of their own (`ronnie desktop-fx`), started by Ronnie while one of them is
 //! chosen: a transparent window over the screen where the pointer is, letting every click through, out of
@@ -35,6 +35,7 @@ pub(crate) struct Fx {
 enum Pointer {
     Wand,
     Saber,
+    Sword,
 }
 
 impl Fx {
@@ -92,6 +93,8 @@ impl App {
             Some(Pointer::Wand)
         } else if d.saber && star_wars {
             Some(Pointer::Saber)
+        } else if d.sword && (!official || crate::coffee::thrones_won(&s.coffee_bests)) {
+            Some(Pointer::Sword)
         } else {
             None
         };
@@ -354,6 +357,11 @@ impl eframe::App for Overlay {
             Some(Pointer::Saber) => {
                 if let Some(at) = local {
                     hyperspace::pointer_saber(&painter, at, self.theme.accent);
+                }
+            }
+            Some(Pointer::Sword) => {
+                if let Some(at) = local {
+                    thrones::pointer_sword(&painter, at);
                 }
             }
             None => {}
