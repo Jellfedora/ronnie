@@ -17,6 +17,10 @@ impl App {
         }
         // An account with a pseudo, on the floor this build talks to.
         let Some(account) = self.config.settings.floor.clone().filter(|a| a.name.is_some() && crate::floor::url().as_deref() == Some(a.url.as_str())) else { return };
+        // Without the key on this computer (the password not given here yet): nothing goes.
+        if !self.notesync.keyed(&account) {
+            return;
+        }
         let focused = ctx.input(|i| i.focused);
         if !self.notesync.due(now, focused) {
             return;
