@@ -118,11 +118,16 @@ pub(super) fn pointer(ctx: &egui::Context, theme: &Theme) {
     }
     ctx.set_cursor_icon(egui::CursorIcon::None);
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("saber-pointer")));
+    pointer_saber(&painter, at, theme.accent);
+}
+
+/// The lightsaber of the pointer, its tip at `at`.
+pub(super) fn pointer_saber(painter: &egui::Painter, at: Pos2, color: Color32) {
     let dir = Vec2::new(-0.55, -1.0).normalized();
     let (w, len): (f32, f32) = (2.6, 17.0);
     let hilt_len = (w * 5.5).max(14.0);
     let hilt = at - dir * (len + hilt_len + w * 0.3);
-    saber(&painter, hilt, dir, len, 1.0, w, theme.accent);
+    saber(painter, hilt, dir, len, 1.0, w, color);
 }
 
 /// Deterministic numbers in [0, 1) (the same stars at each frame).
@@ -237,7 +242,7 @@ fn tie(painter: &egui::Painter, c: Pos2, s: f32) {
 
 /// An astromech droid standing on `foot`, `h` tall: its silver dome with blue panels and its eye, its
 /// white body with blue panels, its two legs; its light blinks red and blue, it rocks now and then.
-fn droid(painter: &egui::Painter, foot: Pos2, h: f32, now: f64) {
+pub(super) fn droid(painter: &egui::Painter, foot: Pos2, h: f32, now: f64) {
     let k = h / 34.0;
     // Every six seconds, a little dance.
     let phase = (now % 6.0) as f32;

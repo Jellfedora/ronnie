@@ -69,10 +69,12 @@ x11rb = { version = "0.13", features = ["screensaver", "xtest"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+# The desktop effects' window kept out of the Dock (src/app/desktop.rs): already there through eframe.
+winit = { version = "0.30", default-features = false }
 muda = { version = "0.20.0", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSColor", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFilePromiseProvider", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSFileManager", "NSGeometry", "NSLocale", "NSNull", "NSOperation", "NSString", "NSURL", "NSValue"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSFileManager", "NSGeometry", "NSLocale", "NSNull", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "NSValue"] }
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "block2", "AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTime", "AVAudioTypes"] }
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
 objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-avf-audio", "SFErrors", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognitionTaskHint", "SFSpeechRecognizer", "SFTranscription"] }

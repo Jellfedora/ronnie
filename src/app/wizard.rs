@@ -810,6 +810,19 @@ impl Wand {
         let icon = ctx.output(|o| o.cursor_icon);
         // Over the text too (the terminals): its tip is as precise as the beam.
         let wand = at.filter(|_| matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::PointingHand | egui::CursorIcon::Text));
+        self.step(wand, ctx.input(|i| i.pointer.any_pressed()), now, dt);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("wand")));
+        if self.paint(&painter, wand, now) {
+            ctx.request_repaint();
+        }
+        if wand.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
+    }
+
+    /// `dt` seconds more, the wand's tip at `wand` (None: not shown), `pressed` a click: sparks where it
+    /// went, a burst and a ring of light at a click, the others moved on.
+    pub(super) fn step(&mut self, wand: Option<Pos2>, pressed: bool, now: f64, dt: f32) {
         if let Some(tip) = wand {
             // Sparks along the way, a few even still.
             let moved = self.last.map_or(0.0, |l| l.distance(tip));
@@ -820,7 +833,7 @@ impl Wand {
                 let size = 0.8 + self.random() * 1.4;
                 self.sparks.push(Spark { at: tip, v: Vec2::angled(a) * s, life: 1.0, size, gold });
             }
-            if ctx.input(|i| i.pointer.any_pressed()) {
+            if pressed {
                 self.cast = Some((tip, now));
                 // One click in three, a spell's name.
                 if self.random() < 1.0 / 3.0 {
@@ -846,7 +859,10 @@ impl Wand {
             let extra = self.sparks.len() - 260;
             self.sparks.drain(..extra);
         }
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("wand")));
+    }
+
+    /// The sparks, the ring of a spell, its name, and the wand at `wand`. Whether something still moves.
+    pub(super) fn paint(&mut self, painter: &egui::Painter, wand: Option<Pos2>, now: f64) -> bool {
         for s in &self.sparks {
             let color = if s.gold { GOLD } else { Color32::from_rgb(0xff, 0x6a, 0x4a) };
             painter.circle_filled(s.at, s.size * 2.2, color.gamma_multiply(0.15 * s.life));
@@ -873,18 +889,14 @@ impl Wand {
                     painter.text(at + Vec2::new(dx, dy), Align2::LEFT_CENTER, word, font.clone(), SCARLET.gamma_multiply(alpha));
                 }
                 painter.text(at, Align2::LEFT_CENTER, word, font, GOLD.gamma_multiply(alpha));
-                ctx.request_repaint();
             } else {
                 self.word = None;
             }
         }
         if let Some(tip) = wand {
-            ctx.set_cursor_icon(egui::CursorIcon::None);
-            paint_wand(&painter, tip, now);
+            paint_wand(painter, tip, now);
         }
-        if !self.sparks.is_empty() || self.cast.is_some() {
-            ctx.request_repaint();
-        }
+        !self.sparks.is_empty() || self.cast.is_some() || self.word.is_some()
     }
 }
 

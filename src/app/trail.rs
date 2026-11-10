@@ -81,6 +81,11 @@ impl Trail {
         self.sparks.retain(|s| s.life > 0.0);
     }
 
+    /// Sparks are still flying.
+    pub(super) fn alive(&self) -> bool {
+        !self.sparks.is_empty()
+    }
+
     /// The sparks, in the theme's colors.
     pub(super) fn paint(&self, painter: &egui::Painter, theme: &Theme) {
         let colors = [theme.accent, theme.ansi[5], theme.ansi[6], theme.ansi[3]];

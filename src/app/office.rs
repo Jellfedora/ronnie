@@ -117,6 +117,10 @@ impl super::App {
     /// The five-legged sheep, caught at the fishing: now and then a walk along the foot of the
     /// terminals, over them; hovered, it bleats.
     pub(super) fn sheep_walk(&mut self, ctx: &egui::Context) {
+        // Walking along the foot of the screen instead (`desktop`): not twice.
+        if self.desktop_draws().2 {
+            return;
+        }
         let Some(area) = self.terminals_rect.filter(|_| self.config.settings.sheep && sheep_unlocked(&self.config.settings)) else { return };
         let strip = Rect::from_min_max(Pos2::new(area.min.x + 6.0, area.max.y - 32.0), Pos2::new(area.max.x - 6.0, area.max.y - 2.0));
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sheep-walk")));

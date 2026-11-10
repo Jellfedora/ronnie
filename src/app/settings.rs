@@ -2203,6 +2203,33 @@ impl App {
                             ui.add_space(6.0);
                             ui.label(egui::RichText::new(&title).size(14.0).strong().color(if u.done { theme.text } else { theme.text.gamma_multiply(0.85) }));
                             ui.add(egui::Label::new(egui::RichText::new(&desc).size(12.5).color(theme.text_muted)).wrap());
+                            // Over the whole screen too (`desktop`), for those that can.
+                            if u.done && super::desktop::supported() {
+                                let fx = &mut picked.desktop_fx;
+                                let choices: Vec<(&str, &mut bool)> = match u.reward {
+                                    Some(super::unlocks::Reward::Trail) => vec![(t.desktop_trail, &mut fx.trail)],
+                                    Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand)],
+                                    _ => vec![],
+                                };
+                                let mut pointer = None;
+                                for (label, on) in choices {
+                                    ui.add_space(6.0);
+                                    ui.horizontal(|ui| {
+                                        if toggle(ui, theme, on).changed() && *on {
+                                            pointer = Some(label);
+                                        }
+                                        ui.label(egui::RichText::new(label).size(12.5).color(theme.text));
+                                    });
+                                }
+                                // One pointer at a time: the wand or the lightsaber.
+                                if pointer == Some(t.desktop_wand) {
+                                    picked.desktop_fx.saber = false;
+                                } else if pointer == Some(t.desktop_saber) {
+                                    picked.desktop_fx.wand = false;
+                                }
+                            }
                             if let (Some((have, need)), false, false) = (u.progress, u.done, u.info) {
                                 ui.add_space(4.0);
                                 let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(220.0), 6.0), Sense::hover());

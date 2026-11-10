@@ -20,6 +20,7 @@ use crate::update::{self, Updater};
 mod backup;
 mod bell;
 mod bigtext;
+mod desktop;
 mod sshclaude;
 mod complete;
 mod blob;
@@ -490,6 +491,8 @@ pub struct App {
     claude_typing: Vec<(PaneId, String, Instant)>,
     /// Claude Code on SSH servers, its conversations brought back here.
     ssh_claude: sshclaude::Remote,
+    /// The rewards over the whole screen, in a process of their own.
+    desktop: desktop::Desktop,
     /// The notices not seen yet, for every window (see `bell`), the last one's id, and the window
     /// listing them.
     notices: Vec<bell::Notice>,
@@ -1346,6 +1349,7 @@ impl App {
             claude_asks: Default::default(),
             claude_typing: Vec::new(),
             ssh_claude: Default::default(),
+            desktop: Default::default(),
             notices: Vec::new(),
             next_notice: 0,
             bell_open: None,
@@ -5596,16 +5600,18 @@ impl App {
                 self.window_title = title;
             }
         }
-        if self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best) {
+        // Drawn over the whole screen instead (`desktop`): not twice.
+        let (screen_trail, screen_pointer, _) = self.desktop_draws();
+        if self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best) && !screen_trail {
             self.trail.frame(ui.ctx(), &self.theme);
         }
         if self.theme.metal {
             paint_metal_pointer(ui.ctx(), &self.theme);
         }
-        if self.theme.hyperspace {
+        if self.theme.hyperspace && !screen_pointer {
             hyperspace::pointer(ui.ctx(), &self.theme);
         }
-        if self.theme.wizard {
+        if self.theme.wizard && !screen_pointer {
             self.wand.frame(ui.ctx());
         }
         // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
@@ -5677,6 +5683,11 @@ fn paint_metal_pointer(ctx: &egui::Context, theme: &Theme) {
     painter.add(egui::Shape::closed_line(outline, Stroke::new(1.2, gold)));
 }
 
+/// `ronnie desktop-fx`: the rewards over the whole screen (started by Ronnie, see `desktop`).
+pub fn run_desktop_fx() {
+    desktop::run();
+}
+
 impl eframe::App for App {
     // Also called while the window is minimized or hidden, when `ui` isn't: that's when commands done and
     // Claude done are worth telling.
@@ -5695,6 +5706,7 @@ impl eframe::App for App {
         self.auto_backup_poll(ctx);
         self.recap_poll(ctx);
         self.progress_tick(ctx);
+        self.desktop_tick();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

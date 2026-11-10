@@ -714,6 +714,9 @@ pub struct Settings {
     /// The pointer's trail of sparks, once unlocked at Ronnie Run.
     #[serde(default = "default_true")]
     pub cursor_trail: bool,
+    /// The rewards shown over the whole screen too, outside Ronnie (`app::desktop`).
+    #[serde(default)]
+    pub desktop_fx: DesktopFx,
     /// The five-legged sheep grazing at the foot of the sidebar, once caught at the fishing.
     #[serde(default = "default_true")]
     pub sheep: bool,
@@ -926,6 +929,22 @@ fn default_mail_port() -> u16 {
 
 fn default_projects_port() -> u16 {
     crate::projects::DEFAULT_PORT
+}
+
+/// The rewards shown over the whole screen, outside Ronnie too (each its own choice, off at first).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct DesktopFx {
+    /// The pointer's trail of sparks.
+    pub trail: bool,
+    /// The five-legged sheep walking along the foot of the screen.
+    pub sheep: bool,
+    /// The pointer as a lightsaber (Star Wars).
+    pub saber: bool,
+    /// The droid rolling along the foot of the screen (Star Wars).
+    pub droid: bool,
+    /// The pointer as a wand (Gryffindor).
+    pub wand: bool,
 }
 
 /// A candidate's card, at the fishing: how many caught, the biggest, the shiny ones, the first.
@@ -1483,7 +1502,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
     }
 }
 

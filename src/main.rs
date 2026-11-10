@@ -261,6 +261,11 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    // The rewards over the whole screen, outside Ronnie too (started by Ronnie).
+    if std::env::args().nth(1).as_deref() == Some("desktop-fx") {
+        app::run_desktop_fx();
+        return Ok(());
+    }
     // A note for the Ronnie running (Claude adds them so).
     if std::env::args().nth(1).as_deref() == Some("note") {
         if let Err(e) = claude::run_note() {
