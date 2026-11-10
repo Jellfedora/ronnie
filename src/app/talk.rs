@@ -481,6 +481,24 @@ impl App {
             self.talk.set_nicknames(&self.config.settings.talk_nicknames);
         }
         let news = self.talk.frame(ctx, self.config.settings.floor.as_ref(), on);
+        // The names given to others, as floor keeps them: the first time, this computer's sent up.
+        if let Some((mut kept, arriving)) = news.nicknames {
+            let first = arriving && !self.config.settings.talk_nicknames_synced;
+            if first {
+                for (id, name) in &self.config.settings.talk_nicknames {
+                    if !kept.contains_key(id) {
+                        self.talk.nickname(id, Some(name));
+                        kept.insert(id.clone(), name.clone());
+                    }
+                }
+                self.config.settings.talk_nicknames_synced = true;
+            }
+            if first || kept != self.config.settings.talk_nicknames {
+                self.config.settings.talk_nicknames = kept;
+                self.save_config();
+                self.talk.set_nicknames(&self.config.settings.talk_nicknames);
+            }
+        }
         if news.forgotten {
             if let Some(account) = &mut self.config.settings.floor {
                 account.name = None;
@@ -2190,7 +2208,9 @@ impl App {
             let given = buf.trim().to_owned();
             if given.is_empty() || given == real {
                 self.config.settings.talk_nicknames.remove(id);
+                self.talk.nickname(id, None);
             } else {
+                self.talk.nickname(id, Some(&given));
                 self.config.settings.talk_nicknames.insert(id.clone(), given);
             }
             self.save_config();

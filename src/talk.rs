@@ -361,6 +361,9 @@ enum Wire {
         #[serde(default)]
         players: Vec<Member>,
         rooms: Vec<WireRoom>,
+        /// The names the player gave others (an older floor doesn't keep them).
+        #[serde(default)]
+        nicknames: Option<HashMap<String, String>>,
     },
     #[serde(rename = "msg")]
     Msg { room: String, m: Message },
@@ -376,6 +379,9 @@ enum Wire {
     Online { players: Vec<Member> },
     #[serde(rename = "players")]
     Players { players: Vec<Member> },
+    /// The names the player gives others, changed (on this computer or another).
+    #[serde(rename = "nicknames")]
+    Nicknames { nicknames: HashMap<String, String> },
     /// The player's status, changed (on this computer or another).
     #[serde(rename = "status")]
     Status { status: Presence },
@@ -447,6 +453,9 @@ pub struct News {
     pub refused: Option<String>,
     /// floor doesn't know the account: the pseudo is to pick again.
     pub forgotten: bool,
+    /// The names the player gave others, as floor keeps them (`true`: on arriving, this computer's
+    /// to be sent up if they never were).
+    pub nicknames: Option<(HashMap<String, String>, bool)>,
 }
 
 /// Kept by the app: the connection, and what floor sent.
@@ -687,7 +696,8 @@ impl Talk {
 
     fn take(&mut self, wire: Wire, news: &mut News) {
         match wire {
-            Wire::Welcome { me, online, players, rooms } => {
+            Wire::Welcome { me, online, players, rooms, nicknames } => {
+                news.nicknames = nicknames.map(|n| (n, true));
                 self.status = Status::Ready;
                 self.falls = 0;
                 // Those known before the fall, for messages missed while away.
@@ -775,6 +785,7 @@ impl Talk {
             Wire::Gone { room } => self.rooms.retain(|r| r.id != room),
             Wire::Online { players } => self.online = players,
             Wire::Players { players } => self.everyone = players,
+            Wire::Nicknames { nicknames } => news.nicknames = Some((nicknames, false)),
             Wire::Status { status } => {
                 if let Some(me) = &mut self.me {
                     me.status = status;
@@ -943,6 +954,13 @@ impl Talk {
     /// `pig` event).
     pub fn pig(&mut self, room: &str) {
         self.send(json!({ "t": "pig", "room": room }));
+    }
+
+    /// A name given to someone (None: their pseudo back), for floor to keep with the account.
+    pub fn nickname(&mut self, id: &str, name: Option<&str>) {
+        if self.status == Status::Ready {
+            self.send(json!({ "t": "nickname", "id": id, "name": name }));
+        }
     }
 
     /// The player's status (online until floor says otherwise).
