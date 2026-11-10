@@ -429,7 +429,13 @@ impl App {
     /// The conversations not read: how many messages, in all.
     pub(super) fn talk_unread(&self) -> usize {
         let Some(me) = &self.talk.me else { return 0 };
-        self.talk.rooms.iter().map(|r| r.unread(&me.id, self.config.settings.talk_read.get(&r.id).copied().unwrap_or(0))).sum()
+        self.talk.rooms.iter().map(|r| r.unread(&me.id, self.talk_read_up_to(r, &me.id))).sum()
+    }
+
+    /// Where the player read a conversation up to: on this computer, or on another one (floor keeps it).
+    fn talk_read_up_to(&self, room: &Room, me: &str) -> i64 {
+        let here = self.config.settings.talk_read.get(&room.id).copied().unwrap_or(0);
+        here.max(room.reads.get(me).copied().unwrap_or(0))
     }
 
     /// The chat at each frame: connected with a pseudo (unless its category is hidden), the messages
@@ -658,7 +664,7 @@ impl App {
             .rooms
             .iter()
             .map(|r| {
-                let read = self.config.settings.talk_read.get(&r.id).copied().unwrap_or(0);
+                let read = self.talk_read_up_to(r, &me);
                 let online = r.peer(&me).is_some_and(|p| self.talk.is_online(&p.id));
                 let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id), self.talk.frame_of(&p.id)));
                 (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer)
