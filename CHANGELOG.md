@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.46.0] - 2026-11-10
+
+### Nouveautés
+
+- **Ta progression dans les jeux suit ton compte** : records, déblocages, thèmes gagnés et toute la pêche aux talents (cartes, brillantes, appâts, budget, canne) sont les mêmes sur tous les postes où tu es connecté. Ce que tu fais sur chaque poste s'additionne, rien ne s'écrase, et ce que tu avais déjà gagné de chaque côté est mis en commun à la première synchro. Merci à Jonathan !
+- **Claude Code sur un serveur SSH** : un bouton Claude dans la barre du terminal SSH lance Claude Code sur le serveur, dans le dossier courant, et l'installe s'il n'y est pas (tu t'y connectes une fois par serveur). À la fin, les conversations sont rapatriées sur ton poste et effacées du serveur. Comme en local, le bouton liste les conversations de ce dossier pour en reprendre une, la renommer ou la supprimer.
+
+### Corrections
+
+- La liste des notifications de la cloche est plus haute : on en voit plusieurs d'un coup sans avoir à défiler.
+
 ## [0.45.0] - 2026-11-07
 
 ### Nouveautés
