@@ -2,6 +2,22 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.47.0] - 2026-11-10
+
+### Nouveautés
+
+- **Tes notes sur tous tes postes**, chiffrées : dans Paramètres › Compte, « Synchroniser mes notes » (désactivé au départ) garde tes notes, leurs dossiers, leurs images et leurs pièces jointes sur le serveur avec ton compte. Elles partent chiffrées sur ton poste : le serveur ne peut pas les lire. La clé est protégée par le mot de passe de ton compte : sur un autre poste, il suffit de te connecter (ou de le retaper une fois) pour tout retrouver. Si une note a été modifiée sur deux postes, c'est la modification la plus récente qui gagne.
+- **Ton statut dans le tchat** : un clic sur le point à côté du titre « Tchat » pour être en ligne (au départ), occupé (ni notifications, ni wizz, ni cochon des autres, et un point orange chez eux) ou hors ligne (tu disparais de la liste des connectés, mais tu reçois toujours les messages). Il est le même sur tous tes postes.
+- **Les noms que tu donnes à tes contacts** te suivent sur tous tes postes.
+- **Les effets des récompenses sur tout l'écran** (macOS, Windows), en dehors de Ronnie aussi : la traînée du pointeur, la baguette, le sabre laser, le mouton et le droïde en bas de l'écran. Un interrupteur sous chaque récompense, désactivé au départ. Avec la baguette ou le sabre, le pointeur du système est caché partout sur macOS.
+- **Game of Thrones a son pointeur** : une épée d'acier à la garde dorée. Chaque thème qui a son propre pointeur (Ronnie Métal, Star Wars, Gryffondor, Game of Thrones) a un interrupteur pour l'avoir dans Ronnie.
+- **Ajouter un serveur SSH en ligne de commande** : `ronnie ssh add prod deploy@10.0.0.5:2222 --key ~/.ssh/id_ed25519 --group Clients` (et `ronnie ssh` pour la liste). Aucun mot de passe ne passe par là : pour un serveur à mot de passe, tu le saisis dans Ronnie. Claude peut aussi en ajouter quand tu le lui demandes. `ronnie` se tape maintenant tel quel dans les terminaux de Ronnie.
+
+### Corrections
+
+- Tchat : une conversation lue sur un autre poste n'apparaît plus comme non lue.
+- Tchat : « ⌘ V » avec une image dans le presse-papier la colle à tous les coups, même en lâchant ⌘ avant V.
+
 ## [0.46.0] - 2026-11-10
 
 ### Nouveautés
