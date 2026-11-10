@@ -51,6 +51,33 @@ pub struct Member {
     /// The badges floor gave it (the fishing's « chasseur », `app::office`).
     #[serde(default)]
     pub badges: Vec<String>,
+    /// The status it gave itself (sent for the player and for those online; an older floor doesn't).
+    #[serde(default)]
+    pub status: Presence,
+}
+
+/// The status a player gives themself: online (at first), busy (not disturbed: no notifications, no
+/// wizz bringing Ronnie to the front), offline (out of the others' list of those online, but still
+/// connected: the messages come).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Presence {
+    #[default]
+    Online,
+    Busy,
+    Offline,
+}
+
+impl Presence {
+    pub const ALL: [Presence; 3] = [Presence::Online, Presence::Busy, Presence::Offline];
+
+    fn wire(self) -> &'static str {
+        match self {
+            Presence::Online => "online",
+            Presence::Busy => "busy",
+            Presence::Offline => "offline",
+        }
+    }
 }
 
 /// A reaction to a message: an emoji, and the players who reacted so.
@@ -349,6 +376,9 @@ enum Wire {
     Online { players: Vec<Member> },
     #[serde(rename = "players")]
     Players { players: Vec<Member> },
+    /// The player's status, changed (on this computer or another).
+    #[serde(rename = "status")]
+    Status { status: Presence },
     #[serde(rename = "typing")]
     Typing { room: String, from: Member },
     #[serde(rename = "history")]
@@ -745,6 +775,11 @@ impl Talk {
             Wire::Gone { room } => self.rooms.retain(|r| r.id != room),
             Wire::Online { players } => self.online = players,
             Wire::Players { players } => self.everyone = players,
+            Wire::Status { status } => {
+                if let Some(me) = &mut self.me {
+                    me.status = status;
+                }
+            }
             Wire::Typing { room, from } => {
                 if let Some(r) = self.rooms.iter_mut().find(|r| r.id == room) {
                     r.typing.retain(|(m, _)| m.id != from.id);
@@ -908,6 +943,32 @@ impl Talk {
     /// `pig` event).
     pub fn pig(&mut self, room: &str) {
         self.send(json!({ "t": "pig", "room": room }));
+    }
+
+    /// The player's status (online until floor says otherwise).
+    pub fn presence(&self) -> Presence {
+        self.me.as_ref().map_or(Presence::Online, |m| m.status)
+    }
+
+    /// The player's status changed: floor keeps it with the account and tells their other computers.
+    pub fn set_presence(&mut self, status: Presence) {
+        if self.status != Status::Ready {
+            return;
+        }
+        if let Some(me) = &mut self.me {
+            me.status = status;
+        }
+        self.send(json!({ "t": "status", "status": status.wire() }));
+    }
+
+    /// The status of someone online.
+    pub fn presence_of(&self, id: &str) -> Presence {
+        self.online.iter().find(|m| m.id == id).map_or(Presence::Online, |m| m.status)
+    }
+
+    /// Someone online says they are busy.
+    pub fn is_busy(&self, id: &str) -> bool {
+        self.online.iter().any(|m| m.id == id && m.status == Presence::Busy)
     }
 
     /// The player read a conversation up to this message: floor told (once each step).
@@ -1260,6 +1321,20 @@ mod tests {
     fn urls() {
         assert_eq!(ws_url("https://fedoheim.hopto.org/floor"), "wss://fedoheim.hopto.org/floor/v1/talk/ws");
         assert_eq!(ws_url("http://localhost:5002"), "ws://localhost:5002/v1/talk/ws");
+    }
+
+    #[test]
+    fn statuses() {
+        let mut talk = Talk::default();
+        let mut news = News::default();
+        assert_eq!(talk.presence(), Presence::Online);
+        let welcome = r#"{"t":"welcome","me":{"id":"d","name":"Dio","status":"offline"},"online":[{"id":"o","name":"Ozzy","status":"busy"},{"id":"l","name":"Lemmy"}],"rooms":[]}"#;
+        talk.take(serde_json::from_str(welcome).unwrap(), &mut news);
+        assert_eq!(talk.presence(), Presence::Offline);
+        assert!(talk.is_busy("o") && !talk.is_busy("l"));
+        assert_eq!(talk.presence_of("l"), Presence::Online);
+        talk.take(serde_json::from_str(r#"{"t":"status","status":"busy"}"#).unwrap(), &mut news);
+        assert_eq!(talk.presence(), Presence::Busy);
     }
 
     fn msg(id: i64, from: &str, text: &str) -> Message {

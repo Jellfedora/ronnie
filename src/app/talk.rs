@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use super::sidebar::{lerp_color, paint_panel_title, paint_row_bg};
 use super::*;
-use crate::talk::{Fetched, FileInfo, FileRefusal, Kind, Member, Message, Quote, Room, Status};
+use crate::talk::{Fetched, FileInfo, FileRefusal, Kind, Member, Message, Presence, Quote, Room, Status};
 
 /// Messages from the same person this close (ms) go under one name.
 const GROUPED_MS: i64 = 5 * 60 * 1000;
@@ -337,6 +337,38 @@ fn tint(theme: &Theme, name: &str) -> Color32 {
 /// A player's avatar: their picture, else a round with the pseudo's first letter (a group: two little
 /// rounds); the frame they wear around it (`super::frames`).
 #[allow(clippy::too_many_arguments)]
+/// Busy's colour: between red and yellow.
+fn busy_color(theme: &Theme) -> Color32 {
+    lerp_color(theme.ansi[1], theme.ansi[3], 0.45)
+}
+
+/// A status as a dot: green online, orange busy, an empty ring offline (`hole`: the background inside).
+fn paint_presence(painter: &egui::Painter, c: Pos2, r: f32, p: Presence, hole: Color32, theme: &Theme) {
+    match p {
+        Presence::Online => {
+            painter.circle_filled(c, r, theme.ansi[2]);
+        }
+        Presence::Busy => {
+            painter.circle_filled(c, r, busy_color(theme));
+            // A bar across, as "do not disturb".
+            painter.line_segment([c - Vec2::new(r * 0.55, 0.0), c + Vec2::new(r * 0.55, 0.0)], Stroke::new((r * 0.4).max(1.0), hole));
+        }
+        Presence::Offline => {
+            painter.circle_filled(c, r, theme.text_muted);
+            painter.circle_filled(c, r * 0.5, hole);
+        }
+    }
+}
+
+/// A status's name.
+fn presence_label(t: &Strings, p: Presence) -> &'static str {
+    match p {
+        Presence::Online => t.talk_status_online,
+        Presence::Busy => t.talk_status_busy,
+        Presence::Offline => t.talk_status_offline,
+    }
+}
+
 pub(super) fn paint_avatar(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, face: Option<&egui::TextureHandle>, frame: Option<&str>, theme: &Theme) {
     paint_face(painter, c, r, name, group, face, theme);
     if !group {
@@ -473,8 +505,13 @@ impl App {
         }
         // A wizz: told of, and the window shakes.
         // (One's own shakes one's window too, as it did on MSN, but isn't told of.)
+        // Busy: the others' wizz and pig don't come (nor bring Ronnie to the front).
+        let busy = self.talk.presence() == Presence::Busy;
         for (room, m) in &news.wizzed {
             let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
+            if busy && !mine {
+                continue;
+            }
             // Someone else's: Ronnie brought to the front (out of the Dock if it was there), its
             // conversation shown.
             let mut wait = Duration::ZERO;
@@ -505,6 +542,9 @@ impl App {
         // on everyone's screen, the sender's too.
         for (room, m) in &news.pigged {
             let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
+            if busy && !mine {
+                continue;
+            }
             let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
             let mut wait = Duration::ZERO;
             if !mine {
@@ -590,6 +630,10 @@ impl App {
 
     /// Told of, as the user likes (the system's notifications, Ronnie's own), a click leading there.
     fn talk_notify(&mut self, ctx: &egui::Context, focused: bool, room: String, title: String, body: String) {
+        // Busy: not disturbed.
+        if self.talk.presence() == Presence::Busy {
+            return;
+        }
         let style = self.config.settings.notify_style;
         if !focused || style.system() {
             crate::notify::send(&title, &body);
@@ -636,9 +680,39 @@ impl App {
             Status::Off => (theme.text_muted.gamma_multiply(0.5), None),
         };
         let dot_at = Pos2::new(head.max.x - 12.0, head.center().y);
-        painter.circle_filled(dot_at, 3.5, dot);
         if let Some(hint) = hint {
+            painter.circle_filled(dot_at, 3.5, dot);
             ui.interact(Rect::from_center_size(dot_at, Vec2::splat(14.0)), ui.id().with("talk-state"), Sense::hover()).on_hover_text(hint);
+        } else if self.talk.ready() {
+            // Connected: the player's status, a click to change it.
+            let presence = self.talk.presence();
+            let resp = ui.interact(Rect::from_center_size(dot_at, Vec2::splat(16.0)), ui.id().with("talk-state"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            paint_presence(&painter, dot_at, if resp.hovered() { 4.2 } else { 3.5 }, presence, theme.chrome_bg, &theme);
+            let resp = resp.on_hover_text(t.talk_status_hint.replace("{s}", presence_label(t, presence)));
+            let mut chosen = None;
+            egui::Popup::menu(&resp).width(250.0).show(|ui| {
+                for p in Presence::ALL {
+                    let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
+                    if r.hovered() {
+                        ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                    }
+                    paint_presence(ui.painter(), Pos2::new(rect.min.x + 10.0, rect.center().y), 4.0, p, ui.visuals().window_fill, &theme);
+                    let color = if p == presence { theme.text } else { theme.text_muted };
+                    ui.painter().text(Pos2::new(rect.min.x + 22.0, rect.center().y), Align2::LEFT_CENTER, presence_label(t, p), FontId::proportional(13.0), color);
+                    if p == presence {
+                        ui.painter().text(Pos2::new(rect.max.x - 8.0, rect.center().y), Align2::RIGHT_CENTER, "✓", FontId::proportional(13.0), theme.accent);
+                    }
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        chosen = Some(p);
+                        ui.close();
+                    }
+                }
+            });
+            if let Some(p) = chosen.filter(|&p| p != presence) {
+                self.talk.set_presence(p);
+            }
+        } else {
+            painter.circle_filled(dot_at, 3.5, dot);
         }
         *y += SECTION_HEADER_H;
 
@@ -665,7 +739,7 @@ impl App {
             .iter()
             .map(|r| {
                 let read = self.talk_read_up_to(r, &me);
-                let online = r.peer(&me).is_some_and(|p| self.talk.is_online(&p.id));
+                let online = r.peer(&me).filter(|p| self.talk.is_online(&p.id)).map(|p| self.talk.presence_of(&p.id));
                 let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id), self.talk.frame_of(&p.id)));
                 (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer)
             })
@@ -680,9 +754,9 @@ impl App {
             paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
             let c = Pos2::new(slot.min.x + 17.0, slot.center().y);
             paint_avatar(&painter, c, 10.0, title, *group, face.as_ref(), worn, &theme);
-            if *online {
+            if let Some(p) = online {
                 painter.circle_filled(c + Vec2::new(7.5, 7.5), 4.0, theme.chrome_bg);
-                painter.circle_filled(c + Vec2::new(7.5, 7.5), 2.8, theme.ansi[2]);
+                paint_presence(&painter, c + Vec2::new(7.5, 7.5), 2.8, *p, theme.chrome_bg, &theme);
             }
             let strong = *unread > 0;
             let color = if active || resp.hovered() || strong { theme.text } else { theme.text_muted };
@@ -752,7 +826,7 @@ impl App {
             super::office::paint_badge(&painter, c, 9.0, &m.badges);
             if *online {
                 painter.circle_filled(c + Vec2::new(7.0, 7.0), 3.8, theme.chrome_bg);
-                painter.circle_filled(c + Vec2::new(7.0, 7.0), 2.6, theme.ansi[2]);
+                paint_presence(&painter, c + Vec2::new(7.0, 7.0), 2.6, self.talk.presence_of(&m.id), theme.chrome_bg, &theme);
             }
             let color = match (resp.hovered(), *online) {
                 (true, _) => theme.text,
@@ -839,6 +913,7 @@ impl App {
         painter.text(Pos2::new(text_x, head.center().y - 8.0), Align2::LEFT_CENTER, &title, FontId::proportional(16.0), theme.text);
         let sub = match room.kind {
             Kind::Dm => match room.peer(&me) {
+                Some(p) if self.talk.is_busy(&p.id) => (t.talk_busy_now.to_owned(), busy_color(&theme)),
                 Some(p) if self.talk.is_online(&p.id) => (t.talk_online_now.to_owned(), theme.ansi[2]),
                 _ => (t.talk_offline.to_owned(), theme.text_muted),
             },
