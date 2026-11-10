@@ -125,6 +125,8 @@ pub(super) struct TalkUi {
     pub room: Option<String>,
     /// What is being written, by conversation.
     drafts: HashMap<String, String>,
+    /// V seen pressed (typed): egui says nothing of the press of ⌘ V with no text on the clipboard.
+    v_down: bool,
     focus: bool,
     picker: Option<Picker>,
     /// A group being renamed: its id, the name typed.
@@ -644,6 +646,27 @@ impl App {
         if style.in_app() {
             self.push_toast(Toast { ok: true, title, body, tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: Some(drive::Lead::Talk(room)) });
         }
+    }
+
+    /// ⌘ V let go with no text on the clipboard (egui told nothing of its press). V let go with ⌘
+    /// still held, or with no press of V seen before it: ⌘ let go first, the release comes without it.
+    fn talk_paste_let_go(&mut self, ui: &Ui) -> bool {
+        let mut let_go = false;
+        ui.input(|i| {
+            for e in &i.events {
+                if let egui::Event::Key { key: egui::Key::V, pressed, modifiers, repeat, .. } = e {
+                    if *pressed {
+                        if !repeat {
+                            self.talk_ui.v_down = true;
+                        }
+                    } else {
+                        let_go |= modifiers.command || !self.talk_ui.v_down;
+                        self.talk_ui.v_down = false;
+                    }
+                }
+            }
+        });
+        let_go
     }
 
     /// The chat's page, in this window: shown instead of the tabs.
@@ -1173,9 +1196,12 @@ impl App {
         // ⌘ V with files or an image on the clipboard: sent (their name, a link, kept out of the field).
         // With text, egui says so on the press; with none, only the key let go does.
         let mut pasted_files: Vec<std::path::PathBuf> = Vec::new();
+        if !(self.talk.ready() && focused_before) {
+            self.talk_paste_let_go(ui);
+        }
         if self.talk.ready() && focused_before {
             let text = ui.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }));
-            let let_go = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)));
+            let let_go = self.talk_paste_let_go(ui);
             if (text.is_some() || let_go)
                 && let Some((media, keep_text)) = clipboard_media(text.as_deref())
             {
