@@ -124,7 +124,47 @@ pub fn local_command(history: Option<&Path>) -> CommandBuilder {
     #[cfg(not(windows))]
     let mut cmd = local_unix_command(history);
     use_node(&mut cmd, history);
+    reach_ronnie(&mut cmd);
     cmd
+}
+
+/// A folder holding `ronnie` (a link to this program; on Windows, its own folder), so that `ronnie
+/// ssh add …` and the others are typed as they are in a pane. Made once a run (the program may move).
+fn cli_dir() -> Option<&'static Path> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe = crate::update::appimage().or_else(|| std::env::current_exe().ok())?;
+        if cfg!(windows) {
+            return exe.parent().map(Path::to_path_buf);
+        }
+        #[cfg(unix)]
+        {
+            let dir = crate::config::config_dir()?.join("bin");
+            std::fs::create_dir_all(&dir).ok()?;
+            let link = dir.join("ronnie");
+            if std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
+                let _ = std::fs::remove_file(&link);
+                std::os::unix::fs::symlink(&exe, &link).ok()?;
+            }
+            Some(dir)
+        }
+        #[cfg(not(unix))]
+        None
+    })
+    .as_deref()
+}
+
+/// That folder last in the PATH: nothing of the user's is hidden by it.
+fn reach_ronnie(cmd: &mut CommandBuilder) {
+    let Some(dir) = cli_dir() else { return };
+    let path = cmd.get_env("PATH").map(std::ffi::OsStr::to_os_string).or_else(|| std::env::var_os("PATH")).unwrap_or_default();
+    let paths: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    if paths.iter().any(|p| p == dir) {
+        return;
+    }
+    if let Ok(joined) = std::env::join_paths(paths.into_iter().chain(std::iter::once(dir.to_path_buf()))) {
+        cmd.env("PATH", joined);
+    }
 }
 
 /// The Node.js version picked for the pane (see `node`): its file, named as the pane's history, for

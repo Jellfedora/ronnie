@@ -71,6 +71,7 @@ impl App {
                 (None, Some(Lead::Talk(room)), _) => talk.as_ref() == Some(room),
                 (None, Some(Lead::Pane(id) | Lead::Doc(id, _)), _) => pane_shown(*id),
                 (None, Some(Lead::Profile(id)), _) => tab.is_some_and(|t| t.profile == Some(*id)),
+                (None, Some(Lead::Host(id)), _) => tab.is_some_and(|t| t.ssh == Some(*id)),
                 (None, None, Some(id)) => !n.stays() && pane_shown(id),
                 (None, None, None) => false,
             };

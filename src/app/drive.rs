@@ -25,6 +25,8 @@ pub(super) enum Lead {
     Dev,
     /// A conversation of the chat.
     Talk(String),
+    /// An SSH server: connected to.
+    Host(Uuid),
 }
 
 /// The pane `id` in `tabs`: its tab's index.
@@ -178,6 +180,7 @@ impl App {
                 self.notes_page = false;
                 self.open_talk_room(&room);
             }
+            Lead::Host(id) => self.open_ssh(id),
         }
     }
 
@@ -348,6 +351,8 @@ impl App {
                 Ok("Proposed to the user (a notice to accept).".into())
             }
             Ask::Profile(profile) => self.make_profile(ctx, profile),
+            Ask::Hosts => Ok(self.hosts_text()),
+            Ask::Host(new) => self.make_host(new),
             Ask::OpenProfile { name } => {
                 let profile = self.config.profiles.iter().find(|p| p.tab.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))).ok_or_else(|| format!("no profile {name}"))?;
                 let (id, state) = (profile.id, profile.tab.clone());
@@ -407,6 +412,91 @@ impl App {
         }
         self.claude_notice(t.claude_made_profile, new.name.clone(), Lead::Profile(id));
         Ok(format!("Profile {} saved (in the left column). The user is told.", new.name))
+    }
+
+    /// The SSH servers saved, for Claude: name, address, login, group (never a password).
+    fn hosts_text(&self) -> String {
+        if self.config.ssh.is_empty() {
+            return "No SSH server saved.".into();
+        }
+        let mut out = String::new();
+        for h in &self.config.ssh {
+            let auth = match h.auth_method() {
+                crate::ssh::SshAuth::Auto => "ssh's defaults".to_owned(),
+                crate::ssh::SshAuth::Key => format!("key {}", h.identity_file.as_ref().map_or("(ssh's)".into(), |p| p.display().to_string())),
+                crate::ssh::SshAuth::Password => if h.password_saved { "password saved in Ronnie".into() } else { "password (not saved yet)".into() },
+                crate::ssh::SshAuth::Ask => "password typed each time".into(),
+                crate::ssh::SshAuth::Interactive => "the server's questions".into(),
+            };
+            let group = self.config.groups.iter().find(|g| g.items.contains(&h.id)).map(|g| format!(", group \"{}\"", g.name)).unwrap_or_default();
+            let jump = h.jump.as_ref().map(|j| format!(", through {j}")).unwrap_or_default();
+            out.push_str(&format!("\"{}\" {} ({auth}{jump}{group})\n", h.name, h.address()));
+        }
+        out
+    }
+
+    /// An SSH server saved from `ronnie ssh add`.
+    fn make_host(&mut self, new: &crate::drive::NewHost) -> Result<String, String> {
+        use crate::ssh::{SshAuth, SshHost};
+        let name = new.name.trim();
+        if name.is_empty() || new.host.trim().is_empty() || new.host.contains(char::is_whitespace) {
+            return Err("a server needs a name and an address (without spaces)".into());
+        }
+        if self.config.ssh.iter().any(|h| h.name.eq_ignore_ascii_case(name)) {
+            return Err(format!("an SSH server named {name} exists already"));
+        }
+        let auth = match new.auth.as_deref() {
+            None => if new.key.is_some() { SshAuth::Key } else { SshAuth::Auto },
+            Some("auto") => SshAuth::Auto,
+            Some("key") => SshAuth::Key,
+            Some("password") => SshAuth::Password,
+            Some("ask") => SshAuth::Ask,
+            Some("interactive") => SshAuth::Interactive,
+            Some(other) => return Err(format!("{other}: --auth is auto, key, password, ask or interactive")),
+        };
+        if let Some(key) = &new.key
+            && !key.is_file()
+        {
+            return Err(format!("{}: no such key file", key.display()));
+        }
+        let color = match &new.color {
+            Some(hex) => {
+                let digits = hex.trim_start_matches('#');
+                let v = u32::from_str_radix(digits, 16).ok().filter(|_| digits.len() == 6).ok_or_else(|| format!("{hex}: a color is #rrggbb"))?;
+                Some(egui::Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+            }
+            None => None,
+        };
+        let host = SshHost {
+            name: name.to_owned(),
+            host: new.host.trim().to_owned(),
+            user: new.user.clone(),
+            port: new.port.filter(|p| *p != 22),
+            auth: Some(auth),
+            identity_file: new.key.clone(),
+            jump: new.jump.clone().filter(|j| !j.trim().is_empty()),
+            start_dir: new.dir.clone().filter(|d| !d.trim().is_empty()),
+            color,
+            ..SshHost::new()
+        };
+        let id = host.id;
+        self.config.ssh.push(host);
+        // In its group (made at the top of the SSH section if there is none of that name).
+        let group = new.group.as_deref().map(str::trim).filter(|g| !g.is_empty());
+        match group {
+            Some(g) => {
+                let found = self.config.groups.iter_mut().find(|x| !x.local && !x.db && x.name.eq_ignore_ascii_case(g));
+                match found {
+                    Some(x) => x.items.push(id),
+                    None => self.config.groups.push(crate::config::Group { id: Uuid::new_v4(), name: g.to_owned(), collapsed: false, items: vec![id], local: false, db: false, parent: None, extra: Default::default() }),
+                }
+            }
+            None => self.config.ungrouped.push(id),
+        }
+        let t = self.t();
+        self.claude_notice(t.claude_made_host, name.to_owned(), Lead::Host(id));
+        let more = if auth == SshAuth::Password { " Its password isn't saved: the user types it in the server's settings (right click › Edit), or at the first connection." } else { "" };
+        Ok(format!("SSH server {name} saved (left column, SSH servers). The user is told; a click on the notice connects.{more}"))
     }
 
     /// What Claude is told of the windows, tabs, panes and profiles.

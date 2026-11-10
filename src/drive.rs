@@ -37,6 +37,40 @@ pub enum Ask {
     Profile(NewProfile),
     /// A saved profile opened (in the background).
     OpenProfile { name: String },
+    /// The SSH servers saved (never their passwords).
+    Hosts,
+    /// An SSH server saved (in the left column).
+    Host(NewHost),
+}
+
+/// An SSH server to save. No password ever comes this way: for one saved by Ronnie, the user types
+/// it in the server's settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct NewHost {
+    pub name: String,
+    pub host: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// A private key file.
+    #[serde(default)]
+    pub key: Option<PathBuf>,
+    /// Jump host(s), as for `ssh -J`.
+    #[serde(default)]
+    pub jump: Option<String>,
+    /// auto, key, password, ask, interactive.
+    #[serde(default)]
+    pub auth: Option<String>,
+    /// A group of the SSH section (made if there is none of that name).
+    #[serde(default)]
+    pub group: Option<String>,
+    /// The folder sessions start in on the server.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// "#rrggbb".
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// What can be shown: a pane (its tab), the notes (one of them), the mails caught, the Dev page.
@@ -149,6 +183,11 @@ Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
   ronnie profile < profile.json         save a profile: {\"name\", \"color\"?: \"#rrggbb\", \"down\"?, \"open\"?,
                                         \"panes\": [{\"cwd\", \"name\"?, \"startup\"?, \"node\"?}]}
   ronnie profile open <name>            open a saved profile (in the background)
+  ronnie ssh                            the SSH servers saved (name, address, login, group)
+  ronnie ssh add <name> <[user@]host[:port]> [--key FILE] [--jump J] [--group G] [--dir D]
+                 [--auth auto|key|password|ask|interactive] [--color #rrggbb]
+                                        save an SSH server (never a password: for `password`,
+                                        the user types it in the server's settings in Ronnie)
   ronnie note [--folder F] [file]       add a Markdown note (else from stdin)
   ronnie note --edit <id> [file]        replace a note's Markdown (else from stdin)
   ronnie note --append <id> [file]      add Markdown at a note's end (else from stdin)
@@ -209,6 +248,11 @@ pub fn run_cli() -> Option<Result<(), String>> {
         },
         "notes" => notes(&rest),
         "mails" => mails(&rest),
+        "ssh" => match rest.as_slice() {
+            [] => ask(Ask::Hosts),
+            ["add", rest @ ..] => new_host(rest).and_then(|h| ask(Ask::Host(h))),
+            _ => Err(USAGE.into()),
+        },
         _ => return None,
     };
     Some(result.map(|text| {
@@ -285,6 +329,51 @@ fn view(rest: &[&str]) -> Result<View, String> {
         [_] => View::Pane(pane_arg(rest)?.0),
         _ => return Err(USAGE.into()),
     })
+}
+
+/// `ronnie ssh add`'s words: its name, its address, its options.
+fn new_host(words: &[&str]) -> Result<NewHost, String> {
+    let mut host = NewHost::default();
+    let mut plain = Vec::new();
+    let mut it = words.iter();
+    while let Some(word) = it.next() {
+        let mut value = || it.next().map(|v| (*v).to_owned()).ok_or_else(|| format!("{word}: a value after it"));
+        match *word {
+            "--key" => host.key = Some(absolute(&value()?)?),
+            "--jump" => host.jump = Some(value()?),
+            "--group" => host.group = Some(value()?),
+            "--dir" => host.dir = Some(value()?),
+            "--auth" => host.auth = Some(value()?),
+            "--color" => host.color = Some(value()?),
+            "--password" | "-p" => return Err("no password on the command line: save the server, then the user types it in its settings in Ronnie".into()),
+            w if w.starts_with("--") => return Err(format!("{w}: unknown option\n{USAGE}")),
+            w => plain.push(w),
+        }
+    }
+    let [name, address] = plain.as_slice() else { return Err(USAGE.into()) };
+    host.name = (*name).to_owned();
+    let (user, rest) = match address.rsplit_once('@') {
+        Some((u, r)) => (Some(u.to_owned()), r),
+        None => (None, *address),
+    };
+    // host:port, but an IPv6 address ([::1]:2222, or bare) keeps its colons.
+    let (addr, port) = match rest.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        Some((v6, tail)) => (v6.to_owned(), tail.strip_prefix(':')),
+        None => match rest.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h.to_owned(), Some(p)),
+            _ => (rest.to_owned(), None),
+        },
+    };
+    host.host = addr;
+    host.user = user.filter(|u| !u.is_empty());
+    host.port = match port {
+        Some(p) => Some(p.parse().map_err(|_| format!("{p}: a port is a number"))?),
+        None => None,
+    };
+    if host.host.is_empty() {
+        return Err(USAGE.into());
+    }
+    Ok(host)
 }
 
 fn profile() -> Result<String, String> {
@@ -545,6 +634,17 @@ mod tests {
         assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), ask);
         let show = serde_json::to_string(&Ask::Show { what: View::Pane(3) }).unwrap();
         assert_eq!(serde_json::from_str::<Ask>(&show).unwrap(), Ask::Show { what: View::Pane(3) });
+    }
+
+    #[test]
+    fn ssh_add_words() {
+        let h = new_host(&["prod", "deploy@10.0.0.5:2222", "--group", "Clients", "--auth", "key", "--key", "/tmp/id"]).unwrap();
+        assert_eq!((h.name.as_str(), h.host.as_str(), h.user.as_deref(), h.port, h.group.as_deref(), h.auth.as_deref()), ("prod", "10.0.0.5", Some("deploy"), Some(2222), Some("Clients"), Some("key")));
+        let h = new_host(&["v6", "[::1]:2200"]).unwrap();
+        assert_eq!((h.host.as_str(), h.port, h.user), ("::1", Some(2200), None));
+        assert_eq!(new_host(&["v6", "fe80::1"]).unwrap().host, "fe80::1");
+        assert!(new_host(&["x", "h", "--password", "secret"]).is_err());
+        assert!(new_host(&["x"]).is_err());
     }
 
     #[test]

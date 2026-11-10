@@ -470,7 +470,10 @@ pane with its number, folder, program and Node.js, and the saved profiles), `run
 running it: a dev server, a watcher… rather than in the background of your own shell), `output <pane>` (what a pane \
 shows), `tab`, `type <pane> <text>`, `cd <pane> <dir>`, `node <pane> <version|system>`, \
 `node available`, `node install <latest|lts|22|vX.Y.Z>`, `rename`, `close`, `profile` (save one, its JSON on \
-stdin; `profile open <name>`), `notes` / `notes show <id>` (read \
+stdin; `profile open <name>`), `ssh` (the SSH servers saved) / `ssh add <name> <[user@]host[:port]> [--key FILE] \
+[--jump J] [--group G] [--dir D] [--auth auto|key|password|ask|interactive]` (save one when the user asks: never \
+a password, on the command line or elsewhere; for one logging in by password, the user types it in Ronnie), \
+`notes` / `notes show <id>` (read \
 the user's notes), `note` (add one; `note --edit <id>` replaces a note's text, `note --append <id>` adds at its \
 end), `mails` / `mails show <id|last>` (the mails caught by the mail catcher: check a \
 project's mails yourself), `open <file>` and `show <pane|notes|mails|dev…>`. When the user asks for a note \
