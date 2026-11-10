@@ -5605,16 +5605,18 @@ impl App {
         if self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best) && !screen_trail {
             self.trail.frame(ui.ctx(), &self.theme);
         }
-        if self.theme.metal {
+        // The theme's own pointer, unless switched off.
+        let pointers = self.config.settings.theme_pointers;
+        if self.theme.metal && pointers.metal {
             paint_metal_pointer(ui.ctx(), &self.theme);
         }
-        if self.theme.hyperspace && !screen_pointer {
+        if self.theme.hyperspace && pointers.saber && !screen_pointer {
             hyperspace::pointer(ui.ctx(), &self.theme);
         }
-        if self.theme.wizard && !screen_pointer {
+        if self.theme.wizard && pointers.wand && !screen_pointer {
             self.wand.frame(ui.ctx());
         }
-        if self.theme.thrones && !screen_pointer {
+        if self.theme.thrones && pointers.sword && !screen_pointer {
             thrones::pointer(ui.ctx());
         }
         // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.

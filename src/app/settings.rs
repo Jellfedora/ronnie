@@ -2203,6 +2203,24 @@ impl App {
                             ui.add_space(6.0);
                             ui.label(egui::RichText::new(&title).size(14.0).strong().color(if u.done { theme.text } else { theme.text.gamma_multiply(0.85) }));
                             ui.add(egui::Label::new(egui::RichText::new(&desc).size(12.5).color(theme.text_muted)).wrap());
+                            // The theme's own pointer in Ronnie, for those that have one.
+                            if u.done {
+                                let p = &mut picked.theme_pointers;
+                                let own = match u.reward {
+                                    Some(super::unlocks::Reward::Theme(crate::theme::METAL_THEME)) => Some(&mut p.metal),
+                                    Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => Some(&mut p.saber),
+                                    Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => Some(&mut p.wand),
+                                    Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => Some(&mut p.sword),
+                                    _ => None,
+                                };
+                                if let Some(on) = own {
+                                    ui.add_space(6.0);
+                                    ui.horizontal(|ui| {
+                                        toggle(ui, theme, on);
+                                        ui.label(egui::RichText::new(t.theme_pointer).size(12.5).color(theme.text));
+                                    });
+                                }
+                            }
                             // Over the whole screen too (`desktop`), for those that can.
                             if u.done && super::desktop::supported() {
                                 let fx = &mut picked.desktop_fx;
