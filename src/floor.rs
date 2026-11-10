@@ -388,7 +388,7 @@ fn sync(url: &str, account: Option<FloorAccount>, round: Option<TypingScore>) ->
 }
 
 /// The account's requests: an error status is read (its message), not an error.
-fn account_agent() -> ureq::Agent {
+pub(crate) fn account_agent() -> ureq::Agent {
     ureq::config::Config::builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(15))).http_status_as_error(false).build().new_agent()
 }
 
@@ -427,7 +427,7 @@ fn answered(res: Result<ureq::http::Response<ureq::Body>, ureq::Error>, status: 
     Err(ClaimError::Refused(message))
 }
 
-fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Result<AccountDone, ClaimError> {
+pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Result<AccountDone, ClaimError> {
     #[derive(Deserialize)]
     struct Signed {
         id: String,

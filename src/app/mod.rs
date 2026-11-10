@@ -23,6 +23,7 @@ mod bigtext;
 mod sshclaude;
 mod complete;
 mod blob;
+mod progress;
 mod chat;
 mod dbview;
 mod drive;
@@ -560,6 +561,8 @@ pub struct App {
     updater: Updater,
     /// The leaderboards' server: its board, the sync running.
     floor: crate::floor::Floor,
+    /// The games' progress kept with the floor account, on every machine signed in to it.
+    progress: crate::progress::Progress,
     /// When the last automatic update check started (app time, seconds).
     last_update_check: Option<f64>,
     /// "Later" was clicked on the update invitation: don't show it again this session.
@@ -1386,6 +1389,7 @@ impl App {
             profile_error: None,
             updater: Updater::new(),
             floor: Default::default(),
+            progress: Default::default(),
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
@@ -5690,6 +5694,7 @@ impl eframe::App for App {
         self.watch_servers(ctx);
         self.auto_backup_poll(ctx);
         self.recap_poll(ctx);
+        self.progress_tick(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
