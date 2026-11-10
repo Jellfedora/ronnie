@@ -1,7 +1,7 @@
 //! Notes: folders of Markdown notes. The folders are a section of the sidebar; the page that takes the
 //! terminals' place shows a folder's notes by date and the note, either as Markdown to edit or rendered.
 //! Kept in notes.json; every note and folder has an id and the date of its last change, and
-//! deletions are kept as marks, for a sync to come.
+//! deletions are kept as marks, for the sync with floor (`crate::notesync`, when the player wants it).
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
@@ -39,7 +39,20 @@ const IMAGE_MAX_H: f32 = 420.0;
 pub struct Store {
     pub folders: Vec<Folder>,
     pub notes: Vec<Note>,
+    /// Notes deleted for good: their id and when, so that a sync deletes them elsewhere too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gone: Vec<Gone>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct Gone {
+    pub id: Uuid,
+    pub at: i64,
+}
+
+/// The marks of notes deleted for good are kept this long (a machine not synced since then gets
+/// them back).
+const GONE_DAYS: i64 = 365;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Folder {
@@ -158,6 +171,8 @@ pub(super) struct Notes {
     path: Option<PathBuf>,
     /// Changed since this time and not saved yet.
     dirty: Option<f64>,
+    /// Saved since the sync last looked.
+    saved: bool,
     error: Option<String>,
     place: Place,
     selected: Option<Uuid>,
@@ -248,7 +263,7 @@ const CELL: &str = "notes-cell";
 
 impl Notes {
     fn with(store: Store, path: Option<PathBuf>, error: Option<String>) -> Self {
-        Self { store, path, dirty: None, error, place: Place::Folder(None), selected: None, search: String::new(), rename: None, rendered: true, focus_search: false, focus_editor: false, layout: None, images: HashMap::new(), pending: None, notice: None, cell_edit: None, claude: None, cleaning: None, cleaned: None, clean_failed: None, claude_unlocked: false }
+        Self { store, path, dirty: None, saved: false, error, place: Place::Folder(None), selected: None, search: String::new(), rename: None, rendered: true, focus_search: false, focus_editor: false, layout: None, images: HashMap::new(), pending: None, notice: None, cell_edit: None, claude: None, cleaning: None, cleaned: None, clean_failed: None, claude_unlocked: false }
     }
 
     pub(super) fn load() -> Self {
@@ -261,7 +276,9 @@ impl Notes {
         let limit = now_ms() - TRASH_DAYS * 24 * 3600 * 1000;
         let before = notes.store.notes.len();
         // Notes left empty (Ronnie closed while one was being started) and old ones in the bin.
-        notes.store.notes.retain(|n| n.trashed.is_none_or(|at| at > limit) && (n.trashed.is_some() || !n.text.trim().is_empty()));
+        notes.drop_notes(|n| n.trashed.is_none_or(|at| at > limit) && (n.trashed.is_some() || !n.text.trim().is_empty()));
+        let old = now_ms() - GONE_DAYS * 24 * 3600 * 1000;
+        notes.store.gone.retain(|g| g.at > old);
         if notes.store.notes.len() != before {
             notes.dirty = Some(0.0);
         }
@@ -342,6 +359,7 @@ impl Notes {
         }
         let Some(path) = &self.path else { return };
         self.error = config::save(path, &self.store).err().map(|e| format!("{e:#}"));
+        self.saved = true;
     }
 
     pub(super) fn focus_search(&mut self) {
@@ -520,7 +538,7 @@ impl Notes {
     fn select(&mut self, id: Option<Uuid>) {
         if let Some(old) = self.selected.filter(|old| Some(*old) != id) {
             let before = self.store.notes.len();
-            self.store.notes.retain(|n| n.id != old || n.trashed.is_some() || !n.text.trim().is_empty());
+            self.drop_notes(|n| n.id != old || n.trashed.is_some() || !n.text.trim().is_empty());
             if self.store.notes.len() != before {
                 self.dirty.get_or_insert(0.0);
             }
@@ -698,14 +716,14 @@ impl Notes {
                 }
             }
             Action::Purge(id) => {
-                self.store.notes.retain(|n| n.id != id);
+                self.drop_notes(|n| n.id != id);
                 if self.selected == Some(id) {
                     self.selected = None;
                 }
                 self.sweep_files();
             }
             Action::EmptyTrash => {
-                self.store.notes.retain(|n| n.trashed.is_none());
+                self.drop_notes(|n| n.trashed.is_none());
                 if self.place == Place::Trash {
                     self.place = Place::Folder(None);
                     self.selected = self.listed().first().map(|n| n.id);
@@ -1688,6 +1706,103 @@ impl Notes {
         self.dirty.get_or_insert(time);
         set_cursor(ctx, Id::new(EDITOR), cursor);
         self.focus_editor = true;
+    }
+
+    /// Keeps the notes `keep` says, the others deleted for good (a mark of each kept for the sync).
+    fn drop_notes(&mut self, keep: impl Fn(&Note) -> bool) {
+        let at = now_ms();
+        let gone: Vec<Gone> = self.store.notes.iter().filter(|n| !keep(n)).map(|n| Gone { id: n.id, at: at.max(n.updated + 1) }).collect();
+        self.store.notes.retain(|n| keep(n));
+        self.store.gone.extend(gone);
+    }
+
+    /// The notes, folders and marks as they travel to floor; and the files the notes cite.
+    pub(super) fn sync_items(&self) -> (Vec<crate::notesync::Item>, std::collections::HashSet<String>) {
+        use crate::notesync::Item;
+        let mut cited = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        for n in &self.store.notes {
+            crate::notesync::cited_in(&n.text, &mut cited);
+            items.push(Item { kind: "note".into(), id: n.id.to_string(), data: serde_json::to_value(n).ok(), updated: n.updated });
+        }
+        for f in &self.store.folders {
+            items.push(Item { kind: "folder".into(), id: f.id.to_string(), data: serde_json::to_value(f).ok(), updated: f.updated });
+        }
+        for g in &self.store.gone {
+            items.push(Item { kind: "note".into(), id: g.id.to_string(), data: None, updated: g.at });
+        }
+        (items, cited)
+    }
+
+    /// What floor sent, merged: each note or folder more recent there than here takes its place.
+    /// `files`: files came down (the images not found before are read again).
+    pub(super) fn absorb(&mut self, items: Vec<crate::notesync::Item>, files: bool) {
+        let mut changed = false;
+        for item in items {
+            let Ok(id) = item.id.parse::<Uuid>() else { continue };
+            match (item.kind.as_str(), item.data) {
+                ("note", None) => {
+                    if self.store.notes.iter().any(|n| n.id == id && n.updated < item.updated) {
+                        self.store.notes.retain(|n| n.id != id);
+                        changed = true;
+                    }
+                    if !self.store.gone.iter().any(|g| g.id == id) {
+                        self.store.gone.push(Gone { id, at: item.updated });
+                    }
+                }
+                ("note", Some(data)) => {
+                    let Ok(note) = serde_json::from_value::<Note>(data) else { continue };
+                    if note.id != id || self.store.gone.iter().any(|g| g.id == id && g.at >= note.updated) {
+                        continue;
+                    }
+                    match self.store.notes.iter_mut().find(|n| n.id == id) {
+                        Some(n) if n.updated >= note.updated => {}
+                        Some(n) => {
+                            *n = note;
+                            changed = true;
+                        }
+                        None => {
+                            self.store.notes.push(note);
+                            changed = true;
+                        }
+                    }
+                }
+                ("folder", Some(data)) => {
+                    let Ok(folder) = serde_json::from_value::<Folder>(data) else { continue };
+                    if folder.id != id {
+                        continue;
+                    }
+                    match self.store.folders.iter_mut().find(|f| f.id == id) {
+                        Some(f) if f.updated >= folder.updated => {}
+                        Some(f) => {
+                            *f = folder;
+                            changed = true;
+                        }
+                        None => {
+                            self.store.folders.push(folder);
+                            changed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if files {
+            self.images.retain(|_, img| img.texture.is_some());
+        }
+        if changed {
+            self.layout = None;
+            self.cell_edit = None;
+            if self.selected.is_some_and(|id| self.note(id).is_none()) {
+                self.selected = self.listed().first().map(|n| n.id);
+            }
+            self.dirty.get_or_insert(0.0);
+        }
+    }
+
+    /// Whether the notes were saved since this was last asked (for the sync to send them).
+    pub(super) fn take_saved(&mut self) -> bool {
+        std::mem::take(&mut self.saved)
     }
 
     /// Deletes the files kept with the notes that no note links to any more (their notes deleted for good).
@@ -3193,7 +3308,7 @@ mod tests {
         let acme = folder("Acme", Some(clients.id));
         let home = folder("Home", None);
         let note = |text: &str, folder: Option<Uuid>| Note { id: Uuid::new_v4(), folder, text: text.into(), created: 0, updated: 0, pinned: false, trashed: None };
-        let store = Store { folders: vec![work.clone(), clients.clone(), acme.clone(), home.clone()], notes: vec![note("a", Some(acme.id)), note("b", Some(work.id)), note("Loose", None)] };
+        let store = Store { folders: vec![work.clone(), clients.clone(), acme.clone(), home.clone()], notes: vec![note("a", Some(acme.id)), note("b", Some(work.id)), note("Loose", None)], gone: Vec::new() };
         let notes = Notes::with(store, None, None);
         assert_eq!(notes.folder_paths().into_iter().map(|(_, p)| p).collect::<Vec<_>>(), ["Home", "Work", "Work › Clients", "Work › Clients › Acme"]);
         assert_eq!(notes.count_in(work.id), 2);
@@ -3201,5 +3316,28 @@ mod tests {
         let t = &crate::i18n::FR;
         let rows: Vec<String> = notes.entries(t).into_iter().map(|(_, n, _)| n).collect();
         assert_eq!(rows, ["Home", "Work", "Loose"]);
+    }
+
+    #[test]
+    fn synced_notes_merge() {
+        use crate::notesync::Item;
+        let note = |id: Uuid, text: &str, updated: i64| Note { id, folder: None, text: text.into(), created: 0, updated, pinned: false, trashed: None };
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let mut notes = Notes::with(Store { notes: vec![note(a, "ici", 10), note(b, "ici", 10)], ..Store::default() }, None, None);
+        let came = |n: Note| Item { kind: "note".into(), id: n.id.to_string(), updated: n.updated, data: serde_json::to_value(n).ok() };
+        // More recent there: taken; older: not; new: added.
+        notes.absorb(vec![came(note(a, "là-bas", 20)), came(note(b, "vieux", 5)), came(note(c, "nouvelle", 1))], false);
+        assert_eq!(notes.note(a).unwrap().text, "là-bas");
+        assert_eq!(notes.note(b).unwrap().text, "ici");
+        assert_eq!(notes.note(c).unwrap().text, "nouvelle");
+        // Deleted for good there: gone here, and not brought back by an older copy.
+        notes.absorb(vec![Item { kind: "note".into(), id: c.to_string(), data: None, updated: 30 }], false);
+        assert!(notes.note(c).is_none());
+        notes.absorb(vec![came(note(c, "nouvelle", 1))], false);
+        assert!(notes.note(c).is_none());
+        // Deleted here: its mark travels.
+        notes.drop_notes(|n| n.id != b);
+        let (items, _) = notes.sync_items();
+        assert!(items.iter().any(|i| i.id == b.to_string() && i.data.is_none() && i.updated > 10));
     }
 }

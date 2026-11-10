@@ -1221,6 +1221,37 @@ impl App {
                 sign_out = ui.add(egui::Button::new(egui::RichText::new(t.account_sign_out).size(13.0).color(theme.ansi[1])).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked();
             });
         });
+        // The notes on every machine (off at first).
+        if account.is_some() {
+            let mut on = self.config.settings.notes_sync;
+            card(ui, theme, Some(t.notes_sync_title), |ui| {
+                setting_row(ui, theme, t.notes_sync_setting, Some(t.notes_sync_desc), |ui| {
+                    toggle(ui, theme, &mut on);
+                });
+                if on {
+                    let (at, error, busy) = self.notesync.status();
+                    let (text, color) = match (busy, error, at) {
+                        (true, _, _) => (t.notes_sync_running.to_owned(), theme.text_muted),
+                        (_, Some(e), _) => (t.notes_sync_failed.replace("{e}", &e), theme.ansi[1]),
+                        (_, None, Some(at)) => {
+                            let when = chrono::DateTime::from_timestamp(at, 0).map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default();
+                            (t.notes_sync_done.replace("{t}", &when), theme.text_muted)
+                        }
+                        _ => (t.notes_sync_running.to_owned(), theme.text_muted),
+                    };
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(text).size(12.0).color(color));
+                    ui.add_space(8.0);
+                }
+            });
+            if on != self.config.settings.notes_sync {
+                self.config.settings.notes_sync = on;
+                self.save_config();
+                if on {
+                    self.notesync.soon();
+                }
+            }
+        }
         if manage {
             self.ask_pseudo();
         }

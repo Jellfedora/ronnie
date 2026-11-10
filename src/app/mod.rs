@@ -24,6 +24,7 @@ mod desktop;
 mod sshclaude;
 mod complete;
 mod blob;
+mod notesync;
 mod progress;
 mod chat;
 mod dbview;
@@ -566,6 +567,7 @@ pub struct App {
     floor: crate::floor::Floor,
     /// The games' progress kept with the floor account, on every machine signed in to it.
     progress: crate::progress::Progress,
+    notesync: crate::notesync::NoteSync,
     /// When the last automatic update check started (app time, seconds).
     last_update_check: Option<f64>,
     /// "Later" was clicked on the update invitation: don't show it again this session.
@@ -1394,6 +1396,7 @@ impl App {
             updater: Updater::new(),
             floor: Default::default(),
             progress: Default::default(),
+            notesync: Default::default(),
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
@@ -5711,6 +5714,7 @@ impl eframe::App for App {
         self.auto_backup_poll(ctx);
         self.recap_poll(ctx);
         self.progress_tick(ctx);
+        self.notesync_tick(ctx);
         self.desktop_tick();
     }
 
