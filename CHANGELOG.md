@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [0.47.1] - 2026-11-12
+
+### Nouveautés
+
+- **Le cadre d'avatar Holo** se débloque maintenant en attrapant les 38 cartes de la pêche aux talents, brillantes ou non.
+
+### Corrections
+
+- La série de jours d'affilée (thème Gryffondor) ne retombe plus à 1 quand tu passes d'un poste à l'autre, par exemple le PC du boulot en semaine et celui de la maison le soir. Merci à Jonathan !
+- macOS : avec la baguette, le sabre laser ou l'épée en dehors de Ronnie, le pointeur du système est bien caché (les deux s'affichaient à la fois).
+
 ## [0.47.0] - 2026-11-10
 
 ### Nouveautés
