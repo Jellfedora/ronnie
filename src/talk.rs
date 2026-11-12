@@ -54,6 +54,9 @@ pub struct Member {
     /// The status it gave itself (sent for the player and for those online; an older floor doesn't).
     #[serde(default)]
     pub status: Presence,
+    /// Bitten (Lundi matin's bite), until then (ms since 1970): green, growling, to be helped up.
+    #[serde(default)]
+    pub bitten: Option<i64>,
 }
 
 /// The status a player gives themself: online (at first), busy (not disturbed: no notifications, no
@@ -406,6 +409,9 @@ enum Wire {
     /// A message changed (edited, taken back), as it is now.
     #[serde(rename = "changed")]
     Changed { room: String, m: Message },
+    /// The player helped up after a bite (by whom).
+    #[serde(rename = "unbitten")]
+    Unbitten { by: String },
     #[serde(rename = "pong")]
     Pong {},
     #[serde(rename = "error")]
@@ -449,6 +455,9 @@ pub struct News {
     pub wizzed: Vec<(String, Message)>,
     /// The dancing pig sent to a conversation, by someone or by the player (room id, the message saying so).
     pub pigged: Vec<(String, Message)>,
+    /// Bitten by someone (their name), helped up by someone (their name).
+    pub bitten_me: Option<String>,
+    pub unbitten: Option<String>,
     /// floor refused something (its word).
     pub refused: Option<String>,
     /// floor doesn't know the account: the pseudo is to pick again.
@@ -731,6 +740,9 @@ impl Talk {
                 if m.event.as_deref() == Some("pig") {
                     news.pigged.push((room.clone(), m.clone()));
                 }
+                if m.event.as_deref() == Some("bite") && !mine {
+                    news.bitten_me = Some(m.name.clone().unwrap_or_default());
+                }
                 if m.event.as_deref() == Some("left") && !mine {
                     news.departed.push((room.clone(), m.clone()));
                 }
@@ -851,6 +863,7 @@ impl Talk {
                 }
             }
             Wire::Pong {} => {}
+            Wire::Unbitten { by } => news.unbitten = Some(by),
             Wire::Error { error } => news.refused = Some(error),
         }
     }
@@ -948,6 +961,22 @@ impl Talk {
     /// A wizz to a conversation: the others' window shakes (floor sends it back as a `wizz` event).
     pub fn wizz(&mut self, room: &str) {
         self.send(json!({ "t": "wizz", "room": room }));
+    }
+
+    /// Lundi matin's bite, to the other of a direct conversation (floor checks it's unlocked, once a day).
+    pub fn bite(&mut self, room: &str) {
+        self.send(json!({ "t": "bite", "room": room }));
+    }
+
+    /// Helps up a colleague bitten.
+    pub fn unbite(&mut self, id: &str) {
+        self.send(json!({ "t": "unbite", "id": id }));
+    }
+
+    /// Bitten right now (online, green until floor says otherwise or the hour is up).
+    pub fn bitten(&self, id: &str) -> bool {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.online.iter().find(|m| m.id == id).and_then(|m| m.bitten).is_some_and(|until| until > now)
     }
 
     /// The dancing pig to a conversation: it dances on everyone's screen (floor sends it back as a

@@ -228,6 +228,8 @@ enum HeadIcon {
     Media,
     Wizz,
     Pig,
+    /// Lundi matin's bite.
+    Bite,
     Pencil,
     Add,
     Leave,
@@ -255,6 +257,13 @@ fn paint_head_icon(painter: &egui::Painter, c: Pos2, icon: HeadIcon, color: Colo
             painter.add(egui::Shape::closed_line(bolt, stroke));
         }
         HeadIcon::Pig => super::pig::paint_pig_icon(painter, c, color),
+        HeadIcon::Bite => {
+            // Teeth: two rows of points.
+            for (y, dir) in [(-3.0, 1.0), (3.0, -1.0)] {
+                let points: Vec<Pos2> = (0..=6).map(|k| at(-7.5 + k as f32 * 2.5, y + if k % 2 == 1 { dir * 3.0 } else { 0.0 })).collect();
+                painter.add(egui::Shape::line(points, stroke));
+            }
+        }
         HeadIcon::Pencil => paint_act(painter, c, Act::Edit, color),
         HeadIcon::Erase => paint_act(painter, c, Act::Delete, color),
         HeadIcon::Add => {
@@ -454,6 +463,7 @@ fn event_text(t: &Strings, m: &Message) -> String {
         Some("renamed") => t.talk_event_renamed,
         Some("wizz") => t.talk_event_wizz,
         Some("pig") => t.talk_event_pig,
+        Some("bite") => t.talk_event_bite,
         _ => "{a}",
     };
     text.replace("{a}", who).replace("{b}", &m.text)
@@ -558,6 +568,13 @@ impl App {
             self.talk_ui.shake = Some((Instant::now() + wait, origin));
         }
         self.talk_shake(ctx);
+        // Bitten (Lundi matin's bite), helped up: said.
+        if let Some(who) = news.bitten_me.clone() {
+            self.push_toast(super::Toast { ok: false, title: t.talk_bitten.replace("{n}", &who), body: t.talk_bitten_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
+        }
+        if let Some(who) = news.unbitten.clone() {
+            self.push_toast(super::Toast { ok: true, title: t.talk_unbitten.replace("{n}", &who), body: String::new(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
+        }
         // The dancing pig: as a wizz, Ronnie brought to the front, the conversation shown; it dances
         // on everyone's screen, the sender's too.
         for (room, m) in &news.pigged {
@@ -851,6 +868,7 @@ impl App {
         paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.talk_online, &theme);
         *y += SECTION_HEADER_H;
         let people = self.talk_people(&me);
+        let mut unbite = None;
         if people.is_empty() {
             let text = if self.talk.ready() { t.talk_nobody } else { t.talk_connecting };
             painter.text(Pos2::new(left + 10.0, *y + 10.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
@@ -874,10 +892,27 @@ impl App {
                 (false, true) => theme.text_muted,
                 (false, false) => theme.text_muted.gamma_multiply(0.6),
             };
-            painter.text(Pos2::new(slot.min.x + 34.0, slot.center().y), Align2::LEFT_CENTER, &m.name, FontId::proportional(13.0), color);
+            // Bitten (Lundi matin): green, growling, a button to help them up.
+            let bitten = self.talk.bitten(&m.id);
+            if bitten {
+                painter.circle_filled(c, 9.5, Color32::from_rgba_unmultiplied(120, 200, 90, 150));
+                let wob = (ui.input(|i| i.time) * 3.0).sin() as f32;
+                let name = format!("{} · {}", m.name, t.talk_growl);
+                painter.text(Pos2::new(slot.min.x + 34.0 + wob, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), Color32::from_rgb(120, 200, 90));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                let help = Rect::from_min_size(Pos2::new(slot.max.x - 64.0, slot.min.y + 4.0), Vec2::new(60.0, slot.height() - 8.0));
+                if ui.put(help, egui::Button::new(egui::RichText::new(t.talk_help_up).size(11.0)).corner_radius(6.0)).clicked() {
+                    unbite = Some(m.id.clone());
+                }
+            } else {
+                painter.text(Pos2::new(slot.min.x + 34.0, slot.center().y), Align2::LEFT_CENTER, &m.name, FontId::proportional(13.0), color);
+            }
             if resp.clicked() {
                 dm = Some(m.id.clone());
             }
+        }
+        if let Some(id) = unbite {
+            self.talk.unbite(&id);
         }
         if let Some(id) = open {
             self.open_talk_room(&id);
@@ -998,6 +1033,10 @@ impl App {
             }
             if button(HeadIcon::Pig, t.talk_pig) {
                 self.send_pig(&room.id);
+            }
+            // Lundi matin's bite, once won.
+            if self.config.settings.monday_revives >= crate::zombie::REVIVES_BITE && button(HeadIcon::Bite, t.talk_bite) {
+                self.talk.bite(&room.id);
             }
             if button(HeadIcon::Media, t.talk_media) {
                 self.open_media(&room.id);
@@ -1451,7 +1490,7 @@ impl App {
                 ui.vertical_centered(|ui| {
                     // A wizz stands out: in the accent, bold.
                     let text = egui::RichText::new(format!("{}  ·  {}", event_text(t, m), clock(m.at))).size(12.0).italics();
-                    ui.label(if matches!(m.event.as_deref(), Some("wizz" | "pig")) { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
+                    ui.label(if matches!(m.event.as_deref(), Some("wizz" | "pig" | "bite")) { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
                 });
                 ui.add_space(4.0);
                 prev = None;
