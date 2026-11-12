@@ -88,6 +88,7 @@ impl App {
                     HomeGame::President => t.arcade_president,
                     HomeGame::BugHunt => t.arcade_bughunt,
                     HomeGame::Fishing => t.fishing_arcade,
+                    HomeGame::Monday => t.arcade_monday,
                 };
                 let (icon, text_left, text_w) = if wide { (Pos2::new(card.center().x, card.min.y + 74.0), None, card.width() - 36.0) } else { (Pos2::new(card.min.x + 44.0, card.center().y), Some(card.min.x + 84.0), card.width() - 100.0) };
                 let scale = if wide { 2.8 } else { 1.8 };
@@ -104,6 +105,7 @@ impl App {
                     HomeGame::President => super::president::paint_president_icon(&painter, icon, &theme, scale),
                     HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(&painter, icon, &theme, scale),
                     HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, scale),
+                    HomeGame::Monday => super::zombie::paint_monday_icon(&painter, icon, &theme, scale),
                 }
                 let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
                 // Its rewards: how many still to unlock (a padlock), or all of them.

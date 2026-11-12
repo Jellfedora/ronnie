@@ -23,6 +23,8 @@ pub(super) enum HomeGame {
     President,
     BugHunt,
     Fishing,
+    /// Lundi matin.
+    Monday,
 }
 
 /// A disc falling into place, since `at`.
@@ -108,6 +110,7 @@ fn invite_texts(t: &Strings, game: Option<&str>) -> (&'static str, &'static str)
         Some("riff-hero") => (t.riff_name, t.riff_invited),
         Some("larsen") => (t.larsen_name, t.larsen_invited),
         Some("president") => (t.president_name, t.president_invited),
+        Some("lundi-matin") => (t.monday_name, t.monday_invited),
         _ => (t.four_name, t.four_invited),
     }
 }
@@ -303,6 +306,7 @@ impl App {
             Some("riff-hero") => HomeGame::Riff,
             Some("larsen") => HomeGame::Larsen,
             Some("president") => HomeGame::President,
+            Some("lundi-matin") => HomeGame::Monday,
             _ => HomeGame::Four,
         };
         let t = self.t();
@@ -321,6 +325,7 @@ impl App {
                     HomeGame::Riff => super::riff::paint_riff_icon(ui.painter(), rect.center(), &theme, 1.2),
                     HomeGame::Larsen => super::larsen::paint_larsen_icon(ui.painter(), rect.center(), &theme, 1.2),
                     HomeGame::President => super::president::paint_president_icon(ui.painter(), rect.center(), &theme, 1.2),
+                    HomeGame::Monday => super::zombie::paint_monday_icon(ui.painter(), rect.center(), &theme, 1.2),
                     _ => paint_four_icon(ui.painter(), rect.center(), &theme, 1.2),
                 }
                 ui.label(egui::RichText::new(name).size(18.0).strong());
@@ -345,6 +350,11 @@ impl App {
             Some(true) if game == HomeGame::Blob => {
                 self.versus.accept(&invite.id);
                 self.open_blob();
+            }
+            // Lundi matin: to the room of who invited.
+            Some(true) if game == HomeGame::Monday => {
+                self.versus.accept(&invite.id);
+                self.monday_join(invite.from.clone());
             }
             Some(true) if game == HomeGame::Riff => {
                 self.versus.accept(&invite.id);

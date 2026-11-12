@@ -37,6 +37,7 @@ mod four;
 mod larsen;
 mod president;
 mod bughunt;
+mod zombie;
 mod fishing;
 mod frames;
 mod trail;
@@ -415,6 +416,7 @@ pub struct App {
     larsen: larsen::Larsen,
     president: president::President,
     bughunt: bughunt::BugHunt,
+    monday: zombie::Monday,
     fishing: fishing::Fishing,
     /// The pointer's trail (unlocked at Ronnie Run).
     trail: trail::Trail,
@@ -1314,6 +1316,7 @@ impl App {
             larsen: larsen::Larsen::default(),
             president: president::President::default(),
             bughunt: bughunt::BugHunt::default(),
+            monday: zombie::Monday::default(),
             fishing: fishing::Fishing::default(),
             trail: trail::Trail::default(),
             trail_preview: trail::Trail::default(),

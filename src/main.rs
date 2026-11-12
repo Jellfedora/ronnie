@@ -6,6 +6,7 @@ mod backstage;
 mod coffee;
 mod blob;
 mod bughunt;
+mod zombie;
 mod fishing;
 mod pond;
 mod awake;
