@@ -238,8 +238,19 @@ fn go_script(run: &str, session: Option<&str>, texts: &Texts) -> String {
     )
 }
 
+/// Printed on its own line just before the sweep's archive: what the server's shell may print first
+/// (a `.bashrc` showing a status, a banner) is skipped up to it.
+const MARK: &str = "RONNIE-CLAUDE-ARCHIVE";
+
+/// What follows the mark in the sweep's output: its archive (empty without the mark: nothing to keep).
+fn after_mark(out: &[u8]) -> &[u8] {
+    let mark = format!("{MARK}\n");
+    out.windows(mark.len()).position(|w| w == mark.as_bytes()).map_or(&[], |at| &out[at + mark.len()..])
+}
+
 /// Lists the runs that ended (their script's pid gone; none yet: made more than 10 minutes ago) and
-/// prints, as a tar archive, what is kept of them: their script, conversations and settings.
+/// prints, after the mark, as a tar archive, what is kept of them: their script, conversations and
+/// settings.
 const SWEEP: &str = r#"cd "$HOME/.ronnie-claude/runs" 2>/dev/null || exit 0
 L=
 for r in *; do
@@ -253,7 +264,7 @@ for r in *; do
   [ -d "$r/projects" ] && L="$L $r/projects"
   [ -f "$r/.claude.json" ] && L="$L $r/.claude.json"
 done
-[ -z "$L" ] || exec tar cf - $L"#;
+[ -z "$L" ] || { echo RONNIE-CLAUDE-ARCHIVE; exec tar cf - $L; }"#;
 
 /// Deletes `runs`, keeping the newest login among them and the settings read on the standard input
 /// (if any).
@@ -298,11 +309,12 @@ impl super::App {
 
 /// The runs that ended on `host`: their conversations kept in `root`, then wiped from the server.
 fn sweep(host: &SshHost, askpass: &crate::askpass::Server, root: &Path) -> Result<usize, String> {
-    let tar = run(host, askpass, SWEEP, b"")?;
+    let out = run(host, askpass, SWEEP, b"")?;
+    let tar = after_mark(&out);
     if tar.is_empty() {
         return Ok(0);
     }
-    let (runs, settings) = unpack(&tar, root)?;
+    let (runs, settings) = unpack(tar, root)?;
     let settings = settings.as_deref().and_then(clean_settings).unwrap_or_default();
     run(host, askpass, &wipe_script(&runs), &settings)?;
     Ok(runs.len())
@@ -419,7 +431,7 @@ mod tests {
         let out = sh(&format!("sh ~/{BASE}/runs/{run_id}/go"), b"", &home.join("app"));
         assert!(String::from_utf8_lossy(&out).contains(&format!("\x1b]1337;RonnieClaude={run_id}\x07")));
 
-        let (runs, settings) = unpack(&sh(SWEEP, b"", &tmp), &root).unwrap();
+        let (runs, settings) = unpack(after_mark(&sh(&format!("echo '=== Statut Fail2Ban ==='; echo '|- Filter'\n{SWEEP}"), b"", &tmp)), &root).unwrap();
         assert_eq!(runs.len(), 1);
         let app = std::fs::canonicalize(home.join("app")).unwrap();
         assert!(crate::claude::has_sessions(Some(&root), &app));
@@ -429,7 +441,7 @@ mod tests {
         assert!(!std::fs::read_to_string(base.join(".claude.json")).unwrap().contains("projects"));
         assert_eq!(std::fs::read_dir(base.join("runs")).unwrap().count(), 0);
         // Nothing more to bring back.
-        assert!(sh(SWEEP, b"", &tmp).is_empty());
+        assert!(after_mark(&sh(SWEEP, b"", &tmp)).is_empty());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
