@@ -26,6 +26,9 @@ pub(crate) struct Fx {
     trail: bool,
     sheep: bool,
     droid: bool,
+    /// Lundi matin's horde, at 10.
+    #[serde(default)]
+    horde: bool,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -40,7 +43,7 @@ enum Pointer {
 
 impl Fx {
     fn any(&self) -> bool {
-        self.trail || self.sheep || self.droid || self.pointer.is_some()
+        self.trail || self.sheep || self.droid || self.horde || self.pointer.is_some()
     }
 
     /// The pointer is followed (else it needn't be).
@@ -98,7 +101,7 @@ impl App {
         } else {
             None
         };
-        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, pointer, theme: s.theme.clone() }
+        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -276,6 +279,73 @@ pub(crate) fn run() {
     }
 }
 
+/// The horde crosses the screen this long, from 10:00:00 on working days.
+const HORDE_RUN: f64 = 14.0;
+
+/// Lundi matin's horde, at 10 o'clock: the zombies running across the screen, shouting for the break.
+/// Whether it shows, and when to look again. (`RONNIE_HORDE=1`, in a build of one's own: every minute.)
+fn horde_run(painter: &egui::Painter, screen: Rect) -> (bool, f32) {
+    use chrono::{Datelike, Timelike};
+    let now = chrono::Local::now();
+    let since = if !crate::config::OFFICIAL && std::env::var("RONNIE_HORDE").is_ok_and(|v| v == "1") {
+        f64::from(now.second()) + f64::from(now.nanosecond()) / 1e9
+    } else {
+        let weekday = now.weekday().num_days_from_monday() < 5;
+        let t = f64::from(now.num_seconds_from_midnight()) + f64::from(now.nanosecond()) / 1e9 - 10.0 * 3600.0;
+        if weekday { t } else { -1.0 }
+    };
+    if !(0.0..HORDE_RUN).contains(&since) {
+        // Woken up again a moment before it starts (at most every second).
+        return (false, 1.0);
+    }
+    paint_horde(painter, screen, since / HORDE_RUN, 14);
+    (true, 0.0)
+}
+
+/// The horde at `k` of its run (0 to 1): `count` zombies from the left edge of `area` to the right,
+/// each on its own line and at its own pace, "PAUSE !" over their heads.
+pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u32) {
+    let size = (area.height() / 14.0).clamp(10.0, 26.0);
+    for n in 0..count {
+        let h = n.wrapping_mul(2_654_435_761);
+        let lane = 0.12 + 0.76 * ((h % 1000) as f32 / 1000.0);
+        let delay = ((h >> 10) % 100) as f64 / 100.0 * 0.3;
+        let pace = 0.75 + ((h >> 17) % 100) as f64 / 100.0 * 0.25;
+        let along = ((k - delay) / pace).clamp(0.0, 1.0) as f32;
+        if along <= 0.0 || along >= 1.0 {
+            continue;
+        }
+        let x = area.min.x - size * 2.0 + (area.width() + size * 4.0) * along;
+        let y = area.min.y + area.height() * lane;
+        let step = (k * 40.0 + f64::from(n)).sin() as f32;
+        paint_runner(painter, Pos2::new(x, y + step.abs() * size * 0.15), size, step);
+        let bubble = Pos2::new(x, y - size * 1.9);
+        let font = FontId::proportional(size * 0.75);
+        let galley = painter.layout_no_wrap("PAUSE !".to_owned(), font, Color32::from_rgb(61, 42, 99));
+        let r = Rect::from_center_size(bubble, galley.size() + Vec2::new(size * 0.6, size * 0.3));
+        painter.rect_filled(r, size * 0.3, Color32::from_rgb(255, 245, 210));
+        painter.galley(r.center() - galley.size() / 2.0, galley, Color32::from_rgb(61, 42, 99));
+    }
+}
+
+/// A zombie seen from the side, running to the right: arms ahead, legs swinging.
+fn paint_runner(painter: &egui::Painter, at: Pos2, size: f32, step: f32) {
+    let skin = Color32::from_rgb(143, 209, 106);
+    let shirt = Color32::from_rgb(90, 110, 150);
+    let legs = Stroke::new(size * 0.22, Color32::from_rgb(50, 54, 70));
+    let hip = at + Vec2::new(0.0, size * 0.55);
+    painter.line_segment([hip, hip + Vec2::new(step * size * 0.4, size * 0.7)], legs);
+    painter.line_segment([hip, hip + Vec2::new(-step * size * 0.4, size * 0.7)], legs);
+    painter.rect_filled(Rect::from_center_size(at + Vec2::new(0.0, size * 0.15), Vec2::new(size * 0.7, size * 0.9)), size * 0.15, shirt);
+    let arms = Stroke::new(size * 0.18, skin);
+    painter.line_segment([at, at + Vec2::new(size * 0.9, -size * 0.1 + step * size * 0.08)], arms);
+    painter.line_segment([at + Vec2::new(0.0, size * 0.1), at + Vec2::new(size * 0.85, size * 0.05 - step * size * 0.08)], arms);
+    let head = at - Vec2::new(-size * 0.05, size * 0.55);
+    painter.circle_filled(head, size * 0.42, skin);
+    painter.circle_filled(head + Vec2::new(size * 0.18, -size * 0.06), size * 0.07, Color32::from_rgb(45, 74, 34));
+    painter.line_segment([head + Vec2::new(size * 0.08, size * 0.18), head + Vec2::new(size * 0.32, size * 0.16)], Stroke::new(size * 0.06, Color32::from_rgb(45, 74, 34)));
+}
+
 /// How often the droid rolls by, how long it takes.
 const DROID_EVERY: f64 = 70.0;
 const DROID_ROLL: f64 = 12.0;
@@ -339,6 +409,11 @@ impl eframe::App for Overlay {
         }
         if self.shown.droid {
             let (shown, again) = droid_walk(&painter, strip, now);
+            busy |= shown;
+            next = next.min(again);
+        }
+        if self.shown.horde {
+            let (shown, again) = horde_run(&painter, Rect::from_min_size(Pos2::ZERO, self.screen.size()));
             busy |= shown;
             next = next.min(again);
         }
@@ -602,7 +677,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

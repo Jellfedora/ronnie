@@ -23,6 +23,8 @@ const BANK: f32 = 440.0;
 const FEET: f32 = 488.0;
 const SPOTS: usize = 6;
 /// One catch in so many is a shiny card.
+/// Agnès bites one cast in so many, for who may catch her.
+const AGNES_ONE_IN: u64 = 30;
 const SHINY_ONE_IN: u64 = 25;
 /// Seconds to hook a bite.
 const BITE_TIME: f32 = 1.1;
@@ -444,7 +446,7 @@ impl App {
                 if pressed {
                     let (cast, hook) = (*cast, *hook);
                     let r = super::game::random(&mut self.fishing.rng);
-                    let rare = FISH[hook.fish].rarity.index() >= Rarity::Rare.index();
+                    let rare = crate::fishing::get(hook.fish).rarity.index() >= Rarity::Rare.index();
                     let offer_at = if r % 100 < if rare { 35 } else { 12 } { 2.0 + (r >> 8) as f32 % 4000.0 / 1000.0 } else { -1.0 };
                     self.fishing.phase = Phase::Reeling { cast, reel: Reel::new(hook.fish, hook.seed, cast, self.config.settings.fish_rod), hook, t: 0.0, offer_at };
                     self.fishing.acc = 0.0;
@@ -491,7 +493,7 @@ impl App {
         }
         if let Some((fish, size, shiny)) = caught {
             self.fishing_hired(fish, size, shiny, now);
-            sfx = Some(hired_sound(FISH[fish].rarity, shiny));
+            sfx = Some(hired_sound(crate::fishing::get(fish).rarity, shiny));
         }
         if let Some(notes) = sfx {
             self.fishing_sound(notes);
@@ -638,12 +640,20 @@ impl App {
         let unix = unix_now();
         let hot = in_bubbles(unix, float);
         let bait = self.fishing_take_bait();
+        let agnes = self.config.settings.monday_escorts >= crate::zombie::ESCORTS_CARD;
         let rng = &mut self.fishing.rng;
         // After a long run with no new card, one not caught yet (if one bites now).
         let lure = Lure { bait, hot };
         let cards = &self.config.settings.fish_cards;
         let fresh = (self.config.settings.fish_dry >= crate::fishing::PITY).then(|| crate::fishing::pick_among(rng, hour(), power, lure, |k| !cards.contains_key(FISH[k].id))).flatten();
         let (fish, size) = fresh.unwrap_or_else(|| crate::fishing::pick(rng, hour(), power, lure));
+        // Agnès, now and then, for who walked her to the coffee often enough (Lundi matin).
+        let (fish, size) = if agnes && super::game::random(rng).is_multiple_of(AGNES_ONE_IN) {
+            let a = &crate::fishing::AGNES_CARD;
+            (crate::fishing::AGNES, a.min_cm + (super::game::random(rng) % u64::from(a.max_cm - a.min_cm + 1)) as u32)
+        } else {
+            (fish, size)
+        };
         let seed = super::game::random(rng);
         let shiny = super::game::random(rng).is_multiple_of(SHINY_ONE_IN);
         // Patience: 7 to 18 s, sooner with tickets resto, in the bubbles, at a job fair.
@@ -701,9 +711,32 @@ impl App {
         }
     }
 
+    /// A candidate's card in the binder (Agnès' kept apart), if caught.
+    fn fish_entry(&self, fish: usize) -> Option<crate::config::FishCard> {
+        let s = &self.config.settings;
+        if fish == crate::fishing::AGNES {
+            return (s.monday_agnes_card > 0).then(|| crate::config::FishCard { count: s.monday_agnes_card, ..Default::default() });
+        }
+        s.fish_cards.get(crate::fishing::get(fish).id).cloned()
+    }
+
     /// A candidate hired: its card in the binder, counted for the half-day, told to the pond and to
     /// floor's board.
     fn fishing_hired(&mut self, fish: usize, size: u32, shiny: bool, now: f64) {
+        // Agnès: her card apart, nothing told to the pond nor to floor's board.
+        if fish == crate::fishing::AGNES {
+            let s = &mut self.config.settings;
+            let new = s.monday_agnes_card == 0;
+            s.monday_agnes_card += 1;
+            self.fishing.phase = Phase::Caught { fish, size, shiny, new, record: false, bait: None, at: now };
+            self.count_fish();
+            self.save_config();
+            if new {
+                let t = self.t();
+                self.push_toast(super::Toast { ok: true, title: t.agnes_card_title.to_owned(), body: t.agnes_card_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+            }
+            return;
+        }
         let id = FISH[fish].id;
         let all = FISH.len() as u32;
         let tally = |cards: &std::collections::BTreeMap<String, crate::config::FishCard>| (cards.len() as u32, cards.values().filter(|c| c.shiny > 0).count() as u32, cards.values().map(|c| c.count).sum::<u32>());
@@ -970,13 +1003,13 @@ impl App {
             let x = spot_x(me) + side * 150.0;
             let track = r(x - 22.0, 104.0, x + 22.0, 420.0);
             let panel = track.expand(10.0 * scale);
-            let rarity = FISH[reel.fish].rarity;
+            let rarity = crate::fishing::get(reel.fish).rarity;
             let rival = reel.offer > 0.0;
             let edge = if rival && (tm * 6.0).sin() > 0.0 { hex(0xe0453a) } else { rarity_color(rarity) };
             painter.rect(Rect::from_min_max(panel.min, Pos2::new(panel.max.x + 26.0 * scale, panel.max.y)), 10.0, theme.chrome_bg.gamma_multiply(0.95), Stroke::new(2.0, edge), egui::StrokeKind::Inside);
             // Who it is, how rare, how it moves.
             let top = Pos2::new(panel.center().x + 13.0 * scale, panel.min.y - 8.0 * scale);
-            let kind = format!("{} · {}", t.fishing_rarities.split('|').nth(rarity.index()).unwrap_or_default(), t.fishing_moods.split('|').nth(FISH[reel.fish].behavior as usize).unwrap_or_default());
+            let kind = format!("{} · {}", t.fishing_rarities.split('|').nth(rarity.index()).unwrap_or_default(), t.fishing_moods.split('|').nth(crate::fishing::get(reel.fish).behavior as usize).unwrap_or_default());
             painter.text(top - Vec2::new(0.0, 16.0 * scale.max(0.75)), Align2::CENTER_BOTTOM, card_text(t, reel.fish).name, FontId::proportional(15.0 * scale.max(0.75)), Color32::WHITE);
             painter.text(top, Align2::CENTER_BOTTOM, kind, FontId::proportional(11.5 * scale.max(0.75)), rarity_color(rarity));
             if rival {
@@ -1020,7 +1053,7 @@ impl App {
             let k = (age / 0.3).min(1.0) as f32;
             painter.rect_filled(field, 0.0, Color32::from_black_alpha((110.0 * k) as u8));
             let card = Rect::from_center_size(centre, Vec2::new(h * 0.714, h));
-            let rarity = FISH[*fish].rarity;
+            let rarity = crate::fishing::get(*fish).rarity;
             // The rarer ones show their back first, then turn over; the others pop up.
             let turn = if rarity.index() >= Rarity::Rare.index() { 0.32 } else { 0.0 };
             if age < turn {
@@ -1035,8 +1068,8 @@ impl App {
             }
             let pop = ((age - turn) / 0.18).min(1.0) as f32;
             let card = Rect::from_center_size(centre, card.size() * (0.86 + 0.14 * ease_out(pop)));
-            let entry = self.config.settings.fish_cards.get(FISH[*fish].id);
-            paint_card(&painter, card, *fish, entry, *shiny, t, theme, now);
+            let entry = self.fish_entry(*fish);
+            paint_card(&painter, card, *fish, entry.as_ref(), *shiny, t, theme, now);
             if pop < 1.0 {
                 painter.rect_filled(card, 10.0, Color32::WHITE.gamma_multiply(0.7 * (1.0 - pop)));
             }
@@ -1072,7 +1105,7 @@ impl App {
         let float = self.fishing.float;
         let tm = now as f32;
         let shadow = |p: Pos2, fish: usize, alpha: f32| {
-            let len = 22.0 + FISH[fish].rarity.index() as f32 * 9.0;
+            let len = 22.0 + crate::fishing::get(fish).rarity.index() as f32 * 9.0;
             paint_candidate(painter, at(p.x, p.y + 6.0), len * scale, fish, Some(Color32::from_black_alpha((alpha * 255.0) as u8)), now);
         };
         match &self.fishing.phase {
@@ -1306,7 +1339,9 @@ impl App {
         let card = Vec2::new(176.0, 246.0);
         let gap = 16.0;
         let cols = (((grid_w + gap) / (card.x + gap)).floor() as usize).max(1);
-        let rows = FISH.len().div_ceil(cols);
+        // Agnès' card, apart, after the others once she's caught.
+        let agnes = self.config.settings.monday_agnes_card > 0;
+        let rows = (FISH.len() + usize::from(agnes)).div_ceil(cols);
         let block_w = cols as f32 * (card.x + gap) - gap;
         let head = 34.0;
         let content_h = head + rows as f32 * (card.y + gap);
@@ -1336,6 +1371,18 @@ impl App {
                     clicked = Some(k);
                 }
             }
+            if agnes {
+                let k = crate::fishing::AGNES;
+                let (row, col) = (k / cols, k % cols);
+                let r = Rect::from_min_size(Pos2::new(x0 + col as f32 * (card.x + gap), area.min.y + head + row as f32 * (card.y + gap)), card);
+                let entry = self.fish_entry(k);
+                let resp = ui.interact(r, ui.id().with(("fish-card", k)), Sense::click());
+                let lift = if resp.hovered() { Vec2::new(0.0, -3.0) } else { Vec2::ZERO };
+                paint_card(&painter, r.translate(lift), k, entry.as_ref(), false, t, &theme, now);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    clicked = Some(k);
+                }
+            }
         });
         if let Some(k) = clicked {
             self.fishing.zoom = Some(k);
@@ -1358,8 +1405,8 @@ impl App {
             painter.rect_filled(body.expand(16.0), 0.0, Color32::from_black_alpha(150));
             let h = (body.height() - 20.0).min(560.0);
             let r = Rect::from_center_size(body.center(), Vec2::new(h * 0.714, h));
-            let entry = self.config.settings.fish_cards.get(FISH[k].id);
-            paint_card(&painter, r, k, entry, entry.is_some_and(|c| c.shiny > 0), t, &theme, now);
+            let entry = self.fish_entry(k);
+            paint_card(&painter, r, k, entry.as_ref(), entry.as_ref().is_some_and(|c| c.shiny > 0), t, &theme, now);
             let away = ui.interact(body.expand(16.0), ui.id().with("fish-zoom"), Sense::click());
             if away.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                 self.fishing.zoom = None;
@@ -1515,7 +1562,7 @@ fn paint_rarity(painter: &egui::Painter, c: Pos2, s: f32, r: Rarity) {
 /// and what was caught of it. Not caught yet: a shadow and question marks. Shiny: a rainbow sheen.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_card(painter: &egui::Painter, r: Rect, fish: usize, entry: Option<&crate::config::FishCard>, shiny: bool, t: &Strings, theme: &Theme, now: f64) {
-    let f = &FISH[fish];
+    let f = crate::fishing::get(fish);
     let k = r.width() / 176.0;
     let known = entry.is_some();
     let frame = if known { rarity_color(f.rarity) } else { theme.tab_hover };
@@ -1586,7 +1633,7 @@ pub(super) fn paint_card(painter: &egui::Painter, r: Rect, fish: usize, entry: O
 
     // At the bottom: its number, what was caught of it.
     let bottom = inner.max.y - 9.0 * k;
-    painter.text(Pos2::new(inner.min.x + pad, bottom), Align2::LEFT_CENTER, format!("#{:03}/{:03}", fish + 1, FISH.len()), FontId::monospace(8.5 * k), muted);
+    painter.text(Pos2::new(inner.min.x + pad, bottom), Align2::LEFT_CENTER, if fish == crate::fishing::AGNES { "H.S.".to_owned() } else { format!("#{:03}/{:03}", fish + 1, FISH.len()) }, FontId::monospace(8.5 * k), muted);
     if let Some(c) = entry {
         let mut stats = format!("{}  ·  {}", t.fishing_count.replace("{n}", &c.count.saturating_sub(c.sold).to_string()), t.fishing_best.replace("{n}", &c.best_cm.to_string()));
         if c.shiny > 0 {
@@ -1652,7 +1699,7 @@ struct Look {
     wear: &'static [Wear],
 }
 
-const LOOKS: [Look; 38] = [
+const LOOKS: [Look; 39] = [
     Look { body: 0xb8c4cc, belly: 0xeef2f4, fins: 0xd8504a, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Badge] },
     Look { body: 0xd2dce6, belly: 0xf4f8fa, fins: 0xa8b8c8, aspect: 0.32, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap] },
     Look { body: 0xa6b84c, belly: 0xe8e2b0, fins: 0xe88a3a, aspect: 0.42, pattern: Pattern::Bars, whiskers: false, wear: &[Wear::Glasses, Wear::Headset] },
@@ -1691,6 +1738,8 @@ const LOOKS: [Look; 38] = [
     Look { body: 0xe8a868, belly: 0xfbe6cc, fins: 0xc07a3a, aspect: 0.36, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Badge, Wear::Mug] },
     Look { body: 0x5a7ab8, belly: 0xdfe6f0, fins: 0x3a5a90, aspect: 0.4, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Cap, Wear::Mop] },
     Look { body: 0xf2c94c, belly: 0xfff0b0, fins: 0xe8a020, aspect: 0.42, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Wool] },
+    // Agnès (Lundi matin): her purple cardigan, her bun, her post-it, her badge and her mug.
+    Look { body: 0x8e6cc9, belly: 0xb6e39a, fins: 0xd9d9d9, aspect: 0.4, pattern: Pattern::Plain, whiskers: false, wear: &[Wear::Bun, Wear::PostIt, Wear::Badge, Wear::Mug] },
 ];
 
 /// A candidate, facing right, its middle at `c`, `len` long. `shadow`: all in that color (not caught

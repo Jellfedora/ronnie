@@ -55,6 +55,17 @@ impl Rarity {
     }
 }
 
+/// Agnès, from Lundi matin's reception desk: a card apart (out of the collection, the board and the
+/// frames, kept in its own setting), caught only by who walked her to the coffee often enough.
+pub const AGNES_CARD: Fish = fish("agnes-accueil", 150, 172, Rarity::Legendary, 55.0, Behavior::Smooth, When::Any);
+/// Her index, past the others.
+pub const AGNES: usize = FISH.len();
+
+/// A candidate by index, Agnès included.
+pub fn get(k: usize) -> &'static Fish {
+    FISH.get(k).unwrap_or(&AGNES_CARD)
+}
+
 /// The five-legged sheep's id (its card unlocks the sheep).
 pub const SHEEP: &str = "mouton-5-pattes";
 
@@ -348,9 +359,9 @@ impl Reel {
     /// `rod`: the rod's level.
     pub fn new(fish: usize, seed: u64, risk: f32, rod: u32) -> Self {
         let rod = Rod::at(rod);
-        let d = FISH[fish].difficulty / 100.0;
+        let d = get(fish).difficulty / 100.0;
         let bar_h = (0.30 - d * 0.10) * (1.0 - 0.1 * risk.clamp(0.0, 1.0)) * (1.0 + rod.bar);
-        Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: FISH[fish].behavior, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, offer: 0.0, rod, rng: seed | 1 }
+        Self { fish, fish_y: 0.25, fish_v: 0.0, target: 0.25, timer: 0.6, mood: get(fish).behavior, bar_y: 0.0, bar_v: 0.0, bar_h, progress: START, perfect: true, idle: 0.0, offer: 0.0, rod, rng: seed | 1 }
     }
 
     /// A rival's counter-offer of `secs` (shorter with a better rod).
@@ -366,7 +377,7 @@ impl Reel {
 
     /// `dt` seconds more, the bar `held` (it rises) or not. Some(true): caught; Some(false): got away.
     pub fn step(&mut self, dt: f32, held: bool) -> Option<bool> {
-        let f = &FISH[self.fish];
+        let f = get(self.fish);
         let d = f.difficulty / 100.0;
         // The fish in its own time, slowed by the rod.
         let fish_dt = dt * (1.0 - self.rod.slow * d);

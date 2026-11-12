@@ -26,6 +26,8 @@ pub(super) enum Reward {
     Frame(&'static str),
     /// A badge beside the avatar (its id), worn by itself.
     Badge(&'static str),
+    /// Lundi matin's horde at 10, over the whole screen.
+    Horde,
 }
 
 impl App {
@@ -100,7 +102,7 @@ impl App {
                     Unlock { what: t.unlock_bite.into(), how: t.unlock_bite_how.replace("{n}", &REVIVES_BITE.to_string()), done: s.monday_revives >= REVIVES_BITE, progress: Some((s.monday_revives.min(REVIVES_BITE), REVIVES_BITE)), info: false, reward: None },
                     Unlock { what: t.unlock_letters.into(), how: t.unlock_letters_how.replace("{n}", &LETTERS.to_string()), done: s.monday_letters >= LETTERS, progress: Some((s.monday_letters.min(LETTERS), LETTERS)), info: false, reward: None },
                     Unlock { what: t.unlock_agnes_card.into(), how: t.unlock_agnes_card_how.replace("{n}", &ESCORTS_CARD.to_string()), done: s.monday_escorts >= ESCORTS_CARD, progress: Some((s.monday_escorts.min(ESCORTS_CARD), ESCORTS_CARD)), info: false, reward: None },
-                    Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: None },
+                    Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: s.monday_horde.then_some(Reward::Horde) },
                 ]
             }
             _ => Vec::new(),

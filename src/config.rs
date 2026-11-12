@@ -460,11 +460,11 @@ impl Config {
 }
 
 /// The settings that record what the games unlocked: sealed, so that editing them by hand undoes them.
-pub const REWARD_KEYS: [&str; 26] = [
+pub const REWARD_KEYS: [&str; 27] = [
     "typing_scores", "blob_best", "mines_best", "runner_best", "riff_bests", "backstage_best", "bughunt_best", "bughunt_best_wave", "fish_cards", "fish_baits", "fish_dry",
     "jurassic_unlocked", "hyperspace_unlocked", "four_online_played", "wizard_unlocked", "open_streak", "open_last",
     "coffee_bests", "fish_budget", "fish_rod", "progress_bases", "monday_best",
-    "monday_revives", "monday_escorts", "monday_letters", "monday_horde",
+    "monday_revives", "monday_escorts", "monday_letters", "monday_horde", "monday_agnes_card",
 ];
 /// The rewards the first seals covered. Those added since count only once written: without that, a
 /// config sealed before them would no longer hold, and its rewards would all be reset.
@@ -809,6 +809,9 @@ pub struct Settings {
     pub monday_letters: u32,
     #[serde(default)]
     pub monday_horde: bool,
+    /// Agnès' card at the fishing: how many times she was hired (a card apart).
+    #[serde(default)]
+    pub monday_agnes_card: u32,
     /// La pêche aux talents: the cards of the candidates caught, by id (`crate::fishing::FISH`).
     #[serde(default)]
     pub fish_cards: std::collections::BTreeMap<String, FishCard>,
@@ -955,8 +958,9 @@ fn default_projects_port() -> u16 {
     crate::projects::DEFAULT_PORT
 }
 
-/// The rewards shown over the whole screen, outside Ronnie too (each its own choice, off at first).
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The rewards shown over the whole screen, outside Ronnie too (each its own choice, off at first;
+/// the 10 o'clock horde on, a surprise).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct DesktopFx {
     /// The pointer's trail of sparks.
@@ -971,6 +975,14 @@ pub struct DesktopFx {
     pub wand: bool,
     /// The pointer as a sword (Game of Thrones).
     pub sword: bool,
+    /// Lundi matin's zombies running across the screen at 10, shouting for the break.
+    pub horde: bool,
+}
+
+impl Default for DesktopFx {
+    fn default() -> Self {
+        Self { trail: false, sheep: false, saber: false, droid: false, wand: false, sword: false, horde: true }
+    }
 }
 
 /// The themes' own pointers in Ronnie, each on unless switched off.
@@ -1550,7 +1562,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, desktop_fx: DesktopFx::default(), theme_pointers: ThemePointers::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, desktop_fx: DesktopFx::default(), theme_pointers: ThemePointers::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, monday_agnes_card: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
     }
 }
 

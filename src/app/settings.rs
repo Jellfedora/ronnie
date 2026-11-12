@@ -2218,6 +2218,10 @@ impl App {
                         painter.add(egui::Shape::convex_polygon(vec![tip, tip + Vec2::new(0.0, 13.0), tip + Vec2::new(3.5, 10.0), tip + Vec2::new(9.0, 9.5)], Color32::WHITE, Stroke::new(1.0, Color32::BLACK)));
                         ui.ctx().request_repaint();
                     }
+                    Some(Reward::Horde) => {
+                        super::desktop::paint_horde(&painter, rect, (now % 6.0) / 6.0, 5);
+                        ui.ctx().request_repaint();
+                    }
                     _ => {
                         let mark = if u.done { "✓" } else if u.info { "•" } else { "?" };
                         painter.text(rect.center(), Align2::CENTER_CENTER, mark, FontId::proportional(30.0), theme.accent.gamma_multiply(0.7));
@@ -2257,6 +2261,7 @@ impl App {
                         match u.reward {
                             Some(super::unlocks::Reward::Trail) => t.trail_setting_desc.to_owned(),
                             Some(super::unlocks::Reward::Sheep) => t.sheep_setting_desc.to_owned(),
+                            Some(super::unlocks::Reward::Horde) => t.horde_setting_desc.to_owned(),
                             _ => t.unlock_done.to_owned(),
                         }
                     } else {
@@ -2299,6 +2304,7 @@ impl App {
                                 let choices: Vec<(&str, &mut bool)> = match u.reward {
                                     Some(super::unlocks::Reward::Trail) => vec![(t.desktop_trail, &mut fx.trail)],
                                     Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
+                                    Some(super::unlocks::Reward::Horde) => vec![(t.desktop_horde, &mut fx.horde)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword)],
@@ -2350,7 +2356,7 @@ impl App {
                                     toggle(ui, theme, &mut picked.sheep);
                                 }
                                 Some(super::unlocks::Reward::Frame(_)) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
-                                Some(super::unlocks::Reward::Badge(_)) | None => {}
+                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde) | None => {}
                             }
                         });
                     });
