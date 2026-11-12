@@ -10,8 +10,8 @@ use super::*;
 pub(super) enum Need {
     /// This Bug Hunt wave reached.
     Wave(u32),
-    /// So many of the fishing's cards caught shiny (floor checks the same, `holo`).
-    Shiny(u32),
+    /// So many of the fishing's cards caught, shiny or not (floor checks the same, `holo`).
+    Cards(u32),
 }
 
 /// A frame: its id on floor, what unlocks it.
@@ -21,19 +21,19 @@ pub(super) struct FrameDef {
 }
 
 /// The frames, in the order they unlock: Bug Hunt's (the first once the first boss is beaten), then
-/// the fishing's shiny binder.
+/// the fishing's full binder.
 pub(super) const FRAMES: [FrameDef; 4] = [
     FrameDef { id: "glitch", need: Need::Wave(6) },
     FrameDef { id: "swarm", need: Need::Wave(11) },
     FrameDef { id: "circuit", need: Need::Wave(16) },
-    FrameDef { id: "holo", need: Need::Shiny(crate::fishing::FISH.len() as u32) },
+    FrameDef { id: "holo", need: Need::Cards(crate::fishing::FISH.len() as u32) },
 ];
 
 /// How far the player is toward a frame, and how far they must go.
 pub(super) fn progress(def: &FrameDef, s: &crate::config::Settings) -> (u32, u32) {
     match def.need {
         Need::Wave(w) => (s.bughunt_best_wave, w),
-        Need::Shiny(n) => (s.fish_cards.values().filter(|c| c.shiny > 0).count() as u32, n),
+        Need::Cards(n) => (s.fish_cards.values().filter(|c| c.count > 0).count() as u32, n),
     }
 }
 
@@ -47,7 +47,7 @@ pub(super) fn unlocked(def: &FrameDef, s: &crate::config::Settings) -> bool {
 pub(super) fn how(def: &FrameDef, t: &Strings) -> String {
     match def.need {
         Need::Wave(w) => t.frame_how.replace("{n}", &w.to_string()),
-        Need::Shiny(n) => t.frame_how_shiny.replace("{n}", &n.to_string()),
+        Need::Cards(n) => t.frame_how_cards.replace("{n}", &n.to_string()),
     }
 }
 
@@ -127,7 +127,7 @@ pub(super) fn paint_frame(painter: &egui::Painter, c: Pos2, r: f32, id: Option<&
                 }
             }
         }
-        // The shiny binder's: a gold ring, a rainbow sheen running round it, sparkles.
+        // The full binder's: a gold ring, a rainbow sheen running round it, sparkles.
         "holo" => {
             let gold = Color32::from_rgb(0xf2, 0xc2, 0x3a);
             painter.circle_stroke(c, ring + w * 0.5, Stroke::new(w * 1.6, gold.gamma_multiply(0.35)));

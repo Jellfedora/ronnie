@@ -707,7 +707,7 @@ impl App {
         let id = FISH[fish].id;
         let all = FISH.len() as u32;
         let tally = |cards: &std::collections::BTreeMap<String, crate::config::FishCard>| (cards.len() as u32, cards.values().filter(|c| c.shiny > 0).count() as u32, cards.values().map(|c| c.count).sum::<u32>());
-        let (_, shiny_before, hires_before) = tally(&self.config.settings.fish_cards);
+        let (species_before, _, hires_before) = tally(&self.config.settings.fish_cards);
         let card = self.config.settings.fish_cards.entry(id.to_owned()).or_default();
         let new = card.count == 0;
         let record = !new && size > card.best_cm;
@@ -744,7 +744,7 @@ impl App {
         if hires_before < crate::fishing::HUNTER && catches >= crate::fishing::HUNTER {
             said.push((t.hunter_unlocked.to_owned(), t.hunter_unlocked_body.to_owned()));
         }
-        if shiny_before < all && shinies >= all {
+        if species_before < all && species >= all {
             said.push((t.frame_unlocked.replace("{n}", super::frames::frame_name(t, "holo")), t.frame_unlocked_body.to_owned()));
         }
         for (title, body) in said {
