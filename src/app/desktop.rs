@@ -349,6 +349,10 @@ impl eframe::App for Overlay {
         }
         // The wand or the lightsaber in place of the system's pointer.
         os::hide_pointer(self.shown.pointer.is_some());
+        if self.shown.pointer.is_some() {
+            // Woken up in time to hide it again.
+            next = next.min(0.5);
+        }
         match self.shown.pointer {
             Some(Pointer::Wand) => {
                 self.wand.step(local, click, now, dt);
@@ -416,12 +420,17 @@ mod os {
         fn CGDisplayShowCursor(display: u32) -> i32;
     }
 
-    static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    thread_local! {
+        /// How many times the pointer was hidden, and when last.
+        static HIDDEN: std::cell::Cell<(u32, Option<std::time::Instant>)> = const { std::cell::Cell::new((0, None)) };
+    }
 
-    /// The system's pointer hidden (`hide`) or shown again (once each: the window server counts them).
+    /// The system's pointer hidden (`hide`) or shown again. Hidden once, it stays in sight on recent
+    /// macOS: it is hidden again every half second while it should be, and shown again as many times
+    /// as it was hidden (the window server counts them).
     pub(super) fn hide_pointer(hide: bool) {
-        use std::sync::atomic::Ordering;
         static ALLOWED: std::sync::Once = std::sync::Once::new();
+        let (count, last) = HIDDEN.get();
         // SAFETY: the window server's calls on our own connection; the key is a CFString kept alive.
         unsafe {
             if hide {
@@ -430,11 +439,15 @@ mod os {
                     let cid = _CGSDefaultConnection();
                     CGSSetConnectionProperty(cid, cid, objc2::rc::Retained::as_ptr(&key).cast(), kCFBooleanTrue);
                 });
-                if !HIDDEN.swap(true, Ordering::Relaxed) {
+                if last.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(500)) {
                     CGDisplayHideCursor(0);
+                    HIDDEN.set((count + 1, Some(std::time::Instant::now())));
                 }
-            } else if HIDDEN.swap(false, Ordering::Relaxed) {
-                CGDisplayShowCursor(0);
+            } else if count > 0 {
+                for _ in 0..count {
+                    CGDisplayShowCursor(0);
+                }
+                HIDDEN.set((0, None));
             }
         }
     }
