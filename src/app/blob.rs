@@ -286,6 +286,20 @@ impl App {
         }
     }
 
+    /// A round's largest mass: kept when it beats the best, the park's theme unlocked past its mass.
+    fn blob_best(&mut self, best: u32) {
+        if best > self.config.settings.blob_best {
+            self.config.settings.blob_best = best;
+            self.save_config();
+        }
+        if best >= crate::theme::JURASSIC_UNLOCK && !self.config.settings.jurassic_unlocked {
+            self.config.settings.jurassic_unlocked = true;
+            self.save_config();
+            let t = self.t();
+            self.push_toast(super::Toast { ok: true, title: t.jurassic_unlocked.to_owned(), body: t.jurassic_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+        }
+    }
+
     /// Out of the game for good (not on pause): floor takes the player out.
     pub(super) fn blob_leave(&mut self) {
         if self.blob.online.connected() {
@@ -331,17 +345,12 @@ impl App {
         let news = self.blob.online.poll();
         if let Some(death) = &news.death {
             self.blob.died_at = now;
-            if death.best > self.config.settings.blob_best {
-                self.config.settings.blob_best = death.best;
-                self.save_config();
-            }
-            // The park's theme, for a round past its mass.
-            if death.best >= crate::theme::JURASSIC_UNLOCK && !self.config.settings.jurassic_unlocked {
-                self.config.settings.jurassic_unlocked = true;
-                self.save_config();
-                let t = self.t();
-                self.push_toast(super::Toast { ok: true, title: t.jurassic_unlocked.to_owned(), body: t.jurassic_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
-            }
+            self.blob_best(death.best);
+        }
+        // floor's record too: a round that ended otherwise (the page left, a pause too long, the
+        // connection lost) counts on floor without a death here.
+        if let Some((_, mass)) = self.blob.online.records.as_ref().and_then(|r| r.me) {
+            self.blob_best(mass);
         }
         if news.ate > 0 {
             self.blob_sound(Sfx::Gulp);
