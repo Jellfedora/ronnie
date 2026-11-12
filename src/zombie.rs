@@ -60,6 +60,17 @@ impl Kind {
     }
 }
 
+/// Floor's steps the rewards hang on (career.js): colleagues helped up for the bite, escorts of
+/// Agnès for her card, her letters.
+pub const REVIVES_BITE: u32 = 20;
+pub const ESCORTS_CARD: u32 = 10;
+pub const LETTERS: u32 = 12;
+
+/// The grades, in floor's order (career.js GRADES): the names it sends.
+pub const GRADES: [&str; 8] = ["Stagiaire", "CDD", "CDI", "Chef d’équipe", "Manager", "Directeur", "DG", "PDG"];
+/// The grade each thing of the coffee machine opens at (career.js SHOP_GRADE).
+pub const SHOP_GRADE: [(&str, u32); 6] = [("mug", 0), ("dmg", 0), ("mag", 0), ("extinguisher", 1), ("turret", 3), ("confetti", 4)];
+
 /// The weapons, in floor's order (its WEAPON_IDS).
 pub const WEAPONS: [&str; 4] = ["staple", "postit", "extinguisher", "confetti"];
 
@@ -83,6 +94,16 @@ pub struct Player {
     pub bleed: f32,
     pub ready: bool,
     pub offline: bool,
+    /// Dashing (RTT).
+    pub dashing: bool,
+    /// The weapons they have (bits, in WEAPONS' order).
+    pub owned: u8,
+    /// Their weapon's upgrades: damage, magazine (levels).
+    pub ups: (u8, u8),
+    pub max_hp: f32,
+    /// Seconds before the next dash, the next teleport.
+    pub dash_in: u32,
+    pub teleport_in: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +152,76 @@ pub struct Frame {
     pub players: Vec<Player>,
     pub zombies: Vec<Zombie>,
     pub shots: Vec<Shot>,
+    pub agnes: Option<Agnes>,
+    /// Gérard, and whether he found her.
+    pub gerard: Option<(f32, f32, bool)>,
+    /// The photocopier turrets: x, y, aim, seconds left.
+    pub turrets: Vec<(f32, f32, f32, u32)>,
+    /// Agnès' letters lying on the floor.
+    pub letters: Vec<(f32, f32)>,
     pub at: Instant,
+}
+
+/// Agnès, from the reception desk.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Agnes {
+    pub x: f32,
+    pub y: f32,
+    pub state: AgnesState,
+    /// Sitting: seconds of help received.
+    pub help: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgnesState {
+    Walking,
+    /// Hit by a shot: to be helped up.
+    Sitting,
+    /// At the coffee machine, everyone served.
+    Served,
+}
+
+/// The player's career, kept by floor.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Career {
+    pub xp: u32,
+    /// The grade (0 intern … 7 CEO), its name, the stars past CEO, the XP it starts at, the next one's.
+    pub grade: u32,
+    pub name: String,
+    pub stars: u32,
+    pub from: u32,
+    pub next: u32,
+    /// Perks to pick before a game (how many, which ones).
+    pub slots: u32,
+    pub perks: Vec<String>,
+    /// What the coffee machine sells them.
+    pub shop: Vec<String>,
+    /// By weapon: mastery level, zombies.
+    pub mastery: std::collections::HashMap<String, (u32, u32)>,
+    pub games: u32,
+    pub kills: u32,
+    pub revives: u32,
+    pub escorts: u32,
+    pub letters: u32,
+    #[serde(rename = "bestWave")]
+    pub best_wave: u32,
+    pub horde: bool,
+    /// The week's goals: id, done so far, needed, reached.
+    pub week: Vec<(String, u32, u32, bool)>,
+}
+
+/// A step passed at the end of a game (what Ronnie announces, and hangs its rewards on).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Milestone {
+    Grade { value: String, #[serde(default)] stars: u32 },
+    Mastery { weapon: String, level: u32 },
+    Wave { value: u32 },
+    Revives { value: u32 },
+    Escorts { value: u32 },
+    Letter { value: u32 },
+    Horde,
+    Weekly { id: String },
 }
 
 /// The office, from floor (sent once).
@@ -197,6 +287,14 @@ pub struct Over {
     pub seconds: u32,
     #[serde(default)]
     pub record: bool,
+    #[serde(default)]
+    pub escorts: u32,
+    #[serde(default)]
+    pub letters: u32,
+    #[serde(default)]
+    pub xp: u32,
+    #[serde(default)]
+    pub milestones: Vec<Milestone>,
 }
 
 /// What happened once, for the app (sounds, toasts, little texts on the field).
@@ -211,6 +309,24 @@ pub enum Happened {
     Revived { player: u32, by: u32 },
     Dead(u32),
     Back(u32),
+    /// Agnès came up by the lift, Gérard by the stairs.
+    Agnes,
+    Gerard,
+    /// A shot made her sit down (by whom); helped up.
+    AgnesHit(u32),
+    AgnesUp(u32),
+    /// She served the coffee (who escorted her).
+    Coffee(Vec<u32>),
+    /// Wave 10 held with her standing: the post-it comes off.
+    PostIt,
+    /// Gérard found her.
+    Reunion,
+    LetterDrop,
+    /// A letter picked up (by whom).
+    Letter(u32),
+    Bought { player: u32, item: String },
+    Dash(u32),
+    Teleport(u32),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -236,7 +352,15 @@ pub struct News {
 #[serde(tag = "t")]
 enum Wire {
     #[serde(rename = "welcome")]
-    Welcome { map: Map },
+    Welcome {
+        map: Map,
+        #[serde(default)]
+        shop: std::collections::HashMap<String, serde_json::Value>,
+    },
+    #[serde(rename = "profile")]
+    Profile(Career),
+    #[serde(rename = "perks")]
+    Perks { list: Vec<String> },
     #[serde(rename = "lobby")]
     Lobby { rooms: Vec<(u32, String, u32, bool)> },
     #[serde(rename = "room")]
@@ -250,7 +374,24 @@ enum Wire {
         started: bool,
     },
     #[serde(rename = "s")]
-    Frame { ph: u8, w: u32, tl: u32, zl: u32, tk: u32, p: Vec<f32>, z: Vec<f32>, b: Vec<f32> },
+    Frame {
+        ph: u8,
+        w: u32,
+        tl: u32,
+        zl: u32,
+        tk: u32,
+        p: Vec<f32>,
+        z: Vec<f32>,
+        b: Vec<f32>,
+        #[serde(default)]
+        a: Option<Vec<f32>>,
+        #[serde(default)]
+        g: Option<Vec<f32>>,
+        #[serde(default)]
+        tu: Vec<f32>,
+        #[serde(default)]
+        l: Vec<f32>,
+    },
     #[serde(rename = "news")]
     News { l: Vec<serde_json::Value> },
     #[serde(rename = "over")]
@@ -289,6 +430,11 @@ pub struct Online {
     pub chat: Vec<(String, String)>,
     /// A room to join as soon as connected (the host's pseudo, after their invitation).
     pub join_host: Option<String>,
+    pub career: Option<Career>,
+    /// The perks floor kept for the next game.
+    pub perks: Vec<String>,
+    /// What the coffee machine costs: item → price (the upgrades, level by level).
+    pub prices: std::collections::HashMap<String, serde_json::Value>,
     pub rtt: f32,
     pings: Vec<(u64, Instant)>,
     next_ping: u64,
@@ -374,6 +520,35 @@ impl Online {
         }
     }
 
+    pub fn buy(&self, item: &str) {
+        self.send(json!({ "t": "buy", "item": item }));
+    }
+
+    pub fn dash(&self) {
+        self.send(json!({ "t": "dash" }));
+    }
+
+    pub fn teleport(&self) {
+        self.send(json!({ "t": "tp" }));
+    }
+
+    /// The perks for the next game (before it starts).
+    pub fn choose_perks(&self, list: &[String]) {
+        self.send(json!({ "t": "perks", "list": list }));
+    }
+
+    /// What `item` costs now for `player` (an upgrade: its next level; None: maxed out).
+    pub fn price(&self, item: &str, player: &Player) -> Option<u32> {
+        let v = self.prices.get(item)?;
+        match v {
+            serde_json::Value::Array(levels) => {
+                let level = if item == "dmg" { player.ups.0 } else { player.ups.1 };
+                levels.get(level as usize).and_then(serde_json::Value::as_u64).map(|n| n as u32)
+            }
+            v => v.as_u64().map(|n| n as u32),
+        }
+    }
+
     pub fn reload(&self) {
         self.send(json!({ "t": "reload" }));
     }
@@ -442,8 +617,11 @@ impl Online {
 
     fn take(&mut self, wire: Wire, at: Instant, news: &mut News, closed: &mut Option<Option<String>>) {
         match wire {
-            Wire::Welcome { map } => {
+            Wire::Profile(career) => self.career = Some(career),
+            Wire::Perks { list } => self.perks = list,
+            Wire::Welcome { map, shop } => {
                 self.map = Some(map);
+                self.prices = shop;
                 self.status = Status::Ready;
                 if let Some(host) = self.join_host.take() {
                     self.join_host(&host);
@@ -461,9 +639,9 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l } => {
                 let players = p
-                    .chunks_exact(12)
+                    .chunks_exact(17)
                     .map(|v| Player {
                         id: v[0] as u32,
                         x: v[1],
@@ -482,6 +660,12 @@ impl Online {
                         bleed: v[10] / 10.0,
                         ready: v[11] as u32 & 1 != 0,
                         offline: v[11] as u32 & 2 != 0,
+                        dashing: v[11] as u32 & 4 != 0,
+                        owned: v[12] as u8,
+                        ups: ((v[13] as u32 / 4) as u8, (v[13] as u32 % 4) as u8),
+                        max_hp: v[14],
+                        dash_in: v[15] as u32,
+                        teleport_in: v[16] as u32,
                     })
                     .collect();
                 let zombies = z
@@ -492,8 +676,21 @@ impl Online {
                     })
                     .collect();
                 let shots = b.chunks_exact(4).map(|v| Shot { x: v[0], y: v[1], angle: v[2] / 100.0, weapon: (v[3].max(0.0) as usize).min(WEAPONS.len() - 1) }).collect();
+                let agnes = a.filter(|v| v.len() >= 4).map(|v| Agnes {
+                    x: v[0],
+                    y: v[1],
+                    state: match v[2] as u32 {
+                        1 => AgnesState::Sitting,
+                        2 => AgnesState::Served,
+                        _ => AgnesState::Walking,
+                    },
+                    help: v[3] / 10.0,
+                });
+                let gerard = g.filter(|v| v.len() >= 3).map(|v| (v[0], v[1], v[2] > 0.0));
+                let turrets = tu.chunks_exact(4).map(|v| (v[0], v[1], v[2] / 100.0, v[3] as u32)).collect();
+                let letters = l.chunks_exact(2).map(|v| (v[0], v[1])).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -545,6 +742,18 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "revived" => Happened::Revived { player: u("player"), by: u("by") },
         "dead" => Happened::Dead(u("player")),
         "back" => Happened::Back(u("player")),
+        "agnes" => Happened::Agnes,
+        "gerard" => Happened::Gerard,
+        "agnes-hit" => Happened::AgnesHit(u("by")),
+        "agnes-up" => Happened::AgnesUp(u("by")),
+        "coffee" => Happened::Coffee(v.get("escorts").and_then(serde_json::Value::as_array).map(|l| l.iter().filter_map(serde_json::Value::as_u64).map(|n| n as u32).collect()).unwrap_or_default()),
+        "postit" => Happened::PostIt,
+        "reunion" => Happened::Reunion,
+        "letter-drop" => Happened::LetterDrop,
+        "letter" => Happened::Letter(u("player")),
+        "bought" => Happened::Bought { player: u("player"), item: v.get("item")?.as_str()?.to_owned() },
+        "dash" => Happened::Dash(u("player")),
+        "teleport" => Happened::Teleport(u("player")),
         _ => return None,
     })
 }
@@ -636,18 +845,25 @@ mod tests {
         assert_eq!(online.lobby, vec![Open { id: 3, host: "Ada".into(), players: 1, started: false }]);
         take(&mut online, r#"{"t":"room","id":3,"host":"Ada","players":[[7,"Ada",0],[8,"Bob",1]],"started":true}"#);
         assert_eq!(online.me("Bob"), Some(8));
-        take(&mut online, r#"{"t":"s","ph":1,"w":2,"tl":0,"zl":9,"tk":40,"p":[7,100,200,157,80,1,1,9,0,12,250,2],"z":[5,3,300,400,50,6],"b":[1,2,314,0]}"#);
+        take(&mut online, r#"{"t":"s","ph":1,"w":2,"tl":0,"zl":9,"tk":40,"p":[7,100,200,157,80,1,1,9,0,12,250,2,3,5,125,2,0],"z":[5,3,300,400,50,6],"b":[1,2,314,0],"a":[10,20,1,15],"g":null,"tu":[1,2,100,30],"l":[]}"#);
         let f = online.frame.as_ref().unwrap();
         assert!(f.wave_on);
         let p = f.players[0];
         assert_eq!((p.state, p.weapon, p.ammo, p.offline), (State::Down, 1, 9, true));
         assert!((p.revive - 1.2).abs() < 1e-4 && (p.bleed - 25.0).abs() < 1e-4);
+        assert_eq!((p.owned, p.ups, p.max_hp, p.dash_in), (3, (1, 1), 125.0, 2));
+        assert_eq!(f.agnes.map(|a| a.state), Some(AgnesState::Sitting));
+        assert_eq!(f.turrets, vec![(1.0, 2.0, 1.0, 30)]);
         let z = f.zombies[0];
         assert_eq!((z.kind, z.charging, z.winding), (Kind::Sales, true, true));
         let news = take(&mut online, r#"{"t":"news","l":[{"t":"wave","wave":3,"boss":false},{"t":"kill","kind":"drh","x":1,"y":2,"by":7},{"t":"nope"}]}"#);
         assert_eq!(news.happened, vec![Happened::Wave { wave: 3, boss: false }, Happened::Kill { kind: Kind::Hr, x: 1.0, y: 2.0, by: 7 }]);
-        let news = take(&mut online, r#"{"t":"over","wave":4,"kills":12,"revives":1,"tickets":300,"seconds":200,"record":true}"#);
-        assert_eq!(news.over.map(|o| (o.wave, o.record)), Some((4, true)));
+        let news = take(&mut online, r#"{"t":"over","wave":4,"kills":12,"revives":1,"tickets":300,"seconds":200,"record":true,"xp":500,"milestones":[{"kind":"grade","value":"CDD","stars":0},{"kind":"horde"},{"kind":"mastery","weapon":"staple","level":1}]}"#);
+        let over = news.over.unwrap();
+        assert_eq!((over.wave, over.record, over.xp), (4, true, 500));
+        assert_eq!(over.milestones[1], Milestone::Horde);
+        take(&mut online, r#"{"t":"profile","xp":600,"grade":1,"name":"CDD","stars":0,"from":500,"next":1500,"slots":0,"perks":[],"shop":["mug"],"mastery":{"staple":[1,55]},"games":1,"kills":12,"revives":1,"escorts":0,"letters":0,"bestWave":4,"horde":false,"week":[["kills",12,300,false]]}"#);
+        assert_eq!(online.career.as_ref().map(|c| (c.grade, c.mastery["staple"])), Some((1, (1, 55))));
         take(&mut online, r#"{"t":"room","id":null}"#);
         assert!(online.room.is_none());
     }

@@ -7,7 +7,7 @@
 
 use super::four::HomeGame;
 use super::*;
-use crate::zombie::{Frame, Happened, Kind, Online, Over, State, Status};
+use crate::zombie::{AgnesState, Frame, Happened, Kind, Milestone, Online, Over, State, Status};
 
 /// The players' colors, by seat.
 const COLORS: [Color32; 4] = [Color32::from_rgb(79, 195, 255), Color32::from_rgb(255, 122, 182), Color32::from_rgb(255, 211, 79), Color32::from_rgb(94, 224, 122)];
@@ -37,6 +37,12 @@ pub(super) struct Monday {
     sound: Option<super::blob::Sound>,
     /// The ready key, pressed during this break (not sent again at each frame).
     ready: bool,
+    /// The perks picked for the next game (sent to floor as they change).
+    perks: Option<Vec<String>>,
+    /// The letters' window is open.
+    letters_open: bool,
+    /// Shift, at the last frame.
+    shift_was: bool,
 }
 
 impl Monday {
@@ -112,6 +118,7 @@ impl App {
         }
         let news = self.monday.online.poll();
         self.monday_news(news, now, pseudo.as_deref());
+        self.monday_mirror();
         ui.ctx().request_repaint();
 
         if self.monday.online.playing() && self.monday.online.frame.is_some() {
@@ -133,6 +140,9 @@ impl App {
         }
         if let Some(over) = self.monday.over.clone() {
             self.monday_over(ui, rect, &over);
+        }
+        if self.monday.letters_open {
+            self.monday_letters(ui.ctx());
         }
         if let Some((text, at)) = &self.monday.error
             && now - at < 3.0
@@ -192,6 +202,46 @@ impl App {
                         self.monday_sound(&[(392.0, 392.0, 0.08, 0.2), (523.0, 523.0, 0.08, 0.2), (659.0, 659.0, 0.15, 0.2)]);
                     }
                 }
+                Happened::Agnes => self.monday.banner = Some((t.monday_agnes.to_owned(), AGNES, now)),
+                Happened::Gerard => self.monday.banner = Some((t.monday_gerard.to_owned(), GERARD, now)),
+                Happened::AgnesHit(_) => {
+                    self.monday.banner = Some((t.monday_agnes_hit.to_owned(), theme.ansi[1], now));
+                    self.monday_sound(&[(520.0, 300.0, 0.25, 0.2)]);
+                }
+                Happened::AgnesUp(_) => {
+                    if let Some(a) = self.monday.online.frame.as_ref().and_then(|f| f.agnes) {
+                        self.monday.floats.push((t.monday_agnes_up.to_owned(), a.x, a.y - 30.0, AGNES, now));
+                    }
+                }
+                Happened::Coffee(_) => {
+                    self.monday.banner = Some((t.monday_coffee.to_owned(), AGNES, now));
+                    self.monday_sound(&[(523.0, 523.0, 0.12, 0.2), (659.0, 659.0, 0.12, 0.2), (784.0, 784.0, 0.12, 0.2), (1046.0, 1046.0, 0.3, 0.2)]);
+                }
+                Happened::PostIt => {
+                    self.monday.banner = Some((t.monday_postit.to_owned(), AGNES, now));
+                    self.monday_sound(&[(784.0, 784.0, 0.2, 0.2), (659.0, 659.0, 0.2, 0.2), (1046.0, 1046.0, 0.5, 0.2)]);
+                }
+                Happened::Reunion => {
+                    self.monday.banner = Some((t.monday_reunion.to_owned(), Color32::from_rgb(255, 122, 182), now));
+                    self.monday_sound(&[(659.0, 659.0, 0.2, 0.2), (784.0, 784.0, 0.2, 0.2), (988.0, 988.0, 0.2, 0.2), (1318.0, 1318.0, 0.6, 0.2)]);
+                }
+                Happened::LetterDrop => self.monday.banner = Some((t.monday_letter_drop.to_owned(), AGNES, now)),
+                Happened::Letter(by) => {
+                    if Some(by) == me {
+                        self.monday.banner = Some((t.monday_letter.to_owned(), AGNES, now));
+                        self.monday_sound(&[(880.0, 880.0, 0.1, 0.2), (1175.0, 1175.0, 0.25, 0.2)]);
+                    }
+                }
+                Happened::Bought { player, .. } => {
+                    if Some(player) == me {
+                        self.monday_sound(&[(700.0, 900.0, 0.08, 0.18), (900.0, 900.0, 0.1, 0.18)]);
+                    }
+                }
+                Happened::Dash(by) | Happened::Teleport(by) => {
+                    if Some(by) == me {
+                        self.monday_sound(&[(300.0, 700.0, 0.12, 0.15)]);
+                    }
+                }
                 Happened::Dead(_) | Happened::Back(_) => {}
             }
         }
@@ -210,6 +260,11 @@ impl App {
                 floor.sync(&self.ctx.clone(), now, None, self.config.settings.floor.as_ref());
             }
             self.monday_sound(&[(392.0, 330.0, 0.3, 0.25), (330.0, 262.0, 0.3, 0.25), (262.0, 196.0, 0.6, 0.25)]);
+            // The steps passed: each said in a toast (the rewards hang on them).
+            for m in &over.milestones {
+                let (title, body) = self.milestone_text(m);
+                self.push_toast(super::Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+            }
         }
     }
 
@@ -221,7 +276,7 @@ impl App {
         let width = body.width().min(if wide { 860.0 } else { 420.0 });
         let left_w = if wide { 420.0 } else { width };
         let x0 = body.center().x - width / 2.0;
-        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 470.0f32.min(body.height())));
+        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 560.0f32.min(body.height())));
         let painter = ui.painter().clone();
         painter.rect(card, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
         let left = card.min.x + 20.0;
@@ -244,7 +299,40 @@ impl App {
         y += 66.0;
         let help = painter.layout(t.monday_help.to_owned(), FontId::proportional(12.0), theme.text_muted, text_w);
         painter.galley(Pos2::new(left, y), help.clone(), theme.text_muted);
-        y += help.size().y + 16.0;
+        y += help.size().y + 14.0;
+        // The career: the grade, its XP, the letters found.
+        if let Some(c) = self.monday.online.career.clone() {
+            let grade = grade_name(t, c.grade, c.stars);
+            painter.text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, &grade, FontId::proportional(15.0), theme.accent);
+            let xp = t.monday_xp.replace("{xp}", &c.xp.to_string()).replace("{next}", &c.next.to_string());
+            painter.text(Pos2::new(card.max.x - 20.0, y + 8.0), Align2::RIGHT_CENTER, xp, FontId::monospace(12.0), theme.text_muted);
+            let bar = Rect::from_min_size(Pos2::new(left, y + 22.0), Vec2::new(text_w, 6.0));
+            painter.rect_filled(bar, 3.0, theme.bg);
+            let k = (c.xp.saturating_sub(c.from)) as f32 / (c.next.saturating_sub(c.from)).max(1) as f32;
+            painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k.clamp(0.0, 1.0), bar.height())), 3.0, theme.accent);
+            y += 36.0;
+            let goals: Vec<&str> = t.monday_goals.split('|').collect();
+            let ids = ["revives", "kills", "waves", "escort", "games", "boss"];
+            painter.text(Pos2::new(left, y + 6.0), Align2::LEFT_CENTER, t.monday_week, FontId::proportional(12.5), theme.text);
+            y += 18.0;
+            for (id, done, need, ok) in &c.week {
+                let label = ids.iter().position(|i| i == id).and_then(|k| goals.get(k)).copied().unwrap_or_default().replace("{n}", &need.to_string());
+                let color = if *ok { theme.ansi[2] } else { theme.text_muted };
+                painter.text(Pos2::new(left + 8.0, y + 6.0), Align2::LEFT_CENTER, if *ok { format!("✓ {label}") } else { format!("· {label}") }, FontId::proportional(12.0), color);
+                painter.text(Pos2::new(card.max.x - 20.0, y + 6.0), Align2::RIGHT_CENTER, format!("{done}/{need}"), FontId::monospace(11.5), color);
+                y += 17.0;
+            }
+            y += 6.0;
+            if c.letters > 0 {
+                let r = Rect::from_min_size(Pos2::new(left, y), Vec2::new(190.0, 24.0));
+                let label = t.monday_letters_button.replace("{n}", &c.letters.to_string());
+                if ui.put(r, egui::Button::new(egui::RichText::new(label).size(12.0).color(AGNES)).corner_radius(6.0)).clicked() {
+                    self.monday.letters_open = true;
+                }
+                y += 30.0;
+            }
+            y += 4.0;
+        }
 
         // The rooms.
         let status = &self.monday.online.status;
@@ -322,7 +410,7 @@ impl App {
         let width = body.width().min(if wide { 860.0 } else { 420.0 });
         let left_w = if wide { 420.0 } else { width };
         let x0 = body.center().x - width / 2.0;
-        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 400.0f32.min(body.height())));
+        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 460.0f32.min(body.height())));
         let painter = ui.painter().clone();
         painter.rect(card, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
         let left = card.min.x + 20.0;
@@ -341,6 +429,46 @@ impl App {
             painter.circle_stroke(Pos2::new(left + 16.0, y), 14.0, Stroke::new(1.0, theme.tab_hover));
             painter.text(Pos2::new(left + 44.0, y), Align2::LEFT_CENTER, t.monday_free_seat, FontId::proportional(13.0), theme.text_muted.gamma_multiply(0.6));
             y += 40.0;
+        }
+        // The perks for this game, among those of the player's grade.
+        if let Some(c) = self.monday.online.career.clone() {
+            let names: Vec<&str> = t.monday_perk_names.split('|').collect();
+            let notes: Vec<&str> = t.monday_perk_notes.split('|').collect();
+            let ids = ["rtt", "mutuelle", "anciennete", "prime", "teletravail"];
+            y += 2.0;
+            if c.slots == 0 {
+                painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.monday_no_perks, FontId::proportional(12.0), theme.text_muted);
+            } else {
+                painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, t.monday_perks.replace("{n}", &c.slots.to_string()), FontId::proportional(12.5), theme.text);
+                let picked = self.monday.perks.get_or_insert_with(|| self.monday.online.perks.clone()).clone();
+                let mut x = left;
+                let mut changed = None;
+                for perk in &c.perks {
+                    let k = ids.iter().position(|i| i == perk).unwrap_or(0);
+                    let on = picked.contains(perk);
+                    let label = names.get(k).copied().unwrap_or(perk.as_str());
+                    let w = 14.0 + label.len() as f32 * 7.0;
+                    if x + w > card.max.x - 20.0 {
+                        break;
+                    }
+                    let r = Rect::from_min_size(Pos2::new(x, y + 12.0), Vec2::new(w, 24.0));
+                    let b = egui::Button::new(egui::RichText::new(label).size(12.0).color(if on { theme.bg } else { theme.text })).fill(if on { theme.accent } else { theme.bg }).corner_radius(12.0);
+                    if ui.put(r, b).on_hover_text(notes.get(k).copied().unwrap_or_default()).clicked() {
+                        let mut list = picked.clone();
+                        if on {
+                            list.retain(|p| p != perk);
+                        } else if (list.len() as u32) < c.slots {
+                            list.push(perk.clone());
+                        }
+                        changed = Some(list);
+                    }
+                    x += w + 6.0;
+                }
+                if let Some(list) = changed {
+                    self.monday.online.choose_perks(&list);
+                    self.monday.perks = Some(list);
+                }
+            }
         }
         let bottom = card.max.y - 36.0;
         if room.host == pseudo {
@@ -476,6 +604,20 @@ impl App {
         for s in &frame.shots {
             paint_shot(&painter, at(s.x, s.y), scale, s.angle, s.weapon, now);
         }
+        for &(x, y, aim, left) in &frame.turrets {
+            paint_turret(&painter, at(x, y), scale, aim, left);
+        }
+        for &(x, y) in &frame.letters {
+            paint_letter(&painter, at(x, y), scale, now);
+        }
+        if let Some((x, y, met)) = frame.gerard {
+            paint_gerard(&painter, at(x, y), scale, now, met);
+        }
+        if let Some(a) = frame.agnes {
+            let lines: Vec<&str> = t.monday_agnes_lines.split('|').collect();
+            let line = lines[((now / 4.0) as usize) % lines.len().max(1)].replace("{n}", &(frame.wave + 1).to_string());
+            paint_agnes(&painter, at(a.x, a.y), scale, now, a, &line, frame.wave >= 10 && frame.gerard.is_some_and(|g| g.2));
+        }
         for p in &frame.players {
             let (x, y) = mix.player(p.id, p.x, p.y);
             let (name, color) = colors.iter().find(|(id, _, _)| *id == p.id).map(|(_, n, c)| (n.as_str(), *c)).unwrap_or(("?", COLORS[0]));
@@ -573,6 +715,21 @@ impl App {
                 }
             }
         }
+        // The coffee machine, during the break: what the team's tickets buy.
+        if let (false, Some(p)) = (frame.wave_on, mine.filter(|p| p.state == State::Up)) {
+            self.monday_shop(ui, field, &frame, p);
+        }
+        // The perks' keys, and when they're back.
+        if let Some(p) = mine {
+            let mut y = field.max.y - 86.0;
+            for (perk, key, left) in [("rtt", t.monday_dash, p.dash_in), ("teletravail", t.monday_tp, p.teleport_in)] {
+                if self.monday.online.perks.iter().any(|q| q == perk) {
+                    let text = if left > 0 { format!("{key}  {left} s") } else { key.to_owned() };
+                    hud.text(Pos2::new(field.min.x + 18.0, y), Align2::LEFT_CENTER, text, FontId::proportional(12.0), if left > 0 { theme.text_muted } else { theme.accent });
+                    y -= 18.0;
+                }
+            }
+        }
         if let Some((text, color, since)) = &self.monday.banner {
             let k = now - since;
             if k < 2.5 {
@@ -585,19 +742,20 @@ impl App {
         }
     }
 
-    /// The keys and the mouse, to floor: moving, aiming at the pointer, firing, a weapon, reloading, ready.
+    /// The keys and the mouse, to floor: moving, aiming at the pointer, firing, a weapon, reloading,
+    /// ready, the perks (Shift: dash, T: back to the coffee).
     fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame) {
         let free = ui.ctx().memory(|m| m.focused().is_none());
-        let (mx, my, fire, pick, reload, ready) = ui.input(|i| {
+        let (mx, my, fire, pick, reload, ready, shift, tp) = ui.input(|i| {
             let down = |keys: &[Key]| free && keys.iter().any(|k| i.key_down(*k));
             let mx = f32::from(down(&[Key::D, Key::ArrowRight])) - f32::from(down(&[Key::Q, Key::A, Key::ArrowLeft]));
             let my = f32::from(down(&[Key::S, Key::ArrowDown])) - f32::from(down(&[Key::Z, Key::W, Key::ArrowUp]));
             let fire = i.pointer.primary_down() && i.pointer.hover_pos().is_some_and(|p| field.contains(p));
             let pick = [Key::Num1, Key::Num2, Key::Num3, Key::Num4].iter().position(|k| free && i.key_pressed(*k));
-            (mx, my, fire, pick, free && i.key_pressed(Key::R), free && i.key_pressed(Key::Space))
+            (mx, my, fire, pick, free && i.key_pressed(Key::R), free && i.key_pressed(Key::Space), free && i.modifiers.shift, free && i.key_pressed(Key::T))
         });
         let aim = pointer.map_or(0.0, |p| (p - me).angle());
-        // The aim in thousandths, so that a still mouse doesn't send anything new.
+        // The aim in steps, so that a still mouse doesn't send anything new.
         let input = (mx as i8, my as i8, (aim * 200.0) as i32, fire);
         let due = self.monday.sent.is_none_or(|(last, at)| last != input || now - at > INPUT_EVERY);
         if due {
@@ -614,6 +772,14 @@ impl App {
             self.monday.ready = !self.monday.ready;
             self.monday.online.ready(self.monday.ready);
         }
+        // Shift pressed (not held): a dash.
+        if shift && !self.monday.shift_was {
+            self.monday.online.dash();
+        }
+        self.monday.shift_was = shift;
+        if tp {
+            self.monday.online.teleport();
+        }
     }
 
     /// The game just over: how far the team went, the player's kills and revives.
@@ -622,18 +788,143 @@ impl App {
         let theme = self.theme.clone();
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_black_alpha(140));
-        let card = Rect::from_center_size(rect.center(), Vec2::new(380.0, 230.0));
+        let lines: Vec<(String, String)> = over.milestones.iter().map(|m| self.milestone_text(m)).collect();
+        let card = Rect::from_center_size(rect.center(), Vec2::new(420.0, 250.0 + lines.len() as f32 * 22.0));
         painter.rect(card, 14.0, theme.chrome_bg, Stroke::new(1.5, theme.accent), egui::StrokeKind::Inside);
         paint_metal(&painter, card.center_top() + Vec2::new(0.0, 40.0), Align2::CENTER_CENTER, t.monday_over, 28.0, theme.accent, 1.0);
         let body = t.monday_over_body.replace("{w}", &over.wave.to_string()).replace("{k}", &over.kills.to_string()).replace("{r}", &over.revives.to_string());
-        painter.text(card.center_top() + Vec2::new(0.0, 90.0), Align2::CENTER_CENTER, body, FontId::proportional(15.0), theme.text);
+        let mut y = card.min.y + 88.0;
+        painter.text(Pos2::new(card.center().x, y), Align2::CENTER_CENTER, body, FontId::proportional(15.0), theme.text);
+        y += 28.0;
+        if over.xp > 0 {
+            painter.text(Pos2::new(card.center().x, y), Align2::CENTER_CENTER, t.monday_xp_gained.replace("{n}", &over.xp.to_string()), FontId::monospace(15.0), theme.accent);
+            y += 26.0;
+        }
         if over.record {
-            painter.text(card.center_top() + Vec2::new(0.0, 122.0), Align2::CENTER_CENTER, t.game_new_best, FontId::proportional(14.0), theme.accent);
+            painter.text(Pos2::new(card.center().x, y), Align2::CENTER_CENTER, t.game_new_best, FontId::proportional(14.0), theme.accent);
+            y += 24.0;
+        }
+        for (title, _) in &lines {
+            painter.text(Pos2::new(card.center().x, y), Align2::CENTER_CENTER, format!("★ {title}"), FontId::proportional(13.5), AGNES);
+            y += 22.0;
         }
         let r = Rect::from_center_size(card.center_bottom() - Vec2::new(0.0, 36.0), Vec2::new(170.0, 34.0));
         let b = egui::Button::new(egui::RichText::new(t.monday_ok).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
         if ui.put(r, b).clicked() || ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape)) {
             self.monday.over = None;
+        }
+    }
+
+    /// A step passed, in words: its title and a line under it.
+    fn milestone_text(&self, m: &Milestone) -> (String, String) {
+        let t = self.t();
+        let weapons: Vec<&str> = t.monday_weapons.split('|').collect();
+        match m {
+            Milestone::Grade { value, stars } => {
+                let k = crate::zombie::GRADES.iter().position(|g| g == value).unwrap_or(0) as u32;
+                (t.monday_ms_grade.replace("{g}", &grade_name(t, k, *stars)), t.monday_name.to_owned())
+            }
+            Milestone::Mastery { weapon, level } => {
+                let k = crate::zombie::WEAPONS.iter().position(|w| w == weapon).unwrap_or(0);
+                (t.monday_ms_mastery.replace("{w}", weapons.get(k).copied().unwrap_or_default()).replace("{n}", &level.to_string()), t.monday_name.to_owned())
+            }
+            Milestone::Wave { value } => (t.monday_ms_wave.replace("{n}", &value.to_string()), t.monday_name.to_owned()),
+            Milestone::Revives { value } => (t.monday_ms_revives.replace("{n}", &value.to_string()), t.unlock_bite.to_owned()),
+            Milestone::Escorts { value } => (t.monday_ms_escorts.replace("{n}", &value.to_string()), t.unlock_agnes_card.to_owned()),
+            Milestone::Letter { value } => (t.monday_ms_letter.replace("{n}", &value.to_string()), t.unlock_letters.to_owned()),
+            Milestone::Horde => (t.monday_ms_horde.to_owned(), t.unlock_horde.to_owned()),
+            Milestone::Weekly { .. } => (t.monday_ms_weekly.to_owned(), t.monday_name.to_owned()),
+        }
+    }
+
+    /// The career floor sent, kept in the settings too (sealed): the rewards it unlocks show offline,
+    /// and travel with the others.
+    fn monday_mirror(&mut self) {
+        let Some(c) = &self.monday.online.career else { return };
+        let s = &mut self.config.settings;
+        let (revives, escorts, letters, horde, best) = (c.revives.max(s.monday_revives), c.escorts.max(s.monday_escorts), c.letters.max(s.monday_letters), c.horde || s.monday_horde, c.best_wave.max(s.monday_best));
+        if (revives, escorts, letters, horde, best) != (s.monday_revives, s.monday_escorts, s.monday_letters, s.monday_horde, s.monday_best) {
+            s.monday_revives = revives;
+            s.monday_escorts = escorts;
+            s.monday_letters = letters;
+            s.monday_horde = horde;
+            s.monday_best = best;
+            self.save_config();
+        }
+    }
+
+    /// The coffee machine, on the right of the field during the break: what the team's tickets buy
+    /// (what the player's grade opens), at its price.
+    fn monday_shop(&mut self, ui: &mut Ui, field: Rect, frame: &Frame, me: crate::zombie::Player) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let names: Vec<&str> = t.monday_shop_items.split('|').collect();
+        let notes: Vec<&str> = t.monday_shop_notes.split('|').collect();
+        let items = ["extinguisher", "confetti", "turret", "mug", "dmg", "mag"];
+        let open: Vec<String> = self.monday.online.career.as_ref().map(|c| c.shop.clone()).unwrap_or_else(|| vec!["mug".into(), "dmg".into(), "mag".into()]);
+        let panel = Rect::from_min_size(Pos2::new(field.max.x - 262.0, field.min.y + 64.0), Vec2::new(250.0, 40.0 + items.len() as f32 * 46.0));
+        let painter = ui.painter_at(field);
+        painter.rect_filled(panel, 10.0, Color32::from_rgba_unmultiplied(18, 20, 26, 225));
+        painter.rect_stroke(panel, 10.0, Stroke::new(1.0, Color32::from_rgb(255, 181, 71).gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        painter.text(panel.min + Vec2::new(14.0, 20.0), Align2::LEFT_CENTER, t.monday_shop, FontId::proportional(14.0), Color32::from_rgb(255, 181, 71));
+        let mut buy = None;
+        for (k, item) in items.iter().enumerate() {
+            let row = Rect::from_min_size(panel.min + Vec2::new(10.0, 38.0 + k as f32 * 46.0), Vec2::new(panel.width() - 20.0, 40.0));
+            let weapon = crate::zombie::WEAPONS.iter().position(|w| w == item);
+            let owned = weapon.is_some_and(|w| me.owned & (1 << w) != 0);
+            let price = self.monday.online.price(item, &me);
+            let unlocked = open.iter().any(|o| o == item);
+            let (right, can) = if owned {
+                (t.monday_owned.to_owned(), false)
+            } else if !unlocked {
+                let grade = crate::zombie::SHOP_GRADE.iter().find(|(i, _)| i == item).map_or(0, |(_, g)| *g);
+                (t.monday_locked_grade.replace("{g}", &grade_name(t, grade, 0)), false)
+            } else if let Some(price) = price {
+                (format!("{price}"), frame.tickets >= price && !(*item == "mug" && me.hp >= me.max_hp))
+            } else {
+                (t.monday_maxed.to_owned(), false)
+            };
+            let resp = ui.interact(row, ui.id().with(("monday-shop", k)), if can { Sense::click() } else { Sense::hover() });
+            let hot = can && resp.hovered();
+            painter.rect_filled(row, 6.0, if hot { Color32::from_rgb(60, 52, 40) } else { Color32::from_rgb(28, 30, 38) });
+            let alpha = if can || owned { 1.0 } else { 0.45 };
+            painter.text(row.min + Vec2::new(10.0, 13.0), Align2::LEFT_CENTER, names.get(k).copied().unwrap_or_default(), FontId::proportional(13.0), Color32::WHITE.gamma_multiply(alpha));
+            painter.text(row.min + Vec2::new(10.0, 29.0), Align2::LEFT_CENTER, notes.get(k).copied().unwrap_or_default(), FontId::proportional(10.5), theme.text_muted.gamma_multiply(alpha));
+            painter.text(row.right_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, right, FontId::monospace(12.0), Color32::from_rgb(255, 181, 71).gamma_multiply(alpha));
+            if can && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                buy = Some(*item);
+            }
+        }
+        if let Some(item) = buy {
+            self.monday.online.buy(item);
+        }
+    }
+
+    /// Agnès' letters to Gérard, those found (the others, still to find).
+    fn monday_letters(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let found = self.config.settings.monday_letters.max(self.monday.online.career.as_ref().map_or(0, |c| c.letters)) as usize;
+        let texts = if self.config.settings.language == crate::i18n::Lang::En { &LETTERS_EN } else { &LETTERS_FR };
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(20.0).fill(theme.chrome_bg).stroke(Stroke::new(1.5, AGNES));
+        let modal = egui::Modal::new(egui::Id::new("monday-letters")).frame(frame).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(egui::RichText::new(t.monday_letters_title).size(18.0).strong().color(AGNES));
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                for (k, text) in texts.iter().enumerate() {
+                    if k < found {
+                        ui.label(egui::RichText::new(format!("{} {}", k + 1, "✉")).size(12.0).color(theme.text_muted));
+                        ui.label(egui::RichText::new(*text).size(13.5).italics());
+                    } else {
+                        ui.label(egui::RichText::new(t.monday_letter_locked.replace("{n}", &(k + 1).to_string())).size(12.5).color(theme.text_muted.gamma_multiply(0.6)));
+                    }
+                    ui.add_space(10.0);
+                }
+            });
+        });
+        if modal.should_close() {
+            self.monday.letters_open = false;
         }
     }
 }
@@ -798,3 +1089,117 @@ pub(super) fn paint_monday_icon(painter: &egui::Painter, c: Pos2, theme: &Theme,
     painter.line_segment([c + Vec2::new(-3.0, 4.0) * scale, c + Vec2::new(3.0, 4.0) * scale], Stroke::new(1.2 * scale, eye));
     painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(0.0, r), c + Vec2::new(2.5 * scale, r + 6.0 * scale), c + Vec2::new(0.0, r + 9.0 * scale), c + Vec2::new(-2.5 * scale, r + 6.0 * scale)], theme.ansi[1], Stroke::NONE));
 }
+
+/// Agnès' cardigan, and her words on the field.
+const AGNES: Color32 = Color32::from_rgb(199, 155, 255);
+const GERARD: Color32 = Color32::from_rgb(196, 160, 110);
+
+/// A grade's name (floor's index), with its stars past the CEO.
+fn grade_name(t: &Strings, grade: u32, stars: u32) -> String {
+    let names: Vec<&str> = t.monday_grades.split('|').collect();
+    let name = names.get(grade as usize).copied().unwrap_or_default();
+    if stars > 0 { format!("{name} {}", "★".repeat(stars.min(5) as usize)) } else { name.to_owned() }
+}
+
+/// Agnès seen from above: her purple cardigan, her grey bun, the post-it on her forehead (off once
+/// she found Gérard), her badge, her mug; waving, a speech bubble; sitting, the ring of the help.
+fn paint_agnes(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, a: crate::zombie::Agnes, line: &str, postit_off: bool) {
+    let sitting = a.state == AgnesState::Sitting;
+    painter.circle_filled(c, 36.0 * scale, AGNES.gamma_multiply(0.12));
+    painter.circle_filled(c + Vec2::new(3.0, 6.0) * scale, 18.0 * scale, Color32::from_black_alpha(80));
+    painter.circle_filled(c, 18.0 * scale, Color32::from_rgb(142, 108, 201));
+    painter.circle_filled(c - Vec2::new(0.0, 2.0) * scale, 12.0 * scale, Color32::from_rgb(182, 227, 154));
+    painter.circle_filled(c - Vec2::new(0.0, 14.0) * scale, 6.0 * scale, Color32::from_rgb(217, 217, 217));
+    if !postit_off {
+        painter.rect_filled(Rect::from_center_size(c - Vec2::new(0.0, 2.0) * scale, Vec2::new(11.0, 7.0) * scale), 1.0, Color32::from_rgb(255, 224, 102));
+    }
+    painter.rect_filled(Rect::from_min_size(c + Vec2::new(7.0, 6.0) * scale, Vec2::new(12.0, 8.0) * scale), 1.0, Color32::WHITE);
+    painter.circle_filled(c + Vec2::new(-20.0, 4.0) * scale, 5.5 * scale, Color32::from_rgb(232, 226, 212));
+    if sitting {
+        let n = 36;
+        let k = (a.help / 3.0).clamp(0.0, 1.0);
+        painter.circle_stroke(c, 30.0 * scale, Stroke::new(3.0 * scale, Color32::from_white_alpha(40)));
+        if k > 0.0 {
+            let points: Vec<Pos2> = (0..=n).map(|i| c + Vec2::angled(-std::f32::consts::FRAC_PI_2 + k * std::f32::consts::TAU * i as f32 / n as f32) * 30.0 * scale).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(3.0 * scale, AGNES)));
+        }
+    } else {
+        // A hand waving.
+        let wave = (now * 6.0).sin() as f32 * 0.5;
+        painter.circle_filled(c + Vec2::angled(-1.2 + wave) * 22.0 * scale, 5.0 * scale, Color32::from_rgb(182, 227, 154));
+    }
+    painter.text(c + Vec2::new(0.0, 32.0 * scale), Align2::CENTER_CENTER, "AGNÈS", FontId::monospace(11.0 * scale.max(0.7)), AGNES);
+    let text = if sitting { "Aïe…" } else { line };
+    let font = FontId::proportional(13.0 * scale.max(0.75));
+    let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::from_rgb(61, 42, 99));
+    let bubble = Rect::from_center_size(c - Vec2::new(0.0, 56.0 * scale), galley.size() + Vec2::new(20.0, 12.0));
+    painter.rect_filled(bubble, 8.0, Color32::from_rgb(245, 240, 255));
+    painter.add(egui::Shape::convex_polygon(vec![bubble.center_bottom() - Vec2::new(6.0, 0.0), bubble.center_bottom() + Vec2::new(6.0, 0.0), bubble.center_bottom() + Vec2::new(0.0, 9.0)], Color32::from_rgb(245, 240, 255), Stroke::NONE));
+    painter.galley(bubble.center() - galley.size() / 2.0, galley, Color32::from_rgb(61, 42, 99));
+}
+
+/// Gérard: a brown jacket, a moustache, hearts once he found her.
+fn paint_gerard(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, met: bool) {
+    painter.circle_filled(c + Vec2::new(3.0, 6.0) * scale, 18.0 * scale, Color32::from_black_alpha(80));
+    painter.circle_filled(c, 18.0 * scale, Color32::from_rgb(120, 86, 60));
+    painter.circle_filled(c - Vec2::new(0.0, 2.0) * scale, 12.0 * scale, Color32::from_rgb(170, 214, 140));
+    painter.line_segment([c + Vec2::new(-5.0, 3.0) * scale, c + Vec2::new(5.0, 3.0) * scale], Stroke::new(2.5 * scale, Color32::from_rgb(90, 70, 50)));
+    painter.text(c + Vec2::new(0.0, 32.0 * scale), Align2::CENTER_CENTER, "GÉRARD", FontId::monospace(11.0 * scale.max(0.7)), GERARD);
+    if met {
+        for k in 0..3 {
+            let rise = ((now * 0.8 + k as f64 / 3.0) % 1.0) as f32;
+            painter.text(c + Vec2::new(-14.0 + k as f32 * 14.0, -26.0 - rise * 30.0) * scale, Align2::CENTER_CENTER, "♥", FontId::proportional(14.0 * scale.max(0.7)), Color32::from_rgb(255, 122, 182).gamma_multiply(1.0 - rise));
+        }
+    }
+}
+
+/// The photocopier turret: a grey box, its barrel toward its target, its seconds left.
+fn paint_turret(painter: &egui::Painter, c: Pos2, scale: f32, aim: f32, left: u32) {
+    let body = Rect::from_center_size(c, Vec2::new(30.0, 24.0) * scale);
+    painter.rect_filled(body.translate(Vec2::new(3.0, 5.0) * scale), 4.0 * scale, Color32::from_black_alpha(80));
+    painter.rect_filled(body, 4.0 * scale, Color32::from_rgb(200, 204, 214));
+    painter.rect_filled(Rect::from_min_size(body.min + Vec2::new(4.0, 4.0) * scale, Vec2::new(22.0, 5.0) * scale), 1.0, Color32::from_rgb(90, 160, 220));
+    painter.line_segment([c, c + Vec2::angled(aim) * 22.0 * scale], Stroke::new(5.0 * scale, Color32::from_rgb(60, 64, 76)));
+    painter.text(c + Vec2::new(0.0, 22.0 * scale), Align2::CENTER_CENTER, format!("{left} s"), FontId::monospace(10.0 * scale.max(0.7)), Color32::WHITE);
+}
+
+/// A letter on the floor: an envelope with a heart, glowing.
+fn paint_letter(painter: &egui::Painter, c: Pos2, scale: f32, now: f64) {
+    let glow = 0.5 + 0.5 * (now * 4.0).sin() as f32;
+    painter.circle_filled(c, 22.0 * scale, AGNES.gamma_multiply(0.15 + 0.15 * glow));
+    let r = Rect::from_center_size(c, Vec2::new(22.0, 15.0) * scale);
+    painter.rect_filled(r, 2.0, Color32::from_rgb(250, 245, 230));
+    painter.line_segment([r.left_top(), r.center()], Stroke::new(1.0, Color32::from_rgb(180, 170, 150)));
+    painter.line_segment([r.right_top(), r.center()], Stroke::new(1.0, Color32::from_rgb(180, 170, 150)));
+    painter.text(r.center() + Vec2::new(0.0, 2.0 * scale), Align2::CENTER_CENTER, "♥", FontId::proportional(9.0 * scale.max(0.7)), Color32::from_rgb(230, 80, 120));
+}
+
+/// Agnès' twelve letters to Gérard, found one by one in the games.
+const LETTERS_FR: [&str; 12] = [
+    "Mon Gérard, la nouvelle machine à café est arrivée ce matin. Elle fait un bruit bizarre et le café a un goût de terre. Je t’en garde un quand même. Bisous, Agnès.",
+    "Gérard, les commerciaux sont revenus du séminaire tout verts. Ils disent que c’est le team building. Moi je trouve qu’ils sentent le marécage.",
+    "Mon chéri, Kevin le stagiaire m’a mordu le badge. Le badge, pas la main, heureusement. Il voulait juste dire bonjour, je crois.",
+    "Gérard, toute la compta a répondu à tous au même mail, quarante fois. Puis ils se sont levés en même temps, et ils marchent tous vers l’ascenseur.",
+    "Je n’arrive plus à te joindre. Ton poste sonne dans le vide, et ton mug est encore sur ton bureau, plein. Ça ne te ressemble pas de laisser un café.",
+    "J’ai un peu mal à la tête et je n’ai plus faim. Mais je dis toujours bonjour à tout le monde : quoi qu’il arrive, l’accueil reste ouvert.",
+    "Mon Gérard, je crois que je suis un peu zombie moi aussi. Mais les autres ne me font rien, et j’ai encore envie de café. C’est bon signe, non ?",
+    "Des collègues tiennent encore l’open space, avec des agrafeuses. Ils sont gentils, ils m’ont raccompagnée jusqu’au café. Je leur ai servi un double.",
+    "Le DRH a recruté douze stagiaires ce matin. Aucun n’a de contrat. Je les ai quand même tous badgés, la procédure c’est la procédure.",
+    "On m’a dit qu’on t’avait vu au parking, niveau -2, en train de chercher ta voiture. Ça, ça te ressemble. Remonte par l’escalier, mon cœur.",
+    "J’ai écrit ton nom sur un post-it et je l’ai collé sur mon front, pour ne jamais t’oublier, même si ma tête s’en va un peu.",
+    "Gérard, si tu lis ceci, viens me chercher à l’accueil. Je t’attendrai avec deux cafés, et cette fois je te laisse le sucre. Ton Agnès, pour toujours.",
+];
+const LETTERS_EN: [&str; 12] = [
+    "My Gérard, the new coffee machine arrived this morning. It makes a strange noise and the coffee tastes of soil. I’m keeping you one anyway. Love, Agnès.",
+    "Gérard, the sales team came back from the seminar all green. They say it’s team building. I think they smell like a swamp.",
+    "Darling, Kevin the intern bit my badge. The badge, not my hand, luckily. He only wanted to say hello, I think.",
+    "Gérard, the whole accounting team replied all to the same email, forty times. Then they stood up together, and they’re all walking to the lift.",
+    "I can’t reach you anymore. Your phone rings and rings, and your mug is still on your desk, full. Leaving a coffee isn’t like you.",
+    "My head aches a little and I’m not hungry anymore. But I still say hello to everyone: whatever happens, the reception stays open.",
+    "My Gérard, I think I’m a bit of a zombie too. But the others leave me alone, and I still want coffee. That’s a good sign, isn’t it?",
+    "Some colleagues are still holding the open space, with staplers. They’re kind, they walked me back to the coffee machine. I made them a double.",
+    "The HR director hired twelve interns this morning. None has a contract. I gave them all a badge anyway: procedure is procedure.",
+    "Someone saw you in the car park, level -2, looking for your car. That’s just like you. Come up by the stairs, sweetheart.",
+    "I wrote your name on a post-it and stuck it on my forehead, so I never forget you, even if my head wanders off a little.",
+    "Gérard, if you read this, come and find me at the reception desk. I’ll wait with two coffees, and this time you can have the sugar. Your Agnès, forever.",
+];
