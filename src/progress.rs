@@ -153,19 +153,34 @@ pub fn merge(base: &Value, local: &Value, remote: &Value) -> Value {
             "fish_cards" => cards(b, l, r),
             "fish_baits" => baits(b, l, r),
             "fish_budget" => counter(b, l, r),
-            // The days in a row: the last machine opened tells them.
+            // The days in a row: the last machine opened tells them, carrying on the other's streak
+            // when that one was opened the day before (it counts its day from its own last opening,
+            // before floor answers: a day on the other machine would otherwise break the streak).
             "open_streak" | "open_last" => {
                 let day = |v: &Value| v.get("open_last").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let streak = |v: &Value| int(v.get("open_streak"));
-                let side = match day(local).cmp(&day(remote)) {
-                    std::cmp::Ordering::Less => remote,
-                    std::cmp::Ordering::Greater => local,
-                    std::cmp::Ordering::Equal if streak(remote) > streak(local) => remote,
-                    std::cmp::Ordering::Equal => local,
+                let (later, earlier) = match day(local).cmp(&day(remote)) {
+                    std::cmp::Ordering::Less => (remote, local),
+                    std::cmp::Ordering::Greater => (local, remote),
+                    std::cmp::Ordering::Equal if streak(remote) > streak(local) => (remote, local),
+                    std::cmp::Ordering::Equal => (local, remote),
                 };
-                match side.get(key).or(l) {
-                    Some(v) => v.clone(),
-                    None => continue,
+                if key == "open_streak" {
+                    let eve = chrono::NaiveDate::parse_from_str(&day(later), "%Y-%m-%d").ok().and_then(|d| d.pred_opt()).map(|d| d.format("%Y-%m-%d").to_string());
+                    let carried = if eve.is_some_and(|eve| eve == day(earlier)) { streak(earlier) + 1 } else { 0 };
+                    if later.get(key).is_none() && carried == 0 {
+                        match l {
+                            Some(v) => v.clone(),
+                            None => continue,
+                        }
+                    } else {
+                        Value::from(streak(later).max(carried))
+                    }
+                } else {
+                    match later.get(key).or(l) {
+                        Some(v) => v.clone(),
+                        None => continue,
+                    }
                 }
             }
             _ => match l.or(r) {
@@ -513,9 +528,37 @@ mod tests {
         let mut a = settings();
         (a.open_streak, a.open_last) = (5, "2026-11-09".into());
         let mut b = settings();
+        (b.open_streak, b.open_last) = (2, "2026-11-08".into());
+        let merged = merge(&Value::Null, &snapshot(&a), &snapshot(&b));
+        apply(&mut a, &merged);
+        assert_eq!((a.open_streak, a.open_last.as_str()), (5, "2026-11-09"), "a gap of a day: the later one's");
         (b.open_streak, b.open_last) = (2, "2026-11-10".into());
         let merged = merge(&Value::Null, &snapshot(&a), &snapshot(&b));
         apply(&mut a, &merged);
-        assert_eq!((a.open_streak, a.open_last.as_str()), (2, "2026-11-10"));
+        assert_eq!((a.open_streak, a.open_last.as_str()), (6, "2026-11-10"), "the eve: carried on");
+    }
+
+    #[test]
+    fn a_day_on_the_other_machine_carries_the_streak_on() {
+        // Home, opened yesterday after 4 days in a row; work, today, counted 1 before floor answered.
+        let mut work = settings();
+        (work.open_streak, work.open_last) = (1, "2026-11-12".into());
+        let mut home = settings();
+        (home.open_streak, home.open_last) = (4, "2026-11-11".into());
+        let merged = merge(&Value::Null, &snapshot(&work), &snapshot(&home));
+        apply(&mut work, &merged);
+        assert_eq!((work.open_streak, work.open_last.as_str()), (5, "2026-11-12"));
+        // The other way round: floor's day is the later one.
+        let merged = merge(&Value::Null, &snapshot(&home), &snapshot(&work));
+        apply(&mut home, &merged);
+        assert_eq!((home.open_streak, home.open_last.as_str()), (5, "2026-11-12"));
+        // Already carried (the later side counted on from the same eve): not counted twice.
+        let mut a = settings();
+        (a.open_streak, a.open_last) = (5, "2026-11-12".into());
+        let mut b = settings();
+        (b.open_streak, b.open_last) = (4, "2026-11-11".into());
+        let merged = merge(&Value::Null, &snapshot(&a), &snapshot(&b));
+        apply(&mut a, &merged);
+        assert_eq!(a.open_streak, 5);
     }
 }
