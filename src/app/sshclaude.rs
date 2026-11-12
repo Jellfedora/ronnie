@@ -218,7 +218,8 @@ fn prepare(host: &SshHost, askpass: &crate::askpass::Server, run_id: &str, go: &
     Ok(String::from_utf8_lossy(&out).lines().rev().map(str::trim).find(|l| l.starts_with('/')).map(str::to_owned))
 }
 
-/// The script of a run: its pid noted (alive: the run isn't swept), the login copied in, Claude Code
+/// The script of a run: its pid noted (alive: the run isn't swept), the login copied in (the server's
+/// own Claude Code login, `~/.claude`, when it is the newest: noted, to give it back refreshed), Claude Code
 /// installed if missing, run in the shell's folder (taking up `session`, put where Claude Code looks for
 /// it), then the end said to Ronnie.
 fn go_script(run: &str, session: Option<&str>, texts: &Texts) -> String {
@@ -228,7 +229,10 @@ fn go_script(run: &str, session: Option<&str>, texts: &Texts) -> String {
     };
     format!(
         "B=\"$HOME/{BASE}\"\nR=\"$B/runs/{run}\"\necho $$ > \"$R/pid\"\n\
-        for f in .credentials.json .claude.json; do [ -f \"$B/$f\" ] && cp -p \"$B/$f\" \"$R/$f\"; done\n\
+        H=\"$HOME/.claude/.credentials.json\"\n\
+        if [ -f \"$H\" ] && {{ [ ! -f \"$B/.credentials.json\" ] || [ \"$H\" -nt \"$B/.credentials.json\" ]; }}; then cp -p \"$H\" \"$R/.credentials.json\" && : > \"$R/home-login\"\n\
+        elif [ -f \"$B/.credentials.json\" ]; then cp -p \"$B/.credentials.json\" \"$R/.credentials.json\"; fi\n\
+        if [ -f \"$B/.claude.json\" ]; then cp -p \"$B/.claude.json\" \"$R/.claude.json\"; elif [ -f \"$HOME/.claude.json\" ]; then cp -p \"$HOME/.claude.json\" \"$R/.claude.json\"; fi\n\
         c=$(command -v claude 2>/dev/null) || c=\"$HOME/.local/bin/claude\"\n\
         if [ ! -x \"$c\" ]; then\n  echo {installing}\n  if command -v curl >/dev/null 2>&1; then curl -fsSL https://claude.ai/install.sh | bash; else wget -qO- https://claude.ai/install.sh | bash; fi\n  c=\"$HOME/.local/bin/claude\"\nfi\n\
         if [ -x \"$c\" ]; then\n{resume}else\n  echo {missing}\nfi\n\
@@ -266,13 +270,15 @@ for r in *; do
 done
 [ -z "$L" ] || { echo RONNIE-CLAUDE-ARCHIVE; exec tar cf - $L; }"#;
 
-/// Deletes `runs`, keeping the newest login among them and the settings read on the standard input
-/// (if any).
+/// Deletes `runs`, keeping the newest login among them (given back to `~/.claude` too when taken
+/// from it and refreshed since) and the settings read on the standard input (if any).
 fn wipe_script(runs: &BTreeSet<String>) -> String {
     let list = runs.iter().filter(|r| valid_run(r)).cloned().collect::<Vec<_>>().join(" ");
     format!(
         "umask 077\nB=\"$HOME/{BASE}\"\n\
         for r in {list}; do f=\"$B/runs/$r/.credentials.json\"; [ -f \"$f\" ] && {{ [ ! -f \"$B/.credentials.json\" ] || [ \"$f\" -nt \"$B/.credentials.json\" ]; }} && cp -p \"$f\" \"$B/.credentials.json\"; done\n\
+        H=\"$HOME/.claude/.credentials.json\"\n\
+        for r in {list}; do f=\"$B/runs/$r/.credentials.json\"; [ -f \"$B/runs/$r/home-login\" ] && [ -f \"$f\" ] && [ -f \"$H\" ] && [ \"$f\" -nt \"$H\" ] && cp -p \"$f\" \"$H\"; done\n\
         cat > \"$B/.claude.json.new\"\n\
         if [ -s \"$B/.claude.json.new\" ]; then mv -f \"$B/.claude.json.new\" \"$B/.claude.json\"; else rm -f \"$B/.claude.json.new\"; fi\n\
         for r in {list}; do rm -rf \"$B/runs/$r\"; done"
@@ -442,6 +448,35 @@ mod tests {
         assert_eq!(std::fs::read_dir(base.join("runs")).unwrap().count(), 0);
         // Nothing more to bring back.
         assert!(after_mark(&sh(SWEEP, b"", &tmp)).is_empty());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// Logged in on the server already (`~/.claude`): that login is used, and given back refreshed.
+    #[cfg(unix)]
+    #[test]
+    fn the_servers_own_login_is_used() {
+        let tmp = std::env::temp_dir().join(format!("ronnie-sshclaude-home-{}", Uuid::new_v4()));
+        let (home, bin) = (tmp.join("home"), tmp.join("bin"));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "mine").unwrap();
+        std::fs::write(home.join(".claude.json"), r#"{"hasCompletedOnboarding":true}"#).unwrap();
+        let claude = "#!/bin/sh\nset -e\n[ \"$(cat \"$CLAUDE_CONFIG_DIR/.credentials.json\")\" = mine ]\ngrep -q hasCompletedOnboarding \"$CLAUDE_CONFIG_DIR/.claude.json\"\nsleep 1\necho refreshed > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n";
+        std::fs::write(bin.join("claude"), claude).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(bin.join("claude")).status().unwrap();
+        let sh = |script: &str| {
+            let out = std::process::Command::new("sh").arg("-c").arg(script).current_dir(&home).env("HOME", &home).env("PATH", format!("{}:/usr/bin:/bin", bin.display())).output().unwrap();
+            assert!(out.status.success(), "{script}");
+        };
+        let run_id = Uuid::new_v4().to_string();
+        let dir = home.join(BASE).join("runs").join(&run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("go"), go_script(&run_id, None, &Texts { installing: "i", missing: "m" })).unwrap();
+        sh(&format!("sh ~/{BASE}/runs/{run_id}/go"));
+        assert_eq!(std::fs::read_to_string(dir.join(".credentials.json")).unwrap().trim(), "refreshed");
+        sh(&wipe_script(&[run_id].into()));
+        assert_eq!(std::fs::read_to_string(home.join(".claude/.credentials.json")).unwrap().trim(), "refreshed");
+        assert_eq!(std::fs::read_to_string(home.join(BASE).join(".credentials.json")).unwrap().trim(), "refreshed");
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
