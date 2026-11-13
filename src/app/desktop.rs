@@ -38,6 +38,9 @@ pub(crate) struct Fx {
     /// The zombies met in Lundi matin (places in its bestiary): the horde is made of them.
     #[serde(default)]
     horde_kinds: Vec<u8>,
+    /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
+    #[serde(default)]
+    matheo: bool,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -52,12 +55,12 @@ enum Pointer {
 
 impl Fx {
     fn any(&self) -> bool {
-        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.pointer.is_some()
+        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.pointer.is_some()
     }
 
-    /// The pointer is followed (else it needn't be).
+    /// The pointer is followed (else it needn't be): Mathéo too, to be grabbed.
     fn follows(&self) -> bool {
-        self.trail || self.pointer.is_some()
+        self.trail || self.matheo || self.pointer.is_some()
     }
 }
 
@@ -112,7 +115,7 @@ impl App {
         } else {
             None
         };
-        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), pointer, theme: s.theme.clone() }
+        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && s.riff_games >= super::riff::MATHEO_GAMES, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -202,6 +205,112 @@ struct Overlay {
     /// Another app fills the screen (a film, a full-screen window): nothing shown then; and when
     /// last looked at.
     full: (bool, Option<Instant>),
+    matheo: Plant,
+}
+
+/// Mathéo where he stands (his pot's foot, screen points), falling, or held.
+struct Plant {
+    at: Option<Pos2>,
+    vy: f32,
+    /// Held by the mouse: from the pointer to his foot.
+    grab: Option<Vec2>,
+    /// The window lets the mouse through (not over him).
+    pass: bool,
+}
+
+impl Default for Plant {
+    fn default() -> Self {
+        Self { at: matheo_load(), vy: 0.0, grab: None, pass: true }
+    }
+}
+
+/// Mathéo's height on screen (points).
+const MATHEO_H: f32 = 70.0;
+
+/// Where Mathéo was left, kept beside the settings.
+fn matheo_file() -> Option<std::path::PathBuf> {
+    crate::config::config_dir().map(|d| d.join("matheo.json"))
+}
+
+fn matheo_load() -> Option<Pos2> {
+    let text = std::fs::read_to_string(matheo_file()?).ok()?;
+    let v: (f32, f32) = serde_json::from_str(&text).ok()?;
+    Some(Pos2::new(v.0, v.1))
+}
+
+fn matheo_save(at: Pos2) {
+    if let Some(path) = matheo_file() {
+        let _ = std::fs::write(path, serde_json::to_string(&(at.x, at.y)).unwrap_or_default());
+    }
+}
+
+/// Mathéo's place among the screens' foot: where he lands (the bottom of the screen under him, above
+/// the Dock), back on a screen if left between two.
+fn matheo_floor(at: Pos2, works: &[Rect]) -> (f32, f32) {
+    let Some(work) = works.iter().find(|w| (w.min.x..w.max.x).contains(&at.x)).or_else(|| works.iter().min_by(|a, b| a.center().distance(at).total_cmp(&b.center().distance(at)))) else {
+        return (at.x, at.y);
+    };
+    let half = MATHEO_H * 0.4;
+    (at.x.clamp(work.min.x + half, work.max.x - half), work.max.y)
+}
+
+/// Mathéo, Riff Hero's green plant, his pot's foot at `foot`, `size` tall: a terracotta pot with a
+/// face, his big leaves swaying; held, his eyes wide and his leaves flapping.
+pub(super) fn paint_matheo(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, held: bool) {
+    let u = size / 70.0;
+    let at = |x: f32, y: f32| foot + Vec2::new(x, y) * u;
+    // The shadow, the pot (wider at the top), its rim.
+    painter.add(egui::Shape::ellipse_filled(at(0.0, 0.0), Vec2::new(20.0, 4.0) * u, Color32::from_black_alpha(60)));
+    painter.add(egui::Shape::convex_polygon(vec![at(-14.0, 0.0), at(14.0, 0.0), at(18.0, -26.0), at(-18.0, -26.0)], Color32::from_rgb(196, 104, 62), Stroke::NONE));
+    painter.rect_filled(Rect::from_min_max(at(-21.0, -32.0), at(21.0, -24.0)), 2.0 * u, Color32::from_rgb(214, 122, 76));
+    painter.rect_filled(Rect::from_min_max(at(-19.0, -33.0), at(19.0, -31.0)), 1.0, Color32::from_rgb(92, 62, 40));
+    // His face on the pot.
+    let blink = (now % 4.0) < 0.12 && !held;
+    for s in [-1.0, 1.0] {
+        let eye = at(s * 6.0, -15.0);
+        if held {
+            painter.circle_filled(eye, 3.2 * u, Color32::WHITE);
+            painter.circle_filled(eye, 1.8 * u, Color32::from_rgb(40, 30, 24));
+        } else if blink {
+            painter.line_segment([eye - Vec2::new(2.0, 0.0) * u, eye + Vec2::new(2.0, 0.0) * u], Stroke::new(1.5 * u, Color32::from_rgb(60, 36, 24)));
+        } else {
+            painter.circle_filled(eye, 2.0 * u, Color32::from_rgb(60, 36, 24));
+        }
+    }
+    if held {
+        painter.circle_stroke(at(0.0, -8.0), 2.5 * u, Stroke::new(1.5 * u, Color32::from_rgb(60, 36, 24)));
+    } else {
+        let smile: Vec<Pos2> = (0..=6).map(|k| at(-4.0 + k as f32 * 8.0 / 6.0, -9.0 + ((k as f32 - 3.0) / 3.0).powi(2) * -2.0 + 2.0)).collect();
+        painter.add(egui::Shape::line(smile, Stroke::new(1.5 * u, Color32::from_rgb(60, 36, 24))));
+    }
+    painter.circle_filled(at(-10.0, -11.0), 2.2 * u, Color32::from_rgba_unmultiplied(255, 140, 140, 90));
+    painter.circle_filled(at(10.0, -11.0), 2.2 * u, Color32::from_rgba_unmultiplied(255, 140, 140, 90));
+    // His leaves: stems from the soil, big leaves swaying (flapping, held).
+    let speed = if held { 9.0 } else { 1.3 };
+    for (k, (angle, len)) in [(-1.0f32, 30.0f32), (-0.45, 38.0), (0.1, 42.0), (0.6, 36.0), (1.1, 28.0)].into_iter().enumerate() {
+        let sway = (now * speed + k as f64 * 0.9).sin() as f32 * if held { 0.25 } else { 0.08 };
+        let a = -std::f32::consts::FRAC_PI_2 + angle * 0.8 + sway;
+        let base = at((k as f32 - 2.0) * 3.0, -32.0);
+        let tip = base + Vec2::angled(a) * len * u;
+        let mid = base.lerp(tip, 0.55);
+        painter.line_segment([base, mid], Stroke::new(2.0 * u, Color32::from_rgb(60, 120, 50)));
+        let dir = Vec2::angled(a);
+        let side = Vec2::new(-dir.y, dir.x);
+        let leaf: Vec<Pos2> = (0..=12)
+            .map(|i| {
+                let f = i as f32 / 12.0;
+                let w = (f * std::f32::consts::PI).sin() * 9.0 * u;
+                mid + dir * f * (len * 0.6) * u + side * w
+            })
+            .chain((0..=12).rev().map(|i| {
+                let f = i as f32 / 12.0;
+                let w = (f * std::f32::consts::PI).sin() * 9.0 * u;
+                mid + dir * f * (len * 0.6) * u - side * w
+            }))
+            .collect();
+        painter.add(egui::Shape::convex_polygon(leaf, [Color32::from_rgb(72, 160, 70), Color32::from_rgb(90, 180, 80)][k % 2], Stroke::new(1.0, Color32::from_rgb(40, 100, 40))));
+        painter.line_segment([mid, mid + dir * len * 0.55 * u], Stroke::new(1.0, Color32::from_rgb(140, 210, 120)));
+    }
 }
 
 /// `ronnie desktop-fx`: the effects' window, until its standard input closes.
@@ -288,7 +397,7 @@ pub(crate) fn run() {
             }
             let work = os::screen_at(start.center()).map_or(start, |(_, work)| work);
             let theme = crate::theme::Preset::find(crate::theme::DEFAULT_THEME).theme();
-            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None), full: (false, None) }))
+            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None), full: (false, None), matheo: Plant::default() }))
         }),
     );
     if let Err(e) = result {
@@ -487,7 +596,25 @@ fn droid_walk(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) {
     let along = (t / DROID_ROLL) as f32;
     let x = strip.min.x - 30.0 + (strip.width() + 60.0) * along;
     let x = if rightward { x } else { strip.max.x + strip.min.x - x };
-    hyperspace::droid(painter, Pos2::new(x, strip.max.y - 2.0), 34.0, now);
+    // Every few seconds, a little hop on his thrusters: up, a moment in the air, down.
+    let hop = (t % 3.2) as f32;
+    let lift = if hop < 0.9 { (hop / 0.9 * std::f32::consts::PI).sin() * 34.0 } else { 0.0 };
+    let foot = Pos2::new(x, strip.max.y - 2.0 - lift);
+    if lift > 0.5 {
+        // The thrusters' flames under his feet, flickering, bigger on the way up.
+        let push = if hop < 0.45 { 1.0 } else { 0.55 };
+        for dx in [-9.0f32, 9.0] {
+            let base = foot + Vec2::new(dx, 0.0);
+            let flick = 0.8 + 0.4 * ((now * 40.0 + f64::from(dx)).sin() as f32 * 0.5 + 0.5);
+            let len = 14.0 * push * flick;
+            painter.add(egui::Shape::convex_polygon(vec![base - Vec2::new(4.0, 0.0), base + Vec2::new(4.0, 0.0), base + Vec2::new(0.0, len)], Color32::from_rgb(255, 150, 40), Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(vec![base - Vec2::new(2.0, 0.0), base + Vec2::new(2.0, 0.0), base + Vec2::new(0.0, len * 0.55)], Color32::from_rgb(255, 240, 160), Stroke::NONE));
+        }
+        // His shadow on the ground, smaller the higher.
+        let k = 1.0 - lift / 50.0;
+        painter.add(egui::Shape::ellipse_filled(Pos2::new(x, strip.max.y - 1.0), Vec2::new(14.0 * k, 3.0 * k), Color32::from_black_alpha(60)));
+    }
+    hyperspace::droid(painter, foot, 34.0, now);
     (true, 0.0)
 }
 
@@ -582,6 +709,53 @@ impl eframe::App for Overlay {
         let local = mouse.at.filter(|p| self.screen.contains(*p)).map(|p| (p - self.screen.min).to_pos2());
         let click = mouse.pressed && !self.pressed;
         self.pressed = mouse.pressed;
+        let screens = os::screens();
+        let works: Vec<Rect> = if screens.is_empty() { vec![self.work] } else { screens.iter().map(|s| s.1).collect() };
+        // Mathéo: grabbed with the mouse (the window takes the click over him only), dragged, dropped:
+        // he falls back to the foot of the screen under him.
+        let mut plant_busy = false;
+        if self.shown.matheo {
+            let plant = &mut self.matheo;
+            let at = *plant.at.get_or_insert_with(|| Pos2::new(self.work.max.x - 160.0, self.work.max.y));
+            let body = Rect::from_center_size(at - Vec2::new(0.0, MATHEO_H * 0.5), Vec2::new(MATHEO_H * 0.7, MATHEO_H));
+            let over = mouse.at.is_some_and(|p| body.contains(p));
+            if click && over {
+                plant.grab = mouse.at.map(|p| at - p);
+            }
+            match (plant.grab, mouse.at) {
+                (Some(grab), Some(p)) if mouse.pressed => {
+                    plant.at = Some(p + grab);
+                    plant.vy = 0.0;
+                    plant_busy = true;
+                }
+                (Some(_), _) => plant.grab = None,
+                _ => {
+                    let (x, floor) = matheo_floor(at, &works);
+                    if at.y < floor - 0.5 || plant.vy != 0.0 || x != at.x {
+                        plant.vy += 2600.0 * dt;
+                        let mut y = at.y + plant.vy * dt;
+                        if y >= floor {
+                            y = floor;
+                            plant.vy = if plant.vy > 500.0 { -plant.vy * 0.3 } else { 0.0 };
+                            if plant.vy == 0.0 {
+                                matheo_save(Pos2::new(x, y));
+                            }
+                        }
+                        plant.at = Some(Pos2::new(x, y));
+                        plant_busy = true;
+                    }
+                }
+            }
+            let pass = !(over || plant.grab.is_some());
+            if pass != plant.pass {
+                plant.pass = pass;
+                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(pass));
+            }
+        } else if !self.matheo.pass {
+            self.matheo.pass = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
+        }
+        let plant = self.matheo.at.filter(|_| self.shown.matheo).map(|at| (at, self.matheo.grab.is_some()));
 
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("desktop-fx")));
         let mut busy = false;
@@ -591,14 +765,19 @@ impl eframe::App for Overlay {
         let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
         // The screens: each walker along one of them (the same all through its walk), the horde along
         // all of them at once. This window covers the pointer's; the others get one each while needed.
-        let screens = os::screens();
         let n = screens.len().max(1);
         let here = screens.iter().position(|(s, _)| (s.min - self.screen.min).length() < 1.0).unwrap_or(0);
         let (shown, again) = paint_walkers(&painter, strip, Rect::from_min_size(Pos2::ZERO, self.screen.size()), now, here, n, &self.shown);
-        busy |= shown;
+        busy |= shown || plant_busy;
         next = next.min(again);
+        // Mathéo on the screen he's on (this window's, or another's).
+        let plant_on = plant.map(|(at, _)| screens.iter().position(|(s, _)| s.contains(at - Vec2::new(0.0, 1.0))).unwrap_or(here));
+        if let (Some((at, held)), true) = (plant, plant_on == Some(here)) {
+            paint_matheo(&painter, at - self.screen.min.to_vec2(), MATHEO_H, now, held);
+            next = next.min(0.1);
+        }
         for (i, (screen, work)) in screens.iter().enumerate() {
-            if i == here || !walkers_on(&self.shown, now, i, n) {
+            if i == here || !(walkers_on(&self.shown, now, i, n) || plant_on == Some(i)) {
                 continue;
             }
             let (screen, work, fx) = (*screen, *work, self.shown.clone());
@@ -619,9 +798,17 @@ impl eframe::App for Overlay {
                 let foot = work.translate(-screen.min.to_vec2());
                 let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
                 paint_walkers(&painter, strip, Rect::from_min_size(Pos2::ZERO, screen.size()), now, i, n, &fx);
+                if let (Some((at, held)), true) = (plant, plant_on == Some(i)) {
+                    paint_matheo(&painter, at - screen.min.to_vec2(), MATHEO_H, now, held);
+                }
             });
             os::tune_all();
-            busy = true;
+            if walkers_on(&self.shown, now, i, n) {
+                busy = true;
+            } else {
+                // Mathéo alone there: his leaves sway gently.
+                next = next.min(0.1);
+            }
         }
         if self.shown.trail {
             self.trail.step(local, dt);
@@ -1063,6 +1250,16 @@ mod tests {
     }
 
     #[test]
+    fn matheo_lands_at_the_foot_of_his_screen() {
+        let works = [Rect::from_min_max(Pos2::new(0.0, 25.0), Pos2::new(1440.0, 860.0)), Rect::from_min_max(Pos2::new(1440.0, 0.0), Pos2::new(3360.0, 1040.0))];
+        // On the second screen: its foot. Between two (past the last): back on the nearest one.
+        assert_eq!(matheo_floor(Pos2::new(2000.0, 300.0), &works), (2000.0, 1040.0));
+        assert_eq!(matheo_floor(Pos2::new(700.0, 100.0), &works), (700.0, 860.0));
+        let (x, y) = matheo_floor(Pos2::new(3500.0, 100.0), &works);
+        assert!(x < 3360.0 && y == 1040.0);
+    }
+
+    #[test]
     fn each_walk_on_one_screen() {
         // One screen: always it. Several: the same all through a walk, every screen in turn.
         assert!((0..50).all(|lap| walk_screen(f64::from(lap), 1, 1) == 0));
@@ -1075,7 +1272,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

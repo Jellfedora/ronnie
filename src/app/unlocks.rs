@@ -46,6 +46,8 @@ pub(super) enum Reward {
     Horde,
     /// Gérard strolling along the foot of the screen.
     Gerard,
+    /// Mathéo, the green plant at the foot of the screen.
+    Matheo,
 }
 
 impl App {
@@ -87,7 +89,10 @@ impl App {
             HomeGame::Riff => {
                 let best = s.riff_bests.iter().copied().max().unwrap_or(0);
                 let need = crate::theme::OFFICE_UNLOCK;
-                vec![Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || best >= need, progress: Some((best, need)), info: false, reward: Some(Reward::Theme(crate::theme::OFFICE_THEME)), gives: t.unlock_gives_theme.into() }]
+                vec![
+                    Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || best >= need, progress: Some((best, need)), info: false, reward: Some(Reward::Theme(crate::theme::OFFICE_THEME)), gives: t.unlock_gives_theme.into() },
+                    Unlock { what: t.unlock_matheo.into(), how: t.unlock_matheo_how.replace("{n}", &super::riff::MATHEO_GAMES.to_string()), done: s.riff_games >= super::riff::MATHEO_GAMES, progress: Some((s.riff_games.min(super::riff::MATHEO_GAMES), super::riff::MATHEO_GAMES)), info: false, reward: Some(Reward::Matheo), gives: t.unlock_gives_matheo.into() },
+                ]
             }
             HomeGame::Runner => {
                 let need = super::trail::TRAIL_METERS;

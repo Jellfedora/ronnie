@@ -2224,6 +2224,12 @@ impl App {
                         super::desktop::paint_horde(&painter, rect, (now % 6.0) / 6.0, 5, &super::zombie::met_kinds(&self.config.settings));
                         ui.ctx().request_repaint();
                     }
+                    Some(Reward::Matheo) => {
+                        // Mathéo in his pot, swaying, now and then a little hop.
+                        let hop = ((now * 0.8) % 3.0 < 0.4).then(|| ((now * 0.8) % 3.0 / 0.4 * std::f64::consts::PI).sin() as f32 * 10.0).unwrap_or(0.0);
+                        super::desktop::paint_matheo(&painter, Pos2::new(rect.center().x, rect.max.y - 6.0 - hop), 56.0, now, false);
+                        ui.ctx().request_repaint();
+                    }
                     Some(Reward::Gerard) => {
                         // Gérard walking to and fro, waving at each end.
                         let p = ((now * 0.12) % 2.0) as f32;
@@ -2305,6 +2311,7 @@ impl App {
                                     Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
                                     Some(super::unlocks::Reward::Horde) => vec![(t.desktop_horde, &mut fx.horde)],
                                     Some(super::unlocks::Reward::Gerard) => vec![(t.desktop_gerard, &mut fx.gerard)],
+                                    Some(super::unlocks::Reward::Matheo) => vec![(t.desktop_matheo, &mut fx.matheo)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword)],
@@ -2360,7 +2367,7 @@ impl App {
                                     toggle(ui, theme, &mut picked.sheep);
                                 }
                                 Some(super::unlocks::Reward::Frame(_)) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
-                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde | super::unlocks::Reward::Gerard) | None => {}
+                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde | super::unlocks::Reward::Gerard | super::unlocks::Reward::Matheo) | None => {}
                             }
                         });
                     });

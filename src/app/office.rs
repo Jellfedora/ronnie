@@ -162,6 +162,18 @@ pub(super) fn sheep(painter: &egui::Painter, strip: Rect, now: f64) -> (Option<R
     let x = if rightward { x } else { strip.max.x + strip.min.x - x };
     let c = Pos2::new(x, strip.max.y - 14.0);
     paint_sheep(painter, c, if rightward { 1.0 } else { -1.0 }, if grazing { None } else { Some(now as f32) });
+    // Now and then, a « Bêêêh » in a bubble (once on the way there, once grazing, once on the way back).
+    if let Some(since) = [2.0, 7.0, 12.5].into_iter().map(|at| t - at).find(|d| (0.0..1.6).contains(d)) {
+        let pop = (since / 0.15).min(1.0) as f32;
+        let fade = (1.0 - ((since - 1.3) / 0.3).clamp(0.0, 1.0)) as f32;
+        let font = egui::FontId::proportional(11.0 * pop.max(0.3));
+        let ink = Color32::from_rgb(0x35, 0x30, 0x30).gamma_multiply(fade);
+        let galley = painter.layout_no_wrap("Bêêêh !".to_owned(), font, ink);
+        let bubble = Rect::from_center_size(c + Vec2::new(if rightward { 14.0 } else { -14.0 }, -26.0), galley.size() + Vec2::new(12.0, 6.0));
+        painter.rect_filled(bubble, 7.0, Color32::from_white_alpha((240.0 * fade) as u8));
+        painter.add(egui::Shape::convex_polygon(vec![bubble.center_bottom() - Vec2::new(4.0, 0.0), bubble.center_bottom() + Vec2::new(4.0, 0.0), bubble.center_bottom() + Vec2::new(if rightward { -6.0 } else { 6.0 }, 6.0)], Color32::from_white_alpha((240.0 * fade) as u8), Stroke::NONE));
+        painter.galley(bubble.center() - galley.size() / 2.0, galley, ink);
+    }
     (Some(Rect::from_center_size(c, Vec2::new(34.0, 26.0))), 0.04)
 }
 

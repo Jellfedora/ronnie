@@ -177,6 +177,9 @@ fn lane_color(theme: &Theme, lane: usize) -> Color32 {
 /// The arrows' keys, from the left.
 const KEYS: [Key; LANES] = [Key::ArrowLeft, Key::ArrowDown, Key::ArrowUp, Key::ArrowRight];
 
+/// Songs played to the end for Mathéo, the green plant.
+pub(super) const MATHEO_GAMES: u32 = 5;
+
 impl App {
     /// Riff Hero, on the home page.
     pub(super) fn open_riff(&mut self) {
@@ -436,6 +439,15 @@ impl App {
             // Played to the end: kept when it beats the best, and sent to the level's board.
             song.finished = true;
             song.record = song.play.score > self.config.settings.riff_bests.get(level).copied().unwrap_or(0);
+            // One more song played to the end: Mathéo, the green plant, at the fifth.
+            let games = self.config.settings.riff_games + 1;
+            self.config.settings.riff_games = games;
+            self.save_config();
+            if games == MATHEO_GAMES {
+                let t = self.t();
+                self.push_toast(super::Toast { ok: true, title: t.matheo_unlocked.to_owned(), body: t.unlock_gives_matheo.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+            }
+            let Some(song) = &mut self.riff.song else { return };
             let p = &song.play;
             let round = crate::floor::GameRound { score: p.score, details: serde_json::json!({ "score": p.score, "hits": p.hits, "perfects": p.perfects, "misses": p.misses, "combo": p.best_combo }) };
             if song.record {
