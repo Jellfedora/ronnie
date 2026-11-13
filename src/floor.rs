@@ -604,9 +604,10 @@ impl Avatars {
     }
 }
 
-/// An avatar fetched from floor (another player's, or one's own), as a picture.
+/// An avatar fetched from floor (another player's, or one's own; a group's icon, by its `g:` id), as a picture.
 pub fn fetch_avatar(url: &str, token: &str, id: &str, version: &str) -> Option<egui::ColorImage> {
-    let mut res = agent().get(format!("{url}/v1/players/{id}/avatar")).query("v", version).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call().ok()?;
+    let path = if id.starts_with("g:") { format!("{url}/v1/talk/rooms/{}/icon", id.replace(':', "%3A")) } else { format!("{url}/v1/players/{id}/avatar") };
+    let mut res = agent().get(path).query("v", version).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call().ok()?;
     let bytes = res.body_mut().with_config().limit(512 * 1024).read_to_vec().ok()?;
     let image = image::load_from_memory(&bytes).ok()?.thumbnail(256, 256).to_rgba8();
     Some(egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()))

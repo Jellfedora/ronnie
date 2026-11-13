@@ -388,8 +388,8 @@ pub(super) fn paint_avatar(painter: &egui::Painter, c: Pos2, r: f32, name: &str,
 }
 
 fn paint_face(painter: &egui::Painter, c: Pos2, r: f32, name: &str, group: bool, face: Option<&egui::TextureHandle>, theme: &Theme) {
-    // Its picture (round), when it has one.
-    if let (Some(face), false) = (face, group) {
+    // Its picture (round), when it has one (a group's: its icon).
+    if let Some(face) = face {
         let rect = Rect::from_center_size(c, Vec2::splat(r * 2.0));
         let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         painter.add(egui::epaint::RectShape::filled(rect, r, Color32::WHITE).with_texture(face.id(), uv));
@@ -461,6 +461,7 @@ fn event_text(t: &Strings, m: &Message) -> String {
         Some("left") => t.talk_event_left,
         Some("renamed") if m.text.is_empty() => t.talk_event_unnamed,
         Some("renamed") => t.talk_event_renamed,
+        Some("icon") => t.talk_event_icon,
         Some("wizz") => t.talk_event_wizz,
         Some("pig") => t.talk_event_pig,
         Some("bite") => t.talk_event_bite,
@@ -812,11 +813,14 @@ impl App {
                 let read = self.talk_read_up_to(r, &me);
                 let online = r.peer(&me).filter(|p| self.talk.is_online(&p.id)).map(|p| self.talk.presence_of(&p.id));
                 let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id), self.talk.frame_of(&p.id)));
-                (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer)
+                (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer, r.icon.clone())
             })
             .collect();
-        for (id, title, group, unread, online, peer) in &rooms {
-            let face = peer.as_ref().and_then(|(pid, v, _)| self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()));
+        for (id, title, group, unread, online, peer, icon) in &rooms {
+            let face = match peer {
+                Some((pid, v, _)) => self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()),
+                None => self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), id, icon.as_deref()),
+            };
             let worn = peer.as_ref().and_then(|(_, _, f)| f.as_deref());
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 4.0));
             *y += slot.height() + ROW_GAP;
@@ -998,12 +1002,40 @@ impl App {
         painter.line_segment([Pos2::new(head.min.x, head.max.y), Pos2::new(head.max.x, head.max.y)], Stroke::new(1.0, theme.tab_hover));
         let title = shown_title(t, &room, &me);
         let c = Pos2::new(head.min.x + margin + 14.0, head.center().y);
-        let face = room.peer(&me).and_then(|p| {
-            let v = self.talk.avatar_of(&p.id);
-            self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &p.id, v.as_deref())
-        });
+        let face = match room.peer(&me) {
+            Some(p) => {
+                let v = self.talk.avatar_of(&p.id);
+                self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &p.id, v.as_deref())
+            }
+            None => self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), &room.id, room.icon.as_deref()),
+        };
         let worn = room.peer(&me).and_then(|p| self.talk.frame_of(&p.id));
         paint_avatar(&painter, c, 14.0, &title, room.kind == Kind::Group, face.as_ref(), worn.as_deref(), &theme);
+        // A group's icon: a click changes it (an image), the right click takes it off too.
+        if room.kind == Kind::Group {
+            let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with("talk-head-icon"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.talk_icon_change);
+            if resp.hovered() {
+                painter.circle_stroke(c, 15.5, Stroke::new(1.2, theme.accent));
+            }
+            let mut pick = resp.clicked();
+            let mut remove = false;
+            resp.context_menu(|ui| {
+                if ui.button(t.talk_icon_change).clicked() {
+                    pick = true;
+                    ui.close();
+                }
+                if room.icon.is_some() && ui.button(t.talk_icon_remove).clicked() {
+                    remove = true;
+                    ui.close();
+                }
+            });
+            if pick && let Some(bytes) = rfd::FileDialog::new().add_filter(t.account_avatar_types, &["png", "jpg", "jpeg", "webp", "gif"]).pick_file().and_then(|path| std::fs::read(path).ok()) {
+                self.talk.set_icon(ui.ctx(), &room.id, Some(bytes));
+            }
+            if remove {
+                self.talk.set_icon(ui.ctx(), &room.id, None);
+            }
+        }
         if let Some(peer) = room.peer(&me) {
             let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(30.0)), ui.id().with("talk-head-face"), Sense::click());
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -1461,6 +1493,11 @@ impl App {
                 };
                 self.talk_ui.refused = Some((text.replace("{n}", &name), Instant::now()));
             }
+        }
+        // A group's icon refused: why (an empty reason: not an image this can read).
+        if let Some(why) = self.talk.icon_refused.lock().ok().and_then(|mut r| r.take()) {
+            let text = if why.is_empty() { t.talk_icon_unreadable.to_owned() } else { t.talk_icon_failed.replace("{e}", &why) };
+            self.talk_ui.refused = Some((text, Instant::now()));
         }
         // The files sent: those done go; one refused says why.
         if let Ok(mut uploads) = self.talk.uploads.lock() {

@@ -287,6 +287,9 @@ struct WireRoom {
     /// How far each member read (an older floor sends none).
     #[serde(default)]
     reads: Option<HashMap<String, i64>>,
+    /// A group's icon: its version (None: none, the two faces drawn).
+    #[serde(default)]
+    icon: Option<String>,
 }
 
 /// A conversation.
@@ -296,6 +299,8 @@ pub struct Room {
     pub kind: Kind,
     /// A group's name (None: none given, its members make it).
     pub name: Option<String>,
+    /// A group's icon, its version (fetched as an avatar is, under the group's id).
+    pub icon: Option<String>,
     pub members: Vec<Member>,
     /// The messages known, the oldest first.
     pub messages: Vec<Message>,
@@ -342,7 +347,7 @@ impl Room {
 
     fn from_wire(w: WireRoom) -> Self {
         let messages = w.messages.unwrap_or_default();
-        Room { id: w.id, kind: w.kind, name: w.name, members: w.members, done: messages.len() < 60, messages, loading: false, typing: Vec::new(), pins: w.pins.unwrap_or_default(), reads: w.reads.unwrap_or_default() }
+        Room { id: w.id, kind: w.kind, name: w.name, icon: w.icon, members: w.members, done: messages.len() < 60, messages, loading: false, typing: Vec::new(), pins: w.pins.unwrap_or_default(), reads: w.reads.unwrap_or_default() }
     }
 
     fn add(&mut self, m: Message) {
@@ -493,6 +498,8 @@ pub struct Talk {
     fetched: Arc<Mutex<Vec<Came>>>,
     /// The files being sent, and those just sent or refused (until seen).
     pub uploads: Arc<Mutex<Vec<Upload>>>,
+    /// A group's icon refused by floor (or not an image): why, until seen.
+    pub icon_refused: Arc<Mutex<Option<String>>>,
     /// Groups just come, put in by someone else: their first event (`created`, `added`) is told of.
     joining: std::collections::HashSet<String>,
     /// The last search's answer: its conversation, what was looked for, the messages found.
@@ -1077,6 +1084,38 @@ impl Talk {
 
     pub fn leave(&self, room: &str) {
         self.send(json!({ "t": "leave", "room": room }));
+    }
+
+    /// A group's icon changed (an image, made a small square) or taken off, in the background (floor
+    /// sends the group back to its members).
+    pub fn set_icon(&self, ctx: &egui::Context, room: &str, image: Option<Vec<u8>>) {
+        let Some((url, token)) = self.key.clone() else { return };
+        let (refused, ctx, room) = (self.icon_refused.clone(), ctx.clone(), room.to_owned());
+        std::thread::spawn(move || {
+            let target = format!("{url}/v1/talk/rooms/{}/icon", segment(&room));
+            let done = match image {
+                Some(bytes) => match crate::floor::avatar_image(&bytes) {
+                    Some(small) => agent().put(&target).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).header("Content-Type", "application/octet-stream").send(&small[..]),
+                    None => {
+                        if let Ok(mut r) = refused.lock() {
+                            *r = Some(String::new());
+                        }
+                        ctx.request_repaint();
+                        return;
+                    }
+                },
+                None => agent().delete(&target).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call(),
+            };
+            let why = match done {
+                Ok(res) if res.status().is_success() => None,
+                Ok(res) => Some(refusal(res)),
+                Err(e) => Some(e.to_string()),
+            };
+            if let (Some(why), Ok(mut r)) = (why, refused.lock()) {
+                *r = Some(why);
+            }
+            ctx.request_repaint();
+        });
     }
 
     /// A file sent to a conversation, in the background (floor sends it back as a message).
