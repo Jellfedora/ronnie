@@ -743,9 +743,22 @@ impl App {
             ui.interact(Rect::from_center_size(dot_at, Vec2::splat(14.0)), ui.id().with("talk-state"), Sense::hover()).on_hover_text(hint);
         } else if self.talk.ready() {
             // Connected: the player's status, a click to change it.
+            // A pill (dot, short word, chevron) so it reads as a button.
             let presence = self.talk.presence();
-            let resp = ui.interact(Rect::from_center_size(dot_at, Vec2::splat(16.0)), ui.id().with("talk-state"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            paint_presence(&painter, dot_at, if resp.hovered() { 4.2 } else { 3.5 }, presence, theme.chrome_bg, &theme);
+            let word = presence_label(t, presence).split(':').next().unwrap_or_default().trim().to_owned();
+            let galley = painter.layout_no_wrap(word, FontId::proportional(11.5), theme.text);
+            let w = galley.size().x + 40.0;
+            let pill = Rect::from_min_size(Pos2::new(head.max.x - w, head.center().y - 10.0), Vec2::new(w, 20.0));
+            let resp = ui.interact(pill, ui.id().with("talk-state"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let hot = resp.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+            painter.rect_filled(pill.expand(4.0), 0.0, theme.chrome_bg);
+            painter.rect(pill, 10.0, if hot { theme.tab_hover } else { theme.chrome_bg }, Stroke::new(1.0, if hot { theme.accent } else { theme.text_muted.gamma_multiply(0.5) }), egui::StrokeKind::Inside);
+            paint_presence(&painter, Pos2::new(pill.min.x + 11.0, pill.center().y), 4.0, presence, theme.chrome_bg, &theme);
+            let text_color = if hot { theme.text } else { theme.text_muted };
+            painter.galley_with_override_text_color(Pos2::new(pill.min.x + 20.0, pill.center().y - galley.size().y / 2.0), galley, text_color);
+            let cx = pill.max.x - 10.0;
+            let cy = pill.center().y;
+            painter.line(vec![Pos2::new(cx - 3.0, cy - 1.5), Pos2::new(cx, cy + 1.5), Pos2::new(cx + 3.0, cy - 1.5)], Stroke::new(1.2, text_color));
             let resp = resp.on_hover_text(t.talk_status_hint.replace("{s}", presence_label(t, presence)));
             let mut chosen = None;
             egui::Popup::menu(&resp).width(250.0).show(|ui| {
