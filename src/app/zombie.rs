@@ -50,7 +50,39 @@ pub(super) struct Monday {
     stains: Vec<(f32, f32, f64, u32, f32)>,
     /// The zombies at the last frame painted (id, x, y, life, radius), and its floor.
     seen: (usize, Vec<Seen>),
+    /// The welcome screen's height, at the last frame (for its scrolling).
+    lobby_h: f32,
 }
+
+/// The welcome screen's cards.
+#[derive(Clone, Copy)]
+enum Card {
+    Play,
+    Career,
+    Bestiary,
+    Howto,
+    Rewards,
+    Board,
+}
+
+/// Inside a card of the welcome screen, around.
+const LOBBY_PAD: f32 = 18.0;
+
+/// The bestiary, in the order they come: each kind, its first wave, a boss. (Its place here is its bit
+/// in `monday_seen`.)
+const BESTIARY: [(Kind, u32, bool); 11] = [
+    (Kind::Base, 1, false),
+    (Kind::Intern, 2, false),
+    (Kind::Meeting, 3, false),
+    (Kind::Sales, 4, false),
+    (Kind::Hr, 5, true),
+    (Kind::ReplyAll, 6, false),
+    (Kind::Visio, 7, false),
+    (Kind::Accountant, 9, false),
+    (Kind::Coach, 12, false),
+    (Kind::It, 14, false),
+    (Kind::Board, 20, true),
+];
 
 /// A zombie as last painted: id, x, y, life, radius.
 type Seen = (u32, f32, f32, f32, f32);
@@ -378,168 +410,306 @@ impl App {
         }
     }
 
-    /// The welcome screen: how to play, the rooms open (join one, or open one), beside the world's board.
+    /// The welcome screen, in cards: to play (the rooms), the career, the bestiary, how to play, the
+    /// rewards, the world's board; three columns on a wide page, two, or one. Scrolls when too tall.
     fn monday_lobby(&mut self, ui: &mut Ui, body: Rect, now: f64, has_pseudo: bool) {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
+        egui::ScrollArea::vertical().id_salt("monday-lobby").auto_shrink(false).show(&mut child, |ui| {
+            let w = ui.available_width();
+            let (area, _) = ui.allocate_exact_size(Vec2::new(w, self.monday.lobby_h.max(body.height() - 8.0)), Sense::hover());
+            self.monday.lobby_h = self.monday_lobby_cards(ui, area, now, has_pseudo);
+        });
+    }
+
+    /// The cards in `area`; the height they take.
+    fn monday_lobby_cards(&mut self, ui: &mut Ui, area: Rect, now: f64, has_pseudo: bool) -> f32 {
+        let gap = 18.0;
+        let cols: usize = if area.width() >= 1180.0 { 3 } else if area.width() >= 760.0 { 2 } else { 1 };
+        let width = area.width().min(if cols == 3 { 1280.0 } else if cols == 2 { 900.0 } else { 480.0 });
+        let col_w = (width - gap * (cols - 1) as f32) / cols as f32;
+        let x0 = area.center().x - width / 2.0;
+        let mut bottoms = vec![area.min.y; cols];
+        let order: &[(Card, usize)] = match cols {
+            3 => &[(Card::Play, 0), (Card::Career, 0), (Card::Bestiary, 1), (Card::Howto, 1), (Card::Rewards, 2), (Card::Board, 2)],
+            2 => &[(Card::Play, 0), (Card::Career, 0), (Card::Howto, 0), (Card::Bestiary, 1), (Card::Rewards, 1), (Card::Board, 1)],
+            _ => &[(Card::Play, 0), (Card::Career, 0), (Card::Bestiary, 0), (Card::Howto, 0), (Card::Rewards, 0), (Card::Board, 0)],
+        };
+        for &(card, col) in order {
+            let x = x0 + col as f32 * (col_w + gap);
+            let top = bottoms[col];
+            // The card's background, under what's drawn in it (its height known once drawn).
+            let back = ui.painter().add(egui::Shape::Noop);
+            let inner = Rect::from_min_size(Pos2::new(x + LOBBY_PAD, top + LOBBY_PAD), Vec2::new(col_w - 2.0 * LOBBY_PAD, 0.0));
+            let h = match card {
+                Card::Play => self.lobby_play(ui, inner, has_pseudo),
+                Card::Career => self.lobby_career(ui, inner),
+                Card::Bestiary => self.lobby_bestiary(ui, inner, now),
+                Card::Howto => self.lobby_howto(ui, inner),
+                Card::Rewards => self.lobby_rewards(ui, inner),
+                Card::Board => self.lobby_board(ui, inner, now),
+            };
+            if h <= 0.0 {
+                continue;
+            }
+            let rect = Rect::from_min_size(Pos2::new(x, top), Vec2::new(col_w, h + 2.0 * LOBBY_PAD));
+            ui.painter().set(back, egui::Shape::rect_filled(rect, 14.0, self.theme.chrome_bg));
+            ui.painter().rect_stroke(rect, 14.0, Stroke::new(1.0, self.theme.tab_hover), egui::StrokeKind::Inside);
+            bottoms[col] = rect.max.y + gap;
+        }
+        bottoms.into_iter().fold(0.0f32, f32::max) - area.min.y
+    }
+
+    /// A card's title, at the top of `inner`; with something on its right (a count...).
+    fn lobby_title(&self, ui: &Ui, inner: Rect, title: &str, right: Option<(String, Color32)>) {
+        let theme = &self.theme;
+        let p = ui.painter();
+        p.rect_filled(Rect::from_min_size(inner.min + Vec2::new(0.0, 2.0), Vec2::new(3.0, 16.0)), 1.5, theme.accent);
+        p.text(inner.min + Vec2::new(12.0, 10.0), Align2::LEFT_CENTER, title, FontId::proportional(15.0), theme.text);
+        if let Some((text, color)) = right {
+            p.text(Pos2::new(inner.max.x, inner.min.y + 10.0), Align2::RIGHT_CENTER, text, FontId::proportional(11.5), color);
+        }
+    }
+
+    /// To play: open a game (alone or with colleagues), or join one open.
+    fn lobby_play(&mut self, ui: &mut Ui, inner: Rect, has_pseudo: bool) -> f32 {
         let t = self.t();
         let theme = self.theme.clone();
-        let wide = body.width() >= 760.0;
-        let width = body.width().min(if wide { 860.0 } else { 420.0 });
-        let left_w = if wide { 420.0 } else { width };
-        let x0 = body.center().x - width / 2.0;
-        let card = Rect::from_min_size(Pos2::new(x0, body.min.y), Vec2::new(left_w, 560.0f32.min(body.height())));
-        let painter = ui.painter().clone();
-        painter.rect(card, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
-        let left = card.min.x + 20.0;
-        let text_w = card.width() - 40.0;
-        let mut y = card.min.y + 20.0;
-        painter.text(Pos2::new(left, y + 4.0), Align2::LEFT_CENTER, t.bughunt_howto, FontId::proportional(16.0), theme.text);
-        y += 26.0;
-        let rules = painter.layout(t.monday_rules.to_owned(), FontId::proportional(13.0), theme.text_muted, text_w);
-        painter.galley(Pos2::new(left, y), rules.clone(), theme.text_muted);
-        y += rules.size().y + 12.0;
-        // The zombies, side by side.
-        let names: Vec<&str> = t.monday_kinds.split('|').collect();
-        let kinds = [Kind::Base, Kind::Intern, Kind::Meeting, Kind::Sales, Kind::ReplyAll];
-        let step = text_w / kinds.len() as f32;
-        for (k, kind) in kinds.into_iter().enumerate() {
-            let c = Pos2::new(left + step * (k as f32 + 0.5), y + 18.0);
-            paint_zombie(&painter, c, 1.0, kind, std::f32::consts::FRAC_PI_2, k as u32 * 7 + 3, (now * 3.0) as f32 + k as f32, 1.0, Fx::default());
-            painter.text(Pos2::new(c.x, y + 48.0), Align2::CENTER_CENTER, names.get(k).copied().unwrap_or_default(), FontId::proportional(11.0), theme.text_muted);
-        }
-        y += 66.0;
-        // Those coming higher in the tower, each from its wave, doing its own thing now and then.
-        let late: Vec<&str> = t.monday_kinds_late.split('|').collect();
-        let step = text_w / LATE_KINDS.len() as f32;
-        for (k, (kind, from)) in LATE_KINDS.into_iter().enumerate() {
-            let c = Pos2::new(left + step * (k as f32 + 0.5), y + 18.0);
-            let cycle = (now * 0.5 + k as f64 * 0.7) % 3.0 < 1.0;
-            let fx = Fx { frozen: kind == Kind::Visio && cycle, healing: kind == Kind::Coach, rebooting: kind == Kind::It && cycle, ..Fx::default() };
-            paint_zombie(&painter, c, 1.0, kind, std::f32::consts::FRAC_PI_2, k as u32 * 11 + 5, (now * 3.0) as f32 + k as f32, 1.0, fx);
-            painter.text(Pos2::new(c.x, y + 48.0), Align2::CENTER_CENTER, late.get(k).copied().unwrap_or_default(), FontId::proportional(11.0), theme.text_muted);
-            painter.text(Pos2::new(c.x, y + 62.0), Align2::CENTER_CENTER, t.monday_from_wave.replace("{n}", &from.to_string()), FontId::proportional(10.0), theme.accent.gamma_multiply(0.8));
-        }
-        y += 80.0;
-        let help = painter.layout(t.monday_help.to_owned(), FontId::proportional(12.0), theme.text_muted, text_w);
-        painter.galley(Pos2::new(left, y), help.clone(), theme.text_muted);
-        y += help.size().y + 14.0;
-        // The career: the grade, its XP, the letters found.
-        if let Some(c) = self.monday.online.career.clone() {
-            let grade = grade_name(t, c.grade, c.stars);
-            painter.text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, &grade, FontId::proportional(15.0), theme.accent);
-            let xp = t.monday_xp.replace("{xp}", &c.xp.to_string()).replace("{next}", &c.next.to_string());
-            painter.text(Pos2::new(card.max.x - 20.0, y + 8.0), Align2::RIGHT_CENTER, xp, FontId::monospace(12.0), theme.text_muted);
-            let bar = Rect::from_min_size(Pos2::new(left, y + 22.0), Vec2::new(text_w, 6.0));
-            painter.rect_filled(bar, 3.0, theme.bg);
-            let k = (c.xp.saturating_sub(c.from)) as f32 / (c.next.saturating_sub(c.from)).max(1) as f32;
-            painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k.clamp(0.0, 1.0), bar.height())), 3.0, theme.accent);
-            y += 36.0;
-            let goals: Vec<&str> = t.monday_goals.split('|').collect();
-            let ids = ["revives", "kills", "waves", "escort", "games", "boss"];
-            painter.text(Pos2::new(left, y + 6.0), Align2::LEFT_CENTER, t.monday_week, FontId::proportional(12.5), theme.text);
-            painter.text(Pos2::new(card.max.x - 20.0, y + 6.0), Align2::RIGHT_CENTER, t.monday_week_xp.replace("{n}", "500"), FontId::proportional(11.5), theme.text_muted);
-            y += 18.0;
-            for (id, done, need, ok) in &c.week {
-                let label = ids.iter().position(|i| i == id).and_then(|k| goals.get(k)).copied().unwrap_or_default().replace("{n}", &need.to_string());
-                let color = if *ok { theme.ansi[2] } else { theme.text_muted };
-                painter.text(Pos2::new(left + 8.0, y + 6.0), Align2::LEFT_CENTER, if *ok { format!("✓ {label}") } else { format!("· {label}") }, FontId::proportional(12.0), color);
-                painter.text(Pos2::new(card.max.x - 20.0, y + 6.0), Align2::RIGHT_CENTER, format!("{done}/{need}"), FontId::monospace(11.5), color);
-                y += 17.0;
-            }
-            if let Some((id, done, need, ok)) = &c.daily {
-                y += 4.0;
-                let label = if id == "floor" { t.monday_goal_floor.to_owned() } else { ids.iter().position(|i| i == id).and_then(|k| goals.get(k)).copied().unwrap_or_default().replace("{n}", &need.to_string()) };
-                let color = if *ok { theme.ansi[2] } else { theme.text };
-                painter.text(Pos2::new(left, y + 6.0), Align2::LEFT_CENTER, format!("{} : {label}", t.monday_daily), FontId::proportional(12.5), color);
-                painter.text(Pos2::new(card.max.x - 20.0, y + 6.0), Align2::RIGHT_CENTER, if *ok { "✓".to_owned() } else { format!("{done}/{need}") }, FontId::monospace(11.5), color);
-                y += 18.0;
-            }
-            y += 6.0;
-            if c.letters > 0 {
-                let r = Rect::from_min_size(Pos2::new(left, y), Vec2::new(190.0, 24.0));
-                let label = t.monday_letters_button.replace("{n}", &c.letters.to_string());
-                if ui.put(r, egui::Button::new(egui::RichText::new(label).size(12.0).color(AGNES)).corner_radius(6.0)).clicked() {
-                    self.monday.letters_open = true;
-                }
-                y += 30.0;
-            }
-            y += 4.0;
-        }
-
-        // The rooms.
-        let status = &self.monday.online.status;
-        let mut host = false;
-        let mut join = None;
-        let mut pick_pseudo = false;
+        self.lobby_title(ui, inner, t.monday_play, None);
+        let (left, w) = (inner.min.x, inner.width());
+        let mut y = inner.min.y + 36.0;
+        let status = self.monday.online.status.clone();
         if !has_pseudo {
-            let r = Rect::from_min_size(Pos2::new(left, y), Vec2::new(200.0, 32.0));
-            pick_pseudo = ui.put(r, egui::Button::new(egui::RichText::new(t.pseudo_pick).size(13.5)).corner_radius(8.0)).clicked();
-        } else if let Status::Failed(why) = status {
-            painter.text(Pos2::new(left, y + 10.0), Align2::LEFT_CENTER, why.as_deref().unwrap_or(t.monday_failed), FontId::proportional(13.0), theme.ansi[1]);
-            let r = Rect::from_min_size(Pos2::new(left, y + 28.0), Vec2::new(120.0, 30.0));
-            if ui.put(r, egui::Button::new(egui::RichText::new(t.monday_retry).size(13.0)).corner_radius(8.0)).clicked() {
+            let galley = ui.painter().layout(t.game_need_pseudo.to_owned(), FontId::proportional(12.5), theme.text_muted, w);
+            let h = galley.size().y;
+            ui.painter().galley(Pos2::new(left, y), galley, theme.text_muted);
+            y += h + 10.0;
+            if ui.put(Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 38.0)), egui::Button::new(egui::RichText::new(t.pseudo_pick).size(14.0)).corner_radius(10.0)).clicked() {
+                self.ask_pseudo();
+            }
+            return y + 38.0 - inner.min.y;
+        }
+        if let Status::Failed(why) = &status {
+            ui.painter().text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, why.as_deref().unwrap_or(t.monday_failed), FontId::proportional(13.0), theme.ansi[1]);
+            y += 26.0;
+            if ui.put(Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 36.0)), egui::Button::new(egui::RichText::new(t.monday_retry).size(13.5)).corner_radius(10.0)).clicked() {
                 self.monday.online = Online::default();
             }
-        } else if *status != Status::Ready {
-            painter.text(Pos2::new(left, y + 10.0), Align2::LEFT_CENTER, t.monday_connecting, FontId::proportional(13.0), theme.text_muted);
-        } else {
-            painter.text(Pos2::new(left, y + 6.0), Align2::LEFT_CENTER, t.monday_rooms, FontId::proportional(14.0), theme.text);
-            y += 20.0;
-            let lobby = self.monday.online.lobby.clone();
-            if lobby.is_empty() {
-                painter.text(Pos2::new(left, y + 12.0), Align2::LEFT_CENTER, t.monday_no_rooms, FontId::proportional(12.5), theme.text_muted);
-                y += 28.0;
-            }
-            for room in lobby.iter().take(((card.max.y - 60.0 - y) / 32.0).max(0.0) as usize) {
-                let row = Rect::from_min_size(Pos2::new(left, y + 2.0), Vec2::new(text_w, 28.0));
-                painter.rect_filled(row, 6.0, theme.bg.gamma_multiply(0.6));
-                let label = format!("{}  ·  {}/4", t.monday_room.replace("{n}", &room.host), room.players);
-                painter.text(Pos2::new(row.min.x + 10.0, row.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme.text);
-                let b = Rect::from_min_size(Pos2::new(row.max.x - 92.0, row.min.y + 2.0), Vec2::new(88.0, 24.0));
-                if room.started {
-                    painter.text(b.center(), Align2::CENTER_CENTER, t.monday_in_game, FontId::proportional(12.0), theme.text_muted);
-                } else if room.players < 4 && ui.put(b, egui::Button::new(egui::RichText::new(t.monday_join).size(12.0)).corner_radius(6.0)).clicked() {
-                    join = Some(room.id);
-                }
-                y += 32.0;
-            }
-            let r = Rect::from_min_size(Pos2::new(left, card.max.y - 50.0), Vec2::new(170.0, 34.0));
-            let b = egui::Button::new(egui::RichText::new(t.monday_host).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
-            host = ui.put(r, b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-            painter.text(Pos2::new(r.max.x + 12.0, r.center().y), Align2::LEFT_CENTER, t.monday_solo, FontId::proportional(12.0), theme.text_muted);
+            return y + 36.0 - inner.min.y;
         }
-        if pick_pseudo {
-            self.ask_pseudo();
+        if status != Status::Ready {
+            ui.painter().text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, t.monday_connecting, FontId::proportional(13.0), theme.text_muted);
+            return y + 20.0 - inner.min.y;
         }
-        if host {
+        // The big button, then what it means.
+        let b = egui::Button::new(egui::RichText::new(t.monday_host).size(15.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(10.0);
+        if ui.put(Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 42.0)), b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.monday.online.host();
+        }
+        y += 50.0;
+        ui.painter().text(Pos2::new(inner.center().x, y + 6.0), Align2::CENTER_CENTER, t.monday_solo, FontId::proportional(12.0), theme.text_muted);
+        y += 26.0;
+        // The games open.
+        ui.painter().line_segment([Pos2::new(left, y), Pos2::new(inner.max.x, y)], Stroke::new(1.0, theme.tab_hover));
+        y += 12.0;
+        ui.painter().text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, t.monday_rooms, FontId::proportional(13.0), theme.text);
+        y += 24.0;
+        let lobby = self.monday.online.lobby.clone();
+        if lobby.is_empty() {
+            ui.painter().text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, t.monday_no_rooms, FontId::proportional(12.5), theme.text_muted);
+            y += 20.0;
+        }
+        let mut join = None;
+        for room in lobby.iter().take(8) {
+            let row = Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 34.0));
+            ui.painter().rect_filled(row, 8.0, theme.bg.gamma_multiply(0.7));
+            ui.painter().text(Pos2::new(row.min.x + 12.0, row.center().y), Align2::LEFT_CENTER, t.monday_room.replace("{n}", &room.host), FontId::proportional(13.0), theme.text);
+            // The seats taken, as dots.
+            for k in 0..4 {
+                let c = Pos2::new(row.max.x - 112.0 + k as f32 * 9.0, row.center().y);
+                if k < room.players as usize {
+                    ui.painter().circle_filled(c, 3.0, theme.accent);
+                } else {
+                    ui.painter().circle_stroke(c, 3.0, Stroke::new(1.0, theme.text_muted));
+                }
+            }
+            let b = Rect::from_min_size(Pos2::new(row.max.x - 74.0, row.min.y + 5.0), Vec2::new(68.0, 24.0));
+            if room.started {
+                ui.painter().text(b.center(), Align2::CENTER_CENTER, t.monday_in_game, FontId::proportional(11.5), theme.text_muted);
+            } else if room.players < 4 && ui.put(b, egui::Button::new(egui::RichText::new(t.monday_join).size(12.0)).corner_radius(6.0)).clicked() {
+                join = Some(room.id);
+            }
+            y += 40.0;
         }
         if let Some(id) = join {
             self.monday.online.join(id);
         }
+        y - inner.min.y
+    }
 
-        // The world's board: beside, or under on a narrow page.
-        let board = if wide { Rect::from_min_max(Pos2::new(card.max.x + 32.0, body.min.y + 6.0), Pos2::new(x0 + width, body.max.y)) } else { Rect::from_min_max(Pos2::new(x0, card.max.y + 20.0), Pos2::new(x0 + width, body.max.y)) };
-        // The end credits, to see again: only once the game is finished (the committee beaten).
+    /// The career: the grade and its XP, the day's challenge, the week's goals, Agnès' letters.
+    fn lobby_career(&mut self, ui: &mut Ui, inner: Rect) -> f32 {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let Some(c) = self.monday.online.career.clone() else { return 0.0 };
+        self.lobby_title(ui, inner, t.monday_career, None);
+        let (left, right, w) = (inner.min.x, inner.max.x, inner.width());
+        let p = ui.painter().clone();
+        let mut y = inner.min.y + 38.0;
+        p.text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, grade_name(t, c.grade, c.stars), FontId::proportional(17.0), theme.accent);
+        p.text(Pos2::new(right, y + 8.0), Align2::RIGHT_CENTER, t.monday_xp.replace("{xp}", &c.xp.to_string()).replace("{next}", &c.next.to_string()), FontId::monospace(11.5), theme.text_muted);
+        y += 22.0;
+        let bar = Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 8.0));
+        p.rect_filled(bar, 4.0, theme.bg);
+        let k = (c.xp.saturating_sub(c.from)) as f32 / (c.next.saturating_sub(c.from)).max(1) as f32;
+        p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k.clamp(0.0, 1.0), bar.height())), 4.0, theme.accent);
+        y += 22.0;
+        let goals: Vec<&str> = t.monday_goals.split('|').collect();
+        let ids = ["revives", "kills", "waves", "escort", "games", "boss"];
+        let label = |id: &str, need: u32| if id == "floor" { t.monday_goal_floor.to_owned() } else { ids.iter().position(|i| *i == id).and_then(|k| goals.get(k)).copied().unwrap_or_default().replace("{n}", &need.to_string()) };
+        // The day's challenge, set apart.
+        if let Some((id, done, need, ok)) = &c.daily {
+            let r#box = Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 52.0));
+            let tint = if *ok { theme.ansi[2] } else { theme.accent };
+            p.rect_filled(r#box, 10.0, tint.gamma_multiply(0.12));
+            p.rect_stroke(r#box, 10.0, Stroke::new(1.0, tint.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+            p.text(r#box.min + Vec2::new(12.0, 14.0), Align2::LEFT_CENTER, t.monday_daily, FontId::proportional(11.0), tint);
+            p.text(r#box.min + Vec2::new(12.0, 34.0), Align2::LEFT_CENTER, label(id, *need), FontId::proportional(13.0), theme.text);
+            p.text(Pos2::new(r#box.max.x - 12.0, r#box.center().y), Align2::RIGHT_CENTER, if *ok { "✓".to_owned() } else { format!("{}/{need}", done.min(need)) }, FontId::monospace(13.0), tint);
+            y += 64.0;
+        }
+        // The week's goals, each with its bar.
+        p.text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, t.monday_week, FontId::proportional(13.0), theme.text);
+        p.text(Pos2::new(right, y + 8.0), Align2::RIGHT_CENTER, t.monday_week_xp.replace("{n}", "500"), FontId::proportional(11.0), theme.text_muted);
+        y += 24.0;
+        for (id, done, need, ok) in &c.week {
+            let color = if *ok { theme.ansi[2] } else { theme.text };
+            p.text(Pos2::new(left, y + 7.0), Align2::LEFT_CENTER, if *ok { format!("✓  {}", label(id, *need)) } else { label(id, *need) }, FontId::proportional(12.5), color);
+            p.text(Pos2::new(right, y + 7.0), Align2::RIGHT_CENTER, format!("{}/{need}", done.min(need)), FontId::monospace(11.5), if *ok { theme.ansi[2] } else { theme.text_muted });
+            let bar = Rect::from_min_size(Pos2::new(left, y + 18.0), Vec2::new(w, 3.0));
+            p.rect_filled(bar, 1.5, theme.bg);
+            p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(w * (*done as f32 / (*need).max(1) as f32).min(1.0), 3.0)), 1.5, if *ok { theme.ansi[2] } else { theme.accent.gamma_multiply(0.8) });
+            y += 30.0;
+        }
+        if c.letters > 0 {
+            y += 4.0;
+            let r = Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 32.0));
+            let label = t.monday_letters_button.replace("{n}", &c.letters.to_string());
+            if ui.put(r, egui::Button::new(egui::RichText::new(label).size(12.5).color(AGNES)).corner_radius(8.0)).clicked() {
+                self.monday.letters_open = true;
+            }
+            y += 32.0;
+        }
+        y - inner.min.y
+    }
+
+    /// The bestiary: every zombie on its tile, its name and its wave; those never met, only their
+    /// shadow. Hovered, what it does.
+    fn lobby_bestiary(&mut self, ui: &mut Ui, inner: Rect, now: f64) -> f32 {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let s = &self.config.settings;
+        let seen: Vec<bool> = BESTIARY.iter().enumerate().map(|(k, (_, from, _))| s.monday_seen & (1 << k) != 0 || s.monday_best >= *from).collect();
+        let count = seen.iter().filter(|s| **s).count();
+        self.lobby_title(ui, inner, t.monday_bestiary_title, Some((t.monday_seen_count.replace("{n}", &count.to_string()).replace("{max}", &BESTIARY.len().to_string()), theme.text_muted)));
+        let names: Vec<&str> = t.monday_bestiary.split('|').collect();
+        let notes: Vec<&str> = t.monday_bestiary_notes.split('|').collect();
+        let gap = 10.0;
+        let cols = (((inner.width() + gap) / (100.0 + gap)) as usize).clamp(3, 6);
+        let tile_w = (inner.width() - gap * (cols - 1) as f32) / cols as f32;
+        let tile_h = 118.0;
+        let top = inner.min.y + 38.0;
+        let p = ui.painter().clone();
+        for (k, &(kind, from, boss)) in BESTIARY.iter().enumerate() {
+            let tile = Rect::from_min_size(Pos2::new(inner.min.x + (k % cols) as f32 * (tile_w + gap), top + (k / cols) as f32 * (tile_h + gap)), Vec2::new(tile_w, tile_h));
+            let resp = ui.interact(tile, ui.id().with(("bestiary", k)), Sense::hover());
+            let lit = seen[k] && resp.hovered();
+            p.rect_filled(tile, 10.0, if lit { theme.tab_hover } else { theme.bg });
+            if boss {
+                p.rect_stroke(tile, 10.0, Stroke::new(1.0, theme.ansi[1].gamma_multiply(if seen[k] { 0.6 } else { 0.25 })), egui::StrokeKind::Inside);
+            }
+            let c = Pos2::new(tile.center().x, tile.min.y + 44.0);
+            let scale = (22.0 / kind.radius()).min(1.15);
+            let phase = (now * 3.0) as f32 + k as f32;
+            if seen[k] {
+                let cycle = (now * 0.5 + k as f64 * 0.7) % 3.0 < 1.0;
+                let fx = Fx { frozen: kind == Kind::Visio && cycle, healing: kind == Kind::Coach, rebooting: kind == Kind::It && cycle, ..Fx::default() };
+                paint_zombie(&p, c, scale, kind, std::f32::consts::FRAC_PI_2, k as u32 * 7 + 3, phase, 1.0, fx);
+            } else {
+                paint_shadow(&p, c, scale, kind, phase);
+            }
+            let name = if seen[k] { names.get(k).copied().unwrap_or_default() } else { "???" };
+            p.text(Pos2::new(tile.center().x, tile.max.y - 30.0), Align2::CENTER_CENTER, name, FontId::proportional(12.0), if seen[k] { theme.text } else { theme.text_muted });
+            let wave = t.monday_wave_short.replace("{n}", &from.to_string());
+            let (label, color) = if boss { (format!("{}  ·  {wave}", t.monday_boss_tag), theme.ansi[1]) } else { (wave, theme.text_muted) };
+            p.text(Pos2::new(tile.center().x, tile.max.y - 13.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), color.gamma_multiply(if seen[k] { 1.0 } else { 0.6 }));
+            let note = if seen[k] { notes.get(k).copied().unwrap_or_default() } else { t.monday_unseen };
+            resp.on_hover_text(note);
+        }
+        let rows = BESTIARY.len().div_ceil(cols);
+        top + rows as f32 * (tile_h + gap) - gap - inner.min.y
+    }
+
+    /// How to play: the rules, then the keys, each on its keycap.
+    fn lobby_howto(&mut self, ui: &mut Ui, inner: Rect) -> f32 {
+        let t = self.t();
+        let theme = self.theme.clone();
+        self.lobby_title(ui, inner, t.bughunt_howto, None);
+        let p = ui.painter().clone();
+        let mut y = inner.min.y + 36.0;
+        let rules = p.layout(t.monday_rules.to_owned(), FontId::proportional(12.5), theme.text_muted, inner.width());
+        let h = rules.size().y;
+        p.galley(Pos2::new(inner.min.x, y), rules, theme.text_muted);
+        y += h + 16.0;
+        // « ZQSD ou flèches : bouger · souris : viser, clic : tirer · ... »: the keys, what they do.
+        let keys: Vec<(&str, &str)> = t.monday_help.split(" · ").filter_map(|part| part.split_once(" : ").or_else(|| part.split_once(": "))).collect();
+        let cap_w = keys.iter().map(|(k, _)| p.layout_no_wrap((*k).to_owned(), FontId::monospace(11.5), theme.text).size().x).fold(0.0f32, f32::max) + 16.0;
+        let cap_w = cap_w.min(inner.width() * 0.5);
+        for (key, what) in keys {
+            let cap = Rect::from_min_size(Pos2::new(inner.min.x, y), Vec2::new(cap_w, 24.0));
+            p.rect_filled(cap.translate(Vec2::new(0.0, 2.0)), 6.0, theme.tab_hover);
+            p.rect_filled(cap, 6.0, theme.bg);
+            p.rect_stroke(cap, 6.0, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+            p.text(cap.center(), Align2::CENTER_CENTER, key, FontId::monospace(11.5), theme.text);
+            p.text(Pos2::new(cap.max.x + 12.0, cap.center().y), Align2::LEFT_CENTER, what, FontId::proportional(12.5), theme.text_muted);
+            y += 32.0;
+        }
+        y - 8.0 - inner.min.y
+    }
+
+    /// The rewards, and the credits to see again once the game is finished.
+    fn lobby_rewards(&mut self, ui: &mut Ui, inner: Rect) -> f32 {
+        let t = self.t();
+        let items = self.unlocks(HomeGame::Monday);
+        let done = items.iter().filter(|u| u.done && !u.info).count();
+        let total = items.iter().filter(|u| !u.info).count();
+        self.lobby_title(ui, inner, t.monday_rewards, Some((format!("{done}/{total}"), if done == total { self.theme.ansi[2] } else { self.theme.accent })));
+        let painter = ui.painter().clone();
+        let mut h = 38.0 + self.monday_rewards(&painter, Rect::from_min_max(inner.min + Vec2::new(0.0, 38.0), Pos2::new(inner.max.x, inner.min.y + 4000.0)));
         if self.config.settings.monday_wins > 0 {
-            let r = Rect::from_min_size(Pos2::new(board.max.x - 130.0, board.min.y), Vec2::new(130.0, 24.0));
-            if ui.put(r, egui::Button::new(egui::RichText::new(t.monday_credits_again).size(11.5)).corner_radius(6.0)).clicked() {
+            let r = Rect::from_min_size(Pos2::new(inner.min.x, inner.min.y + h), Vec2::new(inner.width(), 32.0));
+            if ui.put(r, egui::Button::new(egui::RichText::new(t.monday_credits_again).size(12.5)).corner_radius(8.0)).clicked() {
                 self.monday.credits = Some(f64::NAN);
             }
+            h += 32.0;
         }
-        // What the game unlocks, and how: over the board.
-        let used = self.monday_rewards(&painter, board);
-        let board = Rect::from_min_max(Pos2::new(board.min.x, board.min.y + used), board.max);
-        if board.height() > 60.0 {
-            let floor = self.monday.floor.get_or_insert_with(|| crate::floor::GameFloor::new("lundi-matin", false));
-            floor.poll();
-            floor.sync(ui.ctx(), now, Some(60.0), self.config.settings.floor.as_ref());
-            let best = (self.config.settings.monday_best > 0).then(|| t.monday_best.replace("{n}", &self.config.settings.monday_best.to_string()));
-            let entries = self.monday.floor.as_ref().and_then(|f| f.board()).map(<[_]>::to_vec);
-            let kills = |e: &crate::floor::GameEntry| e.details.get("kills").and_then(serde_json::Value::as_u64).map(|k| t.monday_kills.replace("{n}", &k.to_string()));
-            if self.game_board_noted(ui, board, &theme, entries.as_deref(), best, t_wave, &kills) {
-                self.ask_pseudo();
-            }
+        h
+    }
+
+    /// The world's board.
+    fn lobby_board(&mut self, ui: &mut Ui, inner: Rect, now: f64) -> f32 {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let h = 330.0;
+        let floor = self.monday.floor.get_or_insert_with(|| crate::floor::GameFloor::new("lundi-matin", false));
+        floor.poll();
+        floor.sync(ui.ctx(), now, Some(60.0), self.config.settings.floor.as_ref());
+        let best = (self.config.settings.monday_best > 0).then(|| t.monday_best.replace("{n}", &self.config.settings.monday_best.to_string()));
+        let entries = self.monday.floor.as_ref().and_then(|f| f.board()).map(<[_]>::to_vec);
+        let kills = |e: &crate::floor::GameEntry| e.details.get("kills").and_then(serde_json::Value::as_u64).map(|k| t.monday_kills.replace("{n}", &k.to_string()));
+        if self.game_board_noted(ui, Rect::from_min_size(inner.min, Vec2::new(inner.width(), h)), &theme, entries.as_deref(), best, t_wave, &kills) {
+            self.ask_pseudo();
         }
+        h
     }
 
     /// The rewards of the game, at the top of `area`: each one, how to win it, how far the player is.
@@ -548,9 +718,7 @@ impl App {
         let t = self.t();
         let theme = &self.theme;
         let items = self.unlocks(HomeGame::Monday);
-        let mut y = area.min.y + 4.0;
-        painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, t.monday_rewards, FontId::proportional(15.0), theme.text);
-        y += 26.0;
+        let mut y = area.min.y;
         for u in &items {
             let color = if u.done { theme.ansi[2] } else { theme.accent };
             painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, if u.done { "✓" } else { "•" }, FontId::proportional(13.0), color);
@@ -566,9 +734,9 @@ impl App {
             let how = painter.layout(said, FontId::proportional(11.5), if u.done { theme.text } else { theme.text_muted }, area.width() - 16.0);
             let h = how.size().y;
             painter.galley(Pos2::new(area.min.x + 16.0, y), how, if u.done { theme.text } else { theme.text_muted });
-            y += h + 8.0;
+            y += h + 10.0;
         }
-        y + 10.0 - area.min.y
+        y - 10.0 - area.min.y
     }
 
     /// In a room, before its game: who's there, start (the host) or wait, invite colleagues online.
@@ -700,6 +868,12 @@ impl App {
         let theme = self.theme.clone();
         let Some(frame) = self.monday.online.frame.clone() else { return };
         self.monday.bleed(&frame, now);
+        // The kinds met, for the bestiary.
+        let met = frame.zombies.iter().filter_map(|z| BESTIARY.iter().position(|b| b.0 == z.kind)).fold(0u32, |bits, k| bits | 1 << k);
+        if met & !self.config.settings.monday_seen != 0 {
+            self.config.settings.monday_seen |= met;
+            self.save_config();
+        }
         let online = &self.monday.online;
         let Some(map) = online.floor_map(frame.floor).cloned() else { return };
         let me = online.me(pseudo);
@@ -1659,8 +1833,29 @@ pub(super) struct Fx {
     pub(super) rebooting: bool,
 }
 
-/// The zombies coming higher in the tower, and from which wave (floor's KINDS `from`).
-const LATE_KINDS: [(Kind, u32); 4] = [(Kind::Visio, 7), (Kind::Accountant, 9), (Kind::Coach, 12), (Kind::It, 14)];
+/// A zombie never met: its shadow only (the body, the arms, the head, what it carries), a « ? ».
+fn paint_shadow(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, phase: f32) {
+    let r = kind.radius() * scale;
+    let dir = Vec2::new(0.0, 1.0);
+    let side = Vec2::new(-1.0, 0.0);
+    let ink = Color32::from_black_alpha(150);
+    let c = c + side * phase.sin() * 1.6 * scale;
+    for s in [-1.0f32, 1.0] {
+        let shoulder = c + side * s * r * 0.7;
+        let hand = shoulder + dir * r * (1.0 + 0.18 * (phase * 1.3 + s * 1.7).sin()) - side * s * r * 0.1;
+        painter.line_segment([shoulder, hand], Stroke::new(r * 0.34, ink));
+        painter.circle_filled(hand, r * 0.19, ink);
+    }
+    match kind {
+        Kind::Meeting | Kind::It => fill(painter, quad(c + dir * r * 1.05, dir, r * 0.5, r * 0.9), ink),
+        Kind::Accountant => fill(painter, quad(c + dir * r * 1.12, dir, r * 0.34, r * 1.55), ink),
+        Kind::Board | Kind::Hr => fill(painter, quad(c + dir * r * 1.1 - side * r * 0.5, dir, r * 0.55, r * 0.4), ink),
+        _ => {}
+    }
+    fill(painter, oval(c, dir, r * 0.56, r * 0.98), ink);
+    painter.circle_filled(c + dir * r * 0.06, r * if kind == Kind::Hr { 0.38 } else { 0.47 }, ink);
+    painter.text(c + dir * r * 0.06, Align2::CENTER_CENTER, "?", FontId::proportional(r * 0.7), Color32::from_white_alpha(90));
+}
 
 /// A first-aid kit on the floor: white, its red cross, a green glow breathing; blinking before it goes.
 fn paint_kit(painter: &egui::Painter, c: Pos2, scale: f32, left: u32, now: f64) {
