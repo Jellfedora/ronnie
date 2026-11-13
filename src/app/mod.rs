@@ -3543,17 +3543,9 @@ fn paint_splash(painter: &egui::Painter, screen: Rect, theme: &Theme, t: f32, st
         }
     }
 
-    // The version, then the alpha warning: not for production work.
+    // The version.
     let version = ((t - last_landing - 0.6) / 0.4).clamp(0.0, 1.0) * fade;
     painter.text(Pos2::new(center.x, y + 54.0), Align2::CENTER_CENTER, format!("v{}", update::VERSION), FontId::monospace(13.0), theme.text_muted.gamma_multiply(version));
-    let alpha = ((t - last_landing - 0.8) / 0.4).clamp(0.0, 1.0) * fade;
-    if alpha > 0.0 {
-        let galley = painter.layout(strings.alpha_warning.to_owned(), FontId::proportional(12.5), theme.ansi[3].gamma_multiply(alpha), (screen.width() - 48.0).min(460.0));
-        let box_rect = Rect::from_center_size(Pos2::new(center.x, y + 94.0), galley.size() + Vec2::new(24.0, 14.0));
-        painter.rect_filled(box_rect, 8.0, theme.ansi[3].gamma_multiply(0.10 * alpha));
-        painter.rect_stroke(box_rect, 8.0, Stroke::new(1.0, theme.ansi[3].gamma_multiply(0.45 * alpha)), egui::StrokeKind::Inside);
-        painter.galley(box_rect.center() - galley.size() / 2.0, galley, theme.ansi[3].gamma_multiply(alpha));
-    }
 
     // At the bottom: made with love, the heart beating.
     let credit = ((t - last_landing - 0.9) / 0.5).clamp(0.0, 1.0) * fade;

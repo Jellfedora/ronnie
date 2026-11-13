@@ -250,7 +250,6 @@ pub struct Strings {
     pub new_window: &'static str,
     pub toggle_sidebar: &'static str,
     pub fold_sidebar: &'static str,
-    pub alpha_warning: &'static str,
     /// "MADE WITH" ❤ "BY JELLFEDORA", at the bottom of the splash screen.
     pub splash_made_with: &'static str,
     pub splash_by: &'static str,
@@ -2717,7 +2716,6 @@ pub static FR: Strings = Strings {
     new_window: "Nouvelle fenêtre",
     toggle_sidebar: "Replier / déplier la barre latérale",
     fold_sidebar: "Replier la barre latérale",
-    alpha_warning: "⚠  Version alpha : à ne pas utiliser pour des opérations de production.",
     splash_made_with: "FAIT AVEC",
     splash_by: "PAR JELLFEDORA",
     unfold_sidebar: "Déplier la barre latérale",
@@ -5196,7 +5194,6 @@ pub static EN: Strings = Strings {
     new_window: "New window",
     toggle_sidebar: "Fold / unfold the sidebar",
     fold_sidebar: "Fold the sidebar",
-    alpha_warning: "⚠  Alpha version: not for production work.",
     splash_made_with: "MADE WITH",
     splash_by: "BY JELLFEDORA",
     unfold_sidebar: "Unfold the sidebar",
