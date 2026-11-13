@@ -1034,7 +1034,7 @@ impl App {
                             egui::ScrollArea::vertical().id_salt("settings-general").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.general_page(ui, t, &theme, &mut picked));
                         }
                         SettingsTab::Account => {
-                            egui::ScrollArea::vertical().id_salt("settings-account").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.account_page(ui, t, &theme));
+                            egui::ScrollArea::vertical().id_salt("settings-account").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.account_page(ui, t, &theme, &mut picked));
                         }
                         SettingsTab::Music => {
                             egui::ScrollArea::vertical().id_salt("settings-music").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.music_page(ui, ctx, t, &theme, &mut picked));
@@ -1184,7 +1184,7 @@ impl App {
 
     /// "Claude Code" page: its usage, notifications, Ronnie's introduction and the shared memory.
     /// The floor account: who one is (avatar, pseudo, server), the account window, signing out; or signing in.
-    fn account_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme) {
+    fn account_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         ui.set_width(ui.available_width() - 12.0);
         let account = self.config.settings.floor.clone().filter(|a| crate::floor::pseudo(Some(a)).is_some());
         let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
@@ -1223,7 +1223,8 @@ impl App {
         });
         // The notes on every machine (off at first).
         if let Some(a) = &account {
-            let mut on = self.config.settings.notes_sync;
+            // Through `picked`, as every setting of the window (set straight, it was put back at once).
+            let mut on = picked.notes_sync;
             let keyed = on && self.notesync.keyed(a);
             if on && !keyed {
                 self.notesync.ask_remote(ui.ctx(), a);
@@ -1284,10 +1285,9 @@ impl App {
             if reset {
                 self.notesync.reset(ui.ctx(), a);
             }
-            if on != self.config.settings.notes_sync {
+            if on != picked.notes_sync {
                 self.notes_password.clear();
-                self.config.settings.notes_sync = on;
-                self.save_config();
+                picked.notes_sync = on;
                 if on {
                     self.notesync.soon();
                 }
