@@ -177,6 +177,50 @@ pub fn only_emojis(text: &str) -> Option<usize> {
     (only && (1..=3).contains(&count)).then_some(count)
 }
 
+/// The text-typed smileys and the emoji each becomes.
+const SMILEYS: &[(&str, &str)] = &[
+    (":)", "🙂"), (":-)", "🙂"), ("(:", "🙂"),
+    (":(", "🙁"), (":-(", "🙁"),
+    (";)", "😉"), (";-)", "😉"),
+    (":D", "😄"), (":-D", "😄"),
+    ("xD", "😆"), ("XD", "😆"),
+    (":p", "😛"), (":P", "😛"), (":-p", "😛"), (":-P", "😛"),
+    (";p", "😜"), (";P", "😜"),
+    (":o", "😮"), (":O", "😮"), (":-o", "😮"), (":-O", "😮"),
+    (":'(", "😢"), (":'-(", "😢"),
+    (":*", "😘"), (":-*", "😘"),
+    (":|", "😐"), (":-|", "😐"),
+    (":/", "😕"), (":-/", "😕"),
+    ("B)", "😎"), ("8)", "😎"),
+    ("^^", "😊"), ("^_^", "😊"),
+    (":@", "😠"),
+    ("<3", "❤️"), ("</3", "💔"),
+];
+
+/// A message's text-typed smileys (`;)`, `:p`, `<3`…) turned into their emoji, each only when it stands
+/// alone between spaces (a link's `://` or a time's `10:30` untouched).
+pub fn smileys(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        match SMILEYS.iter().find(|(s, _)| *s == word.as_str()) {
+            Some((_, e)) => out.push_str(e),
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_whitespace() {
+            flush(&mut word, &mut out);
+            out.push(c);
+        } else {
+            word.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// Lowercase without accents, to compare "cafe" and "Café".
 pub fn fold(s: &str) -> String {
     s.chars()
@@ -318,6 +362,16 @@ impl Sheet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smileys_become_emojis() {
+        assert_eq!(smileys("ok ;)"), "ok 😉");
+        assert_eq!(smileys(":p\n:) <3"), "😛\n🙂 ❤️");
+        assert_eq!(smileys("https://x.fr à 10:30 :)."), "https://x.fr à 10:30 :).");
+        for (_, e) in SMILEYS {
+            assert!(cell(e).is_some(), "{e} has no image");
+        }
+    }
 
     #[test]
     fn every_emoji_has_its_image() {

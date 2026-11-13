@@ -1382,6 +1382,7 @@ impl App {
             self.talk.typing(&room.id);
         }
         if send && !text.is_empty() {
+            let text = crate::emoji::smileys(&text);
             match self.talk_ui.editing.take() {
                 Some((r, id, aside)) if r == room.id => {
                     self.talk.edit(&room.id, id, &text);
