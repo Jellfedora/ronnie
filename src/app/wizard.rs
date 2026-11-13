@@ -801,15 +801,14 @@ impl Wand {
         (super::game::random(&mut self.rng) >> 40) as f32 / (1u64 << 24) as f32
     }
 
-    /// One frame: the pointer as a wand (for the plain arrow, the hand and the text beam), sparks where it went, a
+    /// One frame: the pointer as a wand (for the plain arrow only), sparks where it went, a
     /// burst and a ring of light at a click.
     pub(super) fn frame(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let dt = ctx.input(|i| i.stable_dt).min(0.05);
         let at = ctx.input(|i| i.pointer.hover_pos());
-        let icon = ctx.output(|o| o.cursor_icon);
-        // Over the text too (the terminals): its tip is as precise as the beam.
-        let wand = at.filter(|_| matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::PointingHand | egui::CursorIcon::Text));
+        // Only for the plain arrow: a link's hand, a text's beam, a window's edge keep theirs.
+        let wand = at.filter(|&p| super::plain_pointer(ctx, p));
         self.step(wand, ctx.input(|i| i.pointer.any_pressed()), now, dt);
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("wand")));
         if self.paint(&painter, wand, now) {

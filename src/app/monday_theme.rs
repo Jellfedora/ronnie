@@ -260,7 +260,7 @@ pub(super) fn pointer_stapler(painter: &egui::Painter, at: Pos2) {
 /// The pointer as a stapler (only for the plain arrow).
 pub(super) fn pointer(ctx: &egui::Context) {
     let Some(at) = ctx.input(|i| i.pointer.hover_pos()) else { return };
-    if ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Default {
+    if !super::plain_pointer(ctx, at) {
         return;
     }
     ctx.set_cursor_icon(egui::CursorIcon::None);

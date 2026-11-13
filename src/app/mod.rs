@@ -5728,12 +5728,19 @@ impl App {
     }
 }
 
+/// The pointer is egui's plain arrow, away from the window's edges (where the system shows its own
+/// resizing arrows): a theme's pointer may replace it. Any other (a hand, a beam, a resize) stays.
+pub(super) fn plain_pointer(ctx: &egui::Context, at: Pos2) -> bool {
+    let window = ctx.content_rect();
+    ctx.output(|o| o.cursor_icon) == egui::CursorIcon::Default && window.shrink(6.0).contains(at)
+}
+
 /// Ronnie Métal's mouse pointers, drawn in place of the system's: a red arrow edged with gold, and a
 /// gold text beam. The other shapes (hand, resize...) stay the system's.
 fn paint_metal_pointer(ctx: &egui::Context, theme: &Theme) {
     let Some(at) = ctx.input(|i| i.pointer.hover_pos()) else { return };
     let icon = ctx.output(|o| o.cursor_icon);
-    if !matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::Text) {
+    if !(plain_pointer(ctx, at) || icon == egui::CursorIcon::Text) {
         return;
     }
     ctx.set_cursor_icon(egui::CursorIcon::None);

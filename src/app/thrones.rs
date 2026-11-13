@@ -38,7 +38,7 @@ fn sword(painter: &egui::Painter, a: Pos2, b: Pos2, width: f32) {
 /// The pointer as a sword (only for the plain arrow).
 pub(super) fn pointer(ctx: &egui::Context) {
     let Some(at) = ctx.input(|i| i.pointer.hover_pos()) else { return };
-    if ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Default {
+    if !super::plain_pointer(ctx, at) {
         return;
     }
     ctx.set_cursor_icon(egui::CursorIcon::None);

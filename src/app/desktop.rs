@@ -193,6 +193,9 @@ struct Overlay {
     wand: wizard::Wand,
     pressed: bool,
     last: Option<f64>,
+    /// The system's pointer is the plain arrow (else a hand, a beam, a resize...: left as it is), and
+    /// when last looked at.
+    plain: (bool, Option<Instant>),
 }
 
 /// `ronnie desktop-fx`: the effects' window, until its standard input closes.
@@ -279,7 +282,7 @@ pub(crate) fn run() {
             }
             let work = os::screen_at(start.center()).map_or(start, |(_, work)| work);
             let theme = crate::theme::Preset::find(crate::theme::DEFAULT_THEME).theme();
-            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None }))
+            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None) }))
         }),
     );
     if let Err(e) = result {
@@ -522,8 +525,13 @@ impl eframe::App for Overlay {
             self.trail.paint(&painter, &self.theme);
             busy |= self.trail.alive();
         }
-        // The wand or the lightsaber in place of the system's pointer.
-        os::hide_pointer(self.shown.pointer.is_some());
+        // The wand or the lightsaber in place of the system's pointer, only for the plain arrow (a
+        // window's edge, a link, a text keep theirs). Looked at ten times a second.
+        if self.plain.1.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
+            self.plain = (os::plain_pointer(), Some(Instant::now()));
+        }
+        let local = local.filter(|_| self.plain.0 || self.shown.pointer.is_none());
+        os::hide_pointer(self.shown.pointer.is_some() && self.plain.0);
         if self.shown.pointer.is_some() {
             // Woken up in time to hide it again.
             next = next.min(0.5);
@@ -627,6 +635,19 @@ mod os {
         }
     }
 
+    /// The pointer shown by the system (whichever app set it) is the plain arrow: same hot spot, same
+    /// size (the arrow-like ones too: the contextual menu's, the copy's...).
+    pub(super) fn plain_pointer() -> bool {
+        use objc2_app_kit::NSCursor;
+        // Deprecated for screen captures, but the only way to see another app's pointer.
+        #[allow(deprecated)]
+        let Some(current) = NSCursor::currentSystemCursor() else { return true };
+        let arrow = NSCursor::arrowCursor();
+        let (a, b) = (current.hotSpot(), arrow.hotSpot());
+        let (sa, sb) = (current.image().size(), arrow.image().size());
+        (a.x - b.x).abs() < 0.5 && (a.y - b.y).abs() < 0.5 && (sa.width - sb.width).abs() < 0.5 && (sa.height - sb.height).abs() < 0.5
+    }
+
     /// The pointer, in points from the main screen's top left (as the windows are placed).
     pub(super) fn mouse() -> Mouse {
         // SAFETY: an event made from nothing, read and released; CoreGraphics' calls are thread-safe.
@@ -724,6 +745,17 @@ mod os {
     /// Windows keeps its pointer (replacing it system-wide would outlive a crash).
     pub(super) fn hide_pointer(_hide: bool) {}
 
+    /// The system's pointer is the plain arrow.
+    pub(super) fn plain_pointer() -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo, IDC_ARROW, LoadCursorW};
+        // SAFETY: plain Win32 calls on values owned here.
+        unsafe {
+            let mut info: CURSORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+            GetCursorInfo(&mut info) == 0 || info.hCursor == LoadCursorW(std::ptr::null_mut(), IDC_ARROW)
+        }
+    }
+
     /// The screen under `at` (points), and its work area.
     pub(super) fn screen_at(at: Pos2) -> Option<(Rect, Rect)> {
         // Back to pixels: the scales of the screens are tried until one holds the point.
@@ -751,6 +783,10 @@ mod os {
     }
 
     pub(super) fn hide_pointer(_hide: bool) {}
+
+    pub(super) fn plain_pointer() -> bool {
+        true
+    }
 
     pub(super) fn screen_at(_at: Pos2) -> Option<(Rect, Rect)> {
         None

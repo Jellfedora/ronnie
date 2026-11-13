@@ -113,7 +113,7 @@ pub(super) fn duel(painter: &egui::Painter, rect: Rect, now: f64, theme: &Theme)
 /// plain arrow).
 pub(super) fn pointer(ctx: &egui::Context, theme: &Theme) {
     let Some(at) = ctx.input(|i| i.pointer.hover_pos()) else { return };
-    if ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Default {
+    if !super::plain_pointer(ctx, at) {
         return;
     }
     ctx.set_cursor_icon(egui::CursorIcon::None);
