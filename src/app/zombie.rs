@@ -183,20 +183,17 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let now = ui.input(|i| i.time);
-        let playing = self.monday.online.playing();
-        // A game under way is the half-day of work's; once played, the rooms give way (its end shown first).
+        let watching = self.monday.online.watching();
+        let playing = self.monday.online.playing() && !watching;
+        // A game played is the half-day of work's (watching one isn't). Once played, the page stays (the
+        // career, the bestiary, the letters, the games to watch), but not a room to play in (its end
+        // shown first).
         if playing {
             self.count_round(HomeGame::Monday);
-        } else if self.monday.over.is_none()
-            && let Some(p) = self.game_locked(HomeGame::Monday)
-        {
-            if self.monday.online.room.is_some() {
-                self.monday.online.leave();
-            }
-            self.fold_for_game(false);
-            return self.locked_page(ui, rect, HomeGame::Monday, &p);
+        } else if self.monday.over.is_none() && !watching && self.monday.online.room.is_some() && self.game_locked(HomeGame::Monday).is_some() {
+            self.monday.online.leave();
         }
-        self.fold_for_game(playing);
+        self.fold_for_game(playing || watching);
         ui.painter_at(rect).rect_filled(rect, 0.0, theme.bg);
 
         // Connected while the page shows, with a pseudo.
@@ -528,14 +525,27 @@ impl App {
             ui.painter().text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, t.monday_connecting, FontId::proportional(13.0), theme.text_muted);
             return y + 20.0 - inner.min.y;
         }
-        // The big button, then what it means.
-        let b = egui::Button::new(egui::RichText::new(t.monday_host).size(15.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(10.0);
-        if ui.put(Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 42.0)), b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            self.monday.online.host();
+        // The half-day's game played: back at what time (the games under way still to watch).
+        let locked = self.game_locked(HomeGame::Monday);
+        if let Some(p) = &locked {
+            let why = if p.morning { t.playtime_round_morning } else { t.playtime_round_afternoon }.replace("{game}", t.monday_name);
+            for (text, size, color) in [(why, 13.5, theme.text), (t.playtime_back_at.replace("{h}", &self.hour_text(p.end)), 13.5, theme.accent)] {
+                let galley = ui.painter().layout(text, FontId::proportional(size), color, w);
+                let h = galley.size().y;
+                ui.painter().galley(Pos2::new(left, y), galley, color);
+                y += h + 6.0;
+            }
+            y += 8.0;
+        } else {
+            // The big button, then what it means.
+            let b = egui::Button::new(egui::RichText::new(t.monday_host).size(15.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(10.0);
+            if ui.put(Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, 42.0)), b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.monday.online.host();
+            }
+            y += 50.0;
+            ui.painter().text(Pos2::new(inner.center().x, y + 6.0), Align2::CENTER_CENTER, t.monday_solo, FontId::proportional(12.0), theme.text_muted);
+            y += 26.0;
         }
-        y += 50.0;
-        ui.painter().text(Pos2::new(inner.center().x, y + 6.0), Align2::CENTER_CENTER, t.monday_solo, FontId::proportional(12.0), theme.text_muted);
-        y += 26.0;
         // The games open.
         ui.painter().line_segment([Pos2::new(left, y), Pos2::new(inner.max.x, y)], Stroke::new(1.0, theme.tab_hover));
         y += 12.0;
@@ -566,7 +576,7 @@ impl App {
                 if ui.put(b, egui::Button::new(egui::RichText::new(t.monday_watch).size(12.0)).corner_radius(6.0)).on_hover_text(t.monday_in_game).clicked() {
                     watch = Some(room.id);
                 }
-            } else if room.players < 4 && ui.put(b, egui::Button::new(egui::RichText::new(t.monday_join).size(12.0)).corner_radius(6.0)).clicked() {
+            } else if locked.is_none() && room.players < 4 && ui.put(b, egui::Button::new(egui::RichText::new(t.monday_join).size(12.0)).corner_radius(6.0)).clicked() {
                 join = Some(room.id);
             }
             y += 40.0;
