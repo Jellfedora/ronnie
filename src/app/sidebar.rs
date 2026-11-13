@@ -1909,10 +1909,15 @@ impl App {
             ..egui::style::ScrollStyle::thin()
         };
         // Mouse drags never scroll it (egui's default): they move tabs, or the window from empty space.
-        let scroll = egui::ScrollArea::vertical()
+        let mut scroll = egui::ScrollArea::vertical()
             .id_salt("sidebar-scroll")
             .auto_shrink(false)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded);
+        // Git's view fills the panel and its lists scroll by themselves: the panel never does then (it
+        // went under the logo).
+        if category == Category::Local && self.ws_git {
+            scroll = scroll.scroll_source(egui::scroll_area::ScrollSource::NONE).vertical_scroll_offset(0.0).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+        }
         scroll.show(&mut scroll_ui, |ui| {
             let origin = ui.max_rect().min;
             let mut y = origin.y;
