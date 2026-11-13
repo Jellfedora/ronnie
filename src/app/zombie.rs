@@ -45,6 +45,40 @@ pub(super) struct Monday {
     menu: bool,
     /// The game won: the end credits rolling, since (NaN: from the next frame).
     credits: Option<f64>,
+    /// Blood on the floor, for a while: x, y (world), since, seed, size. A zombie gone leaves a pool,
+    /// a hit a few drops.
+    stains: Vec<(f32, f32, f64, u32, f32)>,
+    /// The zombies at the last frame painted (id, x, y, life, radius), and its floor.
+    seen: (usize, Vec<Seen>),
+}
+
+/// A zombie as last painted: id, x, y, life, radius.
+type Seen = (u32, f32, f32, f32, f32);
+
+/// How long blood stays on the floor, in seconds (drying, then fading at the end).
+const STAIN_LIFE: f64 = 24.0;
+
+impl Monday {
+    /// Blood where zombies were hit or went down since the last frame painted; the old one gone.
+    fn bleed(&mut self, frame: &Frame, now: f64) {
+        if self.seen.0 != frame.floor {
+            self.stains.clear();
+            self.seen.1.clear();
+        }
+        let mut seed = (now * 1000.0) as u32;
+        for &(id, x, y, life, r) in &self.seen.1 {
+            seed = seed.wrapping_mul(747_796_405).wrapping_add(id);
+            match frame.zombies.iter().find(|z| z.id == id) {
+                None => self.stains.push((x, y, now, seed, r * 1.5)),
+                Some(z) if z.life < life - 0.02 => self.stains.push((z.x, z.y, now, seed, r * (0.45 + (life - z.life).min(0.6)))),
+                _ => {}
+            }
+        }
+        self.seen = (frame.floor, frame.zombies.iter().map(|z| (z.id, z.x, z.y, z.life, z.kind.radius())).collect());
+        self.stains.retain(|s| now - s.2 < STAIN_LIFE);
+        let over = self.stains.len().saturating_sub(120);
+        self.stains.drain(..over);
+    }
 }
 
 impl Monday {
@@ -530,7 +564,7 @@ impl App {
         y += 36.0;
         for (k, (_, name, color)) in room.players.iter().enumerate() {
             let c = Pos2::new(left + 16.0, y);
-            paint_colleague(&painter, c, 0.9, COLORS[*color as usize % 4], 0.0, (now * 2.0 + k as f64).sin() as f32 * 0.3);
+            paint_colleague(&painter, c, 0.9, COLORS[*color as usize % 4], 0.0, (now * 2.0 + k as f64).sin() as f32 * 0.3, k % 4, now);
             let label = if *name == room.host { format!("{name}  ·  {}", t.monday_host_tag) } else { name.clone() };
             painter.text(Pos2::new(left + 44.0, y), Align2::LEFT_CENTER, label, FontId::proportional(14.0), if name == pseudo { theme.accent } else { theme.text });
             y += 40.0;
@@ -638,8 +672,9 @@ impl App {
     fn monday_game(&mut self, ui: &mut Ui, rect: Rect, now: f64, pseudo: &str) {
         let t = self.t();
         let theme = self.theme.clone();
+        let Some(frame) = self.monday.online.frame.clone() else { return };
+        self.monday.bleed(&frame, now);
         let online = &self.monday.online;
-        let Some(frame) = online.frame.clone() else { return };
         let Some(map) = online.floor_map(frame.floor).cloned() else { return };
         let me = online.me(pseudo);
         let colors: Vec<(u32, String, Color32)> = online.room.as_ref().map(|r| r.players.iter().map(|(id, n, c)| (*id, n.clone(), COLORS[*c as usize % 4])).collect()).unwrap_or_default();
@@ -683,6 +718,13 @@ impl App {
         }
         super::zombie_floors::coffee_machine(&painter, at(map.coffee.x, map.coffee.y), scale, now, frame.wave_on);
 
+        // Blood on the floor: fresh and shining, then drying darker, then gone.
+        for &(x, y, since, seed, size) in &self.monday.stains {
+            let age = (now - since) as f32;
+            let grow = (age * 6.0).min(1.0);
+            let alpha = 0.9 * (1.0 - ((age - (STAIN_LIFE as f32 - 6.0)) / 6.0).clamp(0.0, 1.0));
+            super::monday_theme::splat(&painter, at(x, y), size * scale * (0.6 + 0.4 * grow), seed, alpha * (1.0 - 0.35 * (age / 10.0).min(1.0)));
+        }
         // The zombies (the meeting-itis' aura under everyone), the shots, the colleagues.
         for z in &frame.zombies {
             if z.kind == Kind::Meeting {
@@ -722,7 +764,7 @@ impl App {
             match p.state {
                 State::Up => {
                     let firing = p.reload <= 0.0 && Some(p.id) != me && (now * 30.0 + p.id as f64).sin() > 0.95;
-                    paint_colleague(&painter, c, scale, color, p.aim, 0.0);
+                    paint_colleague(&painter, c, scale, color, p.aim, 0.0, p.weapon, now);
                     if firing {
                         painter.circle_filled(c + Vec2::angled(p.aim) * 42.0 * scale, 5.0 * scale, Color32::from_rgb(255, 233, 168));
                     }
@@ -1342,7 +1384,8 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
 
 /// A colleague seen from above, aiming at `aim`: a shirt in their color, both hands on the weapon
 /// held ahead, the hair, the face toward where they aim.
-fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32, aim: f32, bob: f32) {
+#[allow(clippy::too_many_arguments)]
+fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32, aim: f32, bob: f32, weapon: usize, now: f64) {
     let c = c + Vec2::new(0.0, bob * 4.0 * scale);
     let r = 19.0 * scale;
     let dir = Vec2::angled(aim);
@@ -1351,8 +1394,7 @@ fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32,
     let sleeve = color.lerp_to_gamma(Color32::BLACK, 0.2);
     fill(painter, oval(c + Vec2::new(3.0, 6.0) * scale, dir, r * 0.8, r * 1.1), Color32::from_black_alpha(80));
     // The weapon, then the arms holding it.
-    fill(painter, quad(c + dir * r * 1.3, dir, r * 1.4, r * 0.34), Color32::from_rgb(34, 37, 46));
-    fill(painter, quad(c + dir * r * 1.9, dir, r * 0.3, r * 0.2), Color32::from_rgb(70, 75, 90));
+    paint_held(painter, c, dir, r, weapon, now);
     for (s, grip) in [(-1.0, 0.75), (1.0, 1.15)] {
         let shoulder = c + side * s * r * 0.72;
         let hand = c + dir * r * grip + side * s * r * 0.1;
@@ -1395,12 +1437,82 @@ fn paint_down(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32, prog
     painter.text(c, Align2::CENTER_CENTER, "K.O.", FontId::proportional(12.0 * scale.max(0.7)), theme.text);
 }
 
-/// A shot: a staple, a post-it turning, foam, confetti.
+/// The weapon in the hands, ahead of `c` toward `dir` (`r`: the colleague's size): the stapler, the
+/// post-it launcher (a tube, a pad of post-its loaded), the extinguisher (red, its black horn), the
+/// confetti cannon (a striped cone).
+fn paint_held(painter: &egui::Painter, c: Pos2, dir: Vec2, r: f32, weapon: usize, now: f64) {
+    let side = Vec2::new(-dir.y, dir.x);
+    let outline = Stroke::new((r * 0.06).max(0.8), Color32::from_black_alpha(140));
+    let poly = |points: Vec<Pos2>, color: Color32| {
+        painter.add(egui::Shape::convex_polygon(points, color, outline));
+    };
+    match weapon {
+        0 => {
+            // A big office stapler: its grey base, its black arm over it, the chrome tip.
+            let base = c + dir * r * 1.35;
+            poly(quad(base, dir, r * 1.5, r * 0.42), Color32::from_rgb(120, 126, 140));
+            poly(quad(base + dir * r * 0.1 + side * r * 0.02, dir, r * 1.25, r * 0.3), Color32::from_rgb(28, 30, 36));
+            painter.circle_filled(base - dir * r * 0.55, r * 0.12, Color32::from_rgb(200, 205, 215));
+            poly(quad(base + dir * r * 0.72, dir, r * 0.18, r * 0.36), Color32::from_rgb(214, 220, 232));
+        }
+        1 => {
+            // A yellow tube, a pad of post-its on top, a pink one ready at the mouth.
+            let body = c + dir * r * 1.35;
+            poly(quad(body, dir, r * 1.6, r * 0.36), Color32::from_rgb(70, 74, 88));
+            poly(quad(body + dir * r * 0.85, dir, r * 0.22, r * 0.5), Color32::from_rgb(40, 42, 50));
+            let pad = body - dir * r * 0.15 + side * r * 0.08;
+            poly(quad(pad, dir, r * 0.62, r * 0.62), Color32::from_rgb(255, 224, 102));
+            poly(quad(pad - dir * r * 0.06, dir, r * 0.2, r * 0.62), Color32::from_rgb(232, 196, 70));
+            let mouth = body + dir * r * 1.02;
+            poly(quad(mouth, dir, r * 0.26, r * 0.26), Color32::from_rgb(255, 140, 190));
+        }
+        2 => {
+            // The red bottle held across the belly, its black hose and horn toward the aim.
+            let bottle = c + dir * r * 0.95 - side * r * 0.25;
+            poly(oval(bottle, dir, r * 0.55, r * 0.34), Color32::from_rgb(214, 44, 38));
+            painter.circle_filled(bottle - dir * r * 0.4, r * 0.16, Color32::from_rgb(40, 40, 44));
+            painter.line_segment([bottle - dir * r * 0.15 + side * r * 0.15, bottle + dir * r * 0.55 + side * r * 0.25], Stroke::new(r * 0.07, Color32::from_rgb(240, 240, 240)));
+            let horn = c + dir * r * 1.75 + side * r * 0.05;
+            painter.line_segment([bottle - dir * r * 0.4, horn - dir * r * 0.3], Stroke::new(r * 0.12, Color32::from_rgb(30, 30, 34)));
+            poly(vec![horn - dir * r * 0.32 - side * r * 0.08, horn + dir * r * 0.22 - side * r * 0.2, horn + dir * r * 0.22 + side * r * 0.2, horn - dir * r * 0.32 + side * r * 0.08], Color32::from_rgb(30, 30, 34));
+            // A wisp of foam at the horn.
+            let puff = (now * 7.0).sin() as f32 * 0.5 + 0.5;
+            painter.circle_filled(horn + dir * r * 0.32, r * (0.08 + 0.06 * puff), Color32::from_white_alpha(180));
+        }
+        _ => {
+            // A cone widening toward the aim, pink and gold stripes, confetti peeking out.
+            let back = c + dir * r * 0.65;
+            let mouth = c + dir * r * 2.05;
+            poly(vec![back - side * r * 0.16, mouth - side * r * 0.42, mouth + side * r * 0.42, back + side * r * 0.16], Color32::from_rgb(255, 122, 182));
+            for k in 1..4 {
+                let f = k as f32 / 4.0;
+                let p = back + (mouth - back) * f;
+                let w = 0.16 + (0.42 - 0.16) * f;
+                painter.line_segment([p - side * r * w, p + side * r * w], Stroke::new(r * 0.09, Color32::from_rgb(255, 210, 90)));
+            }
+            painter.line_segment([mouth - side * r * 0.42, mouth + side * r * 0.42], Stroke::new(r * 0.08, Color32::from_rgb(255, 240, 200)));
+            for (k, color) in CONFETTI.iter().enumerate() {
+                let a = (k as f32 - 1.5) * 0.25;
+                let p = mouth + (dir * (a.cos() * 0.12) + side * a) * r;
+                painter.rect_filled(Rect::from_center_size(p, Vec2::splat(r * 0.13)), 0.0, *color);
+            }
+        }
+    }
+}
+
+/// The confetti's colours.
+const CONFETTI: [Color32; 4] = [Color32::from_rgb(255, 181, 71), Color32::from_rgb(110, 200, 255), Color32::from_rgb(140, 220, 120), Color32::from_rgb(255, 122, 182)];
+
+/// A shot: a staple flying (a trail behind), a post-it turning (folded corner, shadow), a cloud of foam,
+/// a burst of confetti.
 fn paint_shot(painter: &egui::Painter, c: Pos2, scale: f32, angle: f32, weapon: usize, now: f64) {
     let dir = Vec2::angled(angle);
     let side = Vec2::new(-dir.y, dir.x);
+    // Each shot its own look, kept while it flies: from its angle (its place changes every frame).
+    let seed = ((angle * 4096.0) as i32).unsigned_abs();
     match weapon {
         0 => {
+            painter.line_segment([c - dir * 22.0 * scale, c - dir * 6.0 * scale], Stroke::new(2.0 * scale, Color32::from_white_alpha(50)));
             let s = Stroke::new(2.5 * scale.max(0.6), Color32::from_rgb(223, 230, 240));
             let (a, b) = (c - dir * 6.0 * scale, c + dir * 6.0 * scale);
             painter.line_segment([a - side * 3.0 * scale, a + side * 3.0 * scale], s);
@@ -1408,18 +1520,50 @@ fn paint_shot(painter: &egui::Painter, c: Pos2, scale: f32, angle: f32, weapon: 
             painter.line_segment([b + side * 3.0 * scale, b - side * 3.0 * scale], s);
         }
         1 => {
-            let turn = Vec2::angled(angle + now as f32 * 8.0) * 7.0 * scale;
+            let spin = angle + now as f32 * 8.0;
+            let turn = Vec2::angled(spin) * 8.0 * scale;
             let n = Vec2::new(-turn.y, turn.x);
-            painter.add(egui::Shape::convex_polygon(vec![c + turn + n, c - turn + n, c - turn - n, c + turn - n], Color32::from_rgb(255, 224, 102), Stroke::NONE));
+            let sq = |o: Vec2| vec![c + o + turn + n, c + o - turn + n, c + o - turn - n, c + o + turn - n];
+            painter.add(egui::Shape::convex_polygon(sq(Vec2::new(3.0, 4.0) * scale), Color32::from_black_alpha(60), Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(sq(Vec2::ZERO), Color32::from_rgb(255, 224, 102), Stroke::new(0.8, Color32::from_rgb(214, 180, 60))));
+            // The sticky band, the corner curling.
+            painter.line_segment([c + turn * 0.7 + n, c + turn * 0.7 - n], Stroke::new(2.5 * scale, Color32::from_rgb(240, 204, 80)));
+            painter.add(egui::Shape::convex_polygon(vec![c - turn - n, c - turn * 0.45 - n, c - turn - n * 0.45], Color32::from_rgb(255, 244, 180), Stroke::NONE));
         }
         2 => {
-            painter.circle_filled(c, 9.0 * scale, Color32::from_white_alpha(170));
+            // Foam: puffs swelling and shaking, a mist around.
+            painter.circle_filled(c, 15.0 * scale, Color32::from_white_alpha(40));
+            for k in 0..6u32 {
+                let a = noise(seed + k) * std::f32::consts::TAU + now as f32 * (1.0 + noise(seed + k + 9));
+                let d = 3.0 + 6.0 * noise(seed + k + 3);
+                let r = 4.0 + 4.0 * noise(seed + k + 5);
+                painter.circle_filled(c + Vec2::angled(a) * d * scale - dir * k as f32 * 1.5 * scale, r * scale, Color32::from_rgb(236, 244, 250).gamma_multiply(0.75));
+            }
+            painter.circle_filled(c + dir * 2.0 * scale, 4.0 * scale, Color32::WHITE);
         }
         _ => {
-            let colors = [Color32::from_rgb(255, 181, 71), COLORS[0], COLORS[1], COLORS[3]];
-            painter.rect_filled(Rect::from_center_size(c, Vec2::new(8.0, 4.0) * scale), 0.0, colors[((c.x + c.y) as usize) % 4]);
+            // A burst: pieces of every colour, turning, a ribbon curling behind.
+            let ribbon: Vec<Pos2> = (0..8).map(|k| c - dir * k as f32 * 3.0 * scale + side * ((k as f32 * 1.3 + now as f32 * 10.0).sin() * 3.0 * scale)).collect();
+            painter.add(egui::Shape::line(ribbon, Stroke::new(1.5 * scale, CONFETTI[(seed % 4) as usize])));
+            for k in 0..7u32 {
+                let a = noise(seed + k) * std::f32::consts::TAU;
+                let d = 2.0 + 8.0 * noise(seed + k + 11);
+                let p = c + Vec2::angled(a) * d * scale;
+                let spin = Vec2::angled(now as f32 * (4.0 + 6.0 * noise(seed + k + 7)) + a) * 3.2 * scale;
+                let n = Vec2::new(-spin.y, spin.x) * 0.5;
+                painter.add(egui::Shape::convex_polygon(vec![p + spin + n, p - spin + n, p - spin - n, p + spin - n], CONFETTI[((seed + k) % 4) as usize], Stroke::NONE));
+            }
         }
     }
+}
+
+/// A number from 0 to 1, fixed for `k`.
+fn noise(k: u32) -> f32 {
+    let mut x = k.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    (x & 0xFFFF) as f32 / 65535.0
 }
 
 /// The game's icon: a zombie head with its tie.
