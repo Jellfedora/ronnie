@@ -164,6 +164,8 @@ pub struct Terminal {
     /// A paste shortcut with no text on the clipboard reaches egui only as V released, with no V
     /// pressed before it: what was seen of the press (the key, or the pasted text) since.
     v_press_seen: bool,
+    /// A dead key waiting for the next one (macOS IME): `^` before the `e` that makes `ê`.
+    preedit: String,
     /// An SSH session (set by the app): pasted images are sent to the server, asked with `wants_upload`.
     pub remote: bool,
     /// Outside macOS, Ctrl+C copies a selection and Ctrl+V pastes (set by the app, see
@@ -288,6 +290,7 @@ impl Terminal {
             link_request: None,
             pending_paste: None,
             v_press_seen: false,
+            preedit: String::new(),
             remote: false,
             plain_clipboard: false,
             wants_upload: false,
@@ -840,6 +843,24 @@ impl Terminal {
         let term = self.term.lock();
         render::paint(&painter, grid_rect.min, cell, &term, theme, fonts, focused);
         self.grid_origin = grid_rect.min;
+        // macOS: the input method on while the pane has the focus, or dead keys (^, ¨, ~…) are lost and
+        // `^` then `e` types a bare `e`. Its pending key is drawn over the cursor until the next one.
+        if !focused {
+            self.preedit.clear();
+        } else if cfg!(target_os = "macos") {
+            let point = term.grid().cursor.point;
+            let row = point.line.0 + term.grid().display_offset() as i32;
+            let at = grid_rect.min + Vec2::new(point.column.0 as f32 * cell.x, row as f32 * cell.y);
+            let cursor_rect = Rect::from_min_size(at, Vec2::new(1.0, cell.y));
+            ui.ctx().output_mut(|o| o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Terminal, rect: grid_rect, cursor_rect, should_interrupt_composition: false }));
+            if !self.preedit.is_empty() {
+                let w = cell.x * self.preedit.chars().count() as f32;
+                let r = Rect::from_min_size(at, Vec2::new(w, cell.y));
+                painter.rect_filled(r, 0.0, theme.bg);
+                painter.text(at, egui::Align2::LEFT_TOP, &self.preedit, egui::FontId::new(fonts.size, egui::FontFamily::Name("mono".into())), theme.accent);
+                painter.hline(r.x_range(), r.max.y - 1.0, egui::Stroke::new(1.0, theme.accent));
+            }
+        }
         if let Some(link) = &self.hover_link {
             let offset = term.grid().display_offset() as i32;
             for p in &link.cells {
@@ -884,7 +905,11 @@ impl Terminal {
                         self.write_user(text.as_bytes());
                     }
                 }
-                Event::Ime(egui::ImeEvent::Commit(text)) => self.write_user(text.as_bytes()),
+                Event::Ime(egui::ImeEvent::Commit(text)) => {
+                    self.preedit.clear();
+                    self.write_user(text.as_bytes());
+                }
+                Event::Ime(egui::ImeEvent::Preedit { text, .. }) => self.preedit = text,
                 // An image on the clipboard: the paste shortcut is passed on for Claude Code to read it.
                 Event::Key { key: Key::V, pressed: false, .. } => {
                     if !std::mem::take(&mut self.v_press_seen) {
