@@ -133,8 +133,8 @@ impl App {
         } else if self.coffee.ended.is_none()
             && let Some(p) = self.game_locked(HomeGame::Coffee)
         {
-            self.fold_for_game(false);
-            return self.locked_page(ui, rect, HomeGame::Coffee, &p);
+            // Its page still shown, to look at; nothing to start (it says why).
+            self.locked_band(ui, rect, HomeGame::Coffee, &p);
         }
         self.fold_for_game(playing);
         let t = self.t();

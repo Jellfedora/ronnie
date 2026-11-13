@@ -72,10 +72,11 @@ impl App {
         // A game under way is the half-day of work's (counted as it starts, see `mines_grid`); once
         // they are all played, a fresh grid gives way.
         let state = self.mines.board.state;
+        // Its page still shown, to look at; a fresh grid doesn't start (it says why).
         if state == State::Fresh
             && let Some(p) = self.game_locked(HomeGame::Mines)
         {
-            return self.locked_page(ui, rect, HomeGame::Mines, &p);
+            self.locked_band(ui, rect, HomeGame::Mines, &p);
         }
         let t = self.t();
         let theme = self.theme.clone();
@@ -140,7 +141,8 @@ impl App {
         let resp = ui.interact(grid, ui.id().with("mines-grid"), Sense::click());
         let at = resp.interact_pointer_pos().or(resp.hover_pos()).map(|p| (((p.x - grid.min.x) / cell) as usize, ((p.y - grid.min.y) / cell) as usize)).filter(|&(c, r)| c < COLS && r < ROWS);
         let over = self.mines.board.over();
-        if let Some((c, r)) = at.filter(|_| !over) {
+        let locked = self.mines.board.state == State::Fresh && self.game_locked(HomeGame::Mines).is_some();
+        if let Some((c, r)) = at.filter(|_| !over && !locked) {
             if resp.clicked() {
                 let seed = super::game::random(&mut self.mines.rng);
                 if self.mines.board.state == State::Fresh {
@@ -155,7 +157,7 @@ impl App {
                 self.mines_over();
             }
         }
-        if !self.mines.board.over() && at.is_some() {
+        if !self.mines.board.over() && !locked && at.is_some() {
             resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         }
 

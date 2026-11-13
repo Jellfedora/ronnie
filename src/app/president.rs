@@ -447,7 +447,8 @@ impl App {
         } else if matches!(self.president.mode, Mode::Lobby)
             && let Some(p) = self.game_locked(HomeGame::President)
         {
-            return self.locked_page(ui, rect, HomeGame::President, &p);
+            // Its page still shown, to look at; nothing to start (it says why).
+            self.locked_band(ui, rect, HomeGame::President, &p);
         }
         let t = self.t();
         let theme = self.theme.clone();
@@ -591,7 +592,7 @@ impl App {
         }
         match action {
             // The first invitation opens the player's table on floor: to it.
-            Some(LobbyAction::Invite(name)) => {
+            Some(LobbyAction::Invite(name)) if self.game_locked(HomeGame::President).is_none() => {
                 self.versus.invite_to(&name, "president");
                 self.president_online();
             }

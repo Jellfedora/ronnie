@@ -107,34 +107,9 @@ impl App {
         self.t().playtime_hour.replace("{h}", &time.hour().to_string()).replace("{m}", &format!("{:02}", time.minute()))
     }
 
-    /// In place of `game`, played enough this half-day: why, when it's back, and its board still.
-    pub(super) fn locked_page(&mut self, ui: &mut Ui, rect: Rect, game: HomeGame, p: &Period) {
+    /// Why `game` can't be played again this half-day.
+    fn locked_why(&self, game: HomeGame, p: &Period) -> String {
         let t = self.t();
-        let theme = self.theme.clone();
-        let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
-        if ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0)).clicked() {
-            self.home_game = false;
-        }
-        let painter = &ui.painter().clone();
-        // Raised, to leave room for the board under it.
-        let c = rect.center() - Vec2::new(0.0, ((rect.height() - 520.0) / 2.0).clamp(0.0, 150.0));
-        let icon = Pos2::new(c.x, c.y - 120.0);
-        match game {
-            HomeGame::SpeedMetal => paint_metal(painter, icon, Align2::CENTER_CENTER, "R", 56.0, theme.accent, 1.0),
-            HomeGame::Four => super::four::paint_four_icon(painter, icon, &theme, 2.6),
-            HomeGame::Blob => super::blob::paint_blob_icon(painter, icon, &theme, 2.6),
-            HomeGame::Mines => super::mines::paint_mines_icon(painter, icon, &theme, 2.6),
-            HomeGame::Runner => super::runner::paint_runner_icon(painter, icon, &theme, 2.6),
-            HomeGame::Riff => super::riff::paint_riff_icon(painter, icon, &theme, 2.6),
-            HomeGame::Backstage => super::backstage::paint_backstage_icon(painter, icon, &theme, 2.6),
-            HomeGame::Coffee => super::coffee::paint_coffee_icon(painter, icon, &theme, 2.6),
-            HomeGame::Larsen => super::larsen::paint_larsen_icon(painter, icon, &theme, 2.6),
-            HomeGame::President => super::president::paint_president_icon(painter, icon, &theme, 2.6),
-            HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(painter, icon, &theme, 2.6),
-            HomeGame::Fishing => super::fishing::paint_fishing_icon(painter, icon, &theme, 2.6),
-            HomeGame::Monday => super::zombie::paint_monday_icon(painter, icon, &theme, 2.6),
-        }
-        paint_metal(painter, Pos2::new(c.x, c.y - 50.0), Align2::CENTER_CENTER, t.playtime_title, 44.0, theme.accent, 1.0);
         let name = match game {
             HomeGame::SpeedMetal => "Speed Metal",
             HomeGame::Four => t.four_name,
@@ -150,88 +125,27 @@ impl App {
             HomeGame::Fishing => t.fishing_name,
             HomeGame::Monday => t.monday_name,
         };
-        let why = match (game, p.morning) {
+        match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),
             (HomeGame::Blob, false) => t.playtime_blob_afternoon.to_owned(),
             (HomeGame::Mines, true) => t.playtime_mines_morning.replace("{n}", &MINES_GAMES.to_string()),
             (HomeGame::Mines, false) => t.playtime_mines_afternoon.replace("{n}", &MINES_GAMES.to_string()),
             (_, true) => t.playtime_round_morning.replace("{game}", name),
             (_, false) => t.playtime_round_afternoon.replace("{game}", name),
-        };
-        let width = (rect.width() - 48.0).clamp(200.0, 460.0);
-        let mut y = c.y + 4.0;
-        for (text, size, color) in [(why, 16.0, theme.text), (t.playtime_back_at.replace("{h}", &self.hour_text(p.end)), 15.0, theme.accent), (t.playtime_rule.to_owned(), 12.5, theme.text_muted)] {
-            let galley = painter.layout(text, FontId::proportional(size), color, width);
-            painter.galley(Pos2::new(c.x - galley.size().x / 2.0, y), galley.clone(), color);
-            y += galley.size().y + 12.0;
-        }
-        let area = Rect::from_min_max(Pos2::new(c.x - 170.0, y + 12.0), Pos2::new(c.x + 170.0, rect.max.y - 12.0));
-        if area.height() > 80.0 {
-            self.locked_board(ui, area, game);
         }
     }
 
-    /// `game`'s board on floor (fetched again every minute), under the page saying it is played enough.
-    fn locked_board(&mut self, ui: &mut Ui, area: Rect, game: HomeGame) {
+    /// Over `game`'s page, played enough this half-day (the page still there, to look at): why, and
+    /// when it's back.
+    pub(super) fn locked_band(&self, ui: &Ui, rect: Rect, game: HomeGame, p: &Period) {
         let t = self.t();
-        let theme = self.theme.clone();
-        let now = ui.input(|i| i.time);
-        let ctx = ui.ctx().clone();
-        let account = self.config.settings.floor.clone();
-        let settings = &self.config.settings;
-        let bests = |n: u32, text: &str, key: &str, value: String| (n > 0).then(|| text.replace(key, &value));
-        let (floor, best, score): (&mut crate::floor::GameFloor, Option<String>, fn(u32) -> String) = match game {
-            HomeGame::SpeedMetal => {
-                self.poll_floor();
-                self.floor.sync(&ctx, now, Some(60.0), account.as_ref());
-                let pseudo = crate::floor::pseudo(account.as_ref());
-                let scores = self.faced(crate::floor::shown(self.floor.board(), &self.config.settings.typing_scores, pseudo));
-                let board = Rect::from_min_size(area.min, Vec2::new(area.width(), (104.0 + scores.len().max(1) as f32 * 28.0).min(area.height())));
-                super::game::paint_board(&ui.painter_at(area), board, &scores, None, &theme, t, 1.0, now);
-                return;
-            }
-            // Against the computer only, for now: no board.
-            HomeGame::President => return,
-            HomeGame::Fishing => {
-                let n = settings.fish_cards.len() as u32;
-                (&mut self.fishing.floor, bests(n, t.fishing_collection, "{n}", format!("{n}/{}", crate::fishing::FISH.len())), |s| s.to_string())
-            }
-            HomeGame::Monday => (self.monday.floor.get_or_insert_with(|| crate::floor::GameFloor::new("lundi-matin", false)), bests(settings.monday_best, t.monday_best, "{n}", settings.monday_best.to_string()), |s| s.to_string()),
-            HomeGame::BugHunt => (&mut self.bughunt.floor, bests(settings.bughunt_best, t.bughunt_best, "{s}", settings.bughunt_best.to_string()), |s| s.to_string()),
-            HomeGame::Four | HomeGame::Larsen => {
-                let id = if game == HomeGame::Four { "puissance-4" } else { "larsen" };
-                let pseudo = crate::floor::pseudo(account.as_ref()).map(str::to_owned);
-                let fetched = if game == HomeGame::Four { &mut self.four.board_at } else { &mut self.larsen.board_at };
-                if pseudo.is_some() && fetched.is_none_or(|at| now - at > 30.0) {
-                    *fetched = Some(now);
-                    self.versus.fetch_board(id);
-                }
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
-                let faces = super::frames::Faces { avatars: &self.avatars, account: self.config.settings.floor.as_ref() };
-                super::four::wins_ui(&mut child, &self.versus, &faces, id, t.four_wins, pseudo.as_deref(), t, &theme);
-                return;
-            }
-            HomeGame::Blob => (self.blob.floor.get_or_insert_with(|| crate::floor::GameFloor::new("ronnie-io", false)), bests(settings.blob_best, t.blob_best, "{n}", settings.blob_best.to_string()), |s| s.to_string()),
-            HomeGame::Mines => (&mut self.mines.floor, bests(settings.mines_best, t.mines_best, "{t}", super::mines::time_text(settings.mines_best)), super::mines::time_text),
-            HomeGame::Runner => (&mut self.runner.floor, bests(settings.runner_best, t.runner_best, "{m}", settings.runner_best.to_string()), super::runner::meters_text),
-            HomeGame::Riff => {
-                let level = self.riff.level.index();
-                let best = settings.riff_bests.get(level).copied().unwrap_or(0);
-                (&mut self.riff.floors[level], bests(best, t.riff_best, "{s}", best.to_string()), |s| s.to_string())
-            }
-            HomeGame::Backstage => (&mut self.backstage.floor, bests(settings.backstage_best, t.backstage_best, "{s}", settings.backstage_best.to_string()), |s| s.to_string()),
-            HomeGame::Coffee => {
-                let total: u32 = settings.coffee_bests.iter().sum();
-                (&mut self.coffee.floor, bests(total, t.coffee_best, "{s}", total.to_string()), |s| s.to_string())
-            }
-        };
-        floor.poll();
-        floor.sync(&ctx, now, Some(60.0), account.as_ref());
-        let board = floor.board().map(<[_]>::to_vec);
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-        if self.game_board(ui, area, &theme, board.as_deref(), best, score) {
-            self.ask_pseudo();
-        }
+        let theme = &self.theme;
+        let text = format!("{}  {}", self.locked_why(game, p), t.playtime_back_at.replace("{h}", &self.hour_text(p.end)));
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("locked-band", game as u8))));
+        let galley = painter.layout(text, FontId::proportional(12.5), theme.text, (rect.width() - 300.0).max(220.0));
+        let band = Rect::from_center_size(Pos2::new(rect.center().x, rect.min.y + 18.0 + galley.size().y / 2.0), galley.size() + Vec2::new(28.0, 12.0));
+        painter.rect(band, 12.0, theme.chrome_bg, Stroke::new(1.0, theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+        painter.galley(band.center() - galley.size() / 2.0, galley, theme.text);
     }
 
     /// The seconds of Ronnie.io left, at the top of its page once there are few.

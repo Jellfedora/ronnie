@@ -17,16 +17,18 @@ impl App {
         if !self.home_game || self.home_which != super::four::HomeGame::SpeedMetal {
             self.game.leave();
             if self.home_game && self.home_which == super::four::HomeGame::Blob {
-                // Its minutes of the half-day of work up: out of the game.
-                if let Some(p) = self.game_locked(super::four::HomeGame::Blob) {
+                // Its minutes of the half-day of work up: out of the game, its page still there (to watch).
+                let locked = self.game_locked(super::four::HomeGame::Blob);
+                if locked.is_some() && self.blob_alive() {
                     self.blob_leave();
                     self.fold_for_game(false);
-                    self.locked_page(ui, rect, super::four::HomeGame::Blob, &p);
-                    return;
                 }
                 // It folds the sidebar itself, during a life.
                 self.games_drawn.push(super::four::HomeGame::Blob);
                 self.blob_page(ui, rect);
+                if let Some(p) = &locked {
+                    self.locked_band(ui, rect, super::four::HomeGame::Blob, p);
+                }
                 if !self.blob_alive() {
                     self.unlocks_pill(ui, rect, super::four::HomeGame::Blob);
                 }
@@ -73,10 +75,9 @@ impl App {
         // Its round of the half-day of work played: none more (one under way or just over stays).
         let locked = self.game_locked(super::four::HomeGame::SpeedMetal);
         self.game.locked = locked.is_some();
+        // Its page still shown, to look at; Play brings back to the start (it says why).
         if let Some(p) = locked.filter(|_| self.game.idle()) {
-            self.fold_for_game(false);
-            self.locked_page(ui, rect, super::four::HomeGame::SpeedMetal, &p);
-            return;
+            self.locked_band(ui, rect, super::four::HomeGame::SpeedMetal, &p);
         }
         let t = self.t();
         let now = ui.input(|i| i.time);

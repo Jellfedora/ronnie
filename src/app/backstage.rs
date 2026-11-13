@@ -103,8 +103,8 @@ impl App {
         } else if self.backstage.ended.is_none()
             && let Some(p) = self.game_locked(HomeGame::Backstage)
         {
-            self.fold_for_game(false);
-            return self.locked_page(ui, rect, HomeGame::Backstage, &p);
+            // Its page still shown, to look at; nothing to start (it says why).
+            self.locked_band(ui, rect, HomeGame::Backstage, &p);
         }
         // During a show the sidebar folds away, and unfolds after.
         self.fold_for_game(playing);

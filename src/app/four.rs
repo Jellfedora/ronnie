@@ -403,7 +403,8 @@ impl App {
         } else if matches!(self.four.mode, Mode::Lobby)
             && let Some(p) = self.game_locked(HomeGame::Four)
         {
-            return self.locked_page(ui, rect, HomeGame::Four, &p);
+            // Its page still shown, to look at; nothing to start (it says why).
+            self.locked_band(ui, rect, HomeGame::Four, &p);
         }
         let t = self.t();
         let theme = self.theme.clone();
@@ -501,7 +502,11 @@ impl App {
         match action.or(ai_action) {
             Some(LobbyAction::Level(l)) => self.four.level = l,
             Some(LobbyAction::PlayAi) => self.new_ai_game(now),
-            Some(LobbyAction::Invite(name)) => self.versus.invite(&name),
+            Some(LobbyAction::Invite(name)) => {
+                if self.game_locked(HomeGame::Four).is_none() {
+                    self.versus.invite(&name);
+                }
+            }
             Some(LobbyAction::Cancel) => self.versus.cancel(),
             Some(LobbyAction::Pseudo) => self.ask_pseudo(),
             None => {}

@@ -264,8 +264,8 @@ impl App {
         } else if self.riff.mode == Mode::Lobby
             && let Some(p) = self.game_locked(HomeGame::Riff)
         {
-            self.fold_for_game(false);
-            return self.locked_page(ui, rect, HomeGame::Riff, &p);
+            // Its page still shown, to look at; nothing to start (it says why).
+            self.locked_band(ui, rect, HomeGame::Riff, &p);
         }
         // During a song the sidebar folds away, and unfolds after.
         self.fold_for_game(playing);
@@ -403,7 +403,11 @@ impl App {
             self.riff_solo_start();
         }
         match action {
-            Some(LobbyAction::Invite(name)) => self.versus.invite_to(&name, "riff-hero"),
+            Some(LobbyAction::Invite(name)) => {
+                if self.game_locked(HomeGame::Riff).is_none() {
+                    self.versus.invite_to(&name, "riff-hero");
+                }
+            }
             Some(LobbyAction::Cancel) => self.versus.cancel(),
             Some(LobbyAction::Pseudo) => self.ask_pseudo(),
             _ => {}

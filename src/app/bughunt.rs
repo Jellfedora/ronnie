@@ -57,8 +57,8 @@ impl App {
         } else if self.bughunt.ended.is_none()
             && let Some(p) = self.game_locked(HomeGame::BugHunt)
         {
-            self.fold_for_game(false);
-            return self.locked_page(ui, rect, HomeGame::BugHunt, &p);
+            // Its page still shown, to look at; nothing to start (it says why).
+            self.locked_band(ui, rect, HomeGame::BugHunt, &p);
         }
         self.fold_for_game(playing);
         let t = self.t();

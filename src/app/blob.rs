@@ -54,8 +54,6 @@ pub(super) struct Blob {
     flip: f32,
     /// When the Demogorgon last caught the player (the screen flashes red).
     grabbed_at: Option<f64>,
-    /// floor's board of best masses, shown in place of the game once its minutes are up.
-    pub(super) floor: Option<crate::floor::GameFloor>,
 }
 
 /// A cell's radius, from its mass (as floor's).
@@ -1174,7 +1172,7 @@ impl App {
             if back {
                 self.blob.spectating = false;
             }
-            if play && now - self.blob.died_at > 0.6 && self.blob.online.status == crate::blob::Status::Ready {
+            if play && now - self.blob.died_at > 0.6 && self.blob.online.status == crate::blob::Status::Ready && self.game_locked(super::four::HomeGame::Blob).is_none() {
                 let skin = self.config.settings.blob_skin.clone();
                 self.blob.online.join(&skin);
                 self.blob.aimed = None;
@@ -1302,7 +1300,7 @@ impl App {
                 if ui.put(look, egui::Button::new(egui::RichText::new(t.blob_watch).size(13.5)).corner_radius(8.0)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     self.blob.spectating = true;
                 }
-                if (ui.put(button, play).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || enter) && ready {
+                if (ui.put(button, play).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || enter) && ready && self.game_locked(super::four::HomeGame::Blob).is_none() {
                     let skin = self.config.settings.blob_skin.clone();
                     self.blob.online.join(&skin);
                     self.blob.aimed = None;
