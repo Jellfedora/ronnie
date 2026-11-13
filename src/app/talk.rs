@@ -975,6 +975,13 @@ impl App {
             return;
         };
         let margin = if rect.width() > 760.0 { 28.0 } else { 14.0 };
+        // ⌘ F: the search bar opened, or its field focused again when it already is.
+        if ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F))) {
+            match &mut self.talk_ui.search {
+                Some(s) if s.room == room.id => s.focus = true,
+                _ => self.toggle_search(&room.id),
+            }
+        }
         // Another conversation shown: the pickers open for the previous one close.
         if self.talk_ui.gif_open.as_ref().is_some_and(|o| o.room != room.id) {
             self.close_gifs();
