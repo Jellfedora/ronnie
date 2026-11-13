@@ -242,6 +242,12 @@ impl App {
                 }
                 Happened::Reunion => {
                     self.monday.banner = Some((t.monday_reunion.to_owned(), Color32::from_rgb(255, 122, 182), now));
+                    // Seen once: Gérard strolls along the foot of the screen from now on.
+                    if !self.config.settings.monday_gerard {
+                        self.config.settings.monday_gerard = true;
+                        self.save_config();
+                        self.push_toast(super::Toast { ok: true, title: t.monday_ms_gerard.to_owned(), body: t.unlock_gerard.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+                    }
                     self.monday_sound(&[(659.0, 659.0, 0.2, 0.2), (784.0, 784.0, 0.2, 0.2), (988.0, 988.0, 0.2, 0.2), (1318.0, 1318.0, 0.6, 0.2)]);
                 }
                 Happened::LetterDrop => self.monday.banner = Some((t.monday_letter_drop.to_owned(), AGNES, now)),
@@ -408,6 +414,9 @@ impl App {
 
         // The world's board: beside, or under on a narrow page.
         let board = if wide { Rect::from_min_max(Pos2::new(card.max.x + 32.0, body.min.y + 6.0), Pos2::new(x0 + width, body.max.y)) } else { Rect::from_min_max(Pos2::new(x0, card.max.y + 20.0), Pos2::new(x0 + width, body.max.y)) };
+        // What the game unlocks, and how: over the board.
+        let used = self.monday_rewards(&painter, board);
+        let board = Rect::from_min_max(Pos2::new(board.min.x, board.min.y + used), board.max);
         if board.height() > 60.0 {
             let floor = self.monday.floor.get_or_insert_with(|| crate::floor::GameFloor::new("lundi-matin", false));
             floor.poll();
@@ -419,6 +428,34 @@ impl App {
                 self.ask_pseudo();
             }
         }
+    }
+
+    /// The rewards of the game, at the top of `area`: each one, how to win it, how far the player is.
+    /// Its height.
+    fn monday_rewards(&self, painter: &egui::Painter, area: Rect) -> f32 {
+        let t = self.t();
+        let theme = &self.theme;
+        let items = self.unlocks(HomeGame::Monday);
+        let mut y = area.min.y + 4.0;
+        painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, t.monday_rewards, FontId::proportional(15.0), theme.text);
+        y += 26.0;
+        for u in &items {
+            let color = if u.done { theme.ansi[2] } else { theme.accent };
+            painter.text(Pos2::new(area.min.x, y), Align2::LEFT_TOP, if u.done { "✓" } else { "•" }, FontId::proportional(13.0), color);
+            painter.text(Pos2::new(area.min.x + 16.0, y), Align2::LEFT_TOP, &u.what, FontId::proportional(13.0), theme.text);
+            let state = match (u.done, u.progress) {
+                (true, _) => t.unlock_done.to_owned(),
+                (false, Some((have, need))) => format!("{}/{need}", have.min(need)),
+                (false, None) => String::new(),
+            };
+            painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, state, FontId::monospace(11.5), color);
+            y += 18.0;
+            let how = painter.layout(u.how.clone(), FontId::proportional(11.5), theme.text_muted, area.width() - 16.0);
+            let h = how.size().y;
+            painter.galley(Pos2::new(area.min.x + 16.0, y), how, theme.text_muted);
+            y += h + 8.0;
+        }
+        y + 10.0 - area.min.y
     }
 
     /// In a room, before its game: who's there, start (the host) or wait, invite colleagues online.
@@ -1358,13 +1395,25 @@ fn paint_agnes(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, a: crate:
     painter.galley(bubble.center() - galley.size() / 2.0, galley, Color32::from_rgb(61, 42, 99));
 }
 
-/// Gérard: a brown jacket, a moustache, hearts once he found her.
+/// Gérard, a kind zombie (no one bites him, no one shoots him): a brown jacket, a moustache, a hand
+/// waving, looking for her; hearts once he found her.
 fn paint_gerard(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, met: bool) {
+    painter.circle_filled(c, 34.0 * scale, GERARD.gamma_multiply(0.12));
     painter.circle_filled(c + Vec2::new(3.0, 6.0) * scale, 18.0 * scale, Color32::from_black_alpha(80));
+    let wave = (now * 6.0).sin() as f32 * 0.5;
+    painter.circle_filled(c + Vec2::angled(-1.9 - wave) * 22.0 * scale, 5.0 * scale, Color32::from_rgb(170, 214, 140));
     painter.circle_filled(c, 18.0 * scale, Color32::from_rgb(120, 86, 60));
     painter.circle_filled(c - Vec2::new(0.0, 2.0) * scale, 12.0 * scale, Color32::from_rgb(170, 214, 140));
     painter.line_segment([c + Vec2::new(-5.0, 3.0) * scale, c + Vec2::new(5.0, 3.0) * scale], Stroke::new(2.5 * scale, Color32::from_rgb(90, 70, 50)));
     painter.text(c + Vec2::new(0.0, 32.0 * scale), Align2::CENTER_CENTER, "GÉRARD", FontId::monospace(11.0 * scale.max(0.7)), GERARD);
+    let text = if met { "Mon Agnès !" } else { "Agnès ?" };
+    let font = FontId::proportional(13.0 * scale.max(0.75));
+    let ink = Color32::from_rgb(70, 50, 30);
+    let galley = painter.layout_no_wrap(text.to_owned(), font, ink);
+    let bubble = Rect::from_center_size(c - Vec2::new(0.0, if met { 70.0 } else { 52.0 }) * scale, galley.size() + Vec2::new(20.0, 12.0));
+    painter.rect_filled(bubble, 8.0, Color32::from_rgb(250, 240, 222));
+    painter.add(egui::Shape::convex_polygon(vec![bubble.center_bottom() - Vec2::new(6.0, 0.0), bubble.center_bottom() + Vec2::new(6.0, 0.0), bubble.center_bottom() + Vec2::new(0.0, 9.0)], Color32::from_rgb(250, 240, 222), Stroke::NONE));
+    painter.galley(bubble.center() - galley.size() / 2.0, galley, ink);
     if met {
         for k in 0..3 {
             let rise = ((now * 0.8 + k as f64 / 3.0) % 1.0) as f32;

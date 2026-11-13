@@ -2305,6 +2305,7 @@ impl App {
                                     Some(super::unlocks::Reward::Trail) => vec![(t.desktop_trail, &mut fx.trail)],
                                     Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
                                     Some(super::unlocks::Reward::Horde) => vec![(t.desktop_horde, &mut fx.horde)],
+                                    Some(super::unlocks::Reward::Gerard) => vec![(t.desktop_gerard, &mut fx.gerard)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword)],
@@ -2356,7 +2357,7 @@ impl App {
                                     toggle(ui, theme, &mut picked.sheep);
                                 }
                                 Some(super::unlocks::Reward::Frame(_)) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
-                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde) | None => {}
+                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde | super::unlocks::Reward::Gerard) | None => {}
                             }
                         });
                     });

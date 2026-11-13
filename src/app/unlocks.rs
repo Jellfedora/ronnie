@@ -28,6 +28,8 @@ pub(super) enum Reward {
     Badge(&'static str),
     /// Lundi matin's horde at 10, over the whole screen.
     Horde,
+    /// Gérard strolling along the foot of the screen.
+    Gerard,
 }
 
 impl App {
@@ -93,14 +95,15 @@ impl App {
                 list.extend(frames);
                 list
             }
-            // Lundi matin: the bite in the chat, the letters, Agnès' card at the fishing, and a mystery
-            // (what it gives shows once won).
+            // Lundi matin: the bite in the chat, the letters, Gérard on the screen, Agnès' card at the
+            // fishing, and a mystery (what it gives shows once won).
             HomeGame::Monday => {
                 use crate::zombie::{ESCORTS_CARD, LETTERS, REVIVES_BITE};
                 let horde = if s.monday_horde { t.unlock_horde } else { t.unlock_mystery };
                 vec![
                     Unlock { what: t.unlock_bite.into(), how: t.unlock_bite_how.replace("{n}", &REVIVES_BITE.to_string()), done: s.monday_revives >= REVIVES_BITE, progress: Some((s.monday_revives.min(REVIVES_BITE), REVIVES_BITE)), info: false, reward: None },
                     Unlock { what: t.unlock_letters.into(), how: t.unlock_letters_how.replace("{n}", &LETTERS.to_string()), done: s.monday_letters >= LETTERS, progress: Some((s.monday_letters.min(LETTERS), LETTERS)), info: false, reward: None },
+                    Unlock { what: t.unlock_gerard.into(), how: t.unlock_gerard_how.to_owned(), done: s.monday_gerard, progress: None, info: false, reward: Some(Reward::Gerard) },
                     Unlock { what: t.unlock_agnes_card.into(), how: t.unlock_agnes_card_how.replace("{n}", &ESCORTS_CARD.to_string()), done: s.monday_escorts >= ESCORTS_CARD, progress: Some((s.monday_escorts.min(ESCORTS_CARD), ESCORTS_CARD)), info: false, reward: None },
                     Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: s.monday_horde.then_some(Reward::Horde) },
                 ]

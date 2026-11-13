@@ -1,5 +1,5 @@
 //! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the wand, the lightsaber
-//! or the sword at the pointer, the sheep and the droid walking along the foot of the screen.
+//! or the sword at the pointer, the sheep, the droid and Gérard walking along the foot of the screen.
 //!
 //! They live in a process of their own (`ronnie desktop-fx`), started by Ronnie while one of them is
 //! chosen: a transparent window over the screen where the pointer is, letting every click through, out of
@@ -29,6 +29,9 @@ pub(crate) struct Fx {
     /// Lundi matin's horde, at 10.
     #[serde(default)]
     horde: bool,
+    /// Gérard, Lundi matin's kind zombie, strolling now and then.
+    #[serde(default)]
+    gerard: bool,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -43,7 +46,7 @@ enum Pointer {
 
 impl Fx {
     fn any(&self) -> bool {
-        self.trail || self.sheep || self.droid || self.horde || self.pointer.is_some()
+        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.pointer.is_some()
     }
 
     /// The pointer is followed (else it needn't be).
@@ -101,7 +104,7 @@ impl App {
         } else {
             None
         };
-        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), pointer, theme: s.theme.clone() }
+        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -346,6 +349,87 @@ fn paint_runner(painter: &egui::Painter, at: Pos2, size: f32, step: f32) {
     painter.line_segment([head + Vec2::new(size * 0.08, size * 0.18), head + Vec2::new(size * 0.32, size * 0.16)], Stroke::new(size * 0.06, Color32::from_rgb(45, 74, 34)));
 }
 
+/// How often Gérard strolls by, how long it takes him (he's in no hurry).
+const GERARD_EVERY: f64 = 150.0;
+const GERARD_STROLL: f64 = 34.0;
+
+/// Gérard strolling along `strip` now and then, one way then the other, a coffee in his hand: halfway, he
+/// stops to wave and say hello. Whether he shows, and when to draw again.
+fn gerard_stroll(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) {
+    let (along, rightward, waving) = match gerard_at(now) {
+        Ok(at) => at,
+        Err(again) => return (false, again),
+    };
+    let x = strip.min.x - 30.0 + (strip.width() + 60.0) * along;
+    let x = if rightward { x } else { strip.max.x + strip.min.x - x };
+    paint_gerard(painter, Pos2::new(x, strip.max.y), 40.0, if rightward { 1.0 } else { -1.0 }, now, waving);
+    (true, 0.0)
+}
+
+/// Where Gérard is at `now`: how far along (0 to 1), going right, waving; or, away, the seconds until
+/// he comes back.
+fn gerard_at(now: f64) -> Result<(f32, bool, bool), f32> {
+    // Not at the sheep's time, nor the droid's.
+    let t = (now + 95.0) % GERARD_EVERY;
+    if t > GERARD_STROLL {
+        return Err((GERARD_EVERY - t) as f32);
+    }
+    let rightward = ((now + 95.0) / GERARD_EVERY).floor() as i64 % 2 == 0;
+    // Walking 0-14 s, waving 14-20 s, walking 20-34 s.
+    let (along, waving) = if t < 14.0 {
+        (t / 14.0 * 0.5, false)
+    } else if t < 20.0 {
+        (0.5, true)
+    } else {
+        (0.5 + (t - 20.0) / 14.0 * 0.5, false)
+    };
+    Ok((along as f32, rightward, waving))
+}
+
+/// Gérard seen from the side, his feet at `foot`, `size` tall, facing `dir` (1 right, -1 left): green
+/// but kind, his brown jacket, his moustache, a coffee for Agnès; waving, "Bonjour !" and a heart.
+pub(super) fn paint_gerard(painter: &egui::Painter, foot: Pos2, size: f32, dir: f32, now: f64, waving: bool) {
+    let u = size / 40.0;
+    let at = |x: f32, y: f32| foot + Vec2::new(x * dir, y) * u;
+    let skin = Color32::from_rgb(170, 214, 140);
+    let jacket = Color32::from_rgb(120, 86, 60);
+    let dark = Color32::from_rgb(60, 50, 44);
+    let step = if waving { 0.0 } else { (now * 5.0).sin() as f32 };
+    // Legs, a slow step.
+    let hip = at(0.0, -14.0);
+    painter.line_segment([hip, at(step * 4.0, 0.0)], Stroke::new(3.2 * u, dark));
+    painter.line_segment([hip, at(-step * 4.0, 0.0)], Stroke::new(3.2 * u, dark));
+    // The jacket, the tie.
+    painter.rect_filled(Rect::from_center_size(at(0.0, -21.0), Vec2::new(12.0, 16.0) * u), 3.0 * u, jacket);
+    painter.line_segment([at(1.5, -28.0), at(1.5, -20.0)], Stroke::new(1.6 * u, Color32::from_rgb(200, 70, 70)));
+    // The arm ahead holds the coffee; the other waves, or swings.
+    let cup = at(9.0, -20.0);
+    painter.line_segment([at(2.0, -25.0), cup], Stroke::new(2.6 * u, jacket));
+    painter.rect_filled(Rect::from_center_size(cup + Vec2::new(2.0 * dir, -1.0) * u, Vec2::new(5.0, 6.0) * u), 1.0, Color32::from_rgb(240, 236, 226));
+    let lift = if waving { -14.0 + (now * 8.0).sin() as f32 * 3.0 } else { -16.0 + step * 2.0 };
+    let hand = at(-6.0 + if waving { 4.0 } else { 0.0 }, if waving { -40.0 } else { lift });
+    painter.line_segment([at(-2.0, -25.0), hand], Stroke::new(2.6 * u, jacket));
+    painter.circle_filled(hand, 2.0 * u, skin);
+    // The head: green, a little grey hair, the moustache, a smile.
+    let head = at(0.0, -34.0);
+    painter.circle_filled(head, 6.5 * u, skin);
+    painter.circle_filled(head + Vec2::new(-2.0 * dir, -4.5) * u, 3.5 * u, Color32::from_rgb(190, 190, 190));
+    painter.circle_filled(head + Vec2::new(-2.0 * dir, -4.5) * u + Vec2::new(0.0, 2.0) * u, 3.0 * u, skin);
+    painter.circle_filled(head + Vec2::new(3.0 * dir, -1.5) * u, 0.9 * u, dark);
+    painter.line_segment([head + Vec2::new(2.0 * dir, 2.0) * u, head + Vec2::new(6.0 * dir, 2.0) * u], Stroke::new(1.6 * u, Color32::from_rgb(90, 70, 50)));
+    if waving {
+        let font = FontId::proportional(13.0 * u);
+        let ink = Color32::from_rgb(61, 42, 99);
+        let galley = painter.layout_no_wrap("Bonjour !".to_owned(), font, ink);
+        let r = Rect::from_center_size(head - Vec2::new(0.0, 22.0 * u), galley.size() + Vec2::new(12.0, 6.0) * u);
+        painter.rect_filled(r, 6.0 * u, Color32::from_rgb(255, 245, 210));
+        painter.galley(r.center() - galley.size() / 2.0, galley, ink);
+    }
+    // A heart rising now and then (he thinks of her).
+    let rise = (now * 0.4 % 1.0) as f32;
+    painter.text(head + Vec2::new(-8.0 * dir, -8.0 - rise * 18.0) * u, Align2::CENTER_CENTER, "♥", FontId::proportional(10.0 * u), Color32::from_rgb(255, 122, 182).gamma_multiply(1.0 - rise));
+}
+
 /// How often the droid rolls by, how long it takes.
 const DROID_EVERY: f64 = 70.0;
 const DROID_ROLL: f64 = 12.0;
@@ -409,6 +493,11 @@ impl eframe::App for Overlay {
         }
         if self.shown.droid {
             let (shown, again) = droid_walk(&painter, strip, now);
+            busy |= shown;
+            next = next.min(again);
+        }
+        if self.shown.gerard {
+            let (shown, again) = gerard_stroll(&painter, strip, now);
             busy |= shown;
             next = next.min(again);
         }
@@ -676,8 +765,18 @@ mod tests {
     }
 
     #[test]
+    fn gerard_strolls_now_and_then() {
+        let shown = (0..1500).filter(|k| gerard_at(*k as f64 / 10.0).is_ok()).count();
+        // 34 s out of 150, waving 6 s of them, halfway.
+        assert!((330..=350).contains(&shown), "{shown}");
+        let waving = (0..1500).filter_map(|k| gerard_at(*k as f64 / 10.0).ok()).filter(|w| w.2).count();
+        assert!((55..=65).contains(&waving), "{waving}");
+        assert!(gerard_at(0.0).is_err_and(|again| again > 0.0));
+    }
+
+    #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());
