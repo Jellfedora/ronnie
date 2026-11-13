@@ -2224,6 +2224,14 @@ impl App {
                         super::desktop::paint_horde(&painter, rect, (now % 6.0) / 6.0, 5);
                         ui.ctx().request_repaint();
                     }
+                    Some(Reward::Gerard) => {
+                        // Gérard walking to and fro, waving at each end.
+                        let p = ((now * 0.12) % 2.0) as f32;
+                        let (k, dir) = if p < 1.0 { (p, 1.0) } else { (2.0 - p, -1.0) };
+                        let x = rect.min.x + 26.0 + (rect.width() - 52.0) * k;
+                        super::desktop::paint_gerard(&painter, Pos2::new(x, rect.max.y - 8.0), 40.0, dir, now, !(0.08..=0.92).contains(&k));
+                        ui.ctx().request_repaint();
+                    }
                     _ => {
                         let mark = if u.done { "✓" } else if u.info { "•" } else { "?" };
                         painter.text(rect.center(), Align2::CENTER_CENTER, mark, FontId::proportional(30.0), theme.accent.gamma_multiply(0.7));
@@ -2244,7 +2252,7 @@ impl App {
         let mut all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
         // Ronnie's own: open days in a row.
         let days = crate::theme::WIZARD_DAYS;
-        let wizard = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: t.unlock_wizard_how.replace("{n}", &days.to_string()), done: !config::OFFICIAL || picked.wizard_unlocked, progress: Some((picked.open_streak.min(days), days)), info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) }];
+        let wizard = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: t.unlock_wizard_how.replace("{n}", &days.to_string()), done: !config::OFFICIAL || picked.wizard_unlocked, progress: Some((picked.open_streak.min(days), days)), info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)), gives: t.unlock_gives_theme.into() }];
         all.push((t.rewards_loyal, wizard));
         let counted = all.iter().flat_map(|(_, u)| u.iter()).filter(|u| !u.info);
         let (done, total) = counted.fold((0, 0), |(d, n), u| (d + u.done as usize, n + 1));
@@ -2259,19 +2267,7 @@ impl App {
                     }
                     let mark = if u.done { "✓" } else if u.info { "•" } else { "🔒" };
                     let title = format!("{mark}  {}", u.what);
-                    let desc = if u.done {
-                        match u.reward {
-                            Some(super::unlocks::Reward::Trail) => t.trail_setting_desc.to_owned(),
-                            Some(super::unlocks::Reward::Sheep) => t.sheep_setting_desc.to_owned(),
-                            Some(super::unlocks::Reward::Horde) => t.horde_setting_desc.to_owned(),
-                            _ => t.unlock_done.to_owned(),
-                        }
-                    } else {
-                        match u.progress {
-                            Some((have, need)) => format!("{} ({})", u.how, t.unlock_best.replace("{n}", &have.min(need).to_string())),
-                            None => u.how.clone(),
-                        }
-                    };
+                    let desc = u.said(t);
                     ui.horizontal(|ui| {
                         // What it looks like, shown whole even locked: to make one want it.
                         self.reward_preview(ui, u, theme);

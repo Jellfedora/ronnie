@@ -14,6 +14,22 @@ pub(super) struct Unlock {
     pub(super) info: bool,
     /// What switches it on, once unlocked (None: on by itself).
     pub(super) reward: Option<Reward>,
+    /// What it is, said once unlocked (empty: `how` says it already).
+    pub(super) gives: String,
+}
+
+impl Unlock {
+    /// What to say of it: what it is once unlocked, else how to get it (and how far the player is).
+    pub(super) fn said(&self, t: &Strings) -> String {
+        if self.done && !self.gives.is_empty() {
+            return self.gives.clone();
+        }
+        match (self.done, self.progress) {
+            (true, _) => t.unlock_done.to_owned(),
+            (false, Some((have, need))) => format!("{} ({})", self.how, t.unlock_best.replace("{n}", &have.min(need).to_string())),
+            (false, None) => self.how.clone(),
+        }
+    }
 }
 
 /// How an unlocked thing is put to use.
@@ -50,37 +66,37 @@ impl App {
         match game {
             HomeGame::SpeedMetal => {
                 let best = s.typing_scores.first().map_or(0, |s| s.letters);
-                vec![Unlock { what: t.unlock_metal.into(), how: t.unlock_metal_how.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()), done: best >= crate::theme::METAL_UNLOCK, progress: Some((best, crate::theme::METAL_UNLOCK)), info: false, reward: Some(Reward::Theme(crate::theme::METAL_THEME)) }]
+                vec![Unlock { what: t.unlock_metal.into(), how: t.unlock_metal_how.replace("{n}", &crate::theme::METAL_UNLOCK.to_string()), done: best >= crate::theme::METAL_UNLOCK, progress: Some((best, crate::theme::METAL_UNLOCK)), info: false, reward: Some(Reward::Theme(crate::theme::METAL_THEME)), gives: t.unlock_gives_theme.into() }]
             }
             HomeGame::Blob => vec![
-                Unlock { what: t.unlock_jurassic.into(), how: t.unlock_jurassic_how.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string()), done: s.jurassic_unlocked, progress: Some((s.blob_best, crate::theme::JURASSIC_UNLOCK)), info: false, reward: Some(Reward::Theme(crate::theme::JURASSIC_THEME)) },
-                Unlock { what: t.unlock_skins.into(), how: t.unlock_skins_how.to_owned(), done: false, progress: None, info: true, reward: None },
+                Unlock { what: t.unlock_jurassic.into(), how: t.unlock_jurassic_how.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string()), done: s.jurassic_unlocked, progress: Some((s.blob_best, crate::theme::JURASSIC_UNLOCK)), info: false, reward: Some(Reward::Theme(crate::theme::JURASSIC_THEME)), gives: t.unlock_gives_theme.into() },
+                Unlock { what: t.unlock_skins.into(), how: t.unlock_skins_how.to_owned(), done: false, progress: None, info: true, reward: None, gives: String::new() },
             ],
-            HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false, reward: None }],
-            HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false, reward: None }],
+            HomeGame::Mines => vec![Unlock { what: t.unlock_wizz.into(), how: t.unlock_wizz_how.to_owned(), done: s.mines_best > 0, progress: None, info: false, reward: None, gives: t.wizz_unlocked_body.into() }],
+            HomeGame::Four => vec![Unlock { what: t.unlock_claude.into(), how: t.unlock_claude_how.to_owned(), done: s.four_online_played, progress: None, info: false, reward: None, gives: t.claude_unlocked_body.into() }],
             HomeGame::Backstage => {
                 let need = super::backstage::PIG_UNLOCK;
-                vec![Unlock { what: t.unlock_pig.into(), how: t.unlock_pig_how.replace("{n}", &need.to_string()), done: s.backstage_best >= need, progress: Some((s.backstage_best, need)), info: false, reward: None }]
+                vec![Unlock { what: t.unlock_pig.into(), how: t.unlock_pig_how.replace("{n}", &need.to_string()), done: s.backstage_best >= need, progress: Some((s.backstage_best, need)), info: false, reward: None, gives: t.pig_unlocked_body.into() }]
             }
             HomeGame::Coffee => {
                 let need = crate::coffee::THRONES_UNLOCK as u32;
                 let done = s.coffee_bests.iter().filter(|&&b| b > 0).count() as u32;
-                vec![Unlock { what: t.unlock_thrones.into(), how: t.unlock_thrones_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || done >= need, progress: Some((done.min(need), need)), info: false, reward: Some(Reward::Theme(crate::theme::THRONES_THEME)) }]
+                vec![Unlock { what: t.unlock_thrones.into(), how: t.unlock_thrones_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || done >= need, progress: Some((done.min(need), need)), info: false, reward: Some(Reward::Theme(crate::theme::THRONES_THEME)), gives: t.unlock_gives_theme.into() }]
             }
-            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::HYPERSPACE_THEME)) }],
+            HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::HYPERSPACE_THEME)), gives: t.unlock_gives_theme.into() }],
             HomeGame::Riff => {
                 let best = s.riff_bests.iter().copied().max().unwrap_or(0);
                 let need = crate::theme::OFFICE_UNLOCK;
-                vec![Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || best >= need, progress: Some((best, need)), info: false, reward: Some(Reward::Theme(crate::theme::OFFICE_THEME)) }]
+                vec![Unlock { what: t.unlock_office.into(), how: t.unlock_office_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || best >= need, progress: Some((best, need)), info: false, reward: Some(Reward::Theme(crate::theme::OFFICE_THEME)), gives: t.unlock_gives_theme.into() }]
             }
             HomeGame::Runner => {
                 let need = super::trail::TRAIL_METERS;
-                vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false, reward: Some(Reward::Trail) }]
+                vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false, reward: Some(Reward::Trail), gives: t.trail_setting_desc.into() }]
             }
             HomeGame::BugHunt | HomeGame::Fishing => {
                 let frames = super::frames::FRAMES.iter().filter(|f| if game == HomeGame::BugHunt { matches!(f.need, super::frames::Need::Wave(_)) } else { matches!(f.need, super::frames::Need::Cards(_)) }).map(|f| {
                     let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
-                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame(f.id)) }
+                    Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame(f.id)), gives: t.frame_unlocked_body.into() }
                 });
                 if game == HomeGame::BugHunt {
                     return frames.collect();
@@ -89,8 +105,8 @@ impl App {
                 let hires: u32 = s.fish_cards.values().map(|c| c.count).sum();
                 let sheep = super::office::sheep_unlocked(s);
                 let mut list = vec![
-                    Unlock { what: t.unlock_sheep.into(), how: t.unlock_sheep_how.to_owned(), done: sheep, progress: None, info: false, reward: Some(Reward::Sheep) },
-                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false, reward: Some(Reward::Badge(super::office::HUNTER_BADGE)) },
+                    Unlock { what: t.unlock_sheep.into(), how: t.unlock_sheep_how.to_owned(), done: sheep, progress: None, info: false, reward: Some(Reward::Sheep), gives: t.sheep_setting_desc.into() },
+                    Unlock { what: t.unlock_hunter.into(), how: t.unlock_hunter_how.replace("{n}", &crate::fishing::HUNTER.to_string()), done: hires >= crate::fishing::HUNTER, progress: Some((hires, crate::fishing::HUNTER)), info: false, reward: Some(Reward::Badge(super::office::HUNTER_BADGE)), gives: t.hunter_unlocked_body.into() },
                 ];
                 list.extend(frames);
                 list
@@ -99,15 +115,17 @@ impl App {
             // fishing, and a mystery (what it gives shows once won).
             HomeGame::Monday => {
                 use crate::zombie::{ESCORTS_CARD, LETTERS, REVIVES_BITE};
-                let horde = if s.monday_horde { t.unlock_horde } else { t.unlock_mystery };
+                // Won (or in a build of one's own, where all is won): its name, what it gives.
+                let horde_won = s.monday_horde || !crate::config::OFFICIAL;
+                let horde = if horde_won { t.unlock_horde } else { t.unlock_mystery };
                 vec![
-                    Unlock { what: t.unlock_bite.into(), how: t.unlock_bite_how.replace("{n}", &REVIVES_BITE.to_string()), done: s.monday_revives >= REVIVES_BITE, progress: Some((s.monday_revives.min(REVIVES_BITE), REVIVES_BITE)), info: false, reward: None },
-                    Unlock { what: t.unlock_letters.into(), how: t.unlock_letters_how.replace("{n}", &LETTERS.to_string()), done: s.monday_letters >= LETTERS, progress: Some((s.monday_letters.min(LETTERS), LETTERS)), info: false, reward: None },
-                    Unlock { what: t.unlock_gerard.into(), how: t.unlock_gerard_how.to_owned(), done: s.monday_gerard, progress: None, info: false, reward: Some(Reward::Gerard) },
-                    Unlock { what: t.unlock_agnes_card.into(), how: t.unlock_agnes_card_how.replace("{n}", &ESCORTS_CARD.to_string()), done: s.monday_escorts >= ESCORTS_CARD, progress: Some((s.monday_escorts.min(ESCORTS_CARD), ESCORTS_CARD)), info: false, reward: None },
-                    Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: s.monday_horde.then_some(Reward::Horde) },
-                    Unlock { what: t.unlock_monday_theme.into(), how: t.unlock_monday_theme_how.replace("{n}", &crate::zombie::LAST_WAVE.to_string()), done: s.monday_wins > 0, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::MONDAY_THEME)) },
-                    Unlock { what: t.unlock_monday_frame.into(), how: t.unlock_monday_frame_how.replace("{n}", &crate::zombie::DAILIES_FRAME.to_string()), done: s.monday_dailies >= crate::zombie::DAILIES_FRAME, progress: Some((s.monday_dailies.min(crate::zombie::DAILIES_FRAME), crate::zombie::DAILIES_FRAME)), info: false, reward: Some(Reward::Frame("survivor")) },
+                    Unlock { what: t.unlock_bite.into(), how: t.unlock_bite_how.replace("{n}", &REVIVES_BITE.to_string()), done: s.monday_revives >= REVIVES_BITE, progress: Some((s.monday_revives.min(REVIVES_BITE), REVIVES_BITE)), info: false, reward: None, gives: t.unlock_gives_bite.into() },
+                    Unlock { what: t.unlock_letters.into(), how: t.unlock_letters_how.replace("{n}", &LETTERS.to_string()), done: s.monday_letters >= LETTERS, progress: Some((s.monday_letters.min(LETTERS), LETTERS)), info: false, reward: None, gives: t.unlock_gives_letters.replace("{n}", &LETTERS.to_string()) },
+                    Unlock { what: t.unlock_gerard.into(), how: t.unlock_gerard_how.to_owned(), done: s.monday_gerard, progress: None, info: false, reward: Some(Reward::Gerard), gives: t.unlock_gives_gerard.into() },
+                    Unlock { what: t.unlock_agnes_card.into(), how: t.unlock_agnes_card_how.replace("{n}", &ESCORTS_CARD.to_string()), done: s.monday_escorts >= ESCORTS_CARD, progress: Some((s.monday_escorts.min(ESCORTS_CARD), ESCORTS_CARD)), info: false, reward: None, gives: t.unlock_gives_agnes_card.into() },
+                    Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: horde_won.then_some(Reward::Horde), gives: t.horde_setting_desc.into() },
+                    Unlock { what: t.unlock_monday_theme.into(), how: t.unlock_monday_theme_how.replace("{n}", &crate::zombie::LAST_WAVE.to_string()), done: s.monday_wins > 0, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::MONDAY_THEME)), gives: t.unlock_gives_monday_theme.into() },
+                    Unlock { what: t.unlock_monday_frame.into(), how: t.unlock_monday_frame_how.replace("{n}", &crate::zombie::DAILIES_FRAME.to_string()), done: s.monday_dailies >= crate::zombie::DAILIES_FRAME, progress: Some((s.monday_dailies.min(crate::zombie::DAILIES_FRAME), crate::zombie::DAILIES_FRAME)), info: false, reward: Some(Reward::Frame("survivor")), gives: t.unlock_gives_monday_frame.into() },
                 ]
             }
             _ => Vec::new(),
@@ -170,11 +188,7 @@ impl App {
                         ui.label(egui::RichText::new(mark).size(13.5).strong().color(color));
                         ui.label(egui::RichText::new(&u.what).size(13.5).strong().color(theme.text));
                     });
-                    let mut how = u.how.clone();
-                    if let (Some((have, need)), false) = (u.progress, u.done) {
-                        how = format!("{how} ({})", t.unlock_best.replace("{n}", &have.min(need).to_string()));
-                    }
-                    ui.add(egui::Label::new(egui::RichText::new(if u.done && u.progress.is_some() { t.unlock_done.to_owned() } else { how }).size(12.0).color(theme.text_muted)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(u.said(t)).size(12.0).color(theme.text_muted)).wrap());
                 }
     }
 }

@@ -459,10 +459,10 @@ impl App {
 
         // The world's board: beside, or under on a narrow page.
         let board = if wide { Rect::from_min_max(Pos2::new(card.max.x + 32.0, body.min.y + 6.0), Pos2::new(x0 + width, body.max.y)) } else { Rect::from_min_max(Pos2::new(x0, card.max.y + 20.0), Pos2::new(x0 + width, body.max.y)) };
-        // In a build of one's own: the end credits, to see them without beating the committee.
-        if !crate::config::OFFICIAL {
+        // The end credits, to see again: only once the game is finished (the committee beaten).
+        if self.config.settings.monday_wins > 0 {
             let r = Rect::from_min_size(Pos2::new(board.max.x - 130.0, board.min.y), Vec2::new(130.0, 24.0));
-            if ui.put(r, egui::Button::new(egui::RichText::new("Générique (dev)").size(11.5)).corner_radius(6.0)).clicked() {
+            if ui.put(r, egui::Button::new(egui::RichText::new(t.monday_credits_again).size(11.5)).corner_radius(6.0)).clicked() {
                 self.monday.credits = Some(f64::NAN);
             }
         }
@@ -502,9 +502,10 @@ impl App {
             };
             painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, state, FontId::monospace(11.5), color);
             y += 18.0;
-            let how = painter.layout(u.how.clone(), FontId::proportional(11.5), theme.text_muted, area.width() - 16.0);
+            let said = if u.done { u.said(t) } else { u.how.clone() };
+            let how = painter.layout(said, FontId::proportional(11.5), if u.done { theme.text } else { theme.text_muted }, area.width() - 16.0);
             let h = how.size().y;
-            painter.galley(Pos2::new(area.min.x + 16.0, y), how, theme.text_muted);
+            painter.galley(Pos2::new(area.min.x + 16.0, y), how, if u.done { theme.text } else { theme.text_muted });
             y += h + 8.0;
         }
         y + 10.0 - area.min.y
