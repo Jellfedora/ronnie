@@ -284,6 +284,10 @@ impl App {
             Mode::Solo => self.riff_solo(ui, body),
             Mode::Battle => self.riff_battle(ui, body),
         }
+        // What the game unlocks (the Open space theme), in the lobby: the pill in the bottom left corner.
+        if self.riff.mode == Mode::Lobby {
+            self.unlocks_pill(ui, rect, HomeGame::Riff);
+        }
     }
 
     /// The back button: a song (or a battle) to the lobby, the lobby to the home page.
