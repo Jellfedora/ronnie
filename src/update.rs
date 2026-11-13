@@ -434,10 +434,35 @@ pub(crate) fn find(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// The `.app` bundle containing `exe`, when running from one.
+/// The `.app` bundle containing `exe`, when running from one. Downloaded and opened where it landed,
+/// macOS runs it from a read-only copy (App Translocation, under /private/var/folders): the bundle
+/// given is then the one the user has, so the update replaces it (and, not quarantined, the new one
+/// runs from there).
 #[cfg(target_os = "macos")]
 fn app_bundle(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)
+    let bundle = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)?;
+    if !bundle.components().any(|c| c.as_os_str() == "AppTranslocation") {
+        return Some(bundle);
+    }
+    let original = untranslocated(&bundle);
+    crate::log::info(&format!("translocated app: {} -> {original:?}", bundle.display()));
+    Some(original.unwrap_or(bundle))
+}
+
+/// Where a translocated bundle really is (Security framework, as Sparkle asks it).
+#[cfg(target_os = "macos")]
+fn untranslocated(bundle: &Path) -> Option<PathBuf> {
+    use objc2::rc::Retained;
+    use objc2_foundation::{NSString, NSURL};
+    #[link(name = "Security", kind = "framework")]
+    unsafe extern "C" {
+        fn SecTranslocateCreateOriginalPathForURL(translocated: *const NSURL, error: *mut *const std::ffi::c_void) -> *mut NSURL;
+    }
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&bundle.to_string_lossy()));
+    // SAFETY: CFURL and NSURL are toll-free bridged; the result is owned (+1), released by `Retained`.
+    let original = unsafe { Retained::from_raw(SecTranslocateCreateOriginalPathForURL(&*url, std::ptr::null_mut()))? };
+    let path = PathBuf::from(original.path()?.to_string());
+    (path != bundle).then_some(path)
 }
 
 /// Swaps the whole bundle (executable, Info.plist, icon), rolling back if the new one can't be moved in.
@@ -463,6 +488,13 @@ fn replace_bundle(bundle: &Path, archive: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn untranslocated_leaves_plain_bundles() {
+        assert_eq!(untranslocated(Path::new("/System/Applications/Calculator.app")), None);
+        assert_eq!(app_bundle(Path::new("/Applications/Ronnie.app/Contents/MacOS/ronnie")), Some(PathBuf::from("/Applications/Ronnie.app")));
+    }
 
     /// A signature made by the release key (openssl pkeyutl -sign -rawin, as the CI does): good for
     /// these bytes only.
