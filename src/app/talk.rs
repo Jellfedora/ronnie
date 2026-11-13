@@ -863,13 +863,18 @@ impl App {
         }
 
         // Everyone with a pseudo (the player aside), those online first: a click writes to them, even
-        // away (they find it when they come back).
-        *y += 10.0;
-        paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.talk_online, &theme);
-        *y += SECTION_HEADER_H;
-        let people = self.talk_people(&me);
+        // away (they find it when they come back). Those already in a conversation of two above are
+        // not listed again (unless bitten: helped up only from here); everyone there: no section at all.
+        let all = self.talk_people(&me);
+        let nobody = all.is_empty();
+        let people: Vec<(Member, bool)> = all.into_iter().filter(|(m, _)| self.talk.bitten(&m.id) || !self.talk.rooms.iter().any(|r| r.kind == Kind::Dm && r.members.iter().any(|x| x.id == m.id))).collect();
         let mut unbite = None;
-        if people.is_empty() {
+        if !people.is_empty() || nobody {
+            *y += 10.0;
+            paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.talk_online, &theme);
+            *y += SECTION_HEADER_H;
+        }
+        if nobody {
             let text = if self.talk.ready() { t.talk_nobody } else { t.talk_connecting };
             painter.text(Pos2::new(left + 10.0, *y + 10.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
             *y += 24.0;
