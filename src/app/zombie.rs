@@ -2117,16 +2117,89 @@ fn grade_name(t: &Strings, grade: u32, stars: u32) -> String {
 /// she found Gérard), her badge, her mug; waving, a speech bubble; sitting, the ring of the help.
 fn paint_agnes(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, a: crate::zombie::Agnes, line: &str, postit_off: bool) {
     let sitting = a.state == AgnesState::Sitting;
-    painter.circle_filled(c, 36.0 * scale, AGNES.gamma_multiply(0.12));
-    painter.circle_filled(c + Vec2::new(3.0, 6.0) * scale, 18.0 * scale, Color32::from_black_alpha(80));
-    painter.circle_filled(c, 18.0 * scale, Color32::from_rgb(142, 108, 201));
-    painter.circle_filled(c - Vec2::new(0.0, 2.0) * scale, 12.0 * scale, Color32::from_rgb(182, 227, 154));
-    painter.circle_filled(c - Vec2::new(0.0, 14.0) * scale, 6.0 * scale, Color32::from_rgb(217, 217, 217));
-    if !postit_off {
-        painter.rect_filled(Rect::from_center_size(c - Vec2::new(0.0, 2.0) * scale, Vec2::new(11.0, 7.0) * scale), 1.0, Color32::from_rgb(255, 224, 102));
+    let r = 18.0 * scale;
+    let dir = Vec2::angled(a.heading);
+    let side = Vec2::new(-dir.y, dir.x);
+    let skin = Color32::from_rgb(190, 222, 168);
+    let cardigan = Color32::from_rgb(142, 108, 201);
+    let sleeve = cardigan.lerp_to_gamma(Color32::BLACK, 0.18);
+    let hair = Color32::from_rgb(222, 222, 228);
+    let outline = Stroke::new((1.0 * scale).max(0.6), Color32::from_black_alpha(90));
+    // Her halo, the shadow.
+    let breath = 0.5 + 0.5 * (now * 2.0).sin() as f32;
+    painter.circle_filled(c, (34.0 + 3.0 * breath) * scale, AGNES.gamma_multiply(0.1 + 0.05 * breath));
+    fill(painter, oval(c + Vec2::new(3.0, 6.0) * scale, dir, r * 0.8, r * 1.1), Color32::from_black_alpha(80));
+    if sitting {
+        // On the floor: her legs out ahead, the coffee spilt beside, stars around her head.
+        for s in [-1.0f32, 1.0] {
+            let knee = c + dir * r * 0.9 + side * s * r * 0.3;
+            painter.line_segment([c + side * s * r * 0.3, knee], Stroke::new(r * 0.34, Color32::from_rgb(70, 60, 90)));
+            painter.circle_filled(knee + dir * r * 0.15, r * 0.2, Color32::from_rgb(120, 40, 50));
+        }
+        painter.add(egui::Shape::ellipse_filled(c + side * r * 1.4 + dir * r * 0.6, Vec2::new(r * 0.6, r * 0.4), Color32::from_rgb(110, 70, 40).gamma_multiply(0.8)));
+        painter.circle_filled(c + side * r * 1.15 + dir * r * 0.3, r * 0.26, Color32::from_rgb(250, 250, 246));
     }
-    painter.rect_filled(Rect::from_min_size(c + Vec2::new(7.0, 6.0) * scale, Vec2::new(12.0, 8.0) * scale), 1.0, Color32::WHITE);
-    painter.circle_filled(c + Vec2::new(-20.0, 4.0) * scale, 5.5 * scale, Color32::from_rgb(232, 226, 212));
+    // The arms: one holding her mug of coffee ahead, the other waving (or down, sitting).
+    let mug_hand = c + dir * r * 0.95 + side * r * 0.45;
+    let wave = (now * 6.0).sin() as f32 * 0.35;
+    let free_hand = if sitting { c - side * r * 1.1 + dir * r * 0.2 } else { c - side * r * 1.05 - dir * r * (0.2 + wave) };
+    for (shoulder, hand) in [(c + side * r * 0.72, mug_hand), (c - side * r * 0.72, free_hand)] {
+        painter.line_segment([shoulder, hand], Stroke::new(r * 0.32, sleeve));
+        painter.circle_filled(shoulder, r * 0.17, sleeve);
+        painter.circle_filled(hand, r * 0.17, skin);
+    }
+    // The cardigan, the blouse's flowers at the collar, the pearls.
+    fill(painter, oval(c, dir, r * 0.56, r * 1.0), cardigan);
+    painter.add(egui::Shape::convex_polygon(oval(c, dir, r * 0.56, r * 1.0), Color32::TRANSPARENT, outline));
+    fill(painter, vec![c + dir * r * 0.52 - side * r * 0.3, c + dir * r * 0.05, c + dir * r * 0.52 + side * r * 0.3], Color32::from_rgb(250, 236, 240));
+    for k in 0..5 {
+        let at = c + dir * r * 0.36 + side * (k as f32 - 2.0) * r * 0.14;
+        painter.circle_filled(at, r * 0.06, Color32::from_rgb(250, 248, 240));
+    }
+    for k in 0..4 {
+        painter.circle_filled(c - dir * r * (0.2 + 0.18 * (k % 2) as f32) + side * (k as f32 - 1.5) * r * 0.26, r * 0.07, Color32::from_rgb(255, 170, 200).gamma_multiply(0.7));
+    }
+    // The post-it on her back (until Gérard takes it off): « ♥ ».
+    if !postit_off {
+        let at = c - dir * r * 0.62;
+        fill(painter, quad(at, dir, r * 0.5, r * 0.5), Color32::from_rgb(255, 224, 102));
+        painter.text(at, Align2::CENTER_CENTER, "♥", FontId::proportional(r * 0.4), Color32::from_rgb(220, 60, 90));
+    }
+    // Her head: the grey bun, a pencil through it, her glasses, her rosy cheeks.
+    let hc = c + dir * r * 0.06;
+    let hr = r * 0.46;
+    painter.circle_filled(hc, hr, hair);
+    fill(painter, oval(hc + dir * hr * 0.32, dir, hr * 0.62, hr * 0.8), skin);
+    let bun = hc - dir * hr * 0.75;
+    painter.circle_filled(bun, hr * 0.48, hair);
+    painter.circle_stroke(bun, hr * 0.48, Stroke::new(0.8 * scale, Color32::from_rgb(190, 190, 196)));
+    painter.line_segment([bun - side * hr * 0.8 - dir * hr * 0.2, bun + side * hr * 0.8 + dir * hr * 0.2], Stroke::new(1.6 * scale, Color32::from_rgb(240, 196, 60)));
+    for s in [-1.0, 1.0] {
+        let eye = hc + dir * hr * 0.62 + side * s * hr * 0.34;
+        painter.circle_stroke(eye, hr * 0.24, Stroke::new(1.1 * scale, Color32::from_rgb(120, 70, 140)));
+        painter.circle_filled(eye, hr * 0.09, Color32::from_rgb(60, 50, 70));
+        painter.circle_filled(eye + dir * hr * 0.22 + side * s * hr * 0.12, hr * 0.12, Color32::from_rgb(255, 150, 170).gamma_multiply(0.6));
+    }
+    painter.line_segment([hc + dir * hr * 0.62 - side * hr * 0.1, hc + dir * hr * 0.62 + side * hr * 0.1], Stroke::new(1.1 * scale, Color32::from_rgb(120, 70, 140)));
+    // The mug: white, a red heart, the coffee, its steam (spilt, sitting).
+    if !sitting {
+        painter.circle_filled(mug_hand + dir * r * 0.12, r * 0.26, Color32::from_rgb(250, 250, 246));
+        painter.circle_filled(mug_hand + dir * r * 0.12, r * 0.18, Color32::from_rgb(110, 70, 40));
+        painter.circle_stroke(mug_hand + dir * r * 0.12 + side * r * 0.3, r * 0.1, Stroke::new(1.4 * scale, Color32::from_rgb(250, 250, 246)));
+        for k in 0..2 {
+            let rise = ((now * 0.7 + k as f64 * 0.5) % 1.0) as f32;
+            let at = mug_hand + dir * r * 0.12 + Vec2::new((rise * 9.0 + k as f32).sin() * 3.0 * scale, -rise * 16.0 * scale);
+            painter.circle_filled(at, r * (0.1 + 0.08 * rise), Color32::from_white_alpha((120.0 * (1.0 - rise)) as u8));
+        }
+    } else {
+        for k in 0..3 {
+            let a = now as f32 * 3.0 + k as f32 * 2.1;
+            let at = hc + Vec2::angled(a) * hr * 1.4;
+            let gold = Stroke::new(1.4 * scale, Color32::from_rgb(255, 224, 102));
+            painter.line_segment([at - Vec2::new(3.5, 0.0) * scale, at + Vec2::new(3.5, 0.0) * scale], gold);
+            painter.line_segment([at - Vec2::new(0.0, 3.5) * scale, at + Vec2::new(0.0, 3.5) * scale], gold);
+        }
+    }
     if sitting {
         let n = 36;
         let k = (a.help / 3.0).clamp(0.0, 1.0);
@@ -2135,14 +2208,15 @@ fn paint_agnes(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, a: crate:
             let points: Vec<Pos2> = (0..=n).map(|i| c + Vec2::angled(-std::f32::consts::FRAC_PI_2 + k * std::f32::consts::TAU * i as f32 / n as f32) * 30.0 * scale).collect();
             painter.add(egui::Shape::line(points, Stroke::new(3.0 * scale, AGNES)));
         }
-    } else {
-        // A hand waving.
-        let wave = (now * 6.0).sin() as f32 * 0.5;
-        painter.circle_filled(c + Vec2::angled(-1.2 + wave) * 22.0 * scale, 5.0 * scale, Color32::from_rgb(182, 227, 154));
     }
-    painter.text(c + Vec2::new(0.0, 32.0 * scale), Align2::CENTER_CENTER, "AGNÈS", FontId::monospace(11.0 * scale.max(0.7)), AGNES);
+    // Her name, on a badge.
+    let font = FontId::proportional(10.5 * scale.max(0.75));
+    let galley = painter.layout_no_wrap("AGNÈS".to_owned(), font, Color32::WHITE);
+    let tag = Rect::from_center_size(c + Vec2::new(0.0, 33.0 * scale), galley.size() + Vec2::new(12.0, 4.0));
+    painter.rect_filled(tag, tag.height() / 2.0, AGNES.lerp_to_gamma(Color32::BLACK, 0.25));
+    painter.galley(tag.center() - galley.size() / 2.0, galley, Color32::WHITE);
     if a.state == AgnesState::Walking && a.life < 1.0 {
-        let bar = Rect::from_min_size(c + Vec2::new(-22.0, 41.0) * scale, Vec2::new(44.0, 5.0) * scale);
+        let bar = Rect::from_min_size(c + Vec2::new(-22.0, 44.0) * scale, Vec2::new(44.0, 5.0) * scale);
         painter.rect_filled(bar, 0.0, Color32::from_black_alpha(150));
         painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * a.life.clamp(0.0, 1.0), bar.height())), 0.0, if a.life > 0.4 { AGNES } else { Color32::from_rgb(255, 93, 93) });
     }
