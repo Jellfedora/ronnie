@@ -1011,7 +1011,17 @@ impl App {
             }
         }
         let text_x = c.x + 26.0;
-        painter.text(Pos2::new(text_x, head.center().y - 8.0), Align2::LEFT_CENTER, &title, FontId::proportional(16.0), theme.text);
+        let title_rect = painter.text(Pos2::new(text_x, head.center().y - 8.0), Align2::LEFT_CENTER, &title, FontId::proportional(16.0), theme.text);
+        // A group's name: a click renames it (underlined when hovered).
+        if room.kind == Kind::Group {
+            let resp = ui.interact(title_rect.expand(3.0), ui.id().with("talk-head-title"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.talk_rename);
+            if resp.hovered() {
+                painter.line_segment([title_rect.left_bottom() + Vec2::new(0.0, 1.0), title_rect.right_bottom() + Vec2::new(0.0, 1.0)], Stroke::new(1.0, theme.text_muted));
+            }
+            if resp.clicked() {
+                self.talk_ui.renaming = Some((room.id.clone(), room.name.clone().unwrap_or_default()));
+            }
+        }
         let sub = match room.kind {
             Kind::Dm => match room.peer(&me) {
                 Some(p) if self.talk.is_busy(&p.id) => (t.talk_busy_now.to_owned(), busy_color(&theme)),
