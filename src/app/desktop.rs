@@ -794,6 +794,11 @@ impl eframe::App for Overlay {
                 .with_position(screen.min)
                 .with_inner_size(screen.size());
             ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("fx-screen", i)), builder, |ctx, _| {
+                // Put back on its screen's top left: macOS slides a new window under the menu bar
+                // (before it is raised above everything), everything in it then drawn too low.
+                if ctx.input(|i| i.viewport().outer_rect).is_some_and(|r| (r.min - screen.min).length() > 1.0) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(screen.min));
+                }
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("desktop-fx")));
                 let foot = work.translate(-screen.min.to_vec2());
                 let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
