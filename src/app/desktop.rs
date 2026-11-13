@@ -706,6 +706,11 @@ impl eframe::App for Overlay {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(screen.size()));
             self.trail = Default::default();
         }
+        // This window too, put back on its screen's top left (macOS slid it under the menu bar when it
+        // was made, before it was raised above everything: all drawn too low).
+        if ctx.input(|i| i.viewport().outer_rect).is_some_and(|r| (r.min - self.screen.min).length() > 1.0) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.screen.min));
+        }
         let local = mouse.at.filter(|p| self.screen.contains(*p)).map(|p| (p - self.screen.min).to_pos2());
         let click = mouse.pressed && !self.pressed;
         self.pressed = mouse.pressed;
