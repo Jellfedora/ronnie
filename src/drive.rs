@@ -106,6 +106,9 @@ pub struct NewProfile {
     /// Opened right away (in the background).
     #[serde(default)]
     pub open: bool,
+    /// The profile of that name changed rather than refused (its panes, its color if given).
+    #[serde(default)]
+    pub replace: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -188,7 +191,8 @@ Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
                                         propose a view to the user (a notice to accept)
   ronnie open <file>                    propose a file in the editor beside the terminals
   ronnie profile < profile.json         save a profile: {\"name\", \"color\"?: \"#rrggbb\", \"down\"?, \"open\"?,
-                                        \"panes\": [{\"cwd\", \"name\"?, \"startup\"?, \"node\"?}]}
+                                        \"replace\"?, \"panes\": [{\"cwd\", \"name\"?, \"startup\"?, \"node\"?}]}
+                                        (refused when one has that name or a folder: \"replace\" changes it)
   ronnie profile open <name>            open a saved profile (in the background)
   ronnie ssh                            the SSH servers saved (name, address, login, group)
   ronnie ssh add <name> <[user@]host[:port]> [--key FILE] [--jump J] [--group G] [--dir D]

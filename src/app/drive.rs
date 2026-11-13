@@ -397,8 +397,23 @@ impl App {
             }
             None => None,
         };
-        if self.config.profiles.iter().any(|p| p.tab.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&new.name))) {
-            return Err(format!("a profile named {} exists already", new.name));
+        let named = self.config.profiles.iter().position(|p| p.tab.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&new.name)));
+        if new.replace && named.is_none() {
+            return Err(format!("no profile {} to replace (see `ronnie panes`)", new.name));
+        }
+        if !new.replace {
+            if named.is_some() {
+                return Err(format!("a profile named {0} exists already: open it (`ronnie profile open {0}`), or send it again with \"replace\": true to change it", new.name));
+            }
+            // The same project saved under another name: that one, not a second.
+            for p in &self.config.profiles {
+                let mut dirs = Vec::new();
+                layout_panes(&p.tab.layout, &mut dirs);
+                if let Some(dir) = new.panes.iter().map(|n| &n.cwd).find(|c| dirs.iter().flatten().any(|d| d == *c)) {
+                    let name = p.name("?");
+                    return Err(format!("the profile \"{name}\" has {} already: open it (`ronnie profile open \"{name}\"`), or send it with \"name\": \"{name}\" and \"replace\": true to change it", dir.display()));
+                }
+            }
         }
         for pane in &new.panes {
             if !pane.cwd.is_dir() {
@@ -411,10 +426,28 @@ impl App {
             }
         }
         let panes = new.panes.iter().map(|p| Layout::Pane { cwd: Some(p.cwd.clone()), history: None, name: p.name.clone(), startup: p.startup.clone(), node: p.node.clone() }).collect();
-        let state = TabState { name: Some(new.name.clone()), color, layout: row_of(panes, if new.down { Axis::Vertical } else { Axis::Horizontal }), ..Default::default() };
+        let layout = row_of(panes, if new.down { Axis::Vertical } else { Axis::Horizontal });
+        let t = self.t();
+        if let Some(k) = named.filter(|_| new.replace) {
+            // Changed in place: its id (tabs opened from it, its commands) and its name as it was written.
+            let profile = &mut self.config.profiles[k];
+            profile.tab.layout = layout;
+            if color.is_some() {
+                profile.tab.color = color;
+            }
+            let (id, name) = (profile.id, profile.name("?").to_owned());
+            if new.open {
+                let state = profile.tab.clone();
+                let pane = self.open_in_background(ctx, &state, Some(id));
+                self.claude_notice(t.claude_made_profile, name.clone(), Lead::Pane(pane));
+                return Ok(format!("Profile {name} changed and opened in the background, its first pane: {pane}. The user is told."));
+            }
+            self.claude_notice(t.claude_made_profile, name.clone(), Lead::Profile(id));
+            return Ok(format!("Profile {name} changed (a tab already open from it keeps its panes until reopened). The user is told."));
+        }
+        let state = TabState { name: Some(new.name.clone()), color, layout, ..Default::default() };
         let id = Uuid::new_v4();
         self.config.profiles.push(Profile { id, tab: state.clone(), commands: Vec::new(), extra: Default::default() });
-        let t = self.t();
         if new.open {
             let pane = self.open_in_background(ctx, &state, Some(id));
             self.claude_notice(t.claude_made_profile, new.name.clone(), Lead::Pane(pane));
