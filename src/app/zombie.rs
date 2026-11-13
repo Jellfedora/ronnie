@@ -208,6 +208,25 @@ impl App {
                     self.monday.banner = Some((t.monday_agnes_hit.to_owned(), theme.ansi[1], now));
                     self.monday_sound(&[(520.0, 300.0, 0.25, 0.2)]);
                 }
+                Happened::AgnesDown => {
+                    self.monday.banner = Some((t.monday_agnes_down.to_owned(), theme.ansi[1], now));
+                    self.monday_sound(&[(440.0, 180.0, 0.4, 0.22)]);
+                }
+                Happened::Drop(w) => {
+                    let names: Vec<&str> = t.monday_weapons.split('|').collect();
+                    self.monday.banner = Some((t.monday_drop.replace("{w}", names.get(w).copied().unwrap_or_default()), WEAPON_COLORS[w], now));
+                    self.monday_sound(&[(500.0, 500.0, 0.05, 0.15), (750.0, 750.0, 0.08, 0.15)]);
+                }
+                Happened::Picked { player, weapon, gain } => {
+                    if Some(player) == me {
+                        let names: Vec<&str> = t.monday_weapons.split('|').collect();
+                        let lines: Vec<&str> = t.monday_picked.split('|').collect();
+                        let k = ["new", "dmg", "mag", "ammo"].iter().position(|g| *g == gain).unwrap_or(3);
+                        let text = lines.get(k).copied().unwrap_or_default().replace("{w}", names.get(weapon).copied().unwrap_or_default());
+                        self.monday.banner = Some((text, WEAPON_COLORS[weapon], now));
+                        self.monday_sound(&[(600.0, 600.0, 0.06, 0.18), (900.0, 900.0, 0.06, 0.18), (1200.0, 1200.0, 0.15, 0.18)]);
+                    }
+                }
                 Happened::AgnesUp(_) => {
                     if let Some(a) = self.monday.online.frame.as_ref().and_then(|f| f.agnes) {
                         self.monday.floats.push((t.monday_agnes_up.to_owned(), a.x, a.y - 30.0, AGNES, now));
@@ -293,7 +312,7 @@ impl App {
         let step = text_w / kinds.len() as f32;
         for (k, kind) in kinds.into_iter().enumerate() {
             let c = Pos2::new(left + step * (k as f32 + 0.5), y + 18.0);
-            paint_zombie(&painter, c, 1.0, kind, (now * 3.0) as f32 + k as f32, 1.0, false, false);
+            paint_zombie(&painter, c, 1.0, kind, std::f32::consts::FRAC_PI_2, k as u32 * 7 + 3, (now * 3.0) as f32 + k as f32, 1.0, false, false);
             painter.text(Pos2::new(c.x, y + 48.0), Align2::CENTER_CENTER, names.get(k).copied().unwrap_or_default(), FontId::proportional(11.0), theme.text_muted);
         }
         y += 66.0;
@@ -314,6 +333,7 @@ impl App {
             let goals: Vec<&str> = t.monday_goals.split('|').collect();
             let ids = ["revives", "kills", "waves", "escort", "games", "boss"];
             painter.text(Pos2::new(left, y + 6.0), Align2::LEFT_CENTER, t.monday_week, FontId::proportional(12.5), theme.text);
+            painter.text(Pos2::new(card.max.x - 20.0, y + 6.0), Align2::RIGHT_CENTER, t.monday_week_xp.replace("{n}", "500"), FontId::proportional(11.5), theme.text_muted);
             y += 18.0;
             for (id, done, need, ok) in &c.week {
                 let label = ids.iter().position(|i| i == id).and_then(|k| goals.get(k)).copied().unwrap_or_default().replace("{n}", &need.to_string());
@@ -564,6 +584,31 @@ impl App {
             let r = Rect::from_center_size(at(door.x.clamp(map.wall / 2.0, map.w - map.wall / 2.0), door.y.clamp(map.wall / 2.0, map.h - map.wall / 2.0)), Vec2::new(w, h) * scale);
             painter.rect_filled(r, 2.0, Color32::from_rgb(75, 127, 163));
         }
+        // The reception's door, Agnès' own (no zombie comes in there); her way to the coffee while she
+        // walks it.
+        if let Some(door) = &map.reception {
+            let r = Rect::from_center_size(at(door.x, door.y.clamp(map.wall / 2.0, map.h - map.wall / 2.0)), Vec2::new(door.span, map.wall) * scale);
+            painter.rect_filled(r, 2.0, AGNES.gamma_multiply(0.8));
+            painter.text(r.center_top() - Vec2::new(0.0, 10.0 * scale), Align2::CENTER_CENTER, t.monday_reception, FontId::monospace(10.0 * scale.max(0.8)), AGNES);
+            if let Some(a) = frame.agnes.filter(|a| a.state != AgnesState::Served) {
+                let mut way = vec![Pos2::new(door.x, door.y - 30.0)];
+                way.extend(map.agnes_path.iter().map(|s| Pos2::new(s.x, s.y)));
+                // From the leg she's on: the first point still ahead of her.
+                let leg = (0..way.len() - 1)
+                    .min_by(|&i, &j| seg_dist(way[i], way[i + 1], Pos2::new(a.x, a.y)).total_cmp(&seg_dist(way[j], way[j + 1], Pos2::new(a.x, a.y))))
+                    .unwrap_or(0);
+                let mut points = vec![Pos2::new(a.x, a.y)];
+                points.extend(way[leg + 1..].iter().copied());
+                for pair in points.windows(2) {
+                    let (from, to) = (pair[0], pair[1]);
+                    let n = ((to - from).length() / 24.0) as usize;
+                    for k in 0..n {
+                        let q = from + (to - from) * ((k as f32 + 0.5) / n.max(1) as f32);
+                        painter.circle_filled(at(q.x, q.y), 2.5 * scale, AGNES.gamma_multiply(0.35));
+                    }
+                }
+            }
+        }
         // The coffee machine, glowing during the break.
         let glow = if frame.wave_on { 0.12 } else { 0.25 + 0.15 * (now * 3.0).sin() as f32 };
         let c = at(map.coffee.x, map.coffee.y);
@@ -599,7 +644,7 @@ impl App {
         }
         for z in &frame.zombies {
             let (x, y) = mix.zombie(z.id, z.x, z.y);
-            paint_zombie(&painter, at(x, y), scale, z.kind, (now * 4.0) as f32 + z.id as f32, z.life, z.slowed, z.charging || z.winding);
+            paint_zombie(&painter, at(x, y), scale, z.kind, z.heading, z.id, (now * 4.0) as f32 + z.id as f32, z.life, z.slowed, z.charging || z.winding);
         }
         for s in &frame.shots {
             paint_shot(&painter, at(s.x, s.y), scale, s.angle, s.weapon, now);
@@ -609,6 +654,10 @@ impl App {
         }
         for &(x, y) in &frame.letters {
             paint_letter(&painter, at(x, y), scale, now);
+        }
+        let short: Vec<&str> = t.monday_weapons_short.split('|').collect();
+        for &(x, y, weapon, left) in &frame.drops {
+            paint_drop(&painter, at(x, y), scale, weapon, left, now, short.get(weapon).copied().unwrap_or_default());
         }
         if let Some((x, y, met)) = frame.gerard {
             paint_gerard(&painter, at(x, y), scale, now, met);
@@ -679,12 +728,39 @@ impl App {
         hud.text(tickets.left_center() + Vec2::new(14.0, 0.0), Align2::LEFT_CENTER, t.monday_tickets, FontId::monospace(11.0), theme.text_muted);
         hud.text(tickets.right_center() - Vec2::new(14.0, 0.0), Align2::RIGHT_CENTER, frame.tickets.to_string(), FontId::monospace(20.0), theme.accent);
         if let Some(p) = mine {
-            let weapons: Vec<&str> = t.monday_weapons.split('|').collect();
-            let gun = Rect::from_min_size(Pos2::new(field.min.x + 12.0, field.max.y - 70.0), Vec2::new(300.0, 58.0));
+            // The four weapons, side by side: the key, the name, the ammo, the upgrades (damage on top,
+            // magazine under); the one in hand lit, those not had yet dimmed.
+            let short: Vec<&str> = t.monday_weapons_short.split('|').collect();
+            let (slot_w, gap) = (96.0, 6.0);
+            let gun = Rect::from_min_size(Pos2::new(field.min.x + 12.0, field.max.y - 104.0), Vec2::new(20.0 + 4.0 * slot_w + 3.0 * gap, 92.0));
             panel(gun);
-            hud.text(gun.min + Vec2::new(14.0, 18.0), Align2::LEFT_CENTER, weapons.get(p.weapon).copied().unwrap_or_default().to_uppercase(), FontId::proportional(15.0), Color32::WHITE);
-            let ammo = if p.reload > 0.0 { t.monday_reload.to_owned() } else { p.ammo.to_string() };
-            hud.text(gun.right_top() + Vec2::new(-14.0, 18.0), Align2::RIGHT_CENTER, ammo, FontId::monospace(16.0), theme.accent);
+            for (k, &tint) in WEAPON_COLORS.iter().enumerate() {
+                let slot = Rect::from_min_size(gun.min + Vec2::new(10.0 + k as f32 * (slot_w + gap), 10.0), Vec2::new(slot_w, 52.0));
+                let owned = p.owned & (1 << k) != 0;
+                let held = p.weapon == k;
+                hud.rect_filled(slot, 6.0, if held { tint.gamma_multiply(0.22) } else { Color32::from_rgb(30, 34, 44) });
+                if held {
+                    hud.rect_stroke(slot, 6.0, Stroke::new(2.0, tint), egui::StrokeKind::Inside);
+                }
+                let ink = if owned { Color32::WHITE } else { Color32::from_white_alpha(60) };
+                hud.text(slot.min + Vec2::new(7.0, 9.0), Align2::LEFT_CENTER, (k + 1).to_string(), FontId::monospace(10.0), if owned { theme.text_muted } else { ink });
+                hud.circle_filled(slot.right_top() + Vec2::new(-9.0, 9.0), 4.0, if owned { tint } else { tint.gamma_multiply(0.25) });
+                hud.text(slot.min + Vec2::new(7.0, 24.0), Align2::LEFT_CENTER, short.get(k).copied().unwrap_or_default(), FontId::proportional(12.5), ink);
+                if owned {
+                    let ammo = if held && p.reload > 0.0 { t.monday_reload.to_owned() } else { p.all_ammo[k].to_string() };
+                    hud.text(slot.min + Vec2::new(7.0, 42.0), Align2::LEFT_CENTER, ammo, FontId::monospace(if held && p.reload > 0.0 { 10.0 } else { 13.0 }), if held { theme.accent } else { theme.text_muted });
+                    let (dmg, mag) = p.all_ups[k];
+                    for (row, level, color) in [(0.0, dmg, Color32::from_rgb(255, 120, 90)), (7.0, mag, Color32::from_rgb(110, 180, 255))] {
+                        for i in 0..3 {
+                            let c = Pos2::new(slot.max.x - 30.0 + i as f32 * 9.0, slot.min.y + 38.0 + row);
+                            hud.circle_filled(c, 3.0, if (i as u8) < level { color } else { Color32::from_white_alpha(28) });
+                        }
+                    }
+                } else {
+                    hud.text(slot.min + Vec2::new(7.0, 42.0), Align2::LEFT_CENTER, "—", FontId::monospace(13.0), ink);
+                }
+            }
+            let gun = Rect::from_min_size(gun.min + Vec2::new(0.0, 34.0), Vec2::new(gun.width(), 58.0));
             let state = match p.state {
                 State::Up if !frame.wave_on => if p.ready { t.monday_ready_done.to_owned() } else { t.monday_ready.to_owned() },
                 State::Up => t.monday_keys.to_owned(),
@@ -721,7 +797,7 @@ impl App {
         }
         // The perks' keys, and when they're back.
         if let Some(p) = mine {
-            let mut y = field.max.y - 86.0;
+            let mut y = field.max.y - 120.0;
             for (perk, key, left) in [("rtt", t.monday_dash, p.dash_in), ("teletravail", t.monday_tp, p.teleport_in)] {
                 if self.monday.online.perks.iter().any(|q| q == perk) {
                     let text = if left > 0 { format!("{key}  {left} s") } else { key.to_owned() };
@@ -974,70 +1050,209 @@ fn paint_pill(painter: &egui::Painter, at: Pos2, text: &str, color: Color32, the
     painter.galley(area.center() - galley.size() / 2.0, galley, color);
 }
 
-/// A zombie seen from above: arms out toward where it goes, a tie for the salesman, a crown of paper
-/// for the HR director; its life under it when hurt.
+/// The weapons' colors (the HUD, the ones on the floor), in WEAPONS' order.
+const WEAPON_COLORS: [Color32; 4] = [Color32::from_rgb(180, 188, 204), Color32::from_rgb(255, 224, 102), Color32::from_rgb(232, 72, 60), Color32::from_rgb(255, 122, 182)];
+const BLOOD: Color32 = Color32::from_rgb(112, 20, 22);
+
+/// The distance from `p` to the segment a → b.
+fn seg_dist(a: Pos2, b: Pos2, p: Pos2) -> f32 {
+    let ab = b - a;
+    let k = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+    (a + ab * k - p).length()
+}
+
+/// An oval turned toward `dir`: `along` its half-length that way, `across` its half-width.
+fn oval(c: Pos2, dir: Vec2, along: f32, across: f32) -> Vec<Pos2> {
+    let side = Vec2::new(-dir.y, dir.x);
+    (0..28)
+        .map(|k| {
+            let a = k as f32 / 28.0 * std::f32::consts::TAU;
+            c + dir * a.cos() * along + side * a.sin() * across
+        })
+        .collect()
+}
+
+/// A rectangle turned toward `dir`, centered on `c`: `len` that way, `wide` across.
+fn quad(c: Pos2, dir: Vec2, len: f32, wide: f32) -> Vec<Pos2> {
+    let side = Vec2::new(-dir.y, dir.x);
+    let (a, b) = (dir * len / 2.0, side * wide / 2.0);
+    vec![c - a - b, c + a - b, c + a + b, c - a + b]
+}
+
+fn fill(painter: &egui::Painter, points: Vec<Pos2>, color: Color32) {
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
+
+/// A head seen from above, facing `dir`: the hair behind (none: bald, a shine on the skull), the
+/// face ahead.
+fn paint_head(painter: &egui::Painter, c: Pos2, dir: Vec2, r: f32, skin: Color32, hair: Option<Color32>) {
+    match hair {
+        Some(hair) => {
+            painter.circle_filled(c, r, hair);
+            fill(painter, oval(c + dir * r * 0.32, dir, r * 0.62, r * 0.8), skin);
+        }
+        None => {
+            painter.circle_filled(c, r, skin);
+            painter.circle_filled(c - dir * r * 0.25 + Vec2::new(-dir.y, dir.x) * r * 0.25, r * 0.22, Color32::from_white_alpha(40));
+        }
+    }
+}
+
+/// A zombie seen from above, heading `heading`: arms out ahead, out of step, its office clothes torn
+/// and stained (the same stains for the same zombie, from `seed`), its pale skin, yellowed eyes.
+/// The employee in shirt and loose tie, the intern in his hoodie with his badge, the meeting-itis
+/// bald in his cardigan behind his laptop, the salesman in suit and red tie on his phone, "reply all"
+/// in his creased shirt among his emails, its copies paler, the HR director in her burgundy blazer,
+/// glasses, the red file. Its life under it when hurt.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, phase: f32, life: f32, slowed: bool, charging: bool) {
+pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, heading: f32, seed: u32, phase: f32, life: f32, slowed: bool, charging: bool) {
     let r = kind.radius() * scale;
-    let skin = match kind {
-        Kind::Intern => Color32::from_rgb(165, 224, 124),
-        Kind::Meeting => Color32::from_rgb(127, 184, 95),
-        Kind::Sales => Color32::from_rgb(111, 169, 85),
-        Kind::Hr => Color32::from_rgb(120, 160, 90),
-        _ => ZOMBIE,
+    let dir = Vec2::angled(heading);
+    let side = Vec2::new(-dir.y, dir.x);
+    let (clothes, hair, skin) = match kind {
+        Kind::Base => (Color32::from_rgb(168, 186, 204), Some(Color32::from_rgb(86, 62, 44)), Color32::from_rgb(160, 172, 140)),
+        Kind::Intern => (Color32::from_rgb(112, 118, 130), Some(Color32::from_rgb(34, 30, 28)), Color32::from_rgb(170, 182, 146)),
+        Kind::Meeting => (Color32::from_rgb(176, 154, 120), None, Color32::from_rgb(166, 170, 138)),
+        Kind::Sales => (Color32::from_rgb(42, 52, 82), Some(Color32::from_rgb(20, 20, 24)), Color32::from_rgb(154, 168, 136)),
+        Kind::ReplyAll | Kind::Cc => (Color32::from_rgb(214, 204, 156), Some(Color32::from_rgb(140, 110, 70)), Color32::from_rgb(162, 176, 140)),
+        Kind::Hr => (Color32::from_rgb(110, 32, 46), Some(Color32::from_rgb(150, 150, 156)), Color32::from_rgb(168, 172, 150)),
     };
-    let wob = phase.sin() * 3.0 * scale;
-    let c = c + Vec2::new(wob * 0.5, 0.0);
-    painter.circle_filled(c + Vec2::new(3.0, 6.0) * scale, r, Color32::from_black_alpha(80));
-    // Arms reaching to the left (toward the colleagues, who start at the coffee).
-    let arm = Stroke::new(7.0 * scale * (r / (18.0 * scale)).sqrt(), skin);
-    for (side, w) in [(-1.0, wob), (1.0, -wob)] {
-        painter.line_segment([c + Vec2::new(-4.0 * scale, side * r * 0.6), c + Vec2::new(-r - 14.0 * scale, side * r * 0.6 + w)], arm);
+    let ghost = |col: Color32| if kind == Kind::Cc { col.gamma_multiply(0.75) } else { col };
+    let sleeve = ghost(clothes.lerp_to_gamma(Color32::BLACK, 0.18));
+    let (clothes, skin) = (ghost(clothes), ghost(skin));
+    // It shambles: the body swings side to side.
+    let c = c + side * phase.sin() * 1.6 * scale;
+    let hash = seed.wrapping_mul(2_654_435_761).rotate_left(7) ^ seed.wrapping_mul(40_503);
+    let rnd = |k: u32| ((hash >> (k * 5 % 27)) & 31) as f32 / 31.0;
+
+    fill(painter, oval(c + Vec2::new(3.0, 6.0) * scale, dir, r * 0.8, r * 1.1), Color32::from_black_alpha(70));
+    // The arms, reaching ahead out of step.
+    let arm = r * 0.34;
+    let mut hands = [c; 2];
+    for (k, s) in [-1.0f32, 1.0].into_iter().enumerate() {
+        let reach = r * (1.0 + 0.18 * (phase * 1.3 + s * 1.7).sin());
+        let shoulder = c + side * s * r * 0.7;
+        let hand = shoulder + dir * reach - side * s * r * 0.1;
+        painter.line_segment([shoulder, hand], Stroke::new(arm, sleeve));
+        painter.circle_filled(shoulder, arm * 0.5, sleeve);
+        painter.circle_filled(hand, arm * 0.55, skin);
+        hands[k] = hand;
     }
-    painter.circle_filled(c, r, if slowed { skin.lerp_to_gamma(Color32::from_rgb(200, 230, 255), 0.5) } else { skin });
-    if charging {
-        painter.circle_stroke(c, r + 4.0 * scale, Stroke::new(2.0 * scale, Color32::from_rgb(255, 93, 93)));
-    }
-    let eye = Color32::from_rgb(45, 74, 34);
-    painter.circle_filled(c + Vec2::new(-r * 0.35, -r * 0.28), 3.0 * scale, eye);
-    painter.circle_filled(c + Vec2::new(-r * 0.35, r * 0.28), 3.0 * scale, eye);
+    // What they carry.
     match kind {
-        Kind::Sales => {
-            let tie = Color32::from_rgb(192, 57, 43);
-            painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(2.0, 0.0) * scale, c + Vec2::new(14.0, -4.0) * scale, c + Vec2::new(14.0, 4.0) * scale], tie, Stroke::NONE));
+        Kind::Meeting => {
+            let at = c + dir * r * 1.05;
+            fill(painter, quad(at, dir, r * 0.55, r * 0.95), Color32::from_rgb(52, 56, 64));
+            fill(painter, quad(at + dir * r * 0.05, dir, r * 0.32, r * 0.8), Color32::from_rgb(120, 170, 210).gamma_multiply(0.6));
         }
-        Kind::Hr => {
-            painter.rect_filled(Rect::from_center_size(c + Vec2::new(r * 0.3, 0.0), Vec2::new(14.0, 20.0) * scale), 2.0 * scale, Color32::from_rgb(240, 240, 240));
-        }
-        Kind::Intern => {
-            painter.circle_filled(c + Vec2::new(r * 0.2, 0.0), 3.5 * scale, Color32::from_rgb(255, 224, 102));
-        }
+        Kind::Sales => fill(painter, quad(hands[1] + dir * r * 0.15, dir, r * 0.4, r * 0.22), Color32::from_rgb(20, 22, 26)),
+        Kind::Hr => fill(painter, quad(hands[1] + dir * r * 0.1 + side * r * 0.12, dir, r * 0.5, r * 0.38), Color32::from_rgb(196, 40, 40)),
         Kind::ReplyAll | Kind::Cc => {
-            painter.text(c + Vec2::new(r * 0.25, 0.0), Align2::CENTER_CENTER, "@", FontId::monospace(r * 0.8), eye);
+            for k in 0..3 {
+                let a = phase * 0.5 + k as f32 * 2.1;
+                let at = c + Vec2::angled(a) * r * 1.45;
+                fill(painter, quad(at, Vec2::angled(a * 1.7), r * 0.42, r * 0.3), ghost(Color32::from_rgb(244, 244, 238)));
+            }
         }
         _ => {}
     }
+    // The torso, in its clothes.
+    fill(painter, oval(c, dir, r * 0.56, r * 0.98), clothes);
+    match kind {
+        Kind::Base => {
+            fill(painter, quad(c + dir * r * 0.32, dir, r * 0.42, r * 0.13), Color32::from_rgb(40, 52, 96));
+        }
+        Kind::Sales => {
+            fill(painter, vec![c + dir * r * 0.52 - side * r * 0.24, c + dir * r * 0.05, c + dir * r * 0.52 + side * r * 0.24], Color32::from_rgb(232, 232, 236));
+            fill(painter, quad(c + dir * r * 0.34, dir, r * 0.4, r * 0.12), Color32::from_rgb(196, 36, 36));
+        }
+        Kind::Intern => {
+            // The hood behind, the badge on its lanyard.
+            painter.circle_filled(c - dir * r * 0.42, r * 0.36, sleeve);
+            painter.line_segment([c + side * r * 0.25, c + dir * r * 0.4 + side * r * 0.4], Stroke::new(1.5 * scale, Color32::from_rgb(40, 90, 200)));
+            fill(painter, quad(c + dir * r * 0.42 + side * r * 0.42, dir, r * 0.24, r * 0.3), Color32::from_rgb(255, 224, 102));
+        }
+        Kind::Hr => {
+            fill(painter, vec![c + dir * r * 0.5 - side * r * 0.2, c + dir * r * 0.1, c + dir * r * 0.5 + side * r * 0.2], Color32::from_rgb(236, 226, 220));
+        }
+        _ => {}
+    }
+    // Torn and stained.
+    for k in 0..3 {
+        let at = c + dir * (rnd(k) - 0.5) * r * 0.8 + side * (rnd(k + 3) - 0.5) * r * 1.4;
+        painter.circle_filled(at, r * (0.08 + 0.12 * rnd(k + 6)), BLOOD.gamma_multiply(0.85));
+    }
+    painter.line_segment([c + side * (rnd(9) - 0.5) * r, c + side * (rnd(10) - 0.5) * r + dir * r * 0.3], Stroke::new(1.5 * scale, clothes.lerp_to_gamma(Color32::BLACK, 0.45)));
+    // The head: its face ahead, yellowed eyes, the mouth open.
+    let hr = r * if kind == Kind::Hr { 0.38 } else { 0.47 };
+    let hc = c + dir * r * 0.06;
+    paint_head(painter, hc, dir, hr, skin, hair);
+    for s in [-1.0, 1.0] {
+        let eye = hc + dir * hr * 0.62 + side * s * hr * 0.36;
+        painter.circle_filled(eye, hr * 0.15, Color32::from_rgb(232, 224, 150));
+        if kind == Kind::Hr {
+            painter.circle_stroke(eye, hr * 0.28, Stroke::new(1.3 * scale, Color32::from_rgb(30, 30, 34)));
+        }
+    }
+    painter.circle_filled(hc + dir * hr * 0.88, hr * 0.17, Color32::from_rgb(70, 16, 18));
+    if slowed {
+        // The extinguisher's foam on it.
+        for k in 0..5 {
+            let at = c + Vec2::angled(k as f32 * 1.3 + rnd(k)) * r * 0.6;
+            painter.circle_filled(at, r * 0.28, Color32::from_white_alpha(120));
+        }
+    }
+    if charging {
+        painter.circle_stroke(c, r + 5.0 * scale, Stroke::new(2.0 * scale, Color32::from_rgb(255, 93, 93)));
+    }
     if life < 1.0 {
-        let bar = Rect::from_min_size(c + Vec2::new(-r, r + 6.0 * scale), Vec2::new(2.0 * r, 4.0 * scale));
+        let bar = Rect::from_min_size(c + Vec2::new(-r, r + 8.0 * scale), Vec2::new(2.0 * r, 4.0 * scale));
         painter.rect_filled(bar, 0.0, Color32::from_black_alpha(140));
         painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * life.clamp(0.0, 1.0), bar.height())), 0.0, Color32::from_rgb(255, 93, 93));
     }
 }
 
-/// A colleague seen from above, aiming at `aim`: the weapon ahead, two eyes.
+/// A colleague seen from above, aiming at `aim`: a shirt in their color, both hands on the weapon
+/// held ahead, the hair, the face toward where they aim.
 fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32, aim: f32, bob: f32) {
     let c = c + Vec2::new(0.0, bob * 4.0 * scale);
-    painter.circle_filled(c + Vec2::new(3.0, 6.0) * scale, 19.0 * scale, Color32::from_black_alpha(80));
+    let r = 19.0 * scale;
     let dir = Vec2::angled(aim);
     let side = Vec2::new(-dir.y, dir.x);
-    let gun = [c + dir * 8.0 * scale + side * 5.0 * scale, c + dir * 38.0 * scale + side * 5.0 * scale, c + dir * 38.0 * scale - side * 5.0 * scale, c + dir * 8.0 * scale - side * 5.0 * scale];
-    painter.add(egui::Shape::convex_polygon(gun.to_vec(), Color32::from_rgb(34, 37, 46), Stroke::NONE));
-    painter.circle_filled(c, 19.0 * scale, color);
-    for s in [-1.0, 1.0] {
-        let e = c + dir * 9.0 * scale + side * 6.0 * s * scale;
-        painter.circle_filled(e, 4.0 * scale, Color32::WHITE);
-        painter.circle_filled(e + dir * 2.0 * scale, 2.0 * scale, Color32::from_rgb(18, 20, 26));
+    let skin = Color32::from_rgb(236, 196, 160);
+    let sleeve = color.lerp_to_gamma(Color32::BLACK, 0.2);
+    fill(painter, oval(c + Vec2::new(3.0, 6.0) * scale, dir, r * 0.8, r * 1.1), Color32::from_black_alpha(80));
+    // The weapon, then the arms holding it.
+    fill(painter, quad(c + dir * r * 1.3, dir, r * 1.4, r * 0.34), Color32::from_rgb(34, 37, 46));
+    fill(painter, quad(c + dir * r * 1.9, dir, r * 0.3, r * 0.2), Color32::from_rgb(70, 75, 90));
+    for (s, grip) in [(-1.0, 0.75), (1.0, 1.15)] {
+        let shoulder = c + side * s * r * 0.72;
+        let hand = c + dir * r * grip + side * s * r * 0.1;
+        painter.line_segment([shoulder, hand], Stroke::new(r * 0.32, sleeve));
+        painter.circle_filled(shoulder, r * 0.17, sleeve);
+        painter.circle_filled(hand, r * 0.18, skin);
     }
+    fill(painter, oval(c, dir, r * 0.56, r * 1.0), color);
+    // A collar.
+    fill(painter, vec![c + dir * r * 0.5 - side * r * 0.2, c + dir * r * 0.18, c + dir * r * 0.5 + side * r * 0.2], Color32::from_rgb(245, 245, 245));
+    paint_head(painter, c - dir * r * 0.04, dir, r * 0.46, skin, Some(Color32::from_rgb(72, 50, 34)));
+}
+
+/// A weapon dropped on the floor: a glow of its color, a cardboard box, its name; blinking before it
+/// goes.
+fn paint_drop(painter: &egui::Painter, c: Pos2, scale: f32, weapon: usize, left: u32, now: f64, name: &str) {
+    if left <= 5 && (now * 6.0).sin() < 0.0 {
+        return;
+    }
+    let color = WEAPON_COLORS[weapon];
+    let pulse = 0.5 + 0.5 * (now * 4.0).sin() as f32;
+    painter.circle_filled(c, (26.0 + 6.0 * pulse) * scale, color.gamma_multiply(0.18 + 0.12 * pulse));
+    let float = Vec2::new(0.0, -3.0 * (now * 3.0).sin() as f32 * scale);
+    let r#box = Rect::from_center_size(c + float, Vec2::new(30.0, 22.0) * scale);
+    painter.rect_filled(r#box.translate(Vec2::new(2.0, 4.0) * scale), 3.0 * scale, Color32::from_black_alpha(80));
+    painter.rect_filled(r#box, 3.0 * scale, Color32::from_rgb(170, 128, 82));
+    painter.rect_filled(Rect::from_center_size(r#box.center(), Vec2::new(30.0, 5.0) * scale), 0.0, color);
+    painter.text(r#box.center_top() - Vec2::new(0.0, 10.0 * scale), Align2::CENTER_CENTER, name, FontId::proportional(11.0 * scale.max(0.8)), color);
 }
 
 /// A colleague down: lying, the ring of the help received around.
@@ -1129,6 +1344,11 @@ fn paint_agnes(painter: &egui::Painter, c: Pos2, scale: f32, now: f64, a: crate:
         painter.circle_filled(c + Vec2::angled(-1.2 + wave) * 22.0 * scale, 5.0 * scale, Color32::from_rgb(182, 227, 154));
     }
     painter.text(c + Vec2::new(0.0, 32.0 * scale), Align2::CENTER_CENTER, "AGNÈS", FontId::monospace(11.0 * scale.max(0.7)), AGNES);
+    if a.state == AgnesState::Walking && a.life < 1.0 {
+        let bar = Rect::from_min_size(c + Vec2::new(-22.0, 41.0) * scale, Vec2::new(44.0, 5.0) * scale);
+        painter.rect_filled(bar, 0.0, Color32::from_black_alpha(150));
+        painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * a.life.clamp(0.0, 1.0), bar.height())), 0.0, if a.life > 0.4 { AGNES } else { Color32::from_rgb(255, 93, 93) });
+    }
     let text = if sitting { "Aïe…" } else { line };
     let font = FontId::proportional(13.0 * scale.max(0.75));
     let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::from_rgb(61, 42, 99));

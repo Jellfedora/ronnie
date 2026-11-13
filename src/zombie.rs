@@ -100,6 +100,9 @@ pub struct Player {
     pub owned: u8,
     /// Their weapon's upgrades: damage, magazine (levels).
     pub ups: (u8, u8),
+    /// Each weapon's upgrades (damage, magazine) and ammo, in WEAPONS' order.
+    pub all_ups: [(u8, u8); 4],
+    pub all_ammo: [u32; 4],
     pub max_hp: f32,
     /// Seconds before the next dash, the next teleport.
     pub dash_in: u32,
@@ -127,6 +130,8 @@ pub struct Zombie {
     pub charging: bool,
     /// Gathering its momentum before a charge.
     pub winding: bool,
+    /// Where it heads (radians).
+    pub heading: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -159,6 +164,8 @@ pub struct Frame {
     pub turrets: Vec<(f32, f32, f32, u32)>,
     /// Agnès' letters lying on the floor.
     pub letters: Vec<(f32, f32)>,
+    /// Weapons dropped by zombies: x, y, weapon (index in WEAPONS), seconds left.
+    pub drops: Vec<(f32, f32, usize, u32)>,
     pub at: Instant,
 }
 
@@ -170,6 +177,9 @@ pub struct Agnes {
     pub state: AgnesState,
     /// Sitting: seconds of help received.
     pub help: f32,
+    /// Her life, 0 to 1, and where she heads (radians).
+    pub life: f32,
+    pub heading: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,6 +243,11 @@ pub struct Map {
     pub desks: Vec<Desk>,
     pub coffee: Spot,
     pub doors: Vec<Door>,
+    /// The reception's door, Agnès' only, and her way to the coffee.
+    #[serde(default)]
+    pub reception: Option<Door>,
+    #[serde(default)]
+    pub agnes_path: Vec<Spot>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -309,12 +324,17 @@ pub enum Happened {
     Revived { player: u32, by: u32 },
     Dead(u32),
     Back(u32),
-    /// Agnès came up by the lift, Gérard by the stairs.
+    /// Agnès came in by the reception, Gérard by the stairs.
     Agnes,
     Gerard,
     /// A shot made her sit down (by whom); helped up.
     AgnesHit(u32),
     AgnesUp(u32),
+    /// Bitten until she sat down.
+    AgnesDown,
+    /// A weapon dropped by a zombie; picked up (by whom, which, and what it gave: new, dmg, mag, ammo).
+    Drop(usize),
+    Picked { player: u32, weapon: usize, gain: String },
     /// She served the coffee (who escorted her).
     Coffee(Vec<u32>),
     /// Wave 10 held with her standing: the post-it comes off.
@@ -391,6 +411,8 @@ enum Wire {
         tu: Vec<f32>,
         #[serde(default)]
         l: Vec<f32>,
+        #[serde(default)]
+        d: Vec<f32>,
     },
     #[serde(rename = "news")]
     News { l: Vec<serde_json::Value> },
@@ -639,9 +661,9 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d } => {
                 let players = p
-                    .chunks_exact(17)
+                    .chunks_exact(22)
                     .map(|v| Player {
                         id: v[0] as u32,
                         x: v[1],
@@ -666,13 +688,18 @@ impl Online {
                         max_hp: v[14],
                         dash_in: v[15] as u32,
                         teleport_in: v[16] as u32,
+                        all_ups: std::array::from_fn(|k| {
+                            let n = (v[17] as u32 >> (4 * k)) & 15;
+                            ((n / 4) as u8, (n % 4) as u8)
+                        }),
+                        all_ammo: std::array::from_fn(|k| v[18 + k] as u32),
                     })
                     .collect();
                 let zombies = z
-                    .chunks_exact(6)
+                    .chunks_exact(7)
                     .map(|v| {
                         let fx = v[5] as u32;
-                        Zombie { id: v[0] as u32, kind: Kind::from(v[1]), x: v[2], y: v[3], life: v[4] / 100.0, slowed: fx & 1 != 0, charging: fx & 2 != 0, winding: fx & 4 != 0 }
+                        Zombie { id: v[0] as u32, kind: Kind::from(v[1]), x: v[2], y: v[3], life: v[4] / 100.0, slowed: fx & 1 != 0, charging: fx & 2 != 0, winding: fx & 4 != 0, heading: v[6] / 100.0 }
                     })
                     .collect();
                 let shots = b.chunks_exact(4).map(|v| Shot { x: v[0], y: v[1], angle: v[2] / 100.0, weapon: (v[3].max(0.0) as usize).min(WEAPONS.len() - 1) }).collect();
@@ -685,12 +712,15 @@ impl Online {
                         _ => AgnesState::Walking,
                     },
                     help: v[3] / 10.0,
+                    life: v.get(4).map_or(1.0, |l| l / 100.0),
+                    heading: v.get(5).map_or(0.0, |h| h / 100.0),
                 });
                 let gerard = g.filter(|v| v.len() >= 3).map(|v| (v[0], v[1], v[2] > 0.0));
                 let turrets = tu.chunks_exact(4).map(|v| (v[0], v[1], v[2] / 100.0, v[3] as u32)).collect();
                 let letters = l.chunks_exact(2).map(|v| (v[0], v[1])).collect();
+                let drops = d.chunks_exact(4).map(|v| (v[0], v[1], (v[2].max(0.0) as usize).min(WEAPONS.len() - 1), v[3] as u32)).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -746,6 +776,13 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "gerard" => Happened::Gerard,
         "agnes-hit" => Happened::AgnesHit(u("by")),
         "agnes-up" => Happened::AgnesUp(u("by")),
+        "agnes-down" => Happened::AgnesDown,
+        "drop" => Happened::Drop(WEAPONS.iter().position(|w| Some(*w) == v.get("weapon").and_then(serde_json::Value::as_str))?),
+        "picked" => Happened::Picked {
+            player: u("player"),
+            weapon: WEAPONS.iter().position(|w| Some(*w) == v.get("weapon").and_then(serde_json::Value::as_str))?,
+            gain: v.get("gain")?.as_str()?.to_owned(),
+        },
         "coffee" => Happened::Coffee(v.get("escorts").and_then(serde_json::Value::as_array).map(|l| l.iter().filter_map(serde_json::Value::as_u64).map(|n| n as u32).collect()).unwrap_or_default()),
         "postit" => Happened::PostIt,
         "reunion" => Happened::Reunion,
@@ -845,14 +882,17 @@ mod tests {
         assert_eq!(online.lobby, vec![Open { id: 3, host: "Ada".into(), players: 1, started: false }]);
         take(&mut online, r#"{"t":"room","id":3,"host":"Ada","players":[[7,"Ada",0],[8,"Bob",1]],"started":true}"#);
         assert_eq!(online.me("Bob"), Some(8));
-        take(&mut online, r#"{"t":"s","ph":1,"w":2,"tl":0,"zl":9,"tk":40,"p":[7,100,200,157,80,1,1,9,0,12,250,2,3,5,125,2,0],"z":[5,3,300,400,50,6],"b":[1,2,314,0],"a":[10,20,1,15],"g":null,"tu":[1,2,100,30],"l":[]}"#);
+        take(&mut online, r#"{"t":"s","ph":1,"w":2,"tl":0,"zl":9,"tk":40,"p":[7,100,200,157,80,1,1,9,0,12,250,2,3,5,125,2,0,857,30,9,0,0],"z":[5,3,300,400,50,6,157],"b":[1,2,314,0],"a":[10,20,1,15,40,314],"g":null,"tu":[1,2,100,30],"l":[],"d":[500,600,3,12]}"#);
         let f = online.frame.as_ref().unwrap();
         assert!(f.wave_on);
         let p = f.players[0];
         assert_eq!((p.state, p.weapon, p.ammo, p.offline), (State::Down, 1, 9, true));
         assert!((p.revive - 1.2).abs() < 1e-4 && (p.bleed - 25.0).abs() < 1e-4);
         assert_eq!((p.owned, p.ups, p.max_hp, p.dash_in), (3, (1, 1), 125.0, 2));
-        assert_eq!(f.agnes.map(|a| a.state), Some(AgnesState::Sitting));
+        assert_eq!(f.agnes.map(|a| (a.state, a.life)), Some((AgnesState::Sitting, 0.4)));
+        assert_eq!(p.all_ups, [(2, 1), (1, 1), (0, 3), (0, 0)]);
+        assert_eq!(p.all_ammo, [30, 9, 0, 0]);
+        assert_eq!(f.drops, vec![(500.0, 600.0, 3, 12)]);
         assert_eq!(f.turrets, vec![(1.0, 2.0, 1.0, 30)]);
         let z = f.zombies[0];
         assert_eq!((z.kind, z.charging, z.winding), (Kind::Sales, true, true));
