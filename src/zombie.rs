@@ -35,6 +35,14 @@ pub enum Kind {
     Hr,
     /// A member of the executive committee: three of them, the final boss (wave 20, on the roof).
     Board,
+    /// In a video call: its picture lags, it freezes then jumps ahead (from wave 7).
+    Visio,
+    /// The accountant: a big binder for a shield, shots from the front barely hurt (from wave 9).
+    Accountant,
+    /// The wellness coach: stays back and heals the zombies around (from wave 12).
+    Coach,
+    /// The IT guy: down the first time, he reboots and comes back (from wave 14).
+    It,
 }
 
 impl Kind {
@@ -47,6 +55,10 @@ impl Kind {
             5 => Kind::Cc,
             6 => Kind::Hr,
             7 => Kind::Board,
+            8 => Kind::Visio,
+            9 => Kind::Accountant,
+            10 => Kind::Coach,
+            11 => Kind::It,
             _ => Kind::Base,
         }
     }
@@ -60,6 +72,9 @@ impl Kind {
             Kind::Cc => 12.0,
             Kind::Hr => 40.0,
             Kind::Board => 28.0,
+            Kind::Visio => 17.0,
+            Kind::Accountant => 20.0,
+            Kind::Coach | Kind::It => 18.0,
         }
     }
 }
@@ -140,6 +155,12 @@ pub struct Zombie {
     pub winding: bool,
     /// Where it heads (radians).
     pub heading: f32,
+    /// In a video call, frozen before it jumps.
+    pub frozen: bool,
+    /// The coach, healing a zombie around.
+    pub healing: bool,
+    /// The IT guy, rebooting.
+    pub rebooting: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,6 +195,8 @@ pub struct Frame {
     pub letters: Vec<(f32, f32)>,
     /// Weapons dropped by zombies: x, y, weapon (index in WEAPONS), seconds left.
     pub drops: Vec<(f32, f32, usize, u32)>,
+    /// First-aid kits on the floor: x, y, seconds left.
+    pub kits: Vec<(f32, f32, u32)>,
     /// The floor of the tower (0 the hall, 1 the open space, 2 the boardroom, 3 the roof).
     pub floor: usize,
     /// Paused (alone, Escape or another page).
@@ -389,6 +412,10 @@ pub enum Happened {
     Bought { player: u32, item: String },
     Dash(u32),
     Teleport(u32),
+    /// The IT guy down for the first time: he reboots, there.
+    Reboot { x: f32, y: f32 },
+    /// A first-aid kit picked up (by whom, where).
+    Healed { player: u32, x: f32, y: f32 },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -457,6 +484,8 @@ enum Wire {
         l: Vec<f32>,
         #[serde(default)]
         d: Vec<f32>,
+        #[serde(default)]
+        m: Vec<f32>,
         #[serde(default)]
         fl: usize,
         #[serde(default)]
@@ -727,7 +756,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, fl, ps } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fl, ps } => {
                 let players = p
                     .chunks_exact(22)
                     .map(|v| Player {
@@ -765,7 +794,7 @@ impl Online {
                     .chunks_exact(7)
                     .map(|v| {
                         let fx = v[5] as u32;
-                        Zombie { id: v[0] as u32, kind: Kind::from(v[1]), x: v[2], y: v[3], life: v[4] / 100.0, slowed: fx & 1 != 0, charging: fx & 2 != 0, winding: fx & 4 != 0, heading: v[6] / 100.0 }
+                        Zombie { id: v[0] as u32, kind: Kind::from(v[1]), x: v[2], y: v[3], life: v[4] / 100.0, slowed: fx & 1 != 0, charging: fx & 2 != 0, winding: fx & 4 != 0, heading: v[6] / 100.0, frozen: fx & 8 != 0, healing: fx & 16 != 0, rebooting: fx & 32 != 0 }
                     })
                     .collect();
                 let shots = b.chunks_exact(4).map(|v| Shot { x: v[0], y: v[1], angle: v[2] / 100.0, weapon: (v[3].max(0.0) as usize).min(WEAPONS.len() - 1) }).collect();
@@ -785,8 +814,9 @@ impl Online {
                 let turrets = tu.chunks_exact(4).map(|v| (v[0], v[1], v[2] / 100.0, v[3] as u32)).collect();
                 let letters = l.chunks_exact(2).map(|v| (v[0], v[1])).collect();
                 let drops = d.chunks_exact(4).map(|v| (v[0], v[1], (v[2].max(0.0) as usize).min(WEAPONS.len() - 1), v[3] as u32)).collect();
+                let kits = m.chunks_exact(3).map(|v| (v[0], v[1], v[2] as u32)).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, floor: fl.min(3), paused: ps == 1, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, floor: fl.min(3), paused: ps == 1, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -835,6 +865,10 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
                 "cc" => Kind::Cc,
                 "drh" => Kind::Hr,
                 "codir" => Kind::Board,
+                "visio" => Kind::Visio,
+                "compta" => Kind::Accountant,
+                "coach" => Kind::Coach,
+                "info" => Kind::It,
                 _ => Kind::Base,
             };
             Happened::Kill { kind, x: n("x") as f32, y: n("y") as f32, by: u("by") }
@@ -862,6 +896,8 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "bought" => Happened::Bought { player: u("player"), item: v.get("item")?.as_str()?.to_owned() },
         "dash" => Happened::Dash(u("player")),
         "teleport" => Happened::Teleport(u("player")),
+        "reboot" => Happened::Reboot { x: n("x") as f32, y: n("y") as f32 },
+        "heal" => Happened::Healed { player: u("id"), x: n("x") as f32, y: n("y") as f32 },
         _ => return None,
     })
 }
@@ -954,6 +990,14 @@ mod tests {
         let over = news.over.unwrap();
         assert!(over.won);
         assert_eq!(over.milestones, vec![Milestone::Final, Milestone::Daily { id: "kills".into() }, Milestone::Dailies { value: 7 }]);
+        // Higher in the tower: the zombie on a call frozen, the coach healing, the IT guy rebooting; a kit.
+        take(&mut online, r#"{"t":"s","ph":1,"w":14,"tl":0,"zl":3,"tk":0,"p":[],"z":[1,8,10,10,90,8,0,2,9,10,10,90,0,0,3,10,10,10,90,16,0,4,11,10,10,50,32,0],"b":[],"m":[300,400,18],"fl":2,"ps":0}"#);
+        let f = online.frame.as_ref().unwrap();
+        let z: Vec<(Kind, bool, bool, bool)> = f.zombies.iter().map(|z| (z.kind, z.frozen, z.healing, z.rebooting)).collect();
+        assert_eq!(z, vec![(Kind::Visio, true, false, false), (Kind::Accountant, false, false, false), (Kind::Coach, false, true, false), (Kind::It, false, false, true)]);
+        assert_eq!(f.kits, vec![(300.0, 400.0, 18)]);
+        let news = take(&mut online, r#"{"t":"news","l":[{"t":"reboot","x":5,"y":6},{"t":"heal","id":7,"x":1,"y":2},{"t":"kill","kind":"compta","x":1,"y":2,"by":7}]}"#);
+        assert_eq!(news.happened, vec![Happened::Reboot { x: 5.0, y: 6.0 }, Happened::Healed { player: 7, x: 1.0, y: 2.0 }, Happened::Kill { kind: Kind::Accountant, x: 1.0, y: 2.0, by: 7 }]);
         take(&mut online, r#"{"t":"profile","xp":0,"grade":0,"name":"Stagiaire","stars":0,"from":0,"next":500,"slots":0,"perks":[],"shop":[],"mastery":{},"games":0,"kills":0,"revives":0,"escorts":0,"letters":0,"bestWave":0,"horde":false,"week":[],"daily":["kills",40,120,false],"dailies":3,"wins":1}"#);
         let c = online.career.as_ref().unwrap();
         assert_eq!((c.daily.clone(), c.dailies, c.wins), (Some(("kills".into(), 40, 120, false)), 3, 1));

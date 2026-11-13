@@ -253,11 +253,25 @@ impl App {
                         Kind::Cc => 3,
                         Kind::Hr => 300,
                         Kind::Board => 400,
+                        Kind::Visio => 14,
+                        Kind::Accountant => 22,
+                        Kind::Coach => 30,
+                        Kind::It => 25,
                     };
                     let color = if Some(by) == me { theme.accent } else { theme.text_muted };
                     self.monday.floats.push((format!("+{points}"), x, y, color, now));
                     if Some(by) == me {
                         self.monday_sound(&[(660.0, 440.0, 0.05, 0.12)]);
+                    }
+                }
+                Happened::Reboot { x, y } => {
+                    self.monday.floats.push((t.monday_reboot.to_owned(), x, y - 30.0, Color32::from_rgb(110, 200, 255), now));
+                    self.monday_sound(&[(880.0, 880.0, 0.06, 0.12), (660.0, 660.0, 0.06, 0.12), (440.0, 440.0, 0.12, 0.12)]);
+                }
+                Happened::Healed { player, x, y } => {
+                    self.monday.floats.push(("+40 ♥".to_owned(), x, y - 30.0, Color32::from_rgb(120, 230, 120), now));
+                    if Some(player) == me {
+                        self.monday_sound(&[(523.0, 523.0, 0.08, 0.2), (784.0, 784.0, 0.15, 0.2)]);
                     }
                 }
                 Happened::Down(id) => {
@@ -389,10 +403,22 @@ impl App {
         let step = text_w / kinds.len() as f32;
         for (k, kind) in kinds.into_iter().enumerate() {
             let c = Pos2::new(left + step * (k as f32 + 0.5), y + 18.0);
-            paint_zombie(&painter, c, 1.0, kind, std::f32::consts::FRAC_PI_2, k as u32 * 7 + 3, (now * 3.0) as f32 + k as f32, 1.0, false, false);
+            paint_zombie(&painter, c, 1.0, kind, std::f32::consts::FRAC_PI_2, k as u32 * 7 + 3, (now * 3.0) as f32 + k as f32, 1.0, Fx::default());
             painter.text(Pos2::new(c.x, y + 48.0), Align2::CENTER_CENTER, names.get(k).copied().unwrap_or_default(), FontId::proportional(11.0), theme.text_muted);
         }
         y += 66.0;
+        // Those coming higher in the tower, each from its wave, doing its own thing now and then.
+        let late: Vec<&str> = t.monday_kinds_late.split('|').collect();
+        let step = text_w / LATE_KINDS.len() as f32;
+        for (k, (kind, from)) in LATE_KINDS.into_iter().enumerate() {
+            let c = Pos2::new(left + step * (k as f32 + 0.5), y + 18.0);
+            let cycle = (now * 0.5 + k as f64 * 0.7) % 3.0 < 1.0;
+            let fx = Fx { frozen: kind == Kind::Visio && cycle, healing: kind == Kind::Coach, rebooting: kind == Kind::It && cycle, ..Fx::default() };
+            paint_zombie(&painter, c, 1.0, kind, std::f32::consts::FRAC_PI_2, k as u32 * 11 + 5, (now * 3.0) as f32 + k as f32, 1.0, fx);
+            painter.text(Pos2::new(c.x, y + 48.0), Align2::CENTER_CENTER, late.get(k).copied().unwrap_or_default(), FontId::proportional(11.0), theme.text_muted);
+            painter.text(Pos2::new(c.x, y + 62.0), Align2::CENTER_CENTER, t.monday_from_wave.replace("{n}", &from.to_string()), FontId::proportional(10.0), theme.accent.gamma_multiply(0.8));
+        }
+        y += 80.0;
         let help = painter.layout(t.monday_help.to_owned(), FontId::proportional(12.0), theme.text_muted, text_w);
         painter.galley(Pos2::new(left, y), help.clone(), theme.text_muted);
         y += help.size().y + 14.0;
@@ -734,7 +760,7 @@ impl App {
         }
         for z in &frame.zombies {
             let (x, y) = mix.zombie(z.id, z.x, z.y);
-            paint_zombie(&painter, at(x, y), scale, z.kind, z.heading, z.id, (now * 4.0) as f32 + z.id as f32, z.life, z.slowed, z.charging || z.winding);
+            paint_zombie(&painter, at(x, y), scale, z.kind, z.heading, z.id, (now * 4.0) as f32 + z.id as f32, z.life, Fx { slowed: z.slowed, charging: z.charging || z.winding, frozen: z.frozen, healing: z.healing, rebooting: z.rebooting });
         }
         for s in &frame.shots {
             paint_shot(&painter, at(s.x, s.y), scale, s.angle, s.weapon, now);
@@ -748,6 +774,9 @@ impl App {
         let short: Vec<&str> = t.monday_weapons_short.split('|').collect();
         for &(x, y, weapon, left) in &frame.drops {
             paint_drop(&painter, at(x, y), scale, weapon, left, now, short.get(weapon).copied().unwrap_or_default());
+        }
+        for &(x, y, left) in &frame.kits {
+            paint_kit(&painter, at(x, y), scale, left, now);
         }
         if let Some((x, y, met)) = frame.gerard {
             paint_gerard(&painter, at(x, y), scale, now, met);
@@ -1262,8 +1291,21 @@ fn paint_head(painter: &egui::Painter, c: Pos2, dir: Vec2, r: f32, skin: Color32
 /// in his creased shirt among his emails, its copies paler, the HR director in her burgundy blazer,
 /// glasses, the red file. Its life under it when hurt.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, heading: f32, seed: u32, phase: f32, life: f32, slowed: bool, charging: bool) {
+pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, heading: f32, seed: u32, phase: f32, life: f32, fx: Fx) {
+    let Fx { slowed, charging, frozen, healing, rebooting } = fx;
     let r = kind.radius() * scale;
+    // In a video call, frozen: its picture shifted, red and blue apart, a band of noise.
+    if kind == Kind::Visio && frozen {
+        let jolt = Vec2::new(((phase * 37.0).sin() * 3.0).round(), 0.0) * scale;
+        painter.circle_filled(c - Vec2::new(3.0, 0.0) * scale + jolt, r, Color32::from_rgba_unmultiplied(255, 40, 60, 60));
+        painter.circle_filled(c + Vec2::new(3.0, 0.0) * scale + jolt, r, Color32::from_rgba_unmultiplied(40, 200, 255, 60));
+    }
+    // The coach, healing: a green halo breathing around her.
+    if kind == Kind::Coach && healing {
+        let breath = (phase * 0.8).sin() * 0.5 + 0.5;
+        painter.circle_filled(c, r * (3.2 + 0.4 * breath), Color32::from_rgba_unmultiplied(90, 220, 140, 22));
+        painter.circle_stroke(c, r * (3.2 + 0.4 * breath), Stroke::new(1.5 * scale, Color32::from_rgba_unmultiplied(90, 220, 140, 90)));
+    }
     let dir = Vec2::angled(heading);
     let side = Vec2::new(-dir.y, dir.x);
     let (clothes, hair, skin) = match kind {
@@ -1274,6 +1316,11 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
         Kind::ReplyAll | Kind::Cc => (Color32::from_rgb(214, 204, 156), Some(Color32::from_rgb(140, 110, 70)), Color32::from_rgb(162, 176, 140)),
         Kind::Hr => (Color32::from_rgb(110, 32, 46), Some(Color32::from_rgb(150, 150, 156)), Color32::from_rgb(168, 172, 150)),
         Kind::Board => (Color32::from_rgb(30, 32, 40), Some(Color32::from_rgb(200, 200, 206)), Color32::from_rgb(150, 166, 132)),
+        // A shirt for the camera (the pyjama under the desk), the hair as out of bed.
+        Kind::Visio => (Color32::from_rgb(120, 168, 214), Some(Color32::from_rgb(60, 44, 36)), Color32::from_rgb(164, 180, 150)),
+        Kind::Accountant => (Color32::from_rgb(150, 136, 104), Some(Color32::from_rgb(110, 104, 98)), Color32::from_rgb(158, 168, 140)),
+        Kind::Coach => (Color32::from_rgb(40, 200, 170), Some(Color32::from_rgb(230, 190, 90)), Color32::from_rgb(172, 186, 148)),
+        Kind::It => (Color32::from_rgb(34, 36, 42), Some(Color32::from_rgb(40, 30, 26)), Color32::from_rgb(160, 174, 144)),
     };
     let ghost = |col: Color32| if kind == Kind::Cc { col.gamma_multiply(0.75) } else { col };
     let sleeve = ghost(clothes.lerp_to_gamma(Color32::BLACK, 0.18));
@@ -1311,6 +1358,34 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
             fill(painter, quad(at, dir, r * 0.62, r * 0.42), Color32::from_rgb(92, 52, 30));
             fill(painter, quad(at, dir, r * 0.1, r * 0.42), Color32::from_rgb(222, 180, 80));
         }
+        // The accountant's binder, held ahead like a shield: green, its white label, its ring.
+        Kind::Accountant => {
+            let at = c + dir * r * 1.12;
+            painter.add(egui::Shape::convex_polygon(quad(at, dir, r * 0.34, r * 1.55), Color32::from_rgb(34, 110, 70), Stroke::new(1.2 * scale, Color32::from_rgb(16, 60, 36))));
+            fill(painter, quad(at + dir * r * 0.05, dir, r * 0.2, r * 0.6), Color32::from_rgb(240, 238, 228));
+            painter.circle_filled(at - side * r * 0.55, r * 0.09, Color32::from_rgb(200, 200, 206));
+        }
+        // The coach's green smoothie, its straw.
+        Kind::Coach => {
+            let cup = hands[1] + dir * r * 0.1;
+            painter.circle_filled(cup, r * 0.24, Color32::from_rgb(120, 200, 80));
+            painter.circle_stroke(cup, r * 0.24, Stroke::new(1.0 * scale, Color32::from_white_alpha(160)));
+            painter.line_segment([cup, cup + dir * r * 0.3 + side * r * 0.12], Stroke::new(1.5 * scale, Color32::from_rgb(255, 100, 140)));
+        }
+        // The IT guy's laptop, open, its screen lit, a cable trailing.
+        Kind::It => {
+            let at = c + dir * r * 1.05;
+            fill(painter, quad(at, dir, r * 0.5, r * 0.9), Color32::from_rgb(70, 74, 84));
+            let screen = if rebooting { Color32::from_rgb(30, 90, 200) } else { Color32::from_rgb(20, 24, 30) };
+            fill(painter, quad(at + dir * r * 0.04, dir, r * 0.34, r * 0.76), screen);
+            if !rebooting {
+                for k in 0..3 {
+                    let y = at + dir * r * (0.12 - k as f32 * 0.1) - side * r * 0.25;
+                    painter.line_segment([y, y + side * r * (0.2 + 0.25 * ((k as f32 + phase).sin() * 0.5 + 0.5))], Stroke::new(1.2 * scale, Color32::from_rgb(90, 230, 110)));
+                }
+            }
+            painter.line_segment([at - side * r * 0.45, c - dir * r * 0.9 - side * r * 0.9], Stroke::new(1.5 * scale, Color32::from_rgb(60, 120, 220)));
+        }
         Kind::ReplyAll | Kind::Cc => {
             for k in 0..3 {
                 let a = phase * 0.5 + k as f32 * 2.1;
@@ -1345,6 +1420,29 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
             fill(painter, quad(c + dir * r * 0.3, dir, r * 0.46, r * 0.13), Color32::from_rgb(222, 180, 80));
             fill(painter, quad(c + dir * r * 0.2 - side * r * 0.42, dir, r * 0.16, r * 0.16), Color32::from_rgb(196, 40, 60));
         }
+        // Pyjama stripes peeking under the shirt.
+        Kind::Visio => {
+            for k in 0..3 {
+                let at = c - dir * r * (0.3 + k as f32 * 0.18);
+                painter.line_segment([at - side * r * 0.45, at + side * r * 0.45], Stroke::new(1.5 * scale, Color32::from_rgb(230, 150, 190)));
+            }
+        }
+        // The cardigan's buttons.
+        Kind::Accountant => {
+            for k in 0..3 {
+                painter.circle_filled(c + dir * r * (0.35 - k as f32 * 0.25), r * 0.06, Color32::from_rgb(70, 60, 40));
+            }
+        }
+        // A sports top: the white stripes.
+        Kind::Coach => {
+            for s in [-1.0, 1.0] {
+                painter.line_segment([c + side * s * r * 0.3 + dir * r * 0.5, c + side * s * r * 0.3 - dir * r * 0.6], Stroke::new(1.6 * scale, Color32::WHITE));
+            }
+        }
+        // The T-shirt and its joke: « 404 ».
+        Kind::It => {
+            painter.text(c - dir * r * 0.25, Align2::CENTER_CENTER, "404", FontId::monospace(r * 0.38), Color32::from_rgb(90, 230, 110));
+        }
         _ => {}
     }
     // Torn and stained.
@@ -1359,10 +1457,27 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
     paint_head(painter, hc, dir, hr, skin, hair);
     for s in [-1.0, 1.0] {
         let eye = hc + dir * hr * 0.62 + side * s * hr * 0.36;
-        painter.circle_filled(eye, hr * 0.15, Color32::from_rgb(232, 224, 150));
-        if kind == Kind::Hr {
+        let eye_color = if kind == Kind::It && rebooting { Color32::from_rgb(110, 200, 255) } else { Color32::from_rgb(232, 224, 150) };
+        painter.circle_filled(eye, hr * 0.15, eye_color);
+        if matches!(kind, Kind::Hr | Kind::Accountant) {
             painter.circle_stroke(eye, hr * 0.28, Stroke::new(1.3 * scale, Color32::from_rgb(30, 30, 34)));
         }
+    }
+    match kind {
+        // The headset: its band over the head, the microphone at the mouth.
+        Kind::Visio => {
+            painter.line_segment([hc - side * hr, hc + side * hr], Stroke::new(2.2 * scale, Color32::from_rgb(30, 30, 34)));
+            for s in [-1.0, 1.0] {
+                painter.circle_filled(hc + side * s * hr, hr * 0.26, Color32::from_rgb(30, 30, 34));
+            }
+            painter.line_segment([hc + side * hr, hc + dir * hr * 1.05 + side * hr * 0.3], Stroke::new(1.4 * scale, Color32::from_rgb(30, 30, 34)));
+            painter.circle_filled(hc + dir * hr * 1.05 + side * hr * 0.3, hr * 0.12, Color32::from_rgb(60, 60, 66));
+        }
+        // The coach's headband.
+        Kind::Coach => {
+            painter.line_segment([hc - side * hr * 0.95 + dir * hr * 0.2, hc + side * hr * 0.95 + dir * hr * 0.2], Stroke::new(2.4 * scale, Color32::from_rgb(255, 90, 150)));
+        }
+        _ => {}
     }
     painter.circle_filled(hc + dir * hr * 0.88, hr * 0.17, Color32::from_rgb(70, 16, 18));
     if slowed {
@@ -1374,6 +1489,40 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
     }
     if charging {
         painter.circle_stroke(c, r + 5.0 * scale, Stroke::new(2.0 * scale, Color32::from_rgb(255, 93, 93)));
+    }
+    // Frozen: bands of noise across it, the bars of a bad connection above.
+    if kind == Kind::Visio && frozen {
+        for k in 0..4 {
+            let y = c.y + (rnd(k) - 0.5) * r * 1.8;
+            let w = r * (0.8 + rnd(k + 4));
+            painter.rect_filled(Rect::from_center_size(Pos2::new(c.x + (rnd(k + 8) - 0.5) * r * 0.6, y), Vec2::new(w * 2.0, 2.0 * scale)), 0.0, Color32::from_white_alpha(110));
+        }
+        let base = c + Vec2::new(-7.0, -r - 8.0 * scale);
+        for k in 0..4 {
+            let h = (3.0 + k as f32 * 3.0) * scale;
+            let color = if k == 0 { Color32::from_rgb(255, 93, 93) } else { Color32::from_white_alpha(50) };
+            painter.rect_filled(Rect::from_min_max(base + Vec2::new(k as f32 * 4.0 * scale, -h), base + Vec2::new(k as f32 * 4.0 * scale + 3.0 * scale, 0.0)), 0.0, color);
+        }
+    }
+    // Healing: little crosses rising from her.
+    if kind == Kind::Coach && healing {
+        for k in 0..3 {
+            let rise = (phase * 0.4 + k as f32 / 3.0).fract();
+            let at = c + Vec2::new((k as f32 - 1.0) * r * 0.7, -r * (0.6 + 1.6 * rise));
+            let a = (1.0 - rise) * 220.0;
+            let color = Color32::from_rgba_unmultiplied(110, 235, 140, a as u8);
+            painter.line_segment([at - Vec2::new(3.0, 0.0) * scale, at + Vec2::new(3.0, 0.0) * scale], Stroke::new(1.8 * scale, color));
+            painter.line_segment([at - Vec2::new(0.0, 3.0) * scale, at + Vec2::new(0.0, 3.0) * scale], Stroke::new(1.8 * scale, color));
+        }
+    }
+    // Rebooting: greyed, the wheel turning above.
+    if kind == Kind::It && rebooting {
+        painter.circle_filled(c, r * 1.05, Color32::from_black_alpha(90));
+        let top = c - Vec2::new(0.0, r + 12.0 * scale);
+        for k in 0..8 {
+            let a = k as f32 / 8.0 * std::f32::consts::TAU + phase * 2.0;
+            painter.circle_filled(top + Vec2::angled(a) * 6.0 * scale, 1.6 * scale, Color32::from_white_alpha(40 + k * 26));
+        }
     }
     if life < 1.0 {
         let bar = Rect::from_min_size(c + Vec2::new(-r, r + 8.0 * scale), Vec2::new(2.0 * r, 4.0 * scale));
@@ -1498,6 +1647,37 @@ fn paint_held(painter: &egui::Painter, c: Pos2, dir: Vec2, r: f32, weapon: usize
             }
         }
     }
+}
+
+/// What a zombie is doing, seen on it.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Fx {
+    pub(super) slowed: bool,
+    pub(super) charging: bool,
+    pub(super) frozen: bool,
+    pub(super) healing: bool,
+    pub(super) rebooting: bool,
+}
+
+/// The zombies coming higher in the tower, and from which wave (floor's KINDS `from`).
+const LATE_KINDS: [(Kind, u32); 4] = [(Kind::Visio, 7), (Kind::Accountant, 9), (Kind::Coach, 12), (Kind::It, 14)];
+
+/// A first-aid kit on the floor: white, its red cross, a green glow breathing; blinking before it goes.
+fn paint_kit(painter: &egui::Painter, c: Pos2, scale: f32, left: u32, now: f64) {
+    if left <= 5 && (now * 6.0).sin() < 0.0 {
+        return;
+    }
+    let pulse = 0.5 + 0.5 * (now * 3.0).sin() as f32;
+    painter.circle_filled(c, (24.0 + 5.0 * pulse) * scale, Color32::from_rgba_unmultiplied(110, 235, 140, (30.0 + 30.0 * pulse) as u8));
+    let float = Vec2::new(0.0, -2.5 * (now * 2.5).sin() as f32 * scale);
+    let r#box = Rect::from_center_size(c + float, Vec2::new(26.0, 20.0) * scale);
+    painter.rect_filled(r#box.translate(Vec2::new(2.0, 4.0) * scale), 4.0 * scale, Color32::from_black_alpha(80));
+    painter.rect_filled(r#box, 4.0 * scale, Color32::from_rgb(244, 244, 240));
+    painter.rect_stroke(r#box, 4.0 * scale, Stroke::new(1.0, Color32::from_rgb(200, 200, 196)), egui::StrokeKind::Inside);
+    painter.rect_filled(Rect::from_center_size(r#box.center() - Vec2::new(0.0, 12.0) * scale, Vec2::new(10.0, 4.0) * scale), 1.5, Color32::from_rgb(200, 200, 196));
+    let red = Color32::from_rgb(220, 40, 50);
+    painter.rect_filled(Rect::from_center_size(r#box.center(), Vec2::new(12.0, 4.0) * scale), 0.0, red);
+    painter.rect_filled(Rect::from_center_size(r#box.center(), Vec2::new(4.0, 12.0) * scale), 0.0, red);
 }
 
 /// The confetti's colours.
