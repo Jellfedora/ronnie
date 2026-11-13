@@ -2,6 +2,13 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [1.1.1] - 2026-11-13
+
+### Corrections
+
+- Réglages › Compte : « Synchroniser mes notes » reste bien coché, au lieu de se décocher aussitôt.
+- L'écran de démarrage n'affiche plus l'avertissement « version alpha ».
+
 ## [1.1.0] - 2026-11-13
 
 ### Nouveautés
