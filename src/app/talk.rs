@@ -1661,6 +1661,13 @@ impl App {
                     });
                 });
                 self.talk_ui.bar = Some((m.id, shown.response.rect));
+                // The wheel over the bar (its own layer, above the list's) still scrolls the conversation.
+                if pointer.is_some_and(|p| shown.response.rect.contains(p)) {
+                    let delta = ui.input(|i| i.smooth_scroll_delta);
+                    if delta != Vec2::ZERO {
+                        ui.scroll_with_delta(delta);
+                    }
+                }
                 match chosen {
                     Some(Act::Pin) => {
                         let at = ui.input(|i| i.pointer.interact_pos()).unwrap_or(at);
