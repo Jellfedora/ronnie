@@ -169,8 +169,13 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
-        paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_dev, &theme);
-        *y += SECTION_HEADER_H;
+        if self.panel_part.head() {
+            paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_dev, &theme);
+            *y += SECTION_HEADER_H;
+        }
+        if !self.panel_part.body() {
+            return;
+        }
         let mut open = None;
         for tool in DevTool::ALL {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));

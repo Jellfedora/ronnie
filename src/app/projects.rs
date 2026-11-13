@@ -766,30 +766,35 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
-        let head = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        paint_panel_title(&painter, head, t.cat_projects, &theme);
-        let plus = Rect::from_center_size(Pos2::new(head.max.x - 14.0, head.center().y), Vec2::splat(22.0));
-        let plus_resp = ui.interact(plus, ui.id().with("projects-import"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.projects_import_hint);
-        if plus_resp.hovered() {
-            painter.rect_filled(plus, 5.0, theme.tab_hover);
+        if self.panel_part.head() {
+            let head = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
+            paint_panel_title(&painter, head, t.cat_projects, &theme);
+            let plus = Rect::from_center_size(Pos2::new(head.max.x - 14.0, head.center().y), Vec2::splat(22.0));
+            let plus_resp = ui.interact(plus, ui.id().with("projects-import"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.projects_import_hint);
+            if plus_resp.hovered() {
+                painter.rect_filled(plus, 5.0, theme.tab_hover);
+            }
+            painter.text(plus.center(), Align2::CENTER_CENTER, "+", FontId::proportional(16.0), if plus_resp.hovered() { theme.text } else { theme.text_muted });
+            let folder = plus.translate(Vec2::new(-26.0, 0.0));
+            let folder_tip = match self.projects_dir() {
+                Some(dir) => t.projects_dir.replace("{path}", &dir.display().to_string()),
+                None => t.projects_dir_pick.to_owned(),
+            };
+            let folder_resp = ui.interact(folder, ui.id().with("projects-dir"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(folder_tip);
+            if folder_resp.hovered() {
+                painter.rect_filled(folder, 5.0, theme.tab_hover);
+            }
+            paint_folder_icon(&painter, folder.center(), if folder_resp.hovered() { theme.text } else { theme.text_muted });
+            *y += SECTION_HEADER_H;
+            if plus_resp.clicked() {
+                self.projects_import();
+            }
+            if folder_resp.clicked() {
+                self.projects_pick_dir();
+            }
         }
-        painter.text(plus.center(), Align2::CENTER_CENTER, "+", FontId::proportional(16.0), if plus_resp.hovered() { theme.text } else { theme.text_muted });
-        let folder = plus.translate(Vec2::new(-26.0, 0.0));
-        let folder_tip = match self.projects_dir() {
-            Some(dir) => t.projects_dir.replace("{path}", &dir.display().to_string()),
-            None => t.projects_dir_pick.to_owned(),
-        };
-        let folder_resp = ui.interact(folder, ui.id().with("projects-dir"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(folder_tip);
-        if folder_resp.hovered() {
-            painter.rect_filled(folder, 5.0, theme.tab_hover);
-        }
-        paint_folder_icon(&painter, folder.center(), if folder_resp.hovered() { theme.text } else { theme.text_muted });
-        *y += SECTION_HEADER_H;
-        if plus_resp.clicked() {
-            self.projects_import();
-        }
-        if folder_resp.clicked() {
-            self.projects_pick_dir();
+        if !self.panel_part.body() {
+            return;
         }
         if self.config.projects.is_empty() {
             let galley = painter.layout(t.projects_empty_short.to_owned(), FontId::proportional(12.0), theme.text_muted, row_w - 16.0);

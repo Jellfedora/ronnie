@@ -478,8 +478,13 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
-        paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &theme);
-        *y += SECTION_HEADER_H;
+        if self.panel_part.head() {
+            paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &theme);
+            *y += SECTION_HEADER_H;
+        }
+        if !self.panel_part.body() {
+            return;
+        }
         let (mut open, mut new_window) = (None, None);
         for (game, name, note) in self.games_list() {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
@@ -706,7 +711,7 @@ impl App {
         let kind = if local { config::GroupKind::Profiles } else { config::GroupKind::Ssh };
 
         // SSH header: title and a "+" menu.
-        if !local {
+        if !local && self.panel_part.head() {
         let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
         paint_panel_title(&painter, header, t.profiles, &self.theme);
         let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
@@ -735,6 +740,9 @@ impl App {
             }
         }
         *y += SECTION_HEADER_H;
+        }
+        if !local && !self.panel_part.body() {
+            return;
         }
 
         if !local && self.config.ssh.is_empty() && !self.config.groups.iter().any(|g| g.kind() == kind) {
@@ -1183,23 +1191,28 @@ impl App {
     pub(super) fn db_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32, action: &mut Option<TabAction>) {
         let t = self.t();
         let painter = ui.painter().clone();
-        let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        paint_panel_title(&painter, header, t.db_section, &self.theme);
-        let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
-        let plus = icon_button(ui, &painter, plus_rect, "db-plus", &self.theme, paint_plus);
-        egui::Popup::menu(&plus).width(210.0).show(|ui| {
-            menu_item(ui, t.db_new_connection, TabAction::NewDb, action);
-            menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Databases), action);
-            ui.separator();
-            menu_item(ui, t.sql_import_menu, TabAction::ImportSql, action);
-            if !crate::projects::wamp_data().is_empty() {
-                menu_item(ui, t.db_import_wamp, TabAction::ImportWamp, action);
-            }
-            if crate::projects::local_sites_file().is_some() {
-                menu_item(ui, t.local_import_menu, TabAction::ImportLocal, action);
-            }
-        });
-        *y += SECTION_HEADER_H;
+        if self.panel_part.head() {
+            let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
+            paint_panel_title(&painter, header, t.db_section, &self.theme);
+            let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
+            let plus = icon_button(ui, &painter, plus_rect, "db-plus", &self.theme, paint_plus);
+            egui::Popup::menu(&plus).width(210.0).show(|ui| {
+                menu_item(ui, t.db_new_connection, TabAction::NewDb, action);
+                menu_item(ui, t.new_group, TabAction::NewGroup(config::GroupKind::Databases), action);
+                ui.separator();
+                menu_item(ui, t.sql_import_menu, TabAction::ImportSql, action);
+                if !crate::projects::wamp_data().is_empty() {
+                    menu_item(ui, t.db_import_wamp, TabAction::ImportWamp, action);
+                }
+                if crate::projects::local_sites_file().is_some() {
+                    menu_item(ui, t.local_import_menu, TabAction::ImportLocal, action);
+                }
+            });
+            *y += SECTION_HEADER_H;
+        }
+        if !self.panel_part.body() {
+            return;
+        }
         // WAMP's databases: their import under way, or the button to import them.
         if let Some((step, fraction, time_left)) = self.wamp_import_state() {
             ui.ctx().request_repaint_after(Duration::from_millis(300));
@@ -1324,15 +1337,20 @@ impl App {
         use super::notes::{Action, DraggedNote, Entry, Place};
         let t = self.t();
         let painter = ui.painter().clone();
-        let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        paint_panel_title(&painter, header, t.notes, &self.theme);
-        let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
-        let plus = icon_button(ui, &painter, plus_rect, "notes-plus", &self.theme, paint_plus).on_hover_text(format!("{}  ({})", t.notes_toggle, self.config.settings.shortcuts.toggle_notes.label()));
-        egui::Popup::menu(&plus).width(200.0).show(|ui| {
-            menu_item(ui, t.notes_new, TabAction::Notes(Action::NewNote), action);
-            menu_item(ui, t.notes_new_folder, TabAction::Notes(Action::NewFolder), action);
-        });
-        *y += SECTION_HEADER_H;
+        if self.panel_part.head() {
+            let header = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
+            paint_panel_title(&painter, header, t.notes, &self.theme);
+            let plus_rect = Rect::from_center_size(Pos2::new(header.max.x - 12.0, header.center().y), Vec2::splat(20.0));
+            let plus = icon_button(ui, &painter, plus_rect, "notes-plus", &self.theme, paint_plus).on_hover_text(format!("{}  ({})", t.notes_toggle, self.config.settings.shortcuts.toggle_notes.label()));
+            egui::Popup::menu(&plus).width(200.0).show(|ui| {
+                menu_item(ui, t.notes_new, TabAction::Notes(Action::NewNote), action);
+                menu_item(ui, t.notes_new_folder, TabAction::Notes(Action::NewFolder), action);
+            });
+            *y += SECTION_HEADER_H;
+        }
+        if !self.panel_part.body() {
+            return;
+        }
         let open = self.notes_page;
         for (entry, name, count) in self.notes.entries(t) {
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H));
@@ -1925,14 +1943,28 @@ impl App {
             self.settings_dialog = true;
         }
 
-        let mut scroll_ui = ui.new_child(egui::UiBuilder::new().max_rect(scroll_rect));
-        // A slim handle that stays visible whenever the list overflows (egui's default only shows on hover).
+        // The section's head (its title and buttons, the files/git switch) stays on top; under it, the
+        // rest scrolls.
+        self.panel_part = PanelPart::Head;
+        let mut head_ui = ui.new_child(egui::UiBuilder::new().max_rect(scroll_rect));
+        let mut head_y = scroll_rect.min.y;
+        self.panel_content(&mut head_ui, category, left, row_w, &mut head_y, &mut action);
+        self.panel_part = PanelPart::All;
+        let body_rect = Rect::from_min_max(Pos2::new(scroll_rect.min.x, head_y.clamp(scroll_rect.min.y, scroll_rect.max.y - 40.0)), scroll_rect.max);
+        let mut scroll_ui = ui.new_child(egui::UiBuilder::new().max_rect(body_rect));
+        // A slim handle, in its own lane, always in sight while the list overflows (egui's default only
+        // shows on hover; floating, the themes' borders hid it).
         scroll_ui.spacing_mut().scroll = egui::style::ScrollStyle {
-            bar_width: 6.0,
-            floating_allocated_width: 4.0,
+            floating: false,
+            bar_width: 5.0,
+            bar_inner_margin: 2.0,
+            bar_outer_margin: 1.0,
+            foreground_color: true,
             dormant_background_opacity: 0.0,
             active_background_opacity: 0.0,
-            dormant_handle_opacity: 0.6,
+            dormant_handle_opacity: 0.35,
+            active_handle_opacity: 0.6,
+            interact_handle_opacity: 0.8,
             ..egui::style::ScrollStyle::thin()
         };
         // Mouse drags never scroll it (egui's default): they move tabs, or the window from empty space.
@@ -1948,7 +1980,9 @@ impl App {
         scroll.show(&mut scroll_ui, |ui| {
             let origin = ui.max_rect().min;
             let mut y = origin.y;
+            self.panel_part = PanelPart::Body;
             self.panel_content(ui, category, left, row_w, &mut y, &mut action);
+            self.panel_part = PanelPart::All;
             // Content height, so the scroll area knows how far it can go.
             ui.allocate_rect(Rect::from_min_max(origin, Pos2::new(origin.x + 1.0, y + ROW_H + SIDEBAR_PAD)), Sense::hover());
             self.apply_tab_action(ui, action);
@@ -2525,5 +2559,24 @@ mod tests {
             let left = known.iter().fold(how.to_string(), |s, k| s.replace(k, ""));
             assert!(!left.contains('{'), "unknown shortcut in: {how}");
         }
+    }
+}
+
+/// What of a side panel's section is drawn: all of it (the folded sidebar's flyout), its head (kept on
+/// top), or the rest (under it, scrolling).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PanelPart {
+    All,
+    Head,
+    Body,
+}
+
+impl PanelPart {
+    pub(super) fn head(self) -> bool {
+        self != Self::Body
+    }
+
+    pub(super) fn body(self) -> bool {
+        self != Self::Head
     }
 }

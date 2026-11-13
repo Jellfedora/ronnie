@@ -548,6 +548,8 @@ pub struct App {
     tree: tree::FileTree,
     /// The VS Code layout: the sidebar shows git rather than the files.
     ws_git: bool,
+    /// What of the side panel's section is drawn now (its head stays on top, the rest scrolls).
+    panel_part: sidebar::PanelPart,
     /// A profile or a group being dragged in the profiles' bar.
     bar_drag: Option<profilebar::BarDrag>,
     /// The folded sidebar's category shown beside it.
@@ -1389,6 +1391,7 @@ impl App {
             tree: tree::FileTree::default(),
             rail_flyout: None,
             ws_git: false,
+            panel_part: sidebar::PanelPart::All,
             bar_drag: None,
             library: library::Library::default(),
             media_keys: crate::media_keys::MediaKeys::new(&cc.egui_ctx, {

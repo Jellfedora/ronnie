@@ -774,8 +774,13 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
-        super::sidebar::paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.music_nav, &theme);
-        *y += SECTION_HEADER_H;
+        if self.panel_part.head() {
+            super::sidebar::paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.music_nav, &theme);
+            *y += SECTION_HEADER_H;
+        }
+        if !self.panel_part.body() {
+            return;
+        }
         let section = self.music_page.then(|| super::library::nav_section(self.library.view()));
         let mut go = None;
         for (k, (target, icon, label)) in super::library::nav_entries(t).into_iter().enumerate() {

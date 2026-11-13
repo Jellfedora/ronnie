@@ -53,32 +53,37 @@ impl App {
         }
 
         // Files or git, side by side.
-        let seg = Rect::from_min_size(Pos2::new(left + 4.0, *y + 2.0), Vec2::new(row_w - 8.0, 28.0));
-        ui.painter().rect_filled(seg, 7.0, theme.bg.gamma_multiply(0.6));
-        for (k, label) in [t.cat_files, t.ws_git].into_iter().enumerate() {
-            let git = k == 1;
-            let cell = Rect::from_min_size(Pos2::new(seg.min.x + seg.width() / 2.0 * k as f32, seg.min.y), Vec2::new(seg.width() / 2.0, seg.height())).shrink(2.0);
-            let resp = ui.interact(cell, ui.id().with(("ws-seg", k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let on = self.ws_git == git;
-            if on || resp.hovered() {
-                ui.painter().rect_filled(cell, 6.0, if on { theme.tab_active } else { theme.tab_hover });
+        if self.panel_part.head() {
+            let seg = Rect::from_min_size(Pos2::new(left + 4.0, *y + 2.0), Vec2::new(row_w - 8.0, 28.0));
+            ui.painter().rect_filled(seg, 7.0, theme.bg.gamma_multiply(0.6));
+            for (k, label) in [t.cat_files, t.ws_git].into_iter().enumerate() {
+                let git = k == 1;
+                let cell = Rect::from_min_size(Pos2::new(seg.min.x + seg.width() / 2.0 * k as f32, seg.min.y), Vec2::new(seg.width() / 2.0, seg.height())).shrink(2.0);
+                let resp = ui.interact(cell, ui.id().with(("ws-seg", k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let on = self.ws_git == git;
+                if on || resp.hovered() {
+                    ui.painter().rect_filled(cell, 6.0, if on { theme.tab_active } else { theme.tab_hover });
+                }
+                let color = if on { theme.text } else { theme.text_muted };
+                let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(12.5), color);
+                let icon_w = 18.0;
+                let start = cell.center().x - (galley.size().x + icon_w) / 2.0;
+                let icon = Rect::from_center_size(Pos2::new(start + 6.0, cell.center().y), Vec2::splat(13.0));
+                if git {
+                    git::paint_branch_icon(ui.painter(), icon, if on { theme.accent } else { color });
+                } else {
+                    files::paint_file_icon(ui.painter(), icon, "", true, false, None, &theme);
+                }
+                ui.painter().galley(Pos2::new(start + icon_w, cell.center().y - galley.size().y / 2.0), galley, color);
+                if resp.clicked() {
+                    self.ws_git = git;
+                }
             }
-            let color = if on { theme.text } else { theme.text_muted };
-            let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(12.5), color);
-            let icon_w = 18.0;
-            let start = cell.center().x - (galley.size().x + icon_w) / 2.0;
-            let icon = Rect::from_center_size(Pos2::new(start + 6.0, cell.center().y), Vec2::splat(13.0));
-            if git {
-                git::paint_branch_icon(ui.painter(), icon, if on { theme.accent } else { color });
-            } else {
-                files::paint_file_icon(ui.painter(), icon, "", true, false, None, &theme);
-            }
-            ui.painter().galley(Pos2::new(start + icon_w, cell.center().y - galley.size().y / 2.0), galley, color);
-            if resp.clicked() {
-                self.ws_git = git;
-            }
+            *y = seg.max.y + 8.0;
         }
-        *y = seg.max.y + 8.0;
+        if !self.panel_part.body() {
+            return;
+        }
 
         if !self.ws_git {
             self.files_section(ui, left, row_w, y);

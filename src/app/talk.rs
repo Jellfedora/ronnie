@@ -729,64 +729,69 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
-        let head = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
-        paint_panel_title(&painter, head, t.cat_talk, &theme);
-        // Its state, on the right: a dot (green: connected).
-        let (dot, hint) = match &self.talk.status {
-            Status::Ready => (theme.ansi[2], None),
-            Status::Connecting => (theme.ansi[3], Some(t.talk_connecting)),
-            Status::Down(_) => (theme.ansi[1], Some(t.talk_down)),
-            Status::Off => (theme.text_muted.gamma_multiply(0.5), None),
-        };
-        let dot_at = Pos2::new(head.max.x - 12.0, head.center().y);
-        if let Some(hint) = hint {
-            painter.circle_filled(dot_at, 3.5, dot);
-            ui.interact(Rect::from_center_size(dot_at, Vec2::splat(14.0)), ui.id().with("talk-state"), Sense::hover()).on_hover_text(hint);
-        } else if self.talk.ready() {
-            // Connected: the player's status, a click to change it.
-            // A pill (dot, short word, chevron) so it reads as a button.
-            let presence = self.talk.presence();
-            let word = presence_label(t, presence).split(':').next().unwrap_or_default().trim().to_owned();
-            let galley = painter.layout_no_wrap(word, FontId::proportional(11.5), theme.text);
-            let w = galley.size().x + 40.0;
-            let pill = Rect::from_min_size(Pos2::new(head.max.x - w, head.center().y - 10.0), Vec2::new(w, 20.0));
-            let resp = ui.interact(pill, ui.id().with("talk-state"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let hot = resp.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
-            painter.rect_filled(pill.expand(4.0), 0.0, theme.chrome_bg);
-            painter.rect(pill, 10.0, if hot { theme.tab_hover } else { theme.chrome_bg }, Stroke::new(1.0, if hot { theme.accent } else { theme.text_muted.gamma_multiply(0.5) }), egui::StrokeKind::Inside);
-            paint_presence(&painter, Pos2::new(pill.min.x + 11.0, pill.center().y), 4.0, presence, theme.chrome_bg, &theme);
-            let text_color = if hot { theme.text } else { theme.text_muted };
-            painter.galley_with_override_text_color(Pos2::new(pill.min.x + 20.0, pill.center().y - galley.size().y / 2.0), galley, text_color);
-            let cx = pill.max.x - 10.0;
-            let cy = pill.center().y;
-            painter.line(vec![Pos2::new(cx - 3.0, cy - 1.5), Pos2::new(cx, cy + 1.5), Pos2::new(cx + 3.0, cy - 1.5)], Stroke::new(1.2, text_color));
-            let resp = resp.on_hover_text(t.talk_status_hint.replace("{s}", presence_label(t, presence)));
-            let mut chosen = None;
-            egui::Popup::menu(&resp).width(250.0).show(|ui| {
-                for p in Presence::ALL {
-                    let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
-                    if r.hovered() {
-                        ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        if self.panel_part.head() {
+            let head = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H));
+            paint_panel_title(&painter, head, t.cat_talk, &theme);
+            // Its state, on the right: a dot (green: connected).
+            let (dot, hint) = match &self.talk.status {
+                Status::Ready => (theme.ansi[2], None),
+                Status::Connecting => (theme.ansi[3], Some(t.talk_connecting)),
+                Status::Down(_) => (theme.ansi[1], Some(t.talk_down)),
+                Status::Off => (theme.text_muted.gamma_multiply(0.5), None),
+            };
+            let dot_at = Pos2::new(head.max.x - 12.0, head.center().y);
+            if let Some(hint) = hint {
+                painter.circle_filled(dot_at, 3.5, dot);
+                ui.interact(Rect::from_center_size(dot_at, Vec2::splat(14.0)), ui.id().with("talk-state"), Sense::hover()).on_hover_text(hint);
+            } else if self.talk.ready() {
+                // Connected: the player's status, a click to change it.
+                // A pill (dot, short word, chevron) so it reads as a button.
+                let presence = self.talk.presence();
+                let word = presence_label(t, presence).split(':').next().unwrap_or_default().trim().to_owned();
+                let galley = painter.layout_no_wrap(word, FontId::proportional(11.5), theme.text);
+                let w = galley.size().x + 40.0;
+                let pill = Rect::from_min_size(Pos2::new(head.max.x - w, head.center().y - 10.0), Vec2::new(w, 20.0));
+                let resp = ui.interact(pill, ui.id().with("talk-state"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let hot = resp.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+                painter.rect_filled(pill.expand(4.0), 0.0, theme.chrome_bg);
+                painter.rect(pill, 10.0, if hot { theme.tab_hover } else { theme.chrome_bg }, Stroke::new(1.0, if hot { theme.accent } else { theme.text_muted.gamma_multiply(0.5) }), egui::StrokeKind::Inside);
+                paint_presence(&painter, Pos2::new(pill.min.x + 11.0, pill.center().y), 4.0, presence, theme.chrome_bg, &theme);
+                let text_color = if hot { theme.text } else { theme.text_muted };
+                painter.galley_with_override_text_color(Pos2::new(pill.min.x + 20.0, pill.center().y - galley.size().y / 2.0), galley, text_color);
+                let cx = pill.max.x - 10.0;
+                let cy = pill.center().y;
+                painter.line(vec![Pos2::new(cx - 3.0, cy - 1.5), Pos2::new(cx, cy + 1.5), Pos2::new(cx + 3.0, cy - 1.5)], Stroke::new(1.2, text_color));
+                let resp = resp.on_hover_text(t.talk_status_hint.replace("{s}", presence_label(t, presence)));
+                let mut chosen = None;
+                egui::Popup::menu(&resp).width(250.0).show(|ui| {
+                    for p in Presence::ALL {
+                        let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
+                        if r.hovered() {
+                            ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                        }
+                        paint_presence(ui.painter(), Pos2::new(rect.min.x + 10.0, rect.center().y), 4.0, p, ui.visuals().window_fill, &theme);
+                        let color = if p == presence { theme.text } else { theme.text_muted };
+                        ui.painter().text(Pos2::new(rect.min.x + 22.0, rect.center().y), Align2::LEFT_CENTER, presence_label(t, p), FontId::proportional(13.0), color);
+                        if p == presence {
+                            ui.painter().text(Pos2::new(rect.max.x - 8.0, rect.center().y), Align2::RIGHT_CENTER, "✓", FontId::proportional(13.0), theme.accent);
+                        }
+                        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            chosen = Some(p);
+                            ui.close();
+                        }
                     }
-                    paint_presence(ui.painter(), Pos2::new(rect.min.x + 10.0, rect.center().y), 4.0, p, ui.visuals().window_fill, &theme);
-                    let color = if p == presence { theme.text } else { theme.text_muted };
-                    ui.painter().text(Pos2::new(rect.min.x + 22.0, rect.center().y), Align2::LEFT_CENTER, presence_label(t, p), FontId::proportional(13.0), color);
-                    if p == presence {
-                        ui.painter().text(Pos2::new(rect.max.x - 8.0, rect.center().y), Align2::RIGHT_CENTER, "✓", FontId::proportional(13.0), theme.accent);
-                    }
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        chosen = Some(p);
-                        ui.close();
-                    }
+                });
+                if let Some(p) = chosen.filter(|&p| p != presence) {
+                    self.talk.set_presence(p);
                 }
-            });
-            if let Some(p) = chosen.filter(|&p| p != presence) {
-                self.talk.set_presence(p);
+            } else {
+                painter.circle_filled(dot_at, 3.5, dot);
             }
-        } else {
-            painter.circle_filled(dot_at, 3.5, dot);
+            *y += SECTION_HEADER_H;
         }
-        *y += SECTION_HEADER_H;
+        if !self.panel_part.body() {
+            return;
+        }
 
         // No pseudo: the chat needs one.
         if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_none() {
