@@ -2027,8 +2027,8 @@ impl App {
         }
     }
 
-    /// The emoji picker, open: the emoji clicked goes in the field (the picker stays) or reacts to the
-    /// message (it closes); a click elsewhere or Esc closes it.
+    /// The emoji picker, open: the emoji clicked goes in the field or reacts to the message, and the
+    /// picker closes; a click elsewhere or Esc closes it too.
     fn talk_emoji_picker(&mut self, ctx: &egui::Context, t: &'static Strings, theme: &Theme) {
         let Some(sheet) = self.talk_ui.emoji_sheet.texture(ctx).cloned() else { return };
         let Some(open) = &mut self.talk_ui.emoji_open else { return };
@@ -2054,7 +2054,10 @@ impl App {
             self.save_config();
         }
         match (chosen, target) {
-            (Some(chars), EmojiTarget::Draft(room)) => self.put_emoji(ctx, &room, &chars, None),
+            (Some(chars), EmojiTarget::Draft(room)) => {
+                self.put_emoji(ctx, &room, &chars, None);
+                self.talk_ui.emoji_open = None;
+            }
             (Some(chars), EmojiTarget::React(room, message)) => {
                 self.talk.react(&room, message, &chars, true);
                 super::emojis::remember(&mut self.config.settings.emoji_recent, &chars);
