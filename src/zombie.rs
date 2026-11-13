@@ -182,6 +182,10 @@ pub const LAST_WAVE: u32 = 30;
 /// The grades, in floor's order (career.js GRADES): the names it sends.
 pub const GRADES: [&str; 8] = ["Stagiaire", "CDD", "CDI", "Chef d’équipe", "Manager", "Directeur", "DG", "PDG"];
 /// The grade each thing of the coffee machine opens at (career.js SHOP_GRADE).
+/// The turret crate (floor's CRATE_*): from this career grade (CDI) on, so many seconds on it.
+pub const CRATE_GRADE: u32 = 2;
+pub const CRATE_HOLD: f32 = 3.0;
+
 pub const SHOP_GRADE: [(&str, u32); 10] = [("mug", 0), ("dmg", 0), ("mag", 0), ("extinguisher", 1), ("turret", 3), ("confetti", 4), ("tape", 1), ("stamp", 2), ("plant", 5), ("projector", 6)];
 
 /// The weapons, in floor's order (its WEAPON_IDS).
@@ -282,8 +286,10 @@ pub struct Frame {
     pub break_left: u32,
     /// Zombies still to come or standing.
     pub left: u32,
-    /// The team's meal tickets.
+    /// The team's meal tickets (all of them).
     pub tickets: u32,
+    /// Each one's meal tickets: player id, tickets (empty from an older floor: the team's only).
+    pub own_tickets: Vec<(u32, u32)>,
     pub players: Vec<Player>,
     pub zombies: Vec<Zombie>,
     pub shots: Vec<Shot>,
@@ -292,6 +298,10 @@ pub struct Frame {
     pub gerard: Option<(f32, f32, bool)>,
     /// The photocopier turrets: x, y, aim, seconds left.
     pub turrets: Vec<(f32, f32, f32, u32)>,
+    /// Each turret's perimeter (in the order of `turrets`).
+    pub turret_ranges: Vec<f32>,
+    /// The turret crates: x, y, seconds someone has stood on it, seconds left.
+    pub crates: Vec<(f32, f32, f32, u32)>,
     /// Agnès' letters lying on the floor.
     pub letters: Vec<(f32, f32)>,
     /// Weapons dropped by zombies: x, y, weapon (index in WEAPONS), seconds left.
@@ -307,6 +317,16 @@ pub struct Frame {
     /// Paused (alone, Escape or another page).
     pub paused: bool,
     pub at: Instant,
+}
+
+impl Frame {
+    /// Player `id`'s meal tickets (the team's, from a floor older than each one's own).
+    pub fn tickets_of(&self, id: u32) -> u32 {
+        if self.own_tickets.is_empty() {
+            return self.tickets;
+        }
+        self.own_tickets.iter().find(|t| t.0 == id).map_or(0, |t| t.1)
+    }
 }
 
 /// Agnès, from the reception desk.
@@ -533,6 +553,9 @@ pub enum Happened {
     Reboot { x: f32, y: f32 },
     /// A first-aid kit picked up (by whom, where).
     Healed { player: u32, x: f32, y: f32 },
+    /// A turret crate dropped there; a turret set up on one (by whom, where).
+    CrateDrop { x: f32, y: f32 },
+    Crate { player: u32, x: f32, y: f32 },
     /// A floor's boss comes in.
     MiniBoss(Kind),
     /// The union rep's strike; the consultant's copies; a player audited; the CFO's cuts (tickets
@@ -628,6 +651,12 @@ enum Wire {
         fl: usize,
         #[serde(default)]
         ps: u8,
+        #[serde(default)]
+        tq: Vec<f32>,
+        #[serde(default)]
+        c: Vec<f32>,
+        #[serde(default)]
+        pt: Vec<f64>,
     },
     #[serde(rename = "news")]
     News { l: Vec<serde_json::Value> },
@@ -910,7 +939,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, pa, fl, ps } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, pa, fl, ps, tq, c, pt } => {
                 let mut players: Vec<Player> = p
                     .chunks_exact(22)
                     .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
@@ -991,8 +1020,10 @@ impl Online {
                 let kits = m.chunks_exact(3).map(|v| (v[0], v[1], v[2] as u32)).collect();
                 let audited = fz.chunks_exact(2).map(|v| (v[0] as u32, v[1] / 10.0)).collect();
                 let heal_zones = hz.chunks_exact(3).map(|v| (v[0], v[1], v[2] / 10.0)).collect();
+                let crates = c.chunks_exact(4).map(|v| (v[0], v[1], v[2] / 10.0, v[3] as u32)).collect();
+                let own_tickets = pt.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -1069,6 +1100,8 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "teleport" => Happened::Teleport(u("player")),
         "reboot" => Happened::Reboot { x: n("x") as f32, y: n("y") as f32 },
         "heal" => Happened::Healed { player: u("id"), x: n("x") as f32, y: n("y") as f32 },
+        "crate-drop" => Happened::CrateDrop { x: n("x") as f32, y: n("y") as f32 },
+        "crate" => Happened::Crate { player: u("player"), x: n("x") as f32, y: n("y") as f32 },
         _ => return None,
     })
 }
@@ -1197,6 +1230,21 @@ mod tests {
         // Every kind's id reads back.
         assert!(ALL_KINDS.iter().all(|k| Kind::of(k.id()) == *k));
         assert!(ALL_KINDS.iter().enumerate().all(|(n, k)| Kind::from(n as f32) == *k));
+    }
+
+    #[test]
+    fn each_ones_tickets_and_the_turret_crates() {
+        let mut online = Online::default();
+        take(&mut online, r#"{"t":"welcome","map":{"w":1600,"h":1000,"wall":20,"desks":[],"coffee":{"x":90,"y":500},"doors":[]}}"#);
+        take(&mut online, r#"{"t":"s","ph":1,"w":3,"tl":0,"zl":4,"tk":130,"p":[],"z":[],"b":[],"tu":[10,20,0,9],"tq":[240],"c":[300,400,15,18],"pt":[7,100,8,30]}"#);
+        let f = online.frame.clone().unwrap();
+        assert_eq!((f.tickets_of(7), f.tickets_of(8), f.tickets_of(9)), (100, 30, 0));
+        assert_eq!((f.turret_ranges.clone(), f.crates.clone()), (vec![240.0], vec![(300.0, 400.0, 1.5, 18)]));
+        // From an older floor: the team's tickets for everyone.
+        take(&mut online, r#"{"t":"s","ph":1,"w":3,"tl":0,"zl":4,"tk":130,"p":[],"z":[],"b":[]}"#);
+        assert_eq!(online.frame.as_ref().unwrap().tickets_of(7), 130);
+        let news = take(&mut online, r#"{"t":"news","l":[{"t":"crate-drop","x":1,"y":2},{"t":"crate","player":7,"x":3,"y":4}]}"#);
+        assert_eq!(news.happened, vec![Happened::CrateDrop { x: 1.0, y: 2.0 }, Happened::Crate { player: 7, x: 3.0, y: 4.0 }]);
     }
 
     #[test]

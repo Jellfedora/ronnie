@@ -331,6 +331,16 @@ impl App {
                         self.monday_sound(&[(523.0, 523.0, 0.08, 0.2), (784.0, 784.0, 0.15, 0.2)]);
                     }
                 }
+                Happened::CrateDrop { x, y } => {
+                    self.monday.floats.push((t.monday_crate_drop.to_owned(), x, y - 30.0, Color32::from_rgb(255, 181, 71), now));
+                    self.monday_sound(&[(330.0, 330.0, 0.06, 0.15), (440.0, 440.0, 0.1, 0.15)]);
+                }
+                Happened::Crate { player, x, y } => {
+                    self.monday.floats.push((t.monday_crate.to_owned(), x, y - 30.0, Color32::from_rgb(255, 181, 71), now));
+                    if Some(player) == me {
+                        self.monday_sound(&[(220.0, 440.0, 0.25, 0.2), (660.0, 660.0, 0.12, 0.2)]);
+                    }
+                }
                 Happened::Down(id) => {
                     if Some(id) == me {
                         self.monday_sound(&[(300.0, 120.0, 0.5, 0.3)]);
@@ -963,6 +973,8 @@ impl App {
 
     /// The game: the office as big as the page lets it, everyone in it, the counters around.
     fn monday_game(&mut self, ui: &mut Ui, rect: Rect, now: f64, pseudo: &str) {
+        /// The strip under the field for a player's weapons.
+        const WEAPON_STRIP: f32 = 104.0;
         let t = self.t();
         let theme = self.theme.clone();
         let Some(frame) = self.monday.online.frame.clone() else { return };
@@ -980,10 +992,12 @@ impl App {
         // Between the last two frames: everyone moves smoothly.
         let mix = frame_mix(online.before.as_ref(), &frame);
 
-        let room = Vec2::new(rect.width() - 24.0, rect.height() - 24.0);
+        // A player's weapons go in a strip under the field (not over its bottom left corner).
+        let strip = if me.is_some() { WEAPON_STRIP } else { 0.0 };
+        let room = Vec2::new(rect.width() - 24.0, rect.height() - 24.0 - strip);
         let scale = (room.x / map.w).min(room.y / map.h).max(0.2);
         let size = Vec2::new(map.w, map.h) * scale;
-        let field = Rect::from_center_size(rect.center(), size);
+        let field = Rect::from_center_size(rect.center() - Vec2::new(0.0, strip / 2.0), size);
         let at = |x: f32, y: f32| field.min + Vec2::new(x, y) * scale;
         let painter = ui.painter_at(field);
 
@@ -1052,8 +1066,20 @@ impl App {
         for s in &frame.shots {
             paint_shot(&painter, at(s.x, s.y), scale, s.angle, s.weapon, now);
         }
-        for &(x, y, aim, left) in &frame.turrets {
+        for (k, &(x, y, aim, left)) in frame.turrets.iter().enumerate() {
+            // Its perimeter, faintly (a crate's turret fires at all that enters it).
+            if let Some(&range) = frame.turret_ranges.get(k) {
+                let pulse = 0.5 + 0.5 * (now * 2.0).sin() as f32;
+                painter.circle_filled(at(x, y), range * scale, Color32::from_rgba_unmultiplied(255, 181, 71, (8.0 + 6.0 * pulse) as u8));
+                painter.circle_stroke(at(x, y), range * scale, Stroke::new(1.5 * scale.max(0.6), Color32::from_rgba_unmultiplied(255, 181, 71, 70)));
+            }
             paint_turret(&painter, at(x, y), scale, aim, left);
+        }
+        // The turret crates: who has the grade sees how long to stay on it; the others, the grade it takes.
+        let can_crate = self.monday.online.career.as_ref().is_some_and(|c| c.grade >= crate::zombie::CRATE_GRADE);
+        for &(x, y, hold, left) in &frame.crates {
+            let need = (!can_crate).then(|| grade_name(t, crate::zombie::CRATE_GRADE, 0));
+            paint_crate(&painter, at(x, y), scale, hold / crate::zombie::CRATE_HOLD, left, now, need.as_deref());
         }
         for &(x, y) in &frame.letters {
             paint_letter(&painter, at(x, y), scale, now);
@@ -1161,7 +1187,7 @@ impl App {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         }
 
-        // The counters: the wave, the team's tickets, the weapon, the team.
+        // The counters: the wave, the player's tickets (watching: the team's), the weapon, the team.
         let hud = ui.painter_at(rect);
         let panel = |r: Rect| hud.rect_filled(r, 10.0, Color32::from_rgba_unmultiplied(18, 20, 26, 210));
         let top = Rect::from_min_size(field.min + Vec2::new(12.0, 12.0), Vec2::new(300.0, 58.0));
@@ -1175,13 +1201,13 @@ impl App {
         let tickets = Rect::from_min_size(Pos2::new(field.max.x - 182.0, field.min.y + 12.0), Vec2::new(170.0, 40.0));
         panel(tickets);
         hud.text(tickets.left_center() + Vec2::new(14.0, 0.0), Align2::LEFT_CENTER, t.monday_tickets, FontId::monospace(11.0), theme.text_muted);
-        hud.text(tickets.right_center() - Vec2::new(14.0, 0.0), Align2::RIGHT_CENTER, frame.tickets.to_string(), FontId::monospace(20.0), theme.accent);
+        hud.text(tickets.right_center() - Vec2::new(14.0, 0.0), Align2::RIGHT_CENTER, mine.map_or(frame.tickets, |p| frame.tickets_of(p.id)).to_string(), FontId::monospace(20.0), theme.accent);
         if let Some(p) = mine {
             // The four weapons, side by side: the key, the name, the ammo, the upgrades (damage on top,
             // magazine under); the one in hand lit, those not had yet dimmed.
             let short: Vec<&str> = t.monday_weapons_short.split('|').collect();
             let (slot_w, gap) = (78.0, 5.0);
-            let gun = Rect::from_min_size(Pos2::new(field.min.x + 12.0, field.max.y - 104.0), Vec2::new(20.0 + 8.0 * slot_w + 7.0 * gap, 92.0));
+            let gun = Rect::from_min_size(Pos2::new(field.min.x, field.max.y + 8.0), Vec2::new(20.0 + 8.0 * slot_w + 7.0 * gap, 92.0));
             panel(gun);
             for (k, &tint) in WEAPON_COLORS.iter().enumerate() {
                 let slot = Rect::from_min_size(gun.min + Vec2::new(10.0 + k as f32 * (slot_w + gap), 10.0), Vec2::new(slot_w, 52.0));
@@ -1240,13 +1266,13 @@ impl App {
                 }
             }
         }
-        // The coffee machine, during the break: what the team's tickets buy.
+        // The coffee machine, during the break: what the player's tickets buy.
         if let (false, Some(p)) = (frame.wave_on, mine.filter(|p| p.state == State::Up)) {
             self.monday_shop(ui, field, &frame, p);
         }
         // The perks' keys, and when they're back.
         if let Some(p) = mine {
-            let mut y = field.max.y - 120.0;
+            let mut y = field.max.y - 16.0;
             for (perk, key, left) in [("rtt", t.monday_dash, p.dash_in), ("teletravail", t.monday_tp, p.teleport_in)] {
                 if self.monday.online.perks.iter().any(|q| q == perk) {
                     let text = if left > 0 { format!("{key}  {left} s") } else { key.to_owned() };
@@ -1434,7 +1460,7 @@ impl App {
         }
     }
 
-    /// The coffee machine, on the right of the field during the break: what the team's tickets buy
+    /// The coffee machine, on the right of the field during the break: what the player's tickets buy
     /// (what the player's grade opens), at its price.
     fn monday_shop(&mut self, ui: &mut Ui, field: Rect, frame: &Frame, me: crate::zombie::Player) {
         let t = self.t();
@@ -1462,7 +1488,7 @@ impl App {
                 let grade = crate::zombie::SHOP_GRADE.iter().find(|(i, _)| i == item).map_or(0, |(_, g)| *g);
                 (t.monday_locked_grade.replace("{g}", &grade_name(t, grade, 0)), false)
             } else if let Some(price) = price {
-                (format!("{price}"), frame.tickets >= price && !(*item == "mug" && me.hp >= me.max_hp))
+                (format!("{price}"), frame.tickets_of(me.id) >= price && !(*item == "mug" && me.hp >= me.max_hp))
             } else {
                 (t.monday_maxed.to_owned(), false)
             };
@@ -2353,6 +2379,37 @@ fn paint_kit(painter: &egui::Painter, c: Pos2, scale: f32, left: u32, now: f64) 
     let red = Color32::from_rgb(220, 40, 50);
     painter.rect_filled(Rect::from_center_size(r#box.center(), Vec2::new(12.0, 4.0) * scale), 0.0, red);
     painter.rect_filled(Rect::from_center_size(r#box.center(), Vec2::new(4.0, 12.0) * scale), 0.0, red);
+}
+
+/// A turret crate on the floor: a wooden box, a photocopier drawn on it; around it, how long someone
+/// has stood on it (`hold`, 0 to 1); `need`, the grade it takes when the player hasn't it.
+fn paint_crate(painter: &egui::Painter, c: Pos2, scale: f32, hold: f32, left: u32, now: f64, need: Option<&str>) {
+    if left <= 5 && hold <= 0.0 && (now * 6.0).sin() < 0.0 {
+        return;
+    }
+    let gold = Color32::from_rgb(255, 181, 71);
+    let pulse = 0.5 + 0.5 * (now * 3.0).sin() as f32;
+    painter.circle_filled(c, (26.0 + 5.0 * pulse) * scale, Color32::from_rgba_unmultiplied(255, 181, 71, (24.0 + 26.0 * pulse) as u8));
+    let r#box = Rect::from_center_size(c, Vec2::new(30.0, 26.0) * scale);
+    painter.rect_filled(r#box.translate(Vec2::new(2.0, 4.0) * scale), 3.0 * scale, Color32::from_black_alpha(80));
+    painter.rect_filled(r#box, 3.0 * scale, Color32::from_rgb(160, 110, 60));
+    let plank = Stroke::new(1.2 * scale.max(0.6), Color32::from_rgb(110, 72, 36));
+    painter.rect_stroke(r#box, 3.0 * scale, plank, egui::StrokeKind::Inside);
+    painter.line_segment([r#box.left_top(), r#box.right_bottom()], plank);
+    painter.line_segment([r#box.right_top(), r#box.left_bottom()], plank);
+    // The photocopier on it, in stencil.
+    let icon = Rect::from_center_size(c, Vec2::new(14.0, 9.0) * scale);
+    painter.rect_filled(icon, 1.5 * scale, Color32::from_rgb(40, 34, 30));
+    painter.rect_filled(Rect::from_center_size(icon.center_top() - Vec2::new(0.0, 2.0 * scale), Vec2::new(10.0, 3.0) * scale), 1.0, Color32::from_rgb(40, 34, 30));
+    if hold > 0.0 {
+        let r = 24.0 * scale;
+        let end = hold.clamp(0.0, 1.0) * std::f32::consts::TAU;
+        let ring: Vec<Pos2> = (0..=40).map(|i| c + Vec2::angled(-std::f32::consts::FRAC_PI_2 + end * i as f32 / 40.0) * r).collect();
+        painter.add(egui::Shape::line(ring, Stroke::new(4.0 * scale.max(0.6), gold)));
+    }
+    if let Some(grade) = need {
+        painter.text(c - Vec2::new(0.0, 26.0 * scale), Align2::CENTER_CENTER, format!("🔒 {grade}"), FontId::proportional(11.0 * scale.max(0.8)), Color32::from_white_alpha(200));
+    }
 }
 
 /// The confetti's colours.
