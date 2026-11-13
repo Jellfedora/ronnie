@@ -1824,10 +1824,13 @@ impl App {
         let card_top = self.music_card(ui, left, row_w, card_top);
         // The account's card: in the games and the chat (a click: the account window).
         let card_top = if matches!(self.category(), Category::Games | Category::Talk) { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
+        // Where a theme's scene starts, above the cards: the list stops over it (never on it).
+        let mut scene_top = card_top;
         if self.theme.hyperspace {
             // Star Wars: the starfield, the Death Star, the droid (who beeps when hovered), the chase, just
-            // above the cards (the list goes over them).
+            // above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 116.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
             let now = ui.input(|i| i.time);
             let again = super::hyperspace::starfield(ui.painter(), field, &self.theme, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
@@ -1837,6 +1840,7 @@ impl App {
             // Game of Thrones: the Wall, its White Walkers and the snow, just above the cards; now and then
             // the dragon dives down the whole sidebar, above what is in it (and never out of it).
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
             let now = ui.input(|i| i.time);
             let again = super::thrones::wall(ui.painter(), field, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
@@ -1849,6 +1853,7 @@ impl App {
         if self.theme.monday {
             // Lundi matin: night over the tower, its zombies shambling by, a hand out of the ground.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
             let now = ui.input(|i| i.time);
             let again = super::monday_theme::scene(ui.painter(), field, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
@@ -1856,6 +1861,7 @@ impl App {
         if self.theme.wizard {
             // Gryffindor: the castle at night, the candles, the Snitch, the owl, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
             let now = ui.input(|i| i.time);
             let again = super::wizard::scene(ui.painter(), field, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
@@ -1863,14 +1869,15 @@ impl App {
         }
         if self.theme.office {
             // Open space: the cork board, the plant, the coffee machine (it speaks when hovered), the water
-            // cooler, just above the cards (the list goes over them).
+            // cooler, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 96.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
             let now = ui.input(|i| i.time);
             let again = super::office::scene(ui.painter(), field, &self.theme, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::office::coffee_rect(field), ui.id().with("coffee"), Sense::hover()).on_hover_text(t.office_coffee);
         }
-        let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, card_top));
+        let scroll_rect = Rect::from_min_max(Pos2::new(bar.min.x, logo_rect.max.y), Pos2::new(bar.max.x - 1.0, scene_top.max(logo_rect.max.y + 120.0)));
         // The file tree's panel widens from its edge.
         // Not while it folds or unfolds (cut by the window's edge then).
         let wide = category == Category::Local;

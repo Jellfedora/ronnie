@@ -633,6 +633,8 @@ impl App {
             let tile = Rect::from_min_size(Pos2::new(inner.min.x + (k % cols) as f32 * (tile_w + gap), top + (k / cols) as f32 * (tile_h + gap)), Vec2::new(tile_w, tile_h));
             let resp = ui.interact(tile, ui.id().with(("bestiary", k)), Sense::hover());
             let lit = seen[k] && resp.hovered();
+            // Each kept in its tile (the coach's halo, the bosses' size).
+            let p = p.with_clip_rect(tile.intersect(p.clip_rect()));
             p.rect_filled(tile, 10.0, if lit { theme.tab_hover } else { theme.bg });
             if boss {
                 p.rect_stroke(tile, 10.0, Stroke::new(1.0, theme.ansi[1].gamma_multiply(if seen[k] { 0.6 } else { 0.25 })), egui::StrokeKind::Inside);
