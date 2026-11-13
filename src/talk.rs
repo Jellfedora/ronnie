@@ -57,6 +57,9 @@ pub struct Member {
     /// Bitten (Lundi matin's bite), until then (ms since 1970): green, growling, to be helped up.
     #[serde(default)]
     pub bitten: Option<i64>,
+    /// The title it wears (a Lundi matin achievement's id).
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// The status a player gives themself: online (at first), busy (not disturbed: no notifications, no
@@ -935,6 +938,12 @@ impl Talk {
     }
 
     /// A player's frame, from what floor sent last.
+    pub fn title_of(&self, id: &str) -> Option<String> {
+        let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
+        self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).and_then(|m| m.title.clone())
+    }
+
+    /// The frame a player wears (from what floor sent last).
     pub fn frame_of(&self, id: &str) -> Option<String> {
         let rooms = self.rooms.iter().flat_map(|r| r.members.iter());
         self.everyone.iter().chain(self.online.iter()).chain(self.me.iter()).chain(rooms).find(|m| m.id == id).and_then(|m| m.frame.clone())

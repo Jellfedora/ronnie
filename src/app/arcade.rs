@@ -233,7 +233,14 @@ impl App {
             let face = entry.id.as_deref().and_then(|id| self.avatars.get(ui.ctx(), account, id, entry.avatar.as_deref()));
             super::talk::paint_avatar(&painter, Pos2::new(area.min.x + 40.0, y + 8.0), 8.0, name, false, face.as_ref(), entry.frame.as_deref(), theme);
             super::office::paint_badge(&painter, Pos2::new(area.min.x + 40.0, y + 8.0), 8.0, &entry.badges);
-            painter.text(Pos2::new(area.min.x + 56.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
+            let named = painter.text(Pos2::new(area.min.x + 56.0, y), Align2::LEFT_TOP, name, FontId::proportional(13.0), color);
+            // Their Lundi matin title, in gold, when there's room.
+            if let Some(title) = entry.title.as_deref().and_then(|id| super::talk::title_name(t, id)) {
+                let galley = painter.layout_no_wrap(format!("« {title} »"), FontId::proportional(10.5), Color32::from_rgb(222, 180, 80));
+                if named.max.x + 6.0 + galley.size().x < area.max.x - 120.0 {
+                    painter.galley(Pos2::new(named.max.x + 6.0, y + 2.0), galley, Color32::from_rgb(222, 180, 80));
+                }
+            }
             painter.text(Pos2::new(area.max.x, y), Align2::RIGHT_TOP, score(entry.score), FontId::monospace(13.0), color);
             if let Some(note) = note(entry) {
                 painter.text(Pos2::new(area.max.x - 76.0, y + 1.0), Align2::RIGHT_TOP, note, FontId::proportional(12.0), theme.text_muted);

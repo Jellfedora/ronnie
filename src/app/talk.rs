@@ -927,7 +927,15 @@ impl App {
                     unbite = Some(m.id.clone());
                 }
             } else {
-                painter.text(Pos2::new(slot.min.x + 34.0, slot.center().y), Align2::LEFT_CENTER, &m.name, FontId::proportional(13.0), color);
+                let name = painter.text(Pos2::new(slot.min.x + 34.0, slot.center().y), Align2::LEFT_CENTER, &m.name, FontId::proportional(13.0), color);
+                // Its Lundi matin title, after it, in gold.
+                if let Some(title) = m.title.as_deref().and_then(|id| title_name(t, id)) {
+                    let room_left = slot.max.x - 8.0 - name.max.x;
+                    let galley = painter.layout_no_wrap(format!("« {title} »"), FontId::proportional(10.5), Color32::from_rgb(222, 180, 80));
+                    if galley.size().x + 6.0 < room_left {
+                        painter.galley(Pos2::new(name.max.x + 6.0, slot.center().y - galley.size().y / 2.0), galley, Color32::from_rgb(222, 180, 80));
+                    }
+                }
             }
             if resp.clicked() {
                 dm = Some(m.id.clone());
@@ -1768,6 +1776,9 @@ impl App {
                 ui.horizontal(|ui| {
                     if room.kind == Kind::Group {
                         ui.label(egui::RichText::new(&name).size(12.5).strong().color(tint(theme, &name)));
+                        if let Some(title) = self.talk.title_of(&m.from).and_then(|id| title_name(t, &id)) {
+                            ui.label(egui::RichText::new(format!("« {title} »")).size(11.0).color(Color32::from_rgb(222, 180, 80)));
+                        }
                     }
                     ui.label(egui::RichText::new(clock(m.at)).size(11.0).color(theme.text_muted.gamma_multiply(0.75)));
                 });
@@ -2916,4 +2927,10 @@ impl App {
             }
         }
     }
+}
+
+/// A Lundi matin title's words, from its achievement's id.
+pub(super) fn title_name(t: &Strings, id: &str) -> Option<&'static str> {
+    let k = super::zombie::ACHIEVEMENTS.iter().position(|a| *a == id)?;
+    t.monday_titles.split('|').nth(k)
 }

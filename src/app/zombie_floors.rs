@@ -73,6 +73,8 @@ pub(super) fn paint_floor(painter: &egui::Painter, map: &Map, to: To, s: f32, no
         "hall" => ground_marble(painter, map, to, s),
         "board" => ground_parquet(painter, map, to, s),
         "roof" => ground_roof(painter, map, to, s, now),
+        "canteen" => ground_lino(painter, map, to, s),
+        "servers" => ground_raised(painter, map, to, s, now),
         _ => ground_carpet(painter, map, to, s),
     }
     // The lights of the ceiling on the ground (the sun, on the roof).
@@ -158,6 +160,57 @@ fn ground_carpet(painter: &egui::Painter, map: &Map, to: To, s: f32) {
     gradient(painter, Rect::from_min_max(to(60.0, 600.0), to(map.w - 60.0, 640.0)), Color32::from_white_alpha(8), Color32::TRANSPARENT, true);
 }
 
+/// The canteen: a linoleum checkerboard, cream and green, its trodden way to the self-service.
+fn ground_lino(painter: &egui::Painter, map: &Map, to: To, s: f32) {
+    let tile = 80.0;
+    for i in 0..(map.w / tile).ceil() as i32 {
+        for j in 0..(map.h / tile).ceil() as i32 {
+            let v = hash(i, j);
+            let base = if (i + j) % 2 == 0 { rgb(222, 214, 190) } else { rgb(120, 158, 132) };
+            let r = Rect::from_min_size(to(i as f32 * tile, j as f32 * tile), Vec2::splat(tile * s + 0.5));
+            painter.rect_filled(r, 0.0, base.lerp_to_gamma(Color32::BLACK, v * 0.08));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_black_alpha(25)), egui::StrokeKind::Inside);
+            // A scuff now and then.
+            if v > 0.82 {
+                let c = r.center() + Vec2::new((hash(j, i) - 0.5) * 30.0, 0.0) * s;
+                painter.line_segment([c, c + Vec2::new(14.0, 3.0) * s], Stroke::new(2.0 * s, Color32::from_black_alpha(30)));
+            }
+        }
+    }
+    // A spilt tray of peas, a puddle of soup.
+    painter.add(egui::Shape::ellipse_filled(to(1000.0, 300.0), Vec2::new(26.0, 16.0) * s, rgb(196, 150, 70).gamma_multiply(0.7)));
+    for k in 0..7 {
+        painter.circle_filled(to(560.0 + hash(k, 3) * 60.0, 820.0 + hash(3, k) * 30.0), 3.0 * s, rgb(110, 170, 70));
+    }
+}
+
+/// The server room: a raised floor of grey tiles, some perforated (the cold air), cables under,
+/// the blue glow of the racks.
+fn ground_raised(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    let tile = 60.0;
+    for i in 0..(map.w / tile).ceil() as i32 {
+        for j in 0..(map.h / tile).ceil() as i32 {
+            let v = hash(i, j);
+            let r = Rect::from_min_size(to(i as f32 * tile, j as f32 * tile), Vec2::splat(tile * s + 0.5));
+            painter.rect_filled(r, 0.0, rgb(58, 62, 70).lerp_to_gamma(rgb(70, 74, 84), v));
+            painter.rect_stroke(r.shrink(1.0), 1.0, Stroke::new(1.0, Color32::from_black_alpha(70)), egui::StrokeKind::Inside);
+            if (i * 7 + j * 3) % 5 == 0 {
+                // Perforated: a grid of holes.
+                for a in 0..4 {
+                    for b in 0..4 {
+                        painter.circle_filled(r.min + Vec2::new(10.0 + a as f32 * 13.0, 10.0 + b as f32 * 13.0) * s, 1.6 * s, Color32::from_black_alpha(140));
+                    }
+                }
+            }
+        }
+    }
+    // The racks' blue light on the floor, breathing.
+    let breath = 0.7 + 0.3 * (now * 1.3).sin() as f32;
+    for d in map.desks.iter().filter(|d| d.k == "rack") {
+        radial(painter, to(d.x + d.w / 2.0, d.y + d.h / 2.0), (d.w.max(d.h) * 0.9) * s, Color32::from_rgba_unmultiplied(60, 140, 255, (30.0 * breath) as u8), Color32::TRANSPARENT);
+    }
+}
+
 /// The boardroom: a parquet of walnut planks, laid staggered.
 fn ground_parquet(painter: &egui::Painter, map: &Map, to: To, s: f32) {
     let (pw, ph) = (180.0, 28.0);
@@ -229,6 +282,8 @@ fn walls(painter: &egui::Painter, map: &Map, to: To, s: f32, field: Rect) {
         "hall" => (rgb(132, 124, 112), rgb(170, 162, 148)),
         "board" => (rgb(66, 42, 30), rgb(96, 64, 44)),
         "roof" => (rgb(150, 150, 146), rgb(186, 186, 182)),
+        "canteen" => (rgb(186, 170, 140), rgb(214, 200, 172)),
+        "servers" => (rgb(34, 38, 46), rgb(52, 58, 70)),
         _ => (rgb(56, 63, 80), rgb(78, 88, 108)),
     };
     let w = map.wall * s;
@@ -521,6 +576,110 @@ fn furniture(painter: &egui::Painter, d: &Desk, to: To, s: f32, now: f64, boss: 
             painter.circle_filled(r.right_center() - Vec2::new(26.0, 0.0) * s, 7.0 * s, rgb(70, 110, 60));
         }
         "heli" => helicopter(painter, d, to, s, now, boss),
+        "cantable" => {
+            // A long canteen table, its stools both sides, trays and plates.
+            let n = ((d.w / 70.0) as i32).max(2);
+            for k in 0..n {
+                let x = d.x + 35.0 + k as f32 * (d.w - 70.0) / (n - 1).max(1) as f32;
+                for (y, out) in [(d.y - 14.0, -1.0), (d.y + d.h + 14.0, 1.0)] {
+                    painter.circle_filled(to(x, y) + Vec2::new(2.0, 3.0) * s, 10.0 * s, Color32::from_black_alpha(60));
+                    painter.circle_filled(to(x, y), 10.0 * s, rgb(220, 90, 60));
+                    painter.circle_filled(to(x, y) + Vec2::new(0.0, out * 2.0) * s, 6.0 * s, rgb(240, 120, 86));
+                }
+            }
+            shadow(4.0 * s);
+            painter.rect_filled(r, 4.0 * s, rgb(210, 206, 196));
+            painter.rect_stroke(r, 4.0 * s, Stroke::new(1.5 * s, rgb(150, 146, 136)), egui::StrokeKind::Inside);
+            for k in 0..n {
+                let x = d.x + 35.0 + k as f32 * (d.w - 70.0) / (n - 1).max(1) as f32;
+                for (y, top) in [(d.y + d.h * 0.27, true), (d.y + d.h * 0.73, false)] {
+                    if hash(k, i32::from(top)) < 0.2 {
+                        continue;
+                    }
+                    let tray = Rect::from_center_size(to(x, y), Vec2::new(46.0, 30.0) * s);
+                    painter.rect_filled(tray, 3.0 * s, [rgb(70, 110, 160), rgb(160, 70, 70), rgb(90, 140, 90)][(k as usize + usize::from(top)) % 3]);
+                    painter.circle_filled(tray.center() - Vec2::new(6.0, 0.0) * s, 9.0 * s, rgb(248, 248, 244));
+                    painter.circle_filled(tray.center() - Vec2::new(6.0, 0.0) * s, 5.0 * s, [rgb(200, 150, 60), rgb(130, 170, 80), rgb(180, 80, 60)][k as usize % 3]);
+                    painter.circle_filled(tray.center() + Vec2::new(14.0, -6.0) * s, 4.0 * s, rgb(240, 240, 240));
+                }
+            }
+        }
+        "buffet" => {
+            // The self-service: its glass, the dishes under it, the trays' rail.
+            shadow(6.0 * s);
+            gradient(painter, r, rgb(190, 196, 204), rgb(150, 156, 166), true);
+            let glass = r.shrink(6.0 * s);
+            painter.rect_filled(glass, 3.0 * s, rgb(200, 230, 240).gamma_multiply(0.35));
+            let n = ((glass.width() / (40.0 * s)) as i32).max(1);
+            for k in 0..n {
+                let c = Pos2::new(glass.min.x + glass.width() * (k as f32 + 0.5) / n as f32, glass.center().y);
+                painter.rect_filled(Rect::from_center_size(c, Vec2::new(30.0, glass.height() / s * 0.6) * s), 2.0 * s, rgb(90, 96, 104));
+                painter.rect_filled(Rect::from_center_size(c, Vec2::new(24.0, glass.height() / s * 0.45) * s), 2.0 * s, [rgb(220, 170, 70), rgb(120, 170, 80), rgb(200, 90, 60), rgb(240, 230, 200)][k as usize % 4]);
+            }
+            painter.line_segment([r.left_bottom() + Vec2::new(0.0, 5.0 * s), r.right_bottom() + Vec2::new(0.0, 5.0 * s)], Stroke::new(3.0 * s, rgb(170, 176, 186)));
+        }
+        "vending" => {
+            // A vending machine: lit glass, rows of snacks, the slot.
+            shadow(4.0 * s);
+            painter.rect_filled(r, 4.0 * s, rgb(170, 36, 40));
+            let glass = Rect::from_min_max(r.min + Vec2::splat(5.0 * s), Pos2::new(r.max.x - r.width() * 0.3, r.max.y - 5.0 * s));
+            painter.rect_filled(glass, 2.0 * s, rgb(210, 230, 240));
+            for row in 0..4 {
+                for col in 0..3 {
+                    let c = glass.min + Vec2::new(glass.width() * (col as f32 + 0.5) / 3.0, glass.height() * (row as f32 + 0.5) / 4.0);
+                    painter.rect_filled(Rect::from_center_size(c, Vec2::new(glass.width() / 4.0, glass.height() / 6.0)), 1.0, [rgb(240, 200, 60), rgb(60, 120, 220), rgb(230, 90, 60), rgb(120, 200, 90)][(row + col) % 4]);
+                }
+            }
+            radial(painter, glass.center(), glass.width() * 0.9, Color32::from_rgba_unmultiplied(220, 240, 255, 30), Color32::TRANSPARENT);
+            painter.rect_filled(Rect::from_center_size(Pos2::new(r.max.x - r.width() * 0.15, r.center().y), Vec2::new(r.width() * 0.12, r.height() * 0.3)), 1.0, rgb(40, 40, 46));
+        }
+        "rack" => {
+            // A row of server racks: black, their lights blinking, the cables on top.
+            shadow(3.0 * s);
+            painter.rect_filled(r, 3.0 * s, rgb(22, 24, 30));
+            let vertical = d.h > d.w;
+            let n = ((if vertical { d.h } else { d.w } / 50.0) as i32).max(1);
+            for k in 0..n {
+                let f0 = k as f32 / n as f32;
+                let f1 = (k + 1) as f32 / n as f32;
+                let cab = if vertical {
+                    Rect::from_min_max(Pos2::new(r.min.x, r.min.y + r.height() * f0), Pos2::new(r.max.x, r.min.y + r.height() * f1))
+                } else {
+                    Rect::from_min_max(Pos2::new(r.min.x + r.width() * f0, r.min.y), Pos2::new(r.min.x + r.width() * f1, r.max.y))
+                }
+                .shrink(2.0 * s);
+                painter.rect_filled(cab, 2.0 * s, rgb(36, 40, 50));
+                painter.rect_stroke(cab, 2.0 * s, Stroke::new(1.0, rgb(60, 66, 80)), egui::StrokeKind::Inside);
+                for l in 0..6 {
+                    let at = cab.min + Vec2::new(cab.width() * (0.2 + 0.12 * (l % 6) as f32), cab.height() * (0.25 + 0.5 * hash(k, l)));
+                    let on = (now * (2.0 + f64::from(hash(l, k)) * 5.0) + f64::from(k + l)).sin() > 0.0;
+                    let color = [rgb(80, 230, 120), rgb(80, 160, 255), rgb(255, 180, 60)][(l + k).rem_euclid(3) as usize];
+                    painter.circle_filled(at, 1.8 * s, if on { color } else { color.gamma_multiply(0.25) });
+                }
+            }
+        }
+        "ups" => {
+            // An inverter: grey, its little screen, its warning stripes.
+            shadow(4.0 * s);
+            gradient(painter, r, rgb(150, 154, 160), rgb(110, 114, 120), true);
+            let screen = Rect::from_center_size(r.center() - Vec2::new(0.0, r.height() * 0.15), Vec2::new(r.width() * 0.5, r.height() * 0.2));
+            painter.rect_filled(screen, 1.0, rgb(30, 60, 40));
+            painter.text(screen.center(), egui::Align2::CENTER_CENTER, "100%", egui::FontId::monospace(screen.height() * 0.7), rgb(110, 240, 140));
+            let band = Rect::from_min_max(Pos2::new(r.min.x, r.max.y - r.height() * 0.2), r.max);
+            painter.rect_filled(band, 0.0, rgb(240, 196, 40));
+            for k in 0..6 {
+                let x = band.min.x + band.width() * k as f32 / 6.0;
+                painter.line_segment([Pos2::new(x, band.max.y), Pos2::new(x + band.height(), band.min.y)], Stroke::new(3.0 * s, rgb(30, 30, 30)));
+            }
+        }
+        "crate" => {
+            // Cardboard boxes, taped, one open.
+            shadow(2.0 * s);
+            painter.rect_filled(r, 2.0 * s, rgb(176, 132, 84));
+            painter.rect_stroke(r, 2.0 * s, Stroke::new(1.0, rgb(130, 94, 56)), egui::StrokeKind::Inside);
+            painter.line_segment([r.center_top(), r.center_bottom()], Stroke::new(5.0 * s, rgb(206, 176, 120)));
+            painter.line_segment([r.left_center(), r.right_center()], Stroke::new(1.0, rgb(130, 94, 56)));
+        }
         "hvac" => {
             shadow(4.0 * s);
             gradient(painter, r, rgb(180, 186, 192), rgb(130, 136, 144), true);
@@ -638,17 +797,17 @@ mod tests {
         let ctx = egui::Context::default();
         let painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
         let desk = |k: &str| Desk { x: 600.0, y: 300.0, w: 300.0, h: 140.0, k: k.into() };
-        for id in ["hall", "openspace", "board", "roof", "?"] {
+        for id in ["hall", "openspace", "canteen", "servers", "board", "roof", "?"] {
             let map = Map {
                 id: id.into(),
                 w: 1600.0,
                 h: 1000.0,
                 wall: 20.0,
-                desks: ["desk", "table", "counter", "sofa", "lowtable", "plant", "fountain", "gates", "boardtable", "flipchart", "credenza", "heli", "hvac", "tank", "antenna", "?"].iter().map(|k| desk(k)).filter(|d| d.k != "heli").collect(),
+                desks: ["desk", "table", "counter", "sofa", "lowtable", "plant", "fountain", "gates", "boardtable", "flipchart", "credenza", "heli", "hvac", "tank", "antenna", "cantable", "buffet", "vending", "rack", "ups", "crate", "?"].iter().map(|k| desk(k)).filter(|d| d.k != "heli" && d.k != "ups").collect(),
                 ..Default::default()
             };
             let to = |x: f32, y: f32| Pos2::new(x * 0.5, y * 0.5);
-            // Text needs the fonts: the helicopter's letters are left out here.
+            // Text needs the fonts: the helicopter's letters and the inverter's screen are left out here.
             paint_floor(&painter, &map, &to, 0.5, 1.0, false);
             paint_shade(&painter, Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 500.0)), id == "roof");
         }

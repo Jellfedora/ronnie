@@ -43,6 +43,24 @@ pub enum Kind {
     Coach,
     /// The IT guy: down the first time, he reboots and comes back (from wave 14).
     It,
+    /// The union rep, the hall's boss (wave 5): calls a strike, the zombies stop then rush.
+    Syndic,
+    /// The consultant, the canteen's boss (wave 15): jumps about, leaves copies of himself.
+    Consultant,
+    /// A copy of the consultant: one hit and gone.
+    Clone,
+    /// The auditor, the server room's boss (wave 20): a player audited can't fire for a while.
+    Auditor,
+    /// The CFO, the executive floor's boss (wave 25): budget cuts, magazines emptied, tickets lost.
+    Cfo,
+    /// The courier: very fast, straight lines, bouncing (from wave 16).
+    Courier,
+    /// The switchboard operator: calls zombies in (from wave 18).
+    Operator,
+    /// The dev in crunch: the more hurt, the faster (from wave 21).
+    Crunch,
+    /// The toxic manager: stays back, the zombies around faster and harder (from wave 24).
+    Toxic,
 }
 
 impl Kind {
@@ -59,6 +77,15 @@ impl Kind {
             9 => Kind::Accountant,
             10 => Kind::Coach,
             11 => Kind::It,
+            12 => Kind::Syndic,
+            13 => Kind::Consultant,
+            14 => Kind::Clone,
+            15 => Kind::Auditor,
+            16 => Kind::Cfo,
+            17 => Kind::Courier,
+            18 => Kind::Operator,
+            19 => Kind::Crunch,
+            20 => Kind::Toxic,
             _ => Kind::Base,
         }
     }
@@ -74,10 +101,73 @@ impl Kind {
             Kind::Board => 28.0,
             Kind::Visio => 17.0,
             Kind::Accountant => 20.0,
-            Kind::Coach | Kind::It => 18.0,
+            Kind::Coach | Kind::It | Kind::Operator | Kind::Crunch => 18.0,
+            Kind::Syndic => 34.0,
+            Kind::Consultant | Kind::Clone | Kind::Auditor => 30.0,
+            Kind::Cfo => 32.0,
+            Kind::Courier => 15.0,
+            Kind::Toxic => 20.0,
         }
     }
+
+    /// Its id at floor (KINDS).
+    pub fn id(self) -> &'static str {
+        match self {
+            Kind::Base => "base",
+            Kind::Intern => "stag",
+            Kind::Meeting => "reu",
+            Kind::Sales => "com",
+            Kind::ReplyAll => "reply",
+            Kind::Cc => "cc",
+            Kind::Hr => "drh",
+            Kind::Board => "codir",
+            Kind::Visio => "visio",
+            Kind::Accountant => "compta",
+            Kind::Coach => "coach",
+            Kind::It => "info",
+            Kind::Syndic => "syndic",
+            Kind::Consultant => "consultant",
+            Kind::Clone => "clone",
+            Kind::Auditor => "auditeur",
+            Kind::Cfo => "daf",
+            Kind::Courier => "coursier",
+            Kind::Operator => "standard",
+            Kind::Crunch => "crunch",
+            Kind::Toxic => "toxic",
+        }
+    }
+
+
+    /// From its id at floor.
+    pub fn of(id: &str) -> Kind {
+        ALL_KINDS.into_iter().find(|k| k.id() == id).unwrap_or(Kind::Base)
+    }
 }
+
+/// Every kind, in floor's order.
+pub const ALL_KINDS: [Kind; 21] = [
+    Kind::Base,
+    Kind::Intern,
+    Kind::Meeting,
+    Kind::Sales,
+    Kind::ReplyAll,
+    Kind::Cc,
+    Kind::Hr,
+    Kind::Board,
+    Kind::Visio,
+    Kind::Accountant,
+    Kind::Coach,
+    Kind::It,
+    Kind::Syndic,
+    Kind::Consultant,
+    Kind::Clone,
+    Kind::Auditor,
+    Kind::Cfo,
+    Kind::Courier,
+    Kind::Operator,
+    Kind::Crunch,
+    Kind::Toxic,
+];
 
 /// Floor's steps the rewards hang on (career.js): colleagues helped up for the bite, escorts of
 /// Agnès for her card, her letters.
@@ -87,15 +177,15 @@ pub const LETTERS: u32 = 12;
 /// Daily challenges done for the avatar frame (career.js DAILIES_FRAME).
 pub const DAILIES_FRAME: u32 = 7;
 /// The last wave: the executive committee on the roof; held, the game is won.
-pub const LAST_WAVE: u32 = 20;
+pub const LAST_WAVE: u32 = 30;
 
 /// The grades, in floor's order (career.js GRADES): the names it sends.
 pub const GRADES: [&str; 8] = ["Stagiaire", "CDD", "CDI", "Chef d’équipe", "Manager", "Directeur", "DG", "PDG"];
 /// The grade each thing of the coffee machine opens at (career.js SHOP_GRADE).
-pub const SHOP_GRADE: [(&str, u32); 6] = [("mug", 0), ("dmg", 0), ("mag", 0), ("extinguisher", 1), ("turret", 3), ("confetti", 4)];
+pub const SHOP_GRADE: [(&str, u32); 10] = [("mug", 0), ("dmg", 0), ("mag", 0), ("extinguisher", 1), ("turret", 3), ("confetti", 4), ("tape", 1), ("stamp", 2), ("plant", 5), ("projector", 6)];
 
 /// The weapons, in floor's order (its WEAPON_IDS).
-pub const WEAPONS: [&str; 4] = ["staple", "postit", "extinguisher", "confetti"];
+pub const WEAPONS: [&str; 8] = ["staple", "postit", "extinguisher", "confetti", "stamp", "tape", "plant", "projector"];
 
 /// A player, at the last frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,8 +214,8 @@ pub struct Player {
     /// Their weapon's upgrades: damage, magazine (levels).
     pub ups: (u8, u8),
     /// Each weapon's upgrades (damage, magazine) and ammo, in WEAPONS' order.
-    pub all_ups: [(u8, u8); 4],
-    pub all_ammo: [u32; 4],
+    pub all_ups: [(u8, u8); 8],
+    pub all_ammo: [u32; 8],
     pub max_hp: f32,
     /// Seconds before the next dash, the next teleport.
     pub dash_in: u32,
@@ -161,6 +251,17 @@ pub struct Zombie {
     pub healing: bool,
     /// The IT guy, rebooting.
     pub rebooting: bool,
+    /// On strike (stopped), then rushing (the union rep's).
+    pub striking: bool,
+    pub rushing: bool,
+    /// The operator, calling someone in.
+    pub calling: bool,
+    /// The toxic manager boosting zombies around; a zombie boosted.
+    pub boosting: bool,
+    pub boosted: bool,
+    /// Stunned by the stamp; stuck by the tape.
+    pub stunned: bool,
+    pub stuck: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -197,6 +298,10 @@ pub struct Frame {
     pub drops: Vec<(f32, f32, usize, u32)>,
     /// First-aid kits on the floor: x, y, seconds left.
     pub kits: Vec<(f32, f32, u32)>,
+    /// Players audited (can't fire): id, seconds left.
+    pub audited: Vec<(u32, f32)>,
+    /// The green plants' healing zones: x, y, seconds left.
+    pub heal_zones: Vec<(f32, f32, f32)>,
     /// The floor of the tower (0 the hall, 1 the open space, 2 the boardroom, 3 the roof).
     pub floor: usize,
     /// Paused (alone, Escape or another page).
@@ -260,6 +365,11 @@ pub struct Career {
     pub dailies: u32,
     #[serde(default)]
     pub wins: u32,
+    /// The achievements won (ids), the title worn (one of them).
+    #[serde(default)]
+    pub achievements: Vec<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// A step passed at the end of a game (what Ronnie announces, and hangs its rewards on).
@@ -278,6 +388,8 @@ pub enum Milestone {
     Final,
     Daily { id: String },
     Dailies { value: u32 },
+    /// An achievement won (and its title).
+    Achievement { id: String },
 }
 
 /// A floor of the tower, from floor (sent once): its furniture, the coffee machine, the doors.
@@ -334,6 +446,11 @@ pub struct Room {
     pub host: String,
     pub players: Vec<(u32, String, u8)>,
     pub started: bool,
+    /// Watched by the player (not in it), and by how many.
+    pub watching: bool,
+    pub spectators: u32,
+    /// The titles worn, by player id.
+    pub titles: std::collections::HashMap<u32, String>,
 }
 
 /// A room seen from the lobby.
@@ -416,6 +533,15 @@ pub enum Happened {
     Reboot { x: f32, y: f32 },
     /// A first-aid kit picked up (by whom, where).
     Healed { player: u32, x: f32, y: f32 },
+    /// A floor's boss comes in.
+    MiniBoss(Kind),
+    /// The union rep's strike; the consultant's copies; a player audited; the CFO's cuts (tickets
+    /// lost); the operator calling someone in.
+    Strike,
+    Clones,
+    Audit(u32),
+    Cuts(u32),
+    Call { x: f32, y: f32 },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -463,6 +589,12 @@ enum Wire {
         players: Vec<(u32, String, u8)>,
         #[serde(default)]
         started: bool,
+        #[serde(default)]
+        watching: bool,
+        #[serde(default)]
+        sp: u32,
+        #[serde(default)]
+        titles: std::collections::HashMap<String, String>,
     },
     #[serde(rename = "s")]
     Frame {
@@ -471,7 +603,7 @@ enum Wire {
         tl: u32,
         zl: u32,
         tk: u32,
-        p: Vec<f32>,
+        p: Vec<f64>,
         z: Vec<f32>,
         b: Vec<f32>,
         #[serde(default)]
@@ -486,6 +618,12 @@ enum Wire {
         d: Vec<f32>,
         #[serde(default)]
         m: Vec<f32>,
+        #[serde(default)]
+        fz: Vec<f32>,
+        #[serde(default)]
+        hz: Vec<f32>,
+        #[serde(default)]
+        pa: Vec<f64>,
         #[serde(default)]
         fl: usize,
         #[serde(default)]
@@ -613,6 +751,21 @@ impl Online {
     /// Out of the game under way: alone, it ends now (and counts); with others, the character stays.
     pub fn quit(&mut self) {
         self.send(json!({ "t": "quit" }));
+    }
+
+    /// To watch the game under way in room `id` (not playing in it).
+    pub fn watch(&self, id: u32) {
+        self.send(json!({ "t": "watch", "id": id }));
+    }
+
+    /// The title worn (an achievement won), or none.
+    pub fn title(&self, id: Option<&str>) {
+        self.send(json!({ "t": "title", "id": id }));
+    }
+
+    /// Watching a game, not in it.
+    pub fn watching(&self) -> bool {
+        self.room.as_ref().is_some_and(|r| r.watching)
     }
 
     /// Paused or going again (alone only).
@@ -747,19 +900,22 @@ impl Online {
             Wire::Lobby { rooms } => {
                 self.lobby = rooms.into_iter().map(|(id, host, players, started)| Open { id, host, players, started }).collect();
             }
-            Wire::Room { id, host, players, started } => {
+            Wire::Room { id, host, players, started, watching, sp, titles } => {
                 let was = self.playing();
-                self.room = id.map(|id| Room { id, host, players, started });
+                let titles = titles.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect();
+                self.room = id.map(|id| Room { id, host, players, started, watching, spectators: sp, titles });
                 // A game starts (or ends): the old frames are another's.
                 if was != self.playing() {
                     self.frame = None;
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fl, ps } => {
-                let players = p
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, pa, fl, ps } => {
+                let mut players: Vec<Player> = p
                     .chunks_exact(22)
-                    .map(|v| Player {
+                    .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
+                    .zip(p.chunks_exact(22).map(|v| v[17] as u64))
+                    .map(|(v, ups)| Player {
                         id: v[0] as u32,
                         x: v[1],
                         y: v[2],
@@ -784,17 +940,35 @@ impl Online {
                         dash_in: v[15] as u32,
                         teleport_in: v[16] as u32,
                         all_ups: std::array::from_fn(|k| {
-                            let n = (v[17] as u32 >> (4 * k)) & 15;
+                            let n = (ups >> (4 * k)) & 15;
                             ((n / 4) as u8, (n % 4) as u8)
                         }),
-                        all_ammo: std::array::from_fn(|k| v[18 + k] as u32),
+                        all_ammo: std::array::from_fn(|k| v.get(18 + k).filter(|_| k < 4).map_or(0, |a| *a as u32)),
                     })
                     .collect();
+                // The ammo of the weapons past the fourth: id, then four.
+                for v in pa.chunks_exact(5) {
+                    if let Some(player) = players.iter_mut().find(|q| f64::from(q.id) == v[0]) {
+                        for k in 0..4 {
+                            player.all_ammo[4 + k] = v[1 + k] as u32;
+                        }
+                    }
+                }
                 let zombies = z
                     .chunks_exact(7)
                     .map(|v| {
                         let fx = v[5] as u32;
-                        Zombie { id: v[0] as u32, kind: Kind::from(v[1]), x: v[2], y: v[3], life: v[4] / 100.0, slowed: fx & 1 != 0, charging: fx & 2 != 0, winding: fx & 4 != 0, heading: v[6] / 100.0, frozen: fx & 8 != 0, healing: fx & 16 != 0, rebooting: fx & 32 != 0 }
+                        Zombie { id: v[0] as u32, kind: Kind::from(v[1]), x: v[2], y: v[3], life: v[4] / 100.0, slowed: fx & 1 != 0, charging: fx & 2 != 0, winding: fx & 4 != 0, heading: v[6] / 100.0, frozen: fx & 8 != 0,
+                            healing: fx & 16 != 0,
+                            rebooting: fx & 32 != 0,
+                            striking: fx & 64 != 0,
+                            rushing: fx & 128 != 0,
+                            calling: fx & 256 != 0,
+                            boosting: fx & 512 != 0,
+                            boosted: fx & 1024 != 0,
+                            stunned: fx & 2048 != 0,
+                            stuck: fx & 4096 != 0,
+                        }
                     })
                     .collect();
                 let shots = b.chunks_exact(4).map(|v| Shot { x: v[0], y: v[1], angle: v[2] / 100.0, weapon: (v[3].max(0.0) as usize).min(WEAPONS.len() - 1) }).collect();
@@ -815,8 +989,10 @@ impl Online {
                 let letters = l.chunks_exact(2).map(|v| (v[0], v[1])).collect();
                 let drops = d.chunks_exact(4).map(|v| (v[0], v[1], (v[2].max(0.0) as usize).min(WEAPONS.len() - 1), v[3] as u32)).collect();
                 let kits = m.chunks_exact(3).map(|v| (v[0], v[1], v[2] as u32)).collect();
+                let audited = fz.chunks_exact(2).map(|v| (v[0] as u32, v[1] / 10.0)).collect();
+                let heal_zones = hz.chunks_exact(3).map(|v| (v[0], v[1], v[2] / 10.0)).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, floor: fl.min(3), paused: ps == 1, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -851,26 +1027,21 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "wave" => Happened::Wave { wave: u("wave"), boss: v.get("boss").and_then(serde_json::Value::as_bool).unwrap_or(false) },
         "cleared" => Happened::Cleared(u("wave")),
         "boss" if v.get("final").and_then(serde_json::Value::as_bool) == Some(true) => Happened::FinalBoss,
-        "boss" => Happened::Boss,
+        "boss" => match v.get("kind").and_then(serde_json::Value::as_str) {
+            Some(kind) => Happened::MiniBoss(Kind::of(kind)),
+            None => Happened::Boss,
+        },
+        "strike" => Happened::Strike,
+        "clones" => Happened::Clones,
+        "audit" => Happened::Audit(u("player")),
+        "cuts" => Happened::Cuts(u("lost")),
+        "call" => Happened::Call { x: n("x") as f32, y: n("y") as f32 },
         "floor" => Happened::Floor(u("floor") as usize),
         "won" => Happened::Won,
         "paused" => Happened::Paused(v.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false)),
         "recruit" => Happened::Recruit,
         "kill" => {
-            let kind = match v.get("kind")?.as_str()? {
-                "stag" => Kind::Intern,
-                "reu" => Kind::Meeting,
-                "com" => Kind::Sales,
-                "reply" => Kind::ReplyAll,
-                "cc" => Kind::Cc,
-                "drh" => Kind::Hr,
-                "codir" => Kind::Board,
-                "visio" => Kind::Visio,
-                "compta" => Kind::Accountant,
-                "coach" => Kind::Coach,
-                "info" => Kind::It,
-                _ => Kind::Base,
-            };
+            let kind = Kind::of(v.get("kind")?.as_str()?);
             Happened::Kill { kind, x: n("x") as f32, y: n("y") as f32, by: u("by") }
         }
         "down" => Happened::Down(u("player")),
@@ -1004,6 +1175,31 @@ mod tests {
     }
 
     #[test]
+    fn the_tower_s_top_floors() {
+        let mut online = Online::default();
+        take(&mut online, r#"{"t":"welcome","map":{"w":1600,"h":1000,"wall":20,"desks":[],"coffee":{"x":90,"y":500},"doors":[]}}"#);
+        // A spectator in a room with a title worn; the 8 weapons' ammo and upgrades; audited, a healing zone.
+        take(&mut online, r#"{"t":"room","id":3,"host":"Ada","players":[[7,"Ada",0]],"started":true,"watching":true,"sp":2,"titles":{"7":"ceo"}}"#);
+        let room = online.room.clone().unwrap();
+        assert!(online.watching() && room.spectators == 2 && room.titles.get(&7).map(String::as_str) == Some("ceo"));
+        let ups = 1u64 << 28 | 2 << 24;
+        let frame = format!(r#"{{"t":"s","ph":1,"w":26,"tl":0,"zl":1,"tk":0,"p":[7,100,200,0,80,0,7,3,0,0,0,0,255,0,100,0,0,{ups},30,9,0,0],"pa":[7,4,5,6,7],"z":[1,12,10,10,90,64,0,2,19,10,10,90,2048,0],"b":[],"fz":[7,35],"hz":[50,60,20],"fl":5,"ps":0}}"#);
+        take(&mut online, &frame);
+        let f = online.frame.as_ref().unwrap();
+        let p = f.players[0];
+        assert_eq!((p.weapon, p.all_ammo, p.all_ups[7], p.all_ups[6]), (7, [30, 9, 0, 0, 4, 5, 6, 7], (0, 1), (0, 2)));
+        assert_eq!((f.zombies[0].kind, f.zombies[0].striking, f.zombies[1].kind, f.zombies[1].stunned), (Kind::Syndic, true, Kind::Crunch, true));
+        assert_eq!((f.audited.clone(), f.heal_zones.clone(), f.floor), (vec![(7, 3.5)], vec![(50.0, 60.0, 2.0)], 5));
+        let news = take(&mut online, r#"{"t":"news","l":[{"t":"boss","kind":"daf"},{"t":"strike"},{"t":"audit","player":7},{"t":"cuts","lost":40},{"t":"call","x":1,"y":2},{"t":"kill","kind":"toxic","x":1,"y":2,"by":7}]}"#);
+        assert_eq!(news.happened, vec![Happened::MiniBoss(Kind::Cfo), Happened::Strike, Happened::Audit(7), Happened::Cuts(40), Happened::Call { x: 1.0, y: 2.0 }, Happened::Kill { kind: Kind::Toxic, x: 1.0, y: 2.0, by: 7 }]);
+        let news = take(&mut online, r#"{"t":"over","wave":30,"kills":1,"revives":0,"won":true,"milestones":[{"kind":"achievement","id":"ceo"}]}"#);
+        assert_eq!(news.over.unwrap().milestones, vec![Milestone::Achievement { id: "ceo".into() }]);
+        // Every kind's id reads back.
+        assert!(ALL_KINDS.iter().all(|k| Kind::of(k.id()) == *k));
+        assert!(ALL_KINDS.iter().enumerate().all(|(n, k)| Kind::from(n as f32) == *k));
+    }
+
+    #[test]
     fn urls() {
         assert_eq!(ws_url("https://floor.example/floor"), "wss://floor.example/floor/v1/zombie/ws");
         assert_eq!(ws_url("http://localhost:5002"), "ws://localhost:5002/v1/zombie/ws");
@@ -1027,8 +1223,8 @@ mod tests {
         assert!((p.revive - 1.2).abs() < 1e-4 && (p.bleed - 25.0).abs() < 1e-4);
         assert_eq!((p.owned, p.ups, p.max_hp, p.dash_in), (3, (1, 1), 125.0, 2));
         assert_eq!(f.agnes.map(|a| (a.state, a.life)), Some((AgnesState::Sitting, 0.4)));
-        assert_eq!(p.all_ups, [(2, 1), (1, 1), (0, 3), (0, 0)]);
-        assert_eq!(p.all_ammo, [30, 9, 0, 0]);
+        assert_eq!(p.all_ups[..4], [(2, 1), (1, 1), (0, 3), (0, 0)]);
+        assert_eq!(p.all_ammo[..4], [30, 9, 0, 0]);
         assert_eq!(f.drops, vec![(500.0, 600.0, 3, 12)]);
         assert_eq!(f.turrets, vec![(1.0, 2.0, 1.0, 30)]);
         let z = f.zombies[0];

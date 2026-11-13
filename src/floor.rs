@@ -675,6 +675,8 @@ pub struct GameEntry {
     pub frame: Option<String>,
     /// The badges floor gave the player (the fishing's « chasseur »).
     pub badges: Vec<String>,
+    /// The Lundi matin title they wear (an achievement's id).
+    pub title: Option<String>,
 }
 
 #[derive(Default)]
@@ -767,6 +769,8 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         frame: Option<String>,
         #[serde(default)]
         badges: Vec<String>,
+        #[serde(default)]
+        title: Option<String>,
     }
     #[derive(Deserialize)]
     struct Answer {
@@ -782,7 +786,7 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         request = request.header("Authorization", format!("Bearer {}", a.token));
     }
     let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame, badges: l.badges }).collect())
+    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame, badges: l.badges, title: l.title }).collect())
 }
 
 #[cfg(test)]
