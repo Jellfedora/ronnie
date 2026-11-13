@@ -2,6 +2,24 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [1.1.0] - 2026-11-13
+
+### Nouveautés
+
+- **Ronnie sur ton téléphone** : une app web à ouvrir sur https://185.245.143.130/floor/app/ puis à ajouter à l'écran d'accueil. Le tchat (avec notifications), les jeux, les classements, tes notes chiffrées et ton profil. Merci à Jonathan !
+- **Lundi matin, les grades** : chaque grade de ta carrière donne sa tenue (badge, cravate, casque, veste, lunettes de soleil… jusqu'au doré du PDG) et un avantage en plus de ceux d'avant : prime d'embauche, caisse de tourelle, réunion d'équipe, note de service (touche E), place de parking, voiture de fonction, parachute doré. Tout est détaillé dans la rubrique « Les grades ».
+- **Lundi matin, la caisse de tourelle** : à partir de CDI, un zombie en lâche parfois une. Reste 3 s dessus : une tourelle tire 10 s sur tout ce qui entre dans son périmètre.
+- **Lundi matin, chacun ses tickets resto** : tu gagnes ceux des zombies que tu abats et tu les dépenses toi-même à la machine à café.
+- **Lundi matin, l'accueil en rubriques** : à côté de la carte pour jouer, clique sur Carrière, Les grades, Bestiaire, Comment jouer, Récompenses ou Classement.
+- **La page d'un jeu reste ouverte une fois ta partie de la demi-journée jouée** : classements, salons et règles se consultent toujours, un bandeau dit quand le jeu revient. À Lundi matin, tu peux même regarder les parties des collègues.
+- **Les effets sur tout l'écran arrivent sous Linux**, et passent sur tous les écrans sous Windows aussi.
+- **La colonne de gauche garde son titre en haut** (« Jeux », « Fichiers / Git », « Notes »…) pendant que la liste défile, avec une barre de défilement bien visible.
+
+### Corrections
+
+- Lundi matin : le bandeau des armes ne cache plus le coin en bas à gauche du terrain, et regarder une partie ne compte plus comme ta partie de la demi-journée.
+- Dans la liste des jeux, le record ne passe plus sur le nom du jeu.
+
 ## [1.0.0] - 2026-11-13
 
 Ronnie est prêt pour la prod.
