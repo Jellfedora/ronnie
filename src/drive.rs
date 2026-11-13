@@ -18,8 +18,15 @@ pub enum Ask {
     Panes,
     /// A file in the editor beside the terminals (of the asking pane's tab), proposed.
     Open { path: PathBuf },
-    /// A pane split off the asking one, running `command`.
-    Run { command: String, cwd: Option<PathBuf>, down: bool, name: Option<String> },
+    /// A pane split off the asking one (or off pane `into`, in any tab), running `command`.
+    Run {
+        command: String,
+        cwd: Option<PathBuf>,
+        down: bool,
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        into: Option<u64>,
+    },
     /// A new tab, in the background.
     Tab { cwd: Option<PathBuf>, command: Option<String>, name: Option<String> },
     /// A line typed in a pane, then Return.
@@ -163,8 +170,8 @@ fn ask(ask: Ask) -> Result<String, String> {
 pub const USAGE: &str = "\
 Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
   ronnie panes                          windows, tabs, panes (folder, program, Node.js), profiles
-  ronnie run [--down] [--name N] [--cwd DIR] <command…>
-                                        split this pane, the new one running <command>
+  ronnie run [--down] [--in PANE] [--name N] [--cwd DIR] <command…>
+                                        split this pane (or PANE, in any tab), the new one running <command>
   ronnie tab [--name N] [--cwd DIR] [<command…>]
                                         a new tab, in the background
   ronnie output <pane> [--lines N]      the last lines a pane shows (60)
@@ -278,11 +285,24 @@ fn absolute(path: &str) -> Result<PathBuf, String> {
 }
 
 /// `--down`, `--name N`, `--cwd DIR` then the command's words.
-fn options<'a>(rest: &'a [&'a str]) -> Result<(bool, Option<String>, Option<PathBuf>, &'a [&'a str]), String> {
-    let (mut down, mut name, mut cwd, mut k) = (false, None, None, 0);
+/// `run`'s and `tab`'s options, then the command.
+struct Options<'a> {
+    down: bool,
+    name: Option<String>,
+    cwd: Option<PathBuf>,
+    into: Option<u64>,
+    command: &'a [&'a str],
+}
+
+fn options<'a>(rest: &'a [&'a str]) -> Result<Options<'a>, String> {
+    let (mut down, mut name, mut cwd, mut into, mut k) = (false, None, None, None, 0);
     while k < rest.len() {
         match rest[k] {
             "--down" => down = true,
+            "--in" => {
+                k += 1;
+                into = Some(pane_arg(&rest[k.min(rest.len())..]).map_err(|_| "--in: which pane? (see `ronnie panes`)")?.0);
+            }
             "--name" => {
                 k += 1;
                 name = Some(rest.get(k).ok_or("--name: which name?")?.to_string());
@@ -299,19 +319,19 @@ fn options<'a>(rest: &'a [&'a str]) -> Result<(bool, Option<String>, Option<Path
         }
         k += 1;
     }
-    Ok((down, name, cwd, &rest[k..]))
+    Ok(Options { down, name, cwd, into, command: &rest[k..] })
 }
 
 fn run(rest: &[&str]) -> Result<String, String> {
-    let (down, name, cwd, command) = options(rest)?;
+    let Options { down, name, cwd, into, command } = options(rest)?;
     if command.is_empty() {
         return Err(USAGE.into());
     }
-    ask(Ask::Run { command: command.join(" "), cwd, down, name })
+    ask(Ask::Run { command: command.join(" "), cwd, down, name, into })
 }
 
 fn tab(rest: &[&str]) -> Result<String, String> {
-    let (_, name, cwd, command) = options(rest)?;
+    let Options { name, cwd, command, .. } = options(rest)?;
     let cwd = match cwd {
         Some(cwd) => Some(cwd),
         None => std::env::current_dir().ok(),
@@ -628,12 +648,23 @@ mod tests {
 
     #[test]
     fn asks_round_trip() {
-        let ask = Ask::Run { command: "npm run dev".into(), cwd: None, down: true, name: Some("dev".into()) };
+        let ask = Ask::Run { command: "npm run dev".into(), cwd: None, down: true, name: Some("dev".into()), into: None };
         let json = serde_json::to_string(&ask).unwrap();
         assert!(json.contains("\"do\":\"run\""));
         assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), ask);
         let show = serde_json::to_string(&Ask::Show { what: View::Pane(3) }).unwrap();
         assert_eq!(serde_json::from_str::<Ask>(&show).unwrap(), Ask::Show { what: View::Pane(3) });
+    }
+
+    #[test]
+    fn run_splits_another_pane() {
+        let o = options(&["--in", "#4", "--down", "--name", "front", "npm", "run", "dev"]).unwrap();
+        assert_eq!((o.into, o.down, o.name.as_deref(), o.command), (Some(4), true, Some("front"), &["npm", "run", "dev"][..]));
+        assert!(options(&["--in"]).is_err());
+        assert!(options(&["--in", "front", "npm"]).is_err());
+        // An ask from an older Ronnie (no `into`) still reads.
+        let old = r#"{"do":"run","command":"ls","cwd":null,"down":false,"name":null}"#;
+        assert!(matches!(serde_json::from_str::<Ask>(old).unwrap(), Ask::Run { into: None, .. }));
     }
 
     #[test]

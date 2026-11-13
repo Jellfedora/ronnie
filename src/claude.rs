@@ -465,9 +465,17 @@ them while this pane isn't on screen.
 - Processes that keep running or that the user may want to watch (dev servers, watchers, long builds or test \
 runs): start them in a pane of Ronnie with `{ronnie} run <command>` (a pane beside yours), not in your own shell's \
 background; follow them with `{ronnie} output <pane>`. Short commands whose result you need stay in your shell.
+- When the user asks to start a project (\"lance le site X\"…): a saved profile matching it (`panes` lists them) \
+opens with `{ronnie} profile open <name>`. Else find its folder and see what it is made of (an API and a front, \
+a worker…: its folders, package.json scripts, docker-compose, README) and start it all in ONE tab named after the \
+project, one pane per part: `{ronnie} tab --name <project> --cwd <api folder> <api command>` gives the tab's first \
+pane, then each other part splits it, `{ronnie} run --in <that pane> --name front --cwd <front folder> <front \
+command>` (`--down` to stack them). Check their output, say where it runs (URL, port), and offer to save the tab \
+as a profile (`{ronnie} profile`, each pane's `startup` its command) so it starts in one go next time.
 - You can drive this Ronnie from here with `{ronnie}` (`{ronnie} --help` lists it all): `panes` (every window, tab, \
 pane with its number, folder, program and Node.js, and the saved profiles), `run <command>` (a pane split off yours \
-running it: a dev server, a watcher… rather than in the background of your own shell), `output <pane>` (what a pane \
+running it: a dev server, a watcher… rather than in the background of your own shell; `--in <pane>` splits that \
+pane instead, in any tab), `output <pane>` (what a pane \
 shows), `tab`, `type <pane> <text>`, `cd <pane> <dir>`, `node <pane> <version|system>`, \
 `node available`, `node install <latest|lts|22|vX.Y.Z>`, `rename`, `close`, `profile` (save one, its JSON on \
 stdin; `profile open <name>`), `ssh` (the SSH servers saved) / `ssh add <name> <[user@]host[:port]> [--key FILE] \

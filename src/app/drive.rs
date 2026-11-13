@@ -225,13 +225,22 @@ impl App {
                 self.claude_notice(t.claude_suggests, name, Lead::Doc(pane, path.clone()));
                 Ok("Proposed to the user (a notice to accept): the file opens beside the terminals if they do.".into())
             }
-            Ask::Run { command, cwd, down, name } => {
-                let me = me.ok_or("the asking pane isn't in Ronnie anymore")?;
-                let i = tab_of(&self.tabs, me).ok_or("the asking pane isn't in this window")?;
+            Ask::Run { command, cwd, down, name, into } => {
+                // The pane split: the asking one, or the one named (a tab opened for a project's other panes).
+                let me = match into {
+                    Some(pane) => *pane,
+                    None => me.ok_or("the asking pane isn't in Ronnie anymore")?,
+                };
+                let i = tab_of(&self.tabs, me).ok_or_else(|| if into.is_some() { format!("no pane {me} in this window (see `ronnie panes`)") } else { "the asking pane isn't in this window".into() })?;
                 let before = self.tabs[i].focused;
+                let focus = self.focus_terminal;
                 self.tabs[i].focused = me;
                 let count = self.tabs[i].layout.leaves().len();
                 self.split(ctx, i, if *down { Direction::Down } else { Direction::Right });
+                // Another tab split: the keyboard stays where the user is.
+                if i != self.active {
+                    self.focus_terminal = focus;
+                }
                 let tab = &mut self.tabs[i];
                 let new = tab.focused;
                 tab.focused = if before == me { me } else { before };
@@ -247,7 +256,8 @@ impl App {
                 }
                 text.push_str(&format!("{command}\r"));
                 self.claude_typing.push((new, text, Instant::now()));
-                Ok(format!("Pane {new} made beside yours, running: {command}\nIts output: `ronnie output {new}`."))
+                let beside = if into.is_some() { format!("pane {me}") } else { "yours".into() };
+                Ok(format!("Pane {new} made beside {beside}, running: {command}\nIts output: `ronnie output {new}`."))
             }
             Ask::Tab { cwd, command, name } => {
                 let state = TabState { name: name.clone(), layout: Layout::Pane { cwd: cwd.clone(), history: None, name: None, startup: None, node: None }, ..Default::default() };
