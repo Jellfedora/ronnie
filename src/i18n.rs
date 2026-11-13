@@ -2599,7 +2599,7 @@ pub static FR: Strings = Strings {
     contributors_title: "Contributeurs",
     contributors: &[
         ("Jellfedora", "Créateur de Ronnie."),
-        ("JonathanDWWM", "Un fidèle apprenti qui a su faire ses preuves et a apporté de grandes contributions : les jeux Démineur, Ronnie Run, Riff Hero et Backstage. Bien plus que Mathéo."),
+        ("JonathanDWWM", "Un fidèle apprenti qui a su faire ses preuves et a apporté de grandes contributions : les jeux Démineur, Ronnie Run, Riff Hero et Backstage, la partie PHP, et bien d’autres choses. Bien plus que Mathéo."),
     ],
     show_cwd: "Dossier courant",
     show_cwd_desc: "Affiché en haut de chaque terminal local.",
@@ -5061,7 +5061,7 @@ pub static EN: Strings = Strings {
     contributors_title: "Contributors",
     contributors: &[
         ("Jellfedora", "Ronnie's creator."),
-        ("JonathanDWWM", "A faithful apprentice who proved himself and made great contributions: the Minesweeper, Ronnie Run, Riff Hero and Backstage games. Far more than Mathéo."),
+        ("JonathanDWWM", "A faithful apprentice who proved himself and made great contributions: the Minesweeper, Ronnie Run, Riff Hero and Backstage games, the PHP part, and much more. Far more than Mathéo."),
     ],
     show_cwd: "Current folder",
     show_cwd_desc: "Shown at the top of each local terminal.",
