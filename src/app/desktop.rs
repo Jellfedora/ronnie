@@ -196,6 +196,9 @@ struct Overlay {
     /// The system's pointer is the plain arrow (else a hand, a beam, a resize...: left as it is), and
     /// when last looked at.
     plain: (bool, Option<Instant>),
+    /// Another app fills the screen (a film, a full-screen window): nothing shown then; and when
+    /// last looked at.
+    full: (bool, Option<Instant>),
 }
 
 /// `ronnie desktop-fx`: the effects' window, until its standard input closes.
@@ -282,7 +285,7 @@ pub(crate) fn run() {
             }
             let work = os::screen_at(start.center()).map_or(start, |(_, work)| work);
             let theme = crate::theme::Preset::find(crate::theme::DEFAULT_THEME).theme();
-            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None) }))
+            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None), full: (false, None) }))
         }),
     );
     if let Err(e) = result {
@@ -479,6 +482,16 @@ impl eframe::App for Overlay {
             self.shown = fx;
         }
         let mouse = self.mouse.lock().map(|m| *m).unwrap_or_default();
+        // Another app full screen (a film...): nothing over it, the pointer its own. Looked at each second.
+        if self.full.1.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+            self.full = (os::full_screen(self.screen), Some(Instant::now()));
+        }
+        if self.full.0 {
+            os::hide_pointer(false);
+            self.trail = Default::default();
+            ctx.request_repaint_after(Duration::from_secs(1));
+            return;
+        }
         // The pointer went to another screen: the window follows it.
         if let Some(at) = mouse.at
             && !self.screen.contains(at)
@@ -635,6 +648,74 @@ mod os {
         }
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CGRect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *const c_void;
+        fn CGRectMakeWithDictionaryRepresentation(dict: *const c_void, rect: *mut CGRect) -> bool;
+        static kCGWindowLayer: *const c_void;
+        static kCGWindowBounds: *const c_void;
+        static kCGWindowOwnerPID: *const c_void;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: *const c_void, kind: i32, out: *mut c_void) -> bool;
+    }
+
+    /// The app in front (not Ronnie) has a window covering the whole of `screen` (points, top left
+    /// origin): a film, a game, a window in full screen.
+    pub(super) fn full_screen(screen: Rect) -> bool {
+        let Some(front) = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication() else { return false };
+        let pid = front.processIdentifier();
+        if pid as u32 == std::os::unix::process::parent_id() || pid as u32 == std::process::id() {
+            return false;
+        }
+        // SAFETY: the window server's list, read then released; every value checked before use.
+        unsafe {
+            // On screen only (1), without the desktop's (16).
+            let list = CGWindowListCopyWindowInfo(1 | 16, 0);
+            if list.is_null() {
+                return false;
+            }
+            let number = |d: *const c_void, key: *const c_void| {
+                let n = CFDictionaryGetValue(d, key);
+                let mut v: i64 = 0;
+                // kCFNumberSInt64Type.
+                (!n.is_null() && CFNumberGetValue(n, 4, (&raw mut v).cast())).then_some(v)
+            };
+            let mut full = false;
+            for k in 0..CFArrayGetCount(list) {
+                let d = CFArrayGetValueAtIndex(list, k);
+                if number(d, kCGWindowOwnerPID) != Some(i64::from(pid)) || number(d, kCGWindowLayer) != Some(0) {
+                    continue;
+                }
+                let mut b = CGRect::default();
+                let bounds = CFDictionaryGetValue(d, kCGWindowBounds);
+                if !bounds.is_null() && CGRectMakeWithDictionaryRepresentation(bounds, &mut b) {
+                    let r = Rect::from_min_size(Pos2::new(b.x as f32, b.y as f32), Vec2::new(b.w as f32, b.h as f32));
+                    if (r.min - screen.min).length() < 2.0 && (r.max - screen.max).length() < 2.0 {
+                        full = true;
+                        break;
+                    }
+                }
+            }
+            CFRelease(list);
+            full
+        }
+    }
+
     /// The pointer shown by the system (whichever app set it) is the plain arrow: same hot spot, same
     /// size (the arrow-like ones too: the contextual menu's, the copy's...).
     pub(super) fn plain_pointer() -> bool {
@@ -745,6 +826,31 @@ mod os {
     /// Windows keeps its pointer (replacing it system-wide would outlive a crash).
     pub(super) fn hide_pointer(_hide: bool) {}
 
+    /// The window in front (not the desktop's) covers its whole monitor: a film, a game.
+    pub(super) fn full_screen(_screen: Rect) -> bool {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromWindow};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect};
+        // SAFETY: plain Win32 calls on values owned here.
+        unsafe {
+            let front = GetForegroundWindow();
+            if front.is_null() || front == GetDesktopWindow() || front == GetShellWindow() {
+                return false;
+            }
+            let mut r: RECT = std::mem::zeroed();
+            if GetWindowRect(front, &mut r) == 0 {
+                return false;
+            }
+            let m = MonitorFromWindow(front, MONITOR_DEFAULTTONULL);
+            if m.is_null() {
+                return false;
+            }
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            GetMonitorInfoW(m, &mut info) != 0 && r.left <= info.rcMonitor.left && r.top <= info.rcMonitor.top && r.right >= info.rcMonitor.right && r.bottom >= info.rcMonitor.bottom
+        }
+    }
+
     /// The system's pointer is the plain arrow.
     pub(super) fn plain_pointer() -> bool {
         use windows_sys::Win32::UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo, IDC_ARROW, LoadCursorW};
@@ -786,6 +892,10 @@ mod os {
 
     pub(super) fn plain_pointer() -> bool {
         true
+    }
+
+    pub(super) fn full_screen(_screen: Rect) -> bool {
+        false
     }
 
     pub(super) fn screen_at(_at: Pos2) -> Option<(Rect, Rect)> {
