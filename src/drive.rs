@@ -37,6 +37,16 @@ pub enum Ask {
     /// The Node.js version of a pane (None: the system's).
     Node { pane: u64, version: Option<String> },
     NodeInstall { version: String },
+    /// The PHP projects ("My PHP projects"): each one's state, address, settings.
+    Projects,
+    /// A new PHP project: its folder made in the folder of the projects.
+    ProjectNew { name: String, settings: ProjectSettings },
+    /// A PHP project's settings changed (it restarts if it runs).
+    ProjectSet { name: String, settings: ProjectSettings },
+    ProjectStart { name: String },
+    ProjectStop { name: String },
+    /// A version of PHP, nginx, MySQL or MariaDB installed (in the background), as published.
+    EnvInstall { kind: crate::envs::Kind, version: String },
     Rename { pane: u64, name: Option<String> },
     Close { pane: u64 },
     /// A view of Ronnie proposed to the user.
@@ -90,6 +100,23 @@ pub enum View {
     Mails,
     Mail(String),
     Dev,
+}
+
+/// A PHP project's settings, as given (each one left as it is when None).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct ProjectSettings {
+    /// php, wordpress, prestashop, laravel.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// An installed PHP version (or its line: 8.3).
+    #[serde(default)]
+    pub php: Option<String>,
+    /// The site's root in its folder ("public"…; "" the folder itself).
+    #[serde(default)]
+    pub root: Option<String>,
+    /// none, mysql, mariadb (the newest installed), or mysql:8.4.3…
+    #[serde(default)]
+    pub db: Option<String>,
 }
 
 /// A profile to save: its panes side by side (or one under the other), each in its folder.
@@ -199,6 +226,17 @@ Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
                  [--auth auto|key|password|ask|interactive] [--color #rrggbb]
                                         save an SSH server (never a password: for `password`,
                                         the user types it in the server's settings in Ronnie)
+  ronnie projects                       the PHP projects (\"My PHP projects\"): state, address, PHP, database
+  ronnie project new <name> [--kind php|laravel|wordpress|prestashop] [--php V] [--root DIR]
+                 [--db none|mysql|mariadb[:V]]
+                                        a new PHP project, its folder made in the folder of the projects
+  ronnie project set <name> [--kind K] [--php V] [--root DIR] [--db D]
+                                        change a PHP project's settings (restarted if it runs)
+  ronnie project start|stop <name>      start or stop a PHP project (its PHP, nginx, database)
+  ronnie env [php|nginx|mysql|mariadb]  the versions installed in Ronnie
+  ronnie env available <kind>           the versions published for this computer
+  ronnie env install <kind> <version|latest|8.3|stable>
+                                        install one, in the background (ask the user first)
   ronnie note [--folder F] [file]       add a Markdown note (else from stdin)
   ronnie note --edit <id> [file]        replace a note's Markdown (else from stdin)
   ronnie note --append <id> [file]      add Markdown at a note's end (else from stdin)
@@ -257,6 +295,9 @@ pub fn run_cli() -> Option<Result<(), String>> {
             [] => profile(),
             _ => Err(USAGE.into()),
         },
+        "projects" => ask(Ask::Projects),
+        "project" => project(&rest),
+        "env" => env(&rest),
         "notes" => notes(&rest),
         "mails" => mails(&rest),
         "ssh" => match rest.as_slice() {
@@ -341,6 +382,90 @@ fn tab(rest: &[&str]) -> Result<String, String> {
         None => std::env::current_dir().ok(),
     };
     ask(Ask::Tab { cwd, command: (!command.is_empty()).then(|| command.join(" ")), name })
+}
+
+/// `ronnie project new|set|start|stop <name> [options]`.
+fn project(rest: &[&str]) -> Result<String, String> {
+    let (action, rest) = rest.split_first().ok_or(USAGE)?;
+    let mut settings = ProjectSettings::default();
+    let mut name = Vec::new();
+    let mut it = rest.iter();
+    while let Some(word) = it.next() {
+        let mut value = || it.next().map(|v| (*v).to_owned()).ok_or_else(|| format!("{word}: a value after it"));
+        match *word {
+            "--kind" => settings.kind = Some(value()?),
+            "--php" => settings.php = Some(value()?),
+            "--root" => settings.root = Some(value()?),
+            "--db" => settings.db = Some(value()?),
+            w if w.starts_with("--") => return Err(format!("{w}: unknown option\n{USAGE}")),
+            w => name.push(w),
+        }
+    }
+    if name.is_empty() {
+        return Err(USAGE.into());
+    }
+    let name = name.join(" ");
+    let plain = settings == ProjectSettings::default();
+    match *action {
+        "new" => ask(Ask::ProjectNew { name, settings }),
+        "set" if !plain => ask(Ask::ProjectSet { name, settings }),
+        "start" if plain => ask(Ask::ProjectStart { name }),
+        "stop" if plain => ask(Ask::ProjectStop { name }),
+        _ => Err(USAGE.into()),
+    }
+}
+
+fn env_kind(word: &str) -> Result<crate::envs::Kind, String> {
+    use crate::envs::Kind;
+    Ok(match word.to_lowercase().as_str() {
+        "php" => Kind::Php,
+        "nginx" => Kind::Nginx,
+        "mysql" => Kind::Mysql,
+        "mariadb" => Kind::Mariadb,
+        _ => return Err(format!("{word}: php, nginx, mysql or mariadb")),
+    })
+}
+
+/// `ronnie env [kind]`, `env available <kind>`, `env install <kind> <version|latest|line>`.
+fn env(rest: &[&str]) -> Result<String, String> {
+    use crate::envs::{self, Kind};
+    match rest {
+        [] => Ok(Kind::ALL.iter().map(|k| installed_env(*k)).collect::<Vec<_>>().join("\n")),
+        [kind] => env_kind(kind).map(installed_env),
+        ["available", kind] => {
+            let kind = env_kind(kind)?;
+            let releases = envs::releases(kind).map_err(|e| format!("{e:#}"))?;
+            let installed = envs::installed(kind);
+            let lines: Vec<String> = releases.iter().take(16).map(|r| format!("{}  {}{}", r.version, r.note, if installed.contains(&r.version) { "  (installed)" } else { "" })).collect();
+            Ok(format!("{} published for this computer ({}), the newest first:\n{}", kind.name(), kind.source(), lines.join("\n")))
+        }
+        ["install", kind, spec] => {
+            let kind = env_kind(kind)?;
+            let releases = envs::releases(kind).map_err(|e| format!("{e:#}"))?;
+            let spec = spec.trim().trim_start_matches('v');
+            let found = match spec.to_lowercase().as_str() {
+                "latest" => releases.first(),
+                s => releases.iter().find(|r| r.version == s).or_else(|| releases.iter().find(|r| r.note.eq_ignore_ascii_case(s) || r.version.starts_with(&format!("{s}.")))),
+            };
+            let version = found.map(|r| r.version.clone()).ok_or_else(|| format!("no {} {spec} published (`ronnie env available {}`)", kind.name(), kind.name().to_lowercase()))?;
+            ask(Ask::EnvInstall { kind, version })
+        }
+        _ => Err(USAGE.into()),
+    }
+}
+
+fn installed_env(kind: crate::envs::Kind) -> String {
+    let installed = crate::envs::installed(kind);
+    let system = crate::envs::system_only(kind).map(|how| format!(" (not published for this computer: the system's, installed with `{how}`)")).unwrap_or_default();
+    if installed.is_empty() {
+        format!("{}: none installed in Ronnie{system}", kind.name())
+    } else if kind == crate::envs::Kind::Php {
+        // Its command line program, for composer, artisan…: no PHP on the system needed.
+        let each: Vec<String> = installed.iter().map(|v| crate::envs::php_cli(v).map_or_else(|| v.clone(), |cli| format!("{v} ({})", cli.display()))).collect();
+        format!("PHP: {}{system}", each.join(", "))
+    } else {
+        format!("{}: {}{system}", kind.name(), installed.join(", "))
+    }
 }
 
 fn view(rest: &[&str]) -> Result<View, String> {

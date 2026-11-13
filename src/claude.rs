@@ -465,6 +465,16 @@ them while this pane isn't on screen.
 - Processes that keep running or that the user may want to watch (dev servers, watchers, long builds or test \
 runs): start them in a pane of Ronnie with `{ronnie} run <command>` (a pane beside yours), not in your own shell's \
 background; follow them with `{ronnie} output <pane>`. Short commands whose result you need stay in your shell.
+- PHP projects (\"{php_projects}\" in the left column): each a folder of the folder of the projects, served by \
+Ronnie's nginx and PHP (PHP-FPM) at http://<name>.localhost:<port>, with a MySQL or MariaDB of Ronnie's if it has \
+a database. For one, use them rather than WAMP, MAMP, Valet, Docker or Homebrew: `{ronnie} projects` (the folder, \
+each project, the versions installed), `project new <name> [--kind php|laravel|wordpress|prestashop] [--php V] \
+[--db none|mysql|mariadb]` (its folder made, empty: put the site in it, with composer, git clone…), `project set`, \
+`project start|stop`; existing code from elsewhere is copied into the folder of the projects (it shows up). Pick the \
+PHP the project needs (composer.json's `require.php`, its framework's version): `{ronnie} env` lists the versions \
+installed (PHP with its `php` program, for composer), `env available php|nginx|mysql|mariadb` those published; \
+say which you would install and why, and install (`env install php 8.3`, `env install nginx stable`…) only once \
+the user agrees. Then start it and give its address.
 - When the user asks to start a project (\"lance le site X\"…): first look at the saved profiles (`panes` lists them \
 with their folders): one matching the project, by its name or its folders, opens with `{ronnie} profile open \
 <name>`, never a second one made for it. Else find its folder and see what it is made of (an API and a front, \
@@ -504,6 +514,7 @@ it on the project's panes.",
         local = t.cat_local,
         notes = t.notes,
         notes_default = t.notes_default,
+        php_projects = t.cat_projects,
         ronnie = ronnie_command("").trim_end(),
     );
     text.push_str("\n\nThis pane and this Ronnie now:");

@@ -63,6 +63,7 @@ impl App {
         let mails = self.dev_page && self.dev.tool == dev::DevTool::Mail;
         let (notes, dev) = (self.notes_page, self.dev_page);
         let talk = self.talk_page.then(|| self.talk_ui.room.clone()).flatten();
+        let project = (dev && self.dev.tool == super::dev::DevTool::Project).then_some(self.projects.selected).flatten();
         self.notices.retain(|n| {
             let seen = match (&n.mail, &n.lead, n.pane) {
                 (Some(_), _, _) => mails,
@@ -72,6 +73,7 @@ impl App {
                 (None, Some(Lead::Pane(id) | Lead::Doc(id, _)), _) => pane_shown(*id),
                 (None, Some(Lead::Profile(id)), _) => tab.is_some_and(|t| t.profile == Some(*id)),
                 (None, Some(Lead::Host(id)), _) => tab.is_some_and(|t| t.ssh == Some(*id)),
+                (None, Some(Lead::Project(id)), _) => project == Some(*id),
                 (None, None, Some(id)) => !n.stays() && pane_shown(id),
                 (None, None, None) => false,
             };

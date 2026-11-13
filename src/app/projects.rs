@@ -1579,3 +1579,190 @@ pub(super) fn paint_projects_icon(painter: &egui::Painter, c: Pos2, color: Color
     painter.add(egui::Shape::closed_line(points, Stroke::new(1.3, color)));
     painter.text(c + Vec2::new(0.0, -0.5), Align2::CENTER_CENTER, "php", FontId::proportional(9.5), color);
 }
+
+/// What Claude asks of the PHP projects (`ronnie projects`, `ronnie project …`): answered in words.
+impl App {
+    pub(super) fn projects_running(&self, id: Uuid) -> bool {
+        self.projects.running.contains(&id)
+    }
+
+    /// A project by its name or its address's name, whatever the case.
+    pub(super) fn project_named(&self, name: &str) -> Result<Uuid, String> {
+        let wanted = name.trim().to_lowercase();
+        self.config
+            .projects
+            .iter()
+            .find(|p| p.name.to_lowercase() == wanted || p.slug() == wanted)
+            .map(|p| p.id)
+            .ok_or_else(|| format!("no PHP project {name} (see `ronnie projects`)"))
+    }
+
+    pub(super) fn projects_text(&self) -> String {
+        let port = self.config.settings.projects_port;
+        let mut out = match self.projects_dir() {
+            Some(dir) => format!("The folder of the projects: {} (each folder in it is a project; one copied in shows up)\n", dir.display()),
+            None => String::new(),
+        };
+        if self.config.projects.is_empty() {
+            out.push_str("No PHP project yet.\n");
+        }
+        for p in &self.config.projects {
+            let state = match self.project_state(p.id) {
+                State::Stopped => "stopped".to_owned(),
+                State::Starting => "starting".to_owned(),
+                State::Running => "running".to_owned(),
+                State::Failed => format!("didn't start: {}", self.projects.errors.get(&p.id).map(String::as_str).unwrap_or("?")),
+            };
+            let label = self.projects.found.get(&p.id).and_then(|f| f.label.clone()).unwrap_or_else(|| p.kind.name().to_owned());
+            let php = match (&p.php, p.php_version()) {
+                (_, Some(v)) => format!("PHP {v}"),
+                (Some(v), None) => format!("PHP {v} (not installed)"),
+                (None, None) => "no PHP installed".to_owned(),
+            };
+            let db = p.db.as_ref().map_or_else(|| "no database".to_owned(), |db| format!("{}{}", db.label("system"), if p.db_server().is_none() { " (not installed)" } else { "" }));
+            let root = if p.root.is_empty() { String::new() } else { format!(", root {}", p.root) };
+            out.push_str(&format!("- \"{}\" ({label}) {state}, {}: {}, {php}, {db}{root}\n", p.name, p.url(port), p.path.display()));
+        }
+        let installed: Vec<String> = Env::ALL.iter().map(|k| format!("{} {}", k.name(), if self.envs.installed(*k).is_empty() { "none".to_owned() } else { self.envs.installed(*k).join(", ") })).collect();
+        out.push_str(&format!("Installed in Ronnie: {}", installed.join("; ")));
+        out
+    }
+
+    /// A project's settings as Claude gives them, checked (what they name installed).
+    fn project_apply(project: &mut Project, settings: &crate::drive::ProjectSettings) -> Result<(), String> {
+        if let Some(kind) = &settings.kind {
+            project.kind = match kind.to_lowercase().as_str() {
+                "php" => projects::Kind::Php,
+                "wordpress" => projects::Kind::WordPress,
+                "prestashop" => projects::Kind::PrestaShop,
+                "laravel" => projects::Kind::Laravel,
+                _ => return Err(format!("{kind}: php, laravel, wordpress or prestashop")),
+            };
+            if settings.root.is_none() && project.kind == projects::Kind::Laravel {
+                project.root = "public".into();
+            }
+        }
+        if let Some(root) = &settings.root {
+            let root = root.trim().trim_matches('/').to_owned();
+            if root.split('/').any(|part| part == "..") {
+                return Err(format!("{root}: a folder in the project's"));
+            }
+            project.root = root;
+        }
+        if let Some(php) = &settings.php {
+            let installed = envs::installed(Env::Php);
+            let version = installed.iter().find(|v| *v == php).or_else(|| installed.iter().find(|v| v.starts_with(&format!("{php}.")))).cloned();
+            project.php = Some(version.ok_or_else(|| format!("PHP {php} isn't installed in Ronnie (installed: {}); `ronnie env install php {php}` once the user agrees", if installed.is_empty() { "none".into() } else { installed.join(", ") }))?);
+        }
+        if let Some(db) = &settings.db {
+            project.db = match db.to_lowercase().as_str() {
+                "none" | "" => None,
+                spec => {
+                    let (kind, version) = spec.split_once(':').map_or((spec, None), |(k, v)| (k, Some(v)));
+                    let kind = match kind {
+                        "mysql" => Env::Mysql,
+                        "mariadb" => Env::Mariadb,
+                        _ => return Err(format!("{db}: none, mysql, mariadb, or mysql:<version>")),
+                    };
+                    let installed = envs::installed(kind);
+                    let found = match version {
+                        Some(v) => installed.iter().find(|i| *i == v || i.starts_with(&format!("{v}."))).cloned(),
+                        None => installed.first().cloned(),
+                    };
+                    let version = found.ok_or_else(|| format!("{} {} isn't installed in Ronnie; `ronnie env install {} <version>` once the user agrees", kind.name(), version.unwrap_or(""), kind.name().to_lowercase()))?;
+                    Some(Db { kind, version })
+                }
+            };
+        }
+        Ok(())
+    }
+
+    pub(super) fn project_new_asked(&mut self, name: &str, settings: &crate::drive::ProjectSettings) -> Result<String, String> {
+        let name = name.trim();
+        if self.read_only {
+            return Err("this Ronnie is read-only (another one runs)".into());
+        }
+        if !projects::valid_site_name(name) {
+            return Err(format!("{name}: not a project's name (no / \\ : * ? \" < > |, not wamp…)"));
+        }
+        if let Ok(id) = self.project_named(name) {
+            let path = self.project(id).map(|p| p.path.display().to_string()).unwrap_or_default();
+            return Err(format!("the PHP project {name} exists already ({path}): `ronnie project set` changes it"));
+        }
+        let dir = self.projects_dir().ok_or("no folder for the projects")?;
+        let folder = dir.join(name);
+        if folder.exists() {
+            return Err(format!("{} exists already", folder.display()));
+        }
+        let mut project = Project::of_folder(&folder);
+        if project.php.is_none() {
+            project.php = envs::installed(Env::Php).into_iter().next();
+        }
+        Self::project_apply(&mut project, settings)?;
+        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        let url = project.url(self.config.settings.projects_port);
+        let id = project.id;
+        self.config.projects.push(project);
+        self.config.projects.sort_by_key(|p| p.name.to_lowercase());
+        self.save_config();
+        let t = self.t();
+        self.claude_notice(t.claude_made_project, name.to_owned(), super::drive::Lead::Project(id));
+        let missing = self.project_missing(id);
+        Ok(format!("PHP project {name} made: its folder {} (empty: put the site in it), its address {url} once started (`ronnie project start {name}`).{missing}", folder.display()))
+    }
+
+    pub(super) fn project_set_asked(&mut self, name: &str, settings: &crate::drive::ProjectSettings) -> Result<String, String> {
+        let id = self.project_named(name)?;
+        let k = self.config.projects.iter().position(|p| p.id == id).ok_or("gone")?;
+        let mut project = self.config.projects[k].clone();
+        Self::project_apply(&mut project, settings)?;
+        self.config.projects[k] = project;
+        self.projects.found.remove(&id);
+        self.save_config();
+        let restarted = if self.projects.running.contains(&id) {
+            self.project_restart(id);
+            " It restarts with them."
+        } else {
+            ""
+        };
+        Ok(format!("{name} changed.{restarted}{}", self.project_missing(id)))
+    }
+
+    pub(super) fn project_start_asked(&mut self, name: &str) -> Result<String, String> {
+        let id = self.project_named(name)?;
+        if self.projects.running.contains(&id) {
+            let url = self.project(id).map(|p| p.url(self.config.settings.projects_port)).unwrap_or_default();
+            return Ok(format!("{name} runs already: {url}"));
+        }
+        let missing = self.project_missing(id);
+        if !missing.is_empty() {
+            return Err(format!("{name} can't start yet.{missing}"));
+        }
+        self.project_start(id, false);
+        let url = self.project(id).map(|p| p.url(self.config.settings.projects_port)).unwrap_or_default();
+        Ok(format!("Starting {name}: {url} once it runs (`ronnie projects` says when, or why not)."))
+    }
+
+    /// What a project still needs installed to start, in words ("" when nothing).
+    fn project_missing(&self, id: Uuid) -> String {
+        let Some(project) = self.project(id) else { return String::new() };
+        let mut missing = Vec::new();
+        if project.php_version().is_none() {
+            missing.push("PHP (`ronnie env available php`)".to_owned());
+        }
+        if self.envs.installed(Env::Nginx).is_empty() {
+            missing.push(match envs::system_only(Env::Nginx) {
+                Some(how) => format!("nginx, on the system: `{how}`"),
+                None => "nginx (`ronnie env available nginx`)".to_owned(),
+            });
+        }
+        if let (Some(db), None) = (&project.db, project.db_server()) {
+            missing.push(format!("{} (`ronnie env available {}`)", db.label("system"), db.kind.name().to_lowercase()));
+        }
+        if missing.is_empty() {
+            String::new()
+        } else {
+            format!(" Missing: {}; to install once the user agrees.", missing.join(", "))
+        }
+    }
+}

@@ -27,6 +27,8 @@ pub(super) enum Lead {
     Talk(String),
     /// An SSH server: connected to.
     Host(Uuid),
+    /// A PHP project: its page.
+    Project(Uuid),
 }
 
 /// The pane `id` in `tabs`: its tab's index.
@@ -149,7 +151,7 @@ impl App {
     }
 
     /// A notice from Claude: what it did or proposes, and where it leads once accepted.
-    fn claude_notice(&mut self, title: &str, body: String, lead: Lead) {
+    pub(super) fn claude_notice(&mut self, title: &str, body: String, lead: Lead) {
         self.push_toast(Toast { ok: true, title: title.to_owned(), body, tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: Some(lead) });
         self.ctx.request_repaint();
     }
@@ -181,6 +183,10 @@ impl App {
                 self.open_talk_room(&room);
             }
             Lead::Host(id) => self.open_ssh(id),
+            Lead::Project(id) => {
+                self.projects.selected = Some(id);
+                self.open_projects_page();
+            }
         }
     }
 
@@ -322,6 +328,25 @@ impl App {
                 }
                 self.dev.install(ctx, v.clone());
                 Ok(format!("Installing {v} (about a minute): `ronnie node` lists it once done."))
+            }
+            Ask::Projects => Ok(self.projects_text()),
+            Ask::ProjectNew { name, settings } => self.project_new_asked(name, settings),
+            Ask::ProjectSet { name, settings } => self.project_set_asked(name, settings),
+            Ask::ProjectStart { name } => self.project_start_asked(name),
+            Ask::ProjectStop { name } => {
+                let id = self.project_named(name)?;
+                if !self.projects_running(id) {
+                    return Ok(format!("{name} isn't running."));
+                }
+                self.project_stop(id);
+                Ok(format!("Stopping {name}."))
+            }
+            Ask::EnvInstall { kind, version } => {
+                if crate::envs::is_installed(*kind, version) {
+                    return Ok(format!("{} {version} is installed already.", kind.name()));
+                }
+                self.envs.install_version(*kind, version.clone(), ctx);
+                Ok(format!("Installing {} {version} in the background (its page in Dev shows how far): `ronnie env` lists it once done.", kind.name()))
             }
             Ask::Rename { pane, name } => {
                 let (i, _) = self.local_pane(*pane)?;

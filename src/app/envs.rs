@@ -69,6 +69,30 @@ impl Envs {
         });
     }
 
+    /// `version` of `kind` installed in the background, found first among those published (Claude's
+    /// `ronnie env install`): its progress shows on its page as for one clicked there.
+    pub(super) fn install_version(&mut self, kind: Env, version: String, ctx: &egui::Context) {
+        if self.installing(kind, &version).is_some() {
+            return;
+        }
+        let progress = Arc::new(Mutex::new(Progress::default()));
+        let result = Arc::new(Mutex::new(None));
+        let (p, r, ctx, v) = (progress.clone(), result.clone(), ctx.clone(), version.clone());
+        let _ = std::thread::Builder::new().name("env-install".into()).spawn(move || {
+            let done = envs::releases(kind)
+                .and_then(|list| list.into_iter().find(|rel| rel.version == v).ok_or_else(|| anyhow::anyhow!("{} {v} isn't published anymore", kind.name())))
+                .and_then(|release| envs::install(kind, &release, &p, &ctx))
+                .map_err(|e| format!("{e:#}"));
+            crate::log::info(&match &done {
+                Ok(()) => format!("{} {v} installed (asked by Claude)", kind.name()),
+                Err(e) => format!("{} {v} not installed: {e}", kind.name()),
+            });
+            *r.lock().unwrap() = Some(done);
+            ctx.request_repaint();
+        });
+        self.installs.push(Install { kind, version, progress, result });
+    }
+
     fn install(&mut self, kind: Env, release: Release, ctx: &egui::Context) {
         if self.installing(kind, &release.version).is_some() {
             return;
