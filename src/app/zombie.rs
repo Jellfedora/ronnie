@@ -928,11 +928,7 @@ impl App {
             let mx = f32::from(down(&[Key::D, Key::ArrowRight])) - f32::from(down(&[Key::Q, Key::A, Key::ArrowLeft]));
             let my = f32::from(down(&[Key::S, Key::ArrowDown])) - f32::from(down(&[Key::Z, Key::W, Key::ArrowUp]));
             let fire = i.pointer.primary_down() && i.pointer.hover_pos().is_some_and(|p| field.contains(p));
-            // By the key's place, not its letter: on an AZERTY keyboard, 4 is « ' » (seen as the quote).
-            let pick = i.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, physical_key, pressed: true, repeat: false, .. } if free => [Key::Num1, Key::Num2, Key::Num3, Key::Num4].iter().position(|k| physical_key.unwrap_or(*key) == *k),
-                _ => None,
-            });
+            let pick = if free { i.events.iter().find_map(|e| super::digit_key(e, 4)) } else { None };
             (mx, my, fire, pick, free && i.key_pressed(Key::R), free && i.key_pressed(Key::Space), free && i.modifiers.shift, free && i.key_pressed(Key::T))
         });
         let aim = pointer.map_or(0.0, |p| (p - me).angle());

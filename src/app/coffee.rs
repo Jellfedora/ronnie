@@ -167,7 +167,7 @@ impl App {
         let free = ui.ctx().memory(|m| m.focused().is_none());
         let (picked, start, stop, pause, restart) = ui.input(|i| {
             let key = |k: Key| free && i.key_pressed(k);
-            let picked = [Key::Num1, Key::Num2, Key::Num3, Key::Num4].iter().position(|&k| key(k));
+            let picked = if free { i.events.iter().find_map(|e| super::digit_key(e, 4)) } else { None };
             (picked, key(Key::Space) || key(Key::Enter), key(Key::Escape), key(Key::P), key(Key::R))
         });
         if playing {

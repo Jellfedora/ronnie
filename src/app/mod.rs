@@ -3147,15 +3147,29 @@ impl App {
                 self.zoom_by(ui.ctx(), steps * 0.1);
             }
         }
-        let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-        for (i, key) in digits.into_iter().enumerate() {
-            if ui.input_mut(|inp| inp.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))) {
-                // Cmd+9 always goes to the last tab, like browsers.
-                self.select(if i == 8 { self.tabs.len().saturating_sub(1) } else { i });
-            }
+        // Cmd+digit, by the key's place (on an AZERTY keyboard, 4 is « ' »).
+        let digit = ui.input_mut(|inp| {
+            let at = inp.events.iter().position(|e| matches!(e, egui::Event::Key { pressed: true, modifiers, .. } if modifiers.command_only()) && digit_key(e, 9).is_some())?;
+            let digit = digit_key(&inp.events[at], 9);
+            inp.events.remove(at);
+            digit
+        });
+        if let Some(i) = digit {
+            // Cmd+9 always goes to the last tab, like browsers.
+            self.select(if i == 8 { self.tabs.len().saturating_sub(1) } else { i });
         }
     }
 
+}
+
+/// The digit (0 for 1) of a key pressed among the first `n`, by its place on the keyboard rather
+/// than its letter: on an AZERTY keyboard 1 to 9 are « & é \" ' ( - è _ ç », some seen as other keys.
+pub(super) fn digit_key(e: &egui::Event, n: usize) -> Option<usize> {
+    const DIGITS: [Key; 9] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+    match e {
+        egui::Event::Key { key, physical_key, pressed: true, repeat: false, .. } => DIGITS[..n].iter().position(|k| physical_key.unwrap_or(*key) == *k),
+        _ => None,
+    }
 }
 
 const THEME_CARD: Vec2 = Vec2::new(204.0, 84.0);
