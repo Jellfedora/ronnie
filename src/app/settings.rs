@@ -2221,7 +2221,7 @@ impl App {
                         ui.ctx().request_repaint();
                     }
                     Some(Reward::Horde) => {
-                        super::desktop::paint_horde(&painter, rect, (now % 6.0) / 6.0, 5);
+                        super::desktop::paint_horde(&painter, rect, (now % 6.0) / 6.0, 5, &super::zombie::met_kinds(&self.config.settings));
                         ui.ctx().request_repaint();
                     }
                     Some(Reward::Gerard) => {

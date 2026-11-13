@@ -35,6 +35,9 @@ pub(crate) struct Fx {
     /// The horde run once right now, to see it (switched on): when, in Unix milliseconds.
     #[serde(default)]
     horde_demo: Option<i64>,
+    /// The zombies met in Lundi matin (places in its bestiary): the horde is made of them.
+    #[serde(default)]
+    horde_kinds: Vec<u8>,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -109,7 +112,7 @@ impl App {
         } else {
             None
         };
-        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), pointer, theme: s.theme.clone() }
+        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -298,7 +301,18 @@ const HORDE_RUN: f64 = 14.0;
 
 /// Lundi matin's horde, at 10 o'clock: the zombies running across the screen, shouting for the break.
 /// Whether it shows, and when to look again. (`RONNIE_HORDE=1`, in a build of one's own: every minute.)
-fn horde_run(painter: &egui::Painter, screen: Rect, demo: Option<i64>) -> (bool, f32) {
+fn horde_run(painter: &egui::Painter, screen: Rect, demo: Option<i64>, kinds: &[u8]) -> (bool, f32) {
+    match horde_since(demo) {
+        Ok(since) => {
+            paint_horde(painter, screen, since / HORDE_RUN, 14, kinds);
+            (true, 0.0)
+        }
+        Err(again) => (false, again),
+    }
+}
+
+/// How far into its run the horde is (seconds); or, not running, when to look again.
+fn horde_since(demo: Option<i64>) -> Result<f64, f32> {
     use chrono::{Datelike, Timelike};
     let now = chrono::Local::now();
     // Just switched on: once, right now.
@@ -314,15 +328,16 @@ fn horde_run(painter: &egui::Painter, screen: Rect, demo: Option<i64>) -> (bool,
     };
     if !(0.0..HORDE_RUN).contains(&since) {
         // Woken up again a moment before it starts (at most every second).
-        return (false, 1.0);
+        return Err(1.0);
     }
-    paint_horde(painter, screen, since / HORDE_RUN, 14);
-    (true, 0.0)
+    Ok(since)
 }
 
 /// The horde at `k` of its run (0 to 1): `count` zombies from the left edge of `area` to the right,
 /// each on its own line and at its own pace, "PAUSE !" over their heads.
-pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u32) {
+/// The zombies, Lundi matin's met ones (`kinds`, places in its bestiary) seen from above, or, none met,
+/// runners seen from the side.
+pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u32, kinds: &[u8]) {
     let size = (area.height() / 14.0).clamp(10.0, 26.0);
     for n in 0..count {
         let h = n.wrapping_mul(2_654_435_761);
@@ -336,7 +351,12 @@ pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u3
         let x = area.min.x - size * 2.0 + (area.width() + size * 4.0) * along;
         let y = area.min.y + area.height() * lane;
         let step = (k * 40.0 + f64::from(n)).sin() as f32;
-        paint_runner(painter, Pos2::new(x, y + step.abs() * size * 0.15), size, step);
+        if kinds.is_empty() {
+            paint_runner(painter, Pos2::new(x, y + step.abs() * size * 0.15), size, step);
+        } else {
+            let kind = super::zombie::bestiary_kind(kinds[(h >> 5) as usize % kinds.len()]);
+            super::zombie::paint_zombie(painter, Pos2::new(x, y), size / 20.0, kind, 0.0, n, (k * 60.0) as f32 + n as f32, 1.0, super::zombie::Fx::default());
+        }
         let bubble = Pos2::new(x, y - size * 1.9);
         let font = FontId::proportional(size * 0.75);
         let galley = painter.layout_no_wrap("PAUSE !".to_owned(), font, Color32::from_rgb(61, 42, 99));
@@ -383,9 +403,13 @@ fn gerard_stroll(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) 
 
 /// Where Gérard is at `now`: how far along (0 to 1), going right, waving; or, away, the seconds until
 /// he comes back.
+/// How often Gérard comes. In a build of one's own, `RONNIE_GERARD=1`: every 45 s, to see him.
+fn gerard_every() -> f64 {
+    if !crate::config::OFFICIAL && std::env::var("RONNIE_GERARD").is_ok_and(|v| v == "1") { 45.0 } else { GERARD_EVERY }
+}
+
 fn gerard_at(now: f64) -> Result<(f32, bool, bool), f32> {
-    // In a build of one's own, `RONNIE_GERARD=1`: every 45 s, to see him.
-    let every = if !crate::config::OFFICIAL && std::env::var("RONNIE_GERARD").is_ok_and(|v| v == "1") { 45.0 } else { GERARD_EVERY };
+    let every = gerard_every();
     // Not at the sheep's time, nor the droid's.
     let t = (now + 95.0) % every;
     if t > GERARD_STROLL {
@@ -467,6 +491,58 @@ fn droid_walk(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) {
     (true, 0.0)
 }
 
+/// Which of `n` screens a walk goes along: the same all through it (`lap`), each walker its own.
+fn walk_screen(lap: f64, salt: u64, n: usize) -> usize {
+    if n <= 1 {
+        return 0;
+    }
+    let h = (lap as i64 as u64).wrapping_add(salt).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    ((h >> 33) % n as u64) as usize
+}
+
+/// The sheep's, the droid's and Gérard's walks under way, and the screen each goes along.
+fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 3] {
+    let gerard = gerard_every();
+    [
+        (fx.sheep && (now + 20.0) % 50.0 <= 16.0, walk_screen(((now + 20.0) / 50.0).floor(), 1, n)),
+        (fx.droid && (now + 55.0) % DROID_EVERY <= DROID_ROLL, walk_screen(((now + 55.0) / DROID_EVERY).floor(), 2, n)),
+        (fx.gerard && gerard_at(now).is_ok(), walk_screen(((now + 95.0) / gerard).floor(), 3, n)),
+    ]
+}
+
+/// Something to show on screen `here` now: a walker going along it, the horde.
+fn walkers_on(fx: &Fx, now: f64, here: usize, n: usize) -> bool {
+    (fx.horde && horde_since(fx.horde_demo).is_ok()) || walks(fx, now, n).iter().any(|&(on, at)| on && at == here)
+}
+
+/// On screen `here` (of `n`): the walkers going along it (`strip`, its foot) and the horde (`whole`).
+/// Something shown, and when to look again.
+fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, n: usize, fx: &Fx) -> (bool, f32) {
+    let [sheep, droid, gerard] = walks(fx, now, n);
+    let (mut busy, mut next) = (false, 1.0f32);
+    if fx.sheep && sheep.1 == here {
+        let (shown, again) = office::sheep(painter, strip, now);
+        busy |= shown.is_some();
+        next = next.min(again);
+    }
+    if fx.droid && droid.1 == here {
+        let (shown, again) = droid_walk(painter, strip, now);
+        busy |= shown;
+        next = next.min(again);
+    }
+    if fx.gerard && gerard.1 == here {
+        let (shown, again) = gerard_stroll(painter, strip, now);
+        busy |= shown;
+        next = next.min(again);
+    }
+    if fx.horde {
+        let (shown, again) = horde_run(painter, whole, fx.horde_demo, &fx.horde_kinds);
+        busy |= shown;
+        next = next.min(again);
+    }
+    (busy, next)
+}
+
 impl eframe::App for Overlay {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -513,25 +589,39 @@ impl eframe::App for Overlay {
         // Along the foot of the screen, above the Dock or the task bar.
         let foot = self.work.translate(-self.screen.min.to_vec2());
         let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
-        if self.shown.sheep {
-            let (shown, again) = office::sheep(&painter, strip, now);
-            busy |= shown.is_some();
-            next = next.min(again);
-        }
-        if self.shown.droid {
-            let (shown, again) = droid_walk(&painter, strip, now);
-            busy |= shown;
-            next = next.min(again);
-        }
-        if self.shown.gerard {
-            let (shown, again) = gerard_stroll(&painter, strip, now);
-            busy |= shown;
-            next = next.min(again);
-        }
-        if self.shown.horde {
-            let (shown, again) = horde_run(&painter, Rect::from_min_size(Pos2::ZERO, self.screen.size()), self.shown.horde_demo);
-            busy |= shown;
-            next = next.min(again);
+        // The screens: each walker along one of them (the same all through its walk), the horde along
+        // all of them at once. This window covers the pointer's; the others get one each while needed.
+        let screens = os::screens();
+        let n = screens.len().max(1);
+        let here = screens.iter().position(|(s, _)| (s.min - self.screen.min).length() < 1.0).unwrap_or(0);
+        let (shown, again) = paint_walkers(&painter, strip, Rect::from_min_size(Pos2::ZERO, self.screen.size()), now, here, n, &self.shown);
+        busy |= shown;
+        next = next.min(again);
+        for (i, (screen, work)) in screens.iter().enumerate() {
+            if i == here || !walkers_on(&self.shown, now, i, n) {
+                continue;
+            }
+            let (screen, work, fx) = (*screen, *work, self.shown.clone());
+            let builder = egui::ViewportBuilder::default()
+                .with_title("Ronnie FX")
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_mouse_passthrough(true)
+                .with_window_level(egui::WindowLevel::AlwaysOnTop)
+                .with_taskbar(false)
+                .with_active(false)
+                .with_has_shadow(false)
+                .with_resizable(false)
+                .with_position(screen.min)
+                .with_inner_size(screen.size());
+            ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("fx-screen", i)), builder, |ctx, _| {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("desktop-fx")));
+                let foot = work.translate(-screen.min.to_vec2());
+                let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
+                paint_walkers(&painter, strip, Rect::from_min_size(Pos2::ZERO, screen.size()), now, i, n, &fx);
+            });
+            os::tune_all();
+            busy = true;
         }
         if self.shown.trail {
             self.trail.step(local, dt);
@@ -754,6 +844,34 @@ mod os {
         screens.iter().map(|s| (flip(s.frame()), flip(s.visibleFrame()))).find(|(frame, _)| frame.contains(at))
     }
 
+    /// Every screen and its part left by the Dock and the menu bar (points, top left origin), left to
+    /// right.
+    pub(super) fn screens() -> Vec<(Rect, Rect)> {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return Vec::new() };
+        let screens = objc2_app_kit::NSScreen::screens(mtm);
+        let Some(main) = screens.firstObject() else { return Vec::new() };
+        let height = main.frame().size.height;
+        let flip = |r: objc2_foundation::NSRect| Rect::from_min_size(Pos2::new(r.origin.x as f32, (height - r.origin.y - r.size.height) as f32), Vec2::new(r.size.width as f32, r.size.height as f32));
+        let mut list: Vec<(Rect, Rect)> = screens.iter().map(|s| (flip(s.frame()), flip(s.visibleFrame()))).collect();
+        list.sort_by(|a, b| a.0.min.x.total_cmp(&b.0.min.x).then(a.0.min.y.total_cmp(&b.0.min.y)));
+        list
+    }
+
+    /// Every window of ours (the other screens' too) above everything, on every desktop, letting the
+    /// mouse through.
+    pub(super) fn tune_all() {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        for window in objc2_app_kit::NSApplication::sharedApplication(mtm).windows().iter() {
+            if window.level() != 1000 {
+                window.setLevel(1000);
+                window.setCollectionBehavior(B::CanJoinAllSpaces | B::Stationary | B::FullScreenAuxiliary | B::IgnoresCycle);
+                window.setHasShadow(false);
+                window.setIgnoresMouseEvents(true);
+            }
+        }
+    }
+
     /// Above every window, the full-screen ones too, on every desktop, out of the window cycle; never
     /// put to sleep by App Nap.
     pub(super) fn tune(cc: &eframe::CreationContext<'_>) {
@@ -876,6 +994,13 @@ mod os {
     }
 
     pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
+
+    /// One screen only here (the pointer's).
+    pub(super) fn screens() -> Vec<(Rect, Rect)> {
+        Vec::new()
+    }
+
+    pub(super) fn tune_all() {}
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -903,6 +1028,12 @@ mod os {
     }
 
     pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
+
+    pub(super) fn screens() -> Vec<(Rect, Rect)> {
+        Vec::new()
+    }
+
+    pub(super) fn tune_all() {}
 }
 
 #[cfg(test)]
@@ -932,8 +1063,19 @@ mod tests {
     }
 
     #[test]
+    fn each_walk_on_one_screen() {
+        // One screen: always it. Several: the same all through a walk, every screen in turn.
+        assert!((0..50).all(|lap| walk_screen(f64::from(lap), 1, 1) == 0));
+        let seen: std::collections::HashSet<usize> = (0..60).map(|lap| walk_screen(f64::from(lap), 2, 3)).collect();
+        assert_eq!(seen.len(), 3);
+        let fx = Fx { sheep: true, ..Default::default() };
+        let at = walks(&fx, 32.0, 3)[0];
+        assert!(at.0 && (0..30).all(|k| walks(&fx, 32.0 + f64::from(k) * 0.4, 3)[0] == at));
+    }
+
+    #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

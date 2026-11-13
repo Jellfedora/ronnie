@@ -1937,6 +1937,16 @@ fn kind_stats(kind: Kind) -> [f32; 4] {
     }
 }
 
+/// The zombies met (places in BESTIARY): seen in a game, or at a wave the player went past.
+pub(super) fn met_kinds(s: &crate::config::Settings) -> Vec<u8> {
+    BESTIARY.iter().enumerate().filter(|(k, (_, from, _))| s.monday_seen & (1 << k) != 0 || s.monday_best >= *from).map(|(k, _)| k as u8).collect()
+}
+
+/// The kind at this place of the bestiary.
+pub(super) fn bestiary_kind(k: u8) -> Kind {
+    BESTIARY.get(k as usize).map_or(Kind::Base, |b| b.0)
+}
+
 /// A zombie never met: its shadow only (the body, the arms, the head, what it carries), a « ? ».
 fn paint_shadow(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, phase: f32) {
     let r = kind.radius() * scale;
