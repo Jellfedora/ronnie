@@ -224,6 +224,12 @@ impl Default for Plant {
     }
 }
 
+/// Where a window of ours really is, its content's top left on the screens (points); before it is
+/// known, where it was asked to be.
+fn window_origin(ctx: &egui::Context, asked: Pos2) -> Pos2 {
+    ctx.input(|i| i.viewport().inner_rect).map_or(asked, |r| r.min)
+}
+
 /// Mathéo's height on screen (points).
 const MATHEO_H: f32 = 70.0;
 
@@ -706,12 +712,10 @@ impl eframe::App for Overlay {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(screen.size()));
             self.trail = Default::default();
         }
-        // This window too, put back on its screen's top left (macOS slid it under the menu bar when it
-        // was made, before it was raised above everything: all drawn too low).
-        if ctx.input(|i| i.viewport().outer_rect).is_some_and(|r| (r.min - self.screen.min).length() > 1.0) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.screen.min));
-        }
-        let local = mouse.at.filter(|p| self.screen.contains(*p)).map(|p| (p - self.screen.min).to_pos2());
+        // Where this window really is: macOS may have slid it under the menu bar (and cut it to fit), so
+        // everything is drawn from its true top left, not the screen's.
+        let origin = window_origin(&ctx, self.screen.min);
+        let local = mouse.at.filter(|p| self.screen.contains(*p)).map(|p| (p - origin).to_pos2());
         let click = mouse.pressed && !self.pressed;
         self.pressed = mouse.pressed;
         let screens = os::screens();
@@ -766,19 +770,19 @@ impl eframe::App for Overlay {
         let mut busy = false;
         let mut next: f32 = 1.0;
         // Along the foot of the screen, above the Dock or the task bar.
-        let foot = self.work.translate(-self.screen.min.to_vec2());
+        let foot = self.work.translate(-origin.to_vec2());
         let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
         // The screens: each walker along one of them (the same all through its walk), the horde along
         // all of them at once. This window covers the pointer's; the others get one each while needed.
         let n = screens.len().max(1);
         let here = screens.iter().position(|(s, _)| (s.min - self.screen.min).length() < 1.0).unwrap_or(0);
-        let (shown, again) = paint_walkers(&painter, strip, Rect::from_min_size(Pos2::ZERO, self.screen.size()), now, here, n, &self.shown);
+        let (shown, again) = paint_walkers(&painter, strip, self.screen.translate(-origin.to_vec2()), now, here, n, &self.shown);
         busy |= shown || plant_busy;
         next = next.min(again);
         // Mathéo on the screen he's on (this window's, or another's).
         let plant_on = plant.map(|(at, _)| screens.iter().position(|(s, _)| s.contains(at - Vec2::new(0.0, 1.0))).unwrap_or(here));
         if let (Some((at, held)), true) = (plant, plant_on == Some(here)) {
-            paint_matheo(&painter, at - self.screen.min.to_vec2(), MATHEO_H, now, held);
+            paint_matheo(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
             next = next.min(0.1);
         }
         for (i, (screen, work)) in screens.iter().enumerate() {
@@ -799,17 +803,14 @@ impl eframe::App for Overlay {
                 .with_position(screen.min)
                 .with_inner_size(screen.size());
             ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("fx-screen", i)), builder, |ctx, _| {
-                // Put back on its screen's top left: macOS slides a new window under the menu bar
-                // (before it is raised above everything), everything in it then drawn too low.
-                if ctx.input(|i| i.viewport().outer_rect).is_some_and(|r| (r.min - screen.min).length() > 1.0) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(screen.min));
-                }
+                // Drawn from where the window really is (macOS slides a new one under the menu bar).
+                let origin = window_origin(ctx, screen.min);
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("desktop-fx")));
-                let foot = work.translate(-screen.min.to_vec2());
+                let foot = work.translate(-origin.to_vec2());
                 let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
-                paint_walkers(&painter, strip, Rect::from_min_size(Pos2::ZERO, screen.size()), now, i, n, &fx);
+                paint_walkers(&painter, strip, screen.translate(-origin.to_vec2()), now, i, n, &fx);
                 if let (Some((at, held)), true) = (plant, plant_on == Some(i)) {
-                    paint_matheo(&painter, at - screen.min.to_vec2(), MATHEO_H, now, held);
+                    paint_matheo(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
                 }
             });
             os::tune_all();
