@@ -2,6 +2,29 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [1.0.0] - 2026-11-13
+
+Ronnie est prêt pour la prod.
+
+### Nouveautés
+
+- **Lundi matin**, un nouveau jeu : survis aux vagues de zombies de bureau, seul ou jusqu'à 4 collègues, en montant les six étages de la tour jusqu'au Comité de direction sur le toit. Des boss, des armes de bureau, une carrière, des succès et des titres à porter dans le tchat, et des récompenses à débloquer. Tu peux aussi regarder la partie d'un collègue.
+- **Mathéo**, une plante verte en pot à débloquer à Riff Hero (5 chansons jouées jusqu'au bout) : il s'installe en bas de l'écran, en dehors de Ronnie aussi. Attrape-le à la souris pour le poser ailleurs, même sur un autre écran : lâché en l'air, il retombe.
+- **Les effets sur tout l'écran passent sur tous tes écrans** : la horde de 10 h les traverse tous à la fois, le mouton, le droïde et Gérard se baladent chacun sur l'un d'eux. Le droïde fait des petits sauts sur ses propulseurs, le mouton bêle. Rien ne s'affiche quand une app est en plein écran (un film, un jeu).
+- **Une récompense débloquée dit ce qu'elle est** et où l'activer, sur la page du jeu et dans Paramètres › Récompenses. Riff Hero affiche ses récompenses sur sa page.
+- **Tchat** : l'icône d'un groupe se change d'un clic sur sa tête, son nom d'un clic dans l'en-tête ; « ⌘ F » ouvre la recherche de la conversation ; les smileys tapés en texte (:) ;) <3 ^^…) deviennent des emoji ; ton statut est une pastille à côté du titre.
+- **Claude crée et lance tes projets PHP** : il les enregistre, installe ce qu'il faut (PHP, nginx, MySQL ou MariaDB, toujours avec ton accord) et démarre chaque partie d'un projet dans un même onglet, un pane par partie.
+
+### Corrections
+
+- Les pointeurs des thèmes (baguette, sabre, épée, agrafeuse) ne remplacent plus que la flèche normale : sur le bord d'une fenêtre, un lien ou du texte, le pointeur du système revient.
+- Clavier AZERTY : « ⌘ 4 » change bien d'onglet, et les touches 1 à 9 des jeux marchent toutes.
+- Terminal (macOS) : les touches mortes marchent (^ puis e donne ê).
+- macOS : la mise à jour marche aussi quand Ronnie a été lancé depuis le dossier où il a été téléchargé.
+- Dans la colonne de gauche, la liste ne passe plus par-dessus la scène du thème, et les Marcheurs blancs restent dans leur panneau.
+- Tchat : une image ouverte en grand est centrée, un collègue n'est plus listé deux fois, la molette ne reste plus bloquée sur un message.
+- Ronnie.io : le record compte aussi quand la partie se finit en quittant la page.
+
 ## [0.47.1] - 2026-11-12
 
 ### Nouveautés
