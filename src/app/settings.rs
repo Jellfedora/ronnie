@@ -1727,13 +1727,15 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests)) {
+                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests), picked.monday_wins > 0) {
                             let how = if preset.id == crate::theme::HYPERSPACE_THEME {
                                 t.theme_locked_larsen.to_owned()
                             } else if preset.id == crate::theme::THRONES_THEME {
                                 t.theme_locked_coffee.replace("{n}", &crate::coffee::THRONES_UNLOCK.to_string())
                             } else if preset.id == crate::theme::WIZARD_THEME {
                                 t.unlock_wizard_how.replace("{n}", &crate::theme::WIZARD_DAYS.to_string())
+                            } else if preset.id == crate::theme::MONDAY_THEME {
+                                t.unlock_monday_theme_how.replace("{n}", &crate::zombie::LAST_WAVE.to_string())
                             } else if preset.id == crate::theme::OFFICE_THEME {
                                 t.theme_locked_office.replace("{n}", &crate::theme::OFFICE_UNLOCK.to_string())
                             } else if preset.id == crate::theme::JURASSIC_THEME {
@@ -2288,6 +2290,7 @@ impl App {
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => Some(&mut p.saber),
                                     Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => Some(&mut p.wand),
                                     Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => Some(&mut p.sword),
+                                    Some(super::unlocks::Reward::Theme(crate::theme::MONDAY_THEME)) => Some(&mut p.stapler),
                                     _ => None,
                                 };
                                 if let Some(on) = own {

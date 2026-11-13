@@ -78,7 +78,7 @@ impl App {
                 vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false, reward: Some(Reward::Trail) }]
             }
             HomeGame::BugHunt | HomeGame::Fishing => {
-                let frames = super::frames::FRAMES.iter().filter(|f| matches!(f.need, super::frames::Need::Wave(_)) == (game == HomeGame::BugHunt)).map(|f| {
+                let frames = super::frames::FRAMES.iter().filter(|f| if game == HomeGame::BugHunt { matches!(f.need, super::frames::Need::Wave(_)) } else { matches!(f.need, super::frames::Need::Cards(_)) }).map(|f| {
                     let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
                     Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame(f.id)) }
                 });
@@ -106,6 +106,8 @@ impl App {
                     Unlock { what: t.unlock_gerard.into(), how: t.unlock_gerard_how.to_owned(), done: s.monday_gerard, progress: None, info: false, reward: Some(Reward::Gerard) },
                     Unlock { what: t.unlock_agnes_card.into(), how: t.unlock_agnes_card_how.replace("{n}", &ESCORTS_CARD.to_string()), done: s.monday_escorts >= ESCORTS_CARD, progress: Some((s.monday_escorts.min(ESCORTS_CARD), ESCORTS_CARD)), info: false, reward: None },
                     Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: s.monday_horde.then_some(Reward::Horde) },
+                    Unlock { what: t.unlock_monday_theme.into(), how: t.unlock_monday_theme_how.replace("{n}", &crate::zombie::LAST_WAVE.to_string()), done: s.monday_wins > 0, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::MONDAY_THEME)) },
+                    Unlock { what: t.unlock_monday_frame.into(), how: t.unlock_monday_frame_how.replace("{n}", &crate::zombie::DAILIES_FRAME.to_string()), done: s.monday_dailies >= crate::zombie::DAILIES_FRAME, progress: Some((s.monday_dailies.min(crate::zombie::DAILIES_FRAME), crate::zombie::DAILIES_FRAME)), info: false, reward: Some(Reward::Frame("survivor")) },
                 ]
             }
             _ => Vec::new(),

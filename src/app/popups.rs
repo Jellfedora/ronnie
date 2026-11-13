@@ -629,6 +629,12 @@ impl App {
                 super::thrones::sword_along(ui.painter(), band, 1.0);
                 ui.add_space(10.0);
             }
+            // Lundi matin: blood on top, the alert.
+            if self.theme.monday {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                super::monday_theme::drips(ui.painter(), band, ui.input(|i| i.time), 5, 0.0);
+                ui.add_space(14.0);
+            }
             // Hyperspace: a red beam on top, the alert.
             if self.theme.hyperspace {
                 let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -641,6 +647,8 @@ impl App {
                 super::hyperspace::ALERT
             } else if self.theme.thrones {
                 super::thrones::ALERT
+            } else if self.theme.monday {
+                super::monday_theme::ALERT
             } else if self.theme.wizard {
                 super::wizard::ALERT
             } else {
@@ -651,6 +659,10 @@ impl App {
                     // Star Wars: the Dark Lord's helmet.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
                     super::hyperspace::helmet(ui.painter(), r);
+                } else if self.theme.monday {
+                    // Lundi matin: a zombie's hand.
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                    super::monday_theme::hand(ui.painter(), r.center_bottom() - Vec2::new(0.0, 2.0), 36.0, 1.0);
                 } else if self.theme.thrones {
                     // Game of Thrones: the Iron Throne.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());

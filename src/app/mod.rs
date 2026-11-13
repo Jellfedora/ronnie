@@ -38,6 +38,8 @@ mod larsen;
 mod president;
 mod bughunt;
 mod zombie;
+mod zombie_floors;
+mod monday_theme;
 mod fishing;
 mod frames;
 mod trail;
@@ -634,6 +636,8 @@ pub struct App {
     jump: Option<f64>,
     /// Game of Thrones: app time when the opening began (the theme picked or won).
     winter: Option<f64>,
+    /// Lundi matin's theme just picked: the blood on the screen, since (NaN: from the next frame).
+    blood: Option<f64>,
     /// Game of Thrones: app time the dragon's flights are counted from (the opening's end: it comes at once).
     dragon_from: f64,
     /// The tour of the features: at the first launch, or asked again from the settings.
@@ -1457,6 +1461,7 @@ impl App {
             splash: Some(f64::NAN),
             jump: None,
             winter: None,
+            blood: None,
             dragon_from: 0.0,
             tour: None,
             worklog_ask: false,
@@ -2190,6 +2195,9 @@ impl App {
             }
             if config.settings.theme == crate::theme::THRONES_THEME {
                 self.winter = Some(f64::NAN);
+            }
+            if config.settings.theme == crate::theme::MONDAY_THEME {
+                self.blood = Some(f64::NAN);
             }
         }
         self.fonts.size = config.settings.font_size.clamp(*config::FONT_SIZES.start(), *config::FONT_SIZES.end());
@@ -3318,6 +3326,11 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     if theme.thrones {
         return thrones::logo(painter, rect);
     }
+    if theme.monday {
+        let now = painter.ctx().input(|i| i.time);
+        painter.ctx().request_repaint_after(std::time::Duration::from_millis(80));
+        return monday_theme::logo(painter, rect, now);
+    }
     paint_metal(painter, rect.center() - Vec2::new(0.0, 2.0), Align2::CENTER_CENTER, "Ronnie", 32.0, theme.accent, 1.0);
 }
 
@@ -3814,6 +3827,12 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     if focused && theme.wizard {
         // Gryffindor: a gold line under the bar.
         wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+    }
+    if theme.monday && focused {
+        // Lundi matin: blood running from under the bar of the pane that has the focus.
+        let now = ui.input(|i| i.time);
+        monday_theme::drips(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max), now, 23, 0.0);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
     }
     if theme.thrones {
         // Game of Thrones: a sword drawn under the bar when the pane takes the focus.
@@ -5193,6 +5212,8 @@ impl App {
                         hyperspace::blade(ui.painter(), r, &self.theme);
                     } else if split && self.theme.thrones {
                         thrones::frame(ui.painter(), r);
+                    } else if split && self.theme.monday {
+                        monday_theme::frame(ui.painter(), r, ui.input(|i| i.time));
                     } else if split && self.theme.wizard {
                         wizard::frame(ui.painter(), r);
                     } else if split {
@@ -5579,6 +5600,25 @@ impl App {
         {
             thrones::corners(&ui.ctx().layer_painter(layer), rect.shrink(5.0));
         }
+        // Lundi matin: bloody hands on the corners of whichever dialog is open.
+        if self.theme.monday
+            && let Some(layer) = ui.ctx().memory(|m| m.top_modal_layer())
+            && let Some(rect) = ui.ctx().memory(|m| m.area_rect(layer.id))
+        {
+            monday_theme::corners(&ui.ctx().layer_painter(layer), rect.shrink(5.0));
+        }
+        // Lundi matin: the blood on the screen; a click or a key skips it.
+        if let Some(start) = self.blood.filter(|_| main_window) {
+            let now = ui.input(|i| i.time);
+            let start = if start.is_nan() { now } else { start };
+            self.blood = Some(start);
+            let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("blood")));
+            if skip || !monday_theme::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, self.t().monday_theme_intro) {
+                self.blood = None;
+            }
+            ui.ctx().request_repaint();
+        }
 
         // Game of Thrones: the Iron Throne in the dark; a click or a key skips it.
         if let Some(start) = self.winter.filter(|_| main_window) {
@@ -5636,6 +5676,9 @@ impl App {
         }
         if self.theme.thrones && pointers.sword && !screen_pointer {
             thrones::pointer(ui.ctx());
+        }
+        if self.theme.monday && pointers.stapler && !screen_pointer {
+            monday_theme::pointer(ui.ctx());
         }
         // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
         let today = chrono::Local::now().date_naive();

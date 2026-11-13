@@ -237,6 +237,9 @@ fn walker(painter: &egui::Painter, foot: Pos2, h: f32, dir: f32, now: f64) {
 /// The Wall at the foot of `field`, its White Walkers marching, the snow falling. Returns when to paint
 /// again, in seconds.
 pub(super) fn wall(painter: &egui::Painter, field: Rect, now: f64) -> f32 {
+    // Kept in its panel: the White Walkers coming in from the side would walk over the strip of the
+    // categories.
+    let painter = &painter.with_clip_rect(field.intersect(painter.clip_rect()));
     let top = field.max.y - field.height().min(120.0) * 0.45;
     let mut ice = Vec::new();
     let mut x = field.min.x;

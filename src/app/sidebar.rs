@@ -360,6 +360,9 @@ impl App {
                 if self.theme.thrones {
                     super::thrones::active_mark(ui.painter(), slot);
                 }
+                if self.theme.monday {
+                    super::monday_theme::active_mark(ui.painter(), slot);
+                }
                 ui.painter().rect_filled(Rect::from_min_size(Pos2::new(strip.min.x + 2.0, slot.min.y + 10.0), Vec2::new(3.0, slot.height() - 20.0)), 1.5, self.theme.accent);
             } else if resp.hovered() {
                 ui.painter().rect_filled(slot, 9.0, self.theme.tab_hover.gamma_multiply(0.75));
@@ -1046,6 +1049,8 @@ impl App {
             super::wizard::crest(ui.painter(), Rect::from_center_size(r_at, Vec2::new(28.0, 34.0)));
         } else if self.theme.thrones {
             super::thrones::throne(ui.painter(), r_at + Vec2::new(0.0, 4.0), 14.0, 1.0);
+        } else if self.theme.monday {
+            super::monday_theme::mark(ui.painter(), r_at, ui.input(|i| i.time));
         } else {
             super::paint_metal(ui.painter(), r_at, Align2::CENTER_CENTER, "R", 32.0, self.theme.accent, 1.0);
         }
@@ -1734,6 +1739,9 @@ impl App {
         if self.theme.thrones {
             super::thrones::panel_bg(ui.painter(), bar);
         }
+        if self.theme.monday {
+            super::monday_theme::panel_bg(ui.painter(), bar);
+        }
         if self.theme.wizard {
             super::wizard::panel_bg(ui.painter(), bar);
             super::wizard::strip_bg(ui.painter(), strip);
@@ -1838,6 +1846,13 @@ impl App {
                 super::thrones::flight(&painter, bar, t, now);
             }
         }
+        if self.theme.monday {
+            // Lundi matin: night over the tower, its zombies shambling by, a hand out of the ground.
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let now = ui.input(|i| i.time);
+            let again = super::monday_theme::scene(ui.painter(), field, now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+        }
         if self.theme.wizard {
             // Gryffindor: the castle at night, the candles, the Snitch, the owl, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
@@ -1876,6 +1891,11 @@ impl App {
         } else if self.theme.wizard {
             // Gryffindor: a gold line above the settings.
             super::wizard::gold_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else if self.theme.monday {
+            // Lundi matin: blood dripping above the settings.
+            let now = ui.input(|i| i.time);
+            super::monday_theme::drips(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)), now, 11, 0.0);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
         } else if self.theme.thrones {
             // Game of Thrones: a line of steel above the settings.
             super::thrones::iron_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
@@ -2279,6 +2299,10 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
     if theme.thrones {
         // Game of Thrones: a rivet and a line of steel after the title.
         super::thrones::title_marks(painter, rect, rect.min.x + 8.0 + galley.size().x);
+    }
+    if theme.monday {
+        // Lundi matin: a drop of blood, a thin line of it.
+        super::monday_theme::title_marks(painter, rect, rect.min.x + 8.0 + galley.size().x);
     }
     if theme.wizard {
         // Gryffindor: a gold diamond before, a gold line fading out after.

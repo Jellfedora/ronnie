@@ -31,6 +31,8 @@ pub struct Theme {
     pub wizard: bool,
     /// Game of Thrones: the Wall under the snow, a dragon, swords (see `app::thrones`).
     pub thrones: bool,
+    /// Lundi matin: the stapler for a pointer.
+    pub monday: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -95,7 +97,9 @@ pub const WIZARD_THEME: &str = "gryffondor";
 /// Game of Thrones, won by finishing levels of Pause Café.
 pub const THRONES_THEME: &str = "game-of-thrones";
 /// The themes with their own touches, most won in the games, shown apart in the settings.
-pub const SPECIAL_THEMES: [&str; 6] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME];
+/// Lundi matin, won by beating the executive committee on the roof.
+pub const MONDAY_THEME: &str = "lundi-matin";
+pub const SPECIAL_THEMES: [&str; 7] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME, MONDAY_THEME];
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -335,6 +339,23 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // Lundi matin: the open space at night, its blue-grey carpet, the zombies' green for the accent,
+    // the post-it yellow for the cursor, the coffee's brown behind the bars.
+    Preset {
+        id: MONDAY_THEME,
+        name: "Lundi matin",
+        bg: 0x161b24,
+        fg: 0xdde3d6,
+        cursor: 0xffe066,
+        chrome: 0x202733,
+        surface: 0x323c4c,
+        accent: 0x8fd16a,
+        ansi: [
+            0x2a3140, 0xd94a4a, 0x8fd16a, 0xffd34f, 0x4fc3ff, 0xc79bff, 0x5fd4c0, 0xc9cfc2, //
+            0x4b5568, 0xff6b6b, 0xb4e894, 0xffe27a, 0x7fd4ff, 0xdcbcff, 0x8ae6d6, 0xf4f7ef,
+        ],
+        dark: true,
+    },
     // Open space: a light office, beige walls and grey carpet, the corporate blue, post-it yellow.
     Preset {
         id: OFFICE_THEME,
@@ -420,14 +441,16 @@ impl Preset {
             office: self.id == OFFICE_THEME,
             wizard: self.id == WIZARD_THEME,
             thrones: self.id == THRONES_THEME,
+            monday: self.id == MONDAY_THEME,
         }
     }
 
     /// Still locked, with this best score at the typing game, and whether a round of Ronnie.io unlocked
     /// the park, whether Larsen unlocked hyperspace, and whether the fishing's binder is full (never in
     /// a dev build, to try them).
-    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
+    #[allow(clippy::too_many_arguments)]
+    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool, monday: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == MONDAY_THEME && !monday) || (self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
     }
 
     /// The preset with this id, or the default one.

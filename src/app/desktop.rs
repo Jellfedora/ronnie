@@ -369,12 +369,14 @@ fn gerard_stroll(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) 
 /// Where Gérard is at `now`: how far along (0 to 1), going right, waving; or, away, the seconds until
 /// he comes back.
 fn gerard_at(now: f64) -> Result<(f32, bool, bool), f32> {
+    // In a build of one's own, `RONNIE_GERARD=1`: every 45 s, to see him.
+    let every = if !crate::config::OFFICIAL && std::env::var("RONNIE_GERARD").is_ok_and(|v| v == "1") { 45.0 } else { GERARD_EVERY };
     // Not at the sheep's time, nor the droid's.
-    let t = (now + 95.0) % GERARD_EVERY;
+    let t = (now + 95.0) % every;
     if t > GERARD_STROLL {
-        return Err((GERARD_EVERY - t) as f32);
+        return Err((every - t) as f32);
     }
-    let rightward = ((now + 95.0) / GERARD_EVERY).floor() as i64 % 2 == 0;
+    let rightward = ((now + 95.0) / every).floor() as i64 % 2 == 0;
     // Walking 0-14 s, waving 14-20 s, walking 20-34 s.
     let (along, waving) = if t < 14.0 {
         (t / 14.0 * 0.5, false)

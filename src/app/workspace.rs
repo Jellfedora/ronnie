@@ -151,6 +151,10 @@ impl App {
                 painter.rect_filled(r, 0.0, theme.bg);
                 if theme.jurassic {
                     super::jurassic::hazard(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
+                } else if theme.monday {
+                    // Lundi matin: blood dripping from the active tab.
+                    let now = painter.ctx().input(|i| i.time);
+                    super::monday_theme::drips(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)), now, r.min.x as u32, 0.0);
                 } else if theme.thrones {
                     // Game of Thrones: a sword over the active tab.
                     super::thrones::sword_along(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 5.0)), 1.0);

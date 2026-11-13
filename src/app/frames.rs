@@ -12,6 +12,8 @@ pub(super) enum Need {
     Wave(u32),
     /// So many of the fishing's cards caught, shiny or not (floor checks the same, `holo`).
     Cards(u32),
+    /// So many of Lundi matin's daily challenges done (floor checks the same, `survivor`).
+    Dailies(u32),
 }
 
 /// A frame: its id on floor, what unlocks it.
@@ -22,11 +24,12 @@ pub(super) struct FrameDef {
 
 /// The frames, in the order they unlock: Bug Hunt's (the first once the first boss is beaten), then
 /// the fishing's full binder.
-pub(super) const FRAMES: [FrameDef; 4] = [
+pub(super) const FRAMES: [FrameDef; 5] = [
     FrameDef { id: "glitch", need: Need::Wave(6) },
     FrameDef { id: "swarm", need: Need::Wave(11) },
     FrameDef { id: "circuit", need: Need::Wave(16) },
     FrameDef { id: "holo", need: Need::Cards(crate::fishing::FISH.len() as u32) },
+    FrameDef { id: "survivor", need: Need::Dailies(crate::zombie::DAILIES_FRAME) },
 ];
 
 /// How far the player is toward a frame, and how far they must go.
@@ -34,6 +37,7 @@ pub(super) fn progress(def: &FrameDef, s: &crate::config::Settings) -> (u32, u32
     match def.need {
         Need::Wave(w) => (s.bughunt_best_wave, w),
         Need::Cards(n) => (s.fish_cards.values().filter(|c| c.count > 0).count() as u32, n),
+        Need::Dailies(n) => (s.monday_dailies, n),
     }
 }
 
@@ -48,6 +52,7 @@ pub(super) fn how(def: &FrameDef, t: &Strings) -> String {
     match def.need {
         Need::Wave(w) => t.frame_how.replace("{n}", &w.to_string()),
         Need::Cards(n) => t.frame_how_cards.replace("{n}", &n.to_string()),
+        Need::Dailies(n) => t.unlock_monday_frame_how.replace("{n}", &n.to_string()),
     }
 }
 
@@ -148,6 +153,27 @@ pub(super) fn paint_frame(painter: &egui::Painter, c: Pos2, r: f32, id: Option<&
                 let s = w * 1.6 * (1.0 - (phase * 2.0 - 1.0).abs());
                 painter.line_segment([at - Vec2::new(s, 0.0), at + Vec2::new(s, 0.0)], Stroke::new(w * 0.35, Color32::WHITE));
                 painter.line_segment([at - Vec2::new(0.0, s), at + Vec2::new(0.0, s)], Stroke::new(w * 0.35, Color32::WHITE));
+            }
+        }
+        // Lundi matin's survivor: a ring of dried blood, drips running down it, the gold tie of the
+        // boss beaten hanging at the bottom, a zombie's hand gripping the top.
+        "survivor" => {
+            let blood = super::monday_theme::BLOOD;
+            painter.circle_stroke(c, ring + w * 0.4, Stroke::new(w * 1.5, super::monday_theme::DRIED));
+            painter.circle_stroke(c, ring, Stroke::new(w * 0.8, blood));
+            for k in 0..5 {
+                let a = 0.35 + k as f32 * 0.55;
+                let grow = ((now as f32 * 0.6 + k as f32 * 1.3).sin() * 0.5 + 0.5) * w * 2.2;
+                let from = c + Vec2::angled(a) * ring;
+                painter.line_segment([from, from + Vec2::new(0.0, w + grow)], Stroke::new(w * 0.55, blood));
+                painter.circle_filled(from + Vec2::new(0.0, w + grow), w * 0.45, blood);
+            }
+            let gold = Color32::from_rgb(222, 180, 80);
+            let knot = c + Vec2::new(0.0, ring + w * 0.6);
+            painter.add(egui::Shape::convex_polygon(vec![knot - Vec2::new(w * 0.9, 0.0), knot + Vec2::new(w * 0.9, 0.0), knot + Vec2::new(w * 0.5, w * 1.1), knot - Vec2::new(w * 0.5, w * 1.1)], gold, Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(vec![knot + Vec2::new(-w * 0.5, w * 1.1), knot + Vec2::new(w * 0.5, w * 1.1), knot + Vec2::new(w * 1.0, w * 4.0), knot + Vec2::new(0.0, w * 5.0), knot + Vec2::new(-w * 1.0, w * 4.0)], gold, Stroke::NONE));
+            if r >= 14.0 {
+                super::monday_theme::hand(painter, c - Vec2::new(-r * 0.5, ring - w), r * 0.7, 0.8 + 0.2 * (now as f32 * 2.0).sin());
             }
         }
         _ => return,

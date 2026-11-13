@@ -33,6 +33,8 @@ pub enum Kind {
     Cc,
     /// The HR director, every fifth wave.
     Hr,
+    /// A member of the executive committee: three of them, the final boss (wave 20, on the roof).
+    Board,
 }
 
 impl Kind {
@@ -44,6 +46,7 @@ impl Kind {
             4 => Kind::ReplyAll,
             5 => Kind::Cc,
             6 => Kind::Hr,
+            7 => Kind::Board,
             _ => Kind::Base,
         }
     }
@@ -56,6 +59,7 @@ impl Kind {
             Kind::Sales => 20.0,
             Kind::Cc => 12.0,
             Kind::Hr => 40.0,
+            Kind::Board => 28.0,
         }
     }
 }
@@ -65,6 +69,10 @@ impl Kind {
 pub const REVIVES_BITE: u32 = 20;
 pub const ESCORTS_CARD: u32 = 10;
 pub const LETTERS: u32 = 12;
+/// Daily challenges done for the avatar frame (career.js DAILIES_FRAME).
+pub const DAILIES_FRAME: u32 = 7;
+/// The last wave: the executive committee on the roof; held, the game is won.
+pub const LAST_WAVE: u32 = 20;
 
 /// The grades, in floor's order (career.js GRADES): the names it sends.
 pub const GRADES: [&str; 8] = ["Stagiaire", "CDD", "CDI", "Chef d’équipe", "Manager", "Directeur", "DG", "PDG"];
@@ -166,6 +174,10 @@ pub struct Frame {
     pub letters: Vec<(f32, f32)>,
     /// Weapons dropped by zombies: x, y, weapon (index in WEAPONS), seconds left.
     pub drops: Vec<(f32, f32, usize, u32)>,
+    /// The floor of the tower (0 the hall, 1 the open space, 2 the boardroom, 3 the roof).
+    pub floor: usize,
+    /// Paused (alone, Escape or another page).
+    pub paused: bool,
     pub at: Instant,
 }
 
@@ -218,6 +230,13 @@ pub struct Career {
     pub horde: bool,
     /// The week's goals: id, done so far, needed, reached.
     pub week: Vec<(String, u32, u32, bool)>,
+    /// The day's challenge: id, done so far, needed, reached; the challenges done, the games won.
+    #[serde(default)]
+    pub daily: Option<(String, u32, u32, bool)>,
+    #[serde(default)]
+    pub dailies: u32,
+    #[serde(default)]
+    pub wins: u32,
 }
 
 /// A step passed at the end of a game (what Ronnie announces, and hangs its rewards on).
@@ -232,13 +251,23 @@ pub enum Milestone {
     Letter { value: u32 },
     Horde,
     Weekly { id: String },
+    /// The executive committee beaten, the first time.
+    Final,
+    Daily { id: String },
+    Dailies { value: u32 },
 }
 
-/// The office, from floor (sent once).
+/// A floor of the tower, from floor (sent once): its furniture, the coffee machine, the doors.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Map {
+    /// 'hall', 'openspace', 'board', 'roof'.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
     pub w: f32,
+    #[serde(default)]
     pub h: f32,
+    #[serde(default)]
     pub wall: f32,
     pub desks: Vec<Desk>,
     pub coffee: Spot,
@@ -250,12 +279,15 @@ pub struct Map {
     pub agnes_path: Vec<Spot>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Desk {
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// What it is ('desk', 'table', 'sofa', 'plant', 'heli'...), drawn as such.
+    #[serde(default)]
+    pub k: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -310,6 +342,9 @@ pub struct Over {
     pub xp: u32,
     #[serde(default)]
     pub milestones: Vec<Milestone>,
+    /// The executive committee beaten: the game won.
+    #[serde(default)]
+    pub won: bool,
 }
 
 /// What happened once, for the app (sounds, toasts, little texts on the field).
@@ -318,6 +353,13 @@ pub enum Happened {
     Wave { wave: u32, boss: bool },
     Cleared(u32),
     Boss,
+    /// The executive committee comes in.
+    FinalBoss,
+    /// Up a floor (its number).
+    Floor(usize),
+    /// The executive committee beaten.
+    Won,
+    Paused(bool),
     Recruit,
     Kill { kind: Kind, x: f32, y: f32, by: u32 },
     Down(u32),
@@ -375,6 +417,8 @@ enum Wire {
     Welcome {
         map: Map,
         #[serde(default)]
+        floors: Vec<Map>,
+        #[serde(default)]
         shop: std::collections::HashMap<String, serde_json::Value>,
     },
     #[serde(rename = "profile")]
@@ -413,6 +457,10 @@ enum Wire {
         l: Vec<f32>,
         #[serde(default)]
         d: Vec<f32>,
+        #[serde(default)]
+        fl: usize,
+        #[serde(default)]
+        ps: u8,
     },
     #[serde(rename = "news")]
     News { l: Vec<serde_json::Value> },
@@ -444,6 +492,8 @@ pub struct Online {
     retry_at: Option<Instant>,
     pub status: Status,
     pub map: Option<Map>,
+    /// The tower's floors (the map's size on each).
+    pub floors: Vec<Map>,
     pub lobby: Vec<Open>,
     pub room: Option<Room>,
     pub frame: Option<Frame>,
@@ -529,6 +579,21 @@ impl Online {
 
     pub fn leave(&mut self) {
         self.send(json!({ "t": "leave" }));
+    }
+
+    /// Out of the game under way: alone, it ends now (and counts); with others, the character stays.
+    pub fn quit(&mut self) {
+        self.send(json!({ "t": "quit" }));
+    }
+
+    /// Paused or going again (alone only).
+    pub fn pause(&self, on: bool) {
+        self.send(json!({ "t": "pause", "on": on }));
+    }
+
+    /// The floor `k` of the tower (the first one, before floor sent them).
+    pub fn floor_map(&self, k: usize) -> Option<&Map> {
+        self.floors.get(k).or(self.map.as_ref())
     }
 
     /// Moving (x, y between -1 and 1), aiming (radians), firing.
@@ -641,7 +706,8 @@ impl Online {
         match wire {
             Wire::Profile(career) => self.career = Some(career),
             Wire::Perks { list } => self.perks = list,
-            Wire::Welcome { map, shop } => {
+            Wire::Welcome { map, floors, shop } => {
+                self.floors = floors.into_iter().map(|f| Map { w: map.w, h: map.h, wall: map.wall, ..f }).collect();
                 self.map = Some(map);
                 self.prices = shop;
                 self.status = Status::Ready;
@@ -661,7 +727,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, fl, ps } => {
                 let players = p
                     .chunks_exact(22)
                     .map(|v| Player {
@@ -720,7 +786,7 @@ impl Online {
                 let letters = l.chunks_exact(2).map(|v| (v[0], v[1])).collect();
                 let drops = d.chunks_exact(4).map(|v| (v[0], v[1], (v[2].max(0.0) as usize).min(WEAPONS.len() - 1), v[3] as u32)).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, players, zombies, shots, agnes, gerard, turrets, letters, drops, floor: fl.min(3), paused: ps == 1, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -754,7 +820,11 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
     Some(match v.get("t")?.as_str()? {
         "wave" => Happened::Wave { wave: u("wave"), boss: v.get("boss").and_then(serde_json::Value::as_bool).unwrap_or(false) },
         "cleared" => Happened::Cleared(u("wave")),
+        "boss" if v.get("final").and_then(serde_json::Value::as_bool) == Some(true) => Happened::FinalBoss,
         "boss" => Happened::Boss,
+        "floor" => Happened::Floor(u("floor") as usize),
+        "won" => Happened::Won,
+        "paused" => Happened::Paused(v.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false)),
         "recruit" => Happened::Recruit,
         "kill" => {
             let kind = match v.get("kind")?.as_str()? {
@@ -764,6 +834,7 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
                 "reply" => Kind::ReplyAll,
                 "cc" => Kind::Cc,
                 "drh" => Kind::Hr,
+                "codir" => Kind::Board,
                 _ => Kind::Base,
             };
             Happened::Kill { kind, x: n("x") as f32, y: n("y") as f32, by: u("by") }
@@ -864,6 +935,28 @@ mod tests {
         online.take(serde_json::from_str(text).unwrap(), Instant::now(), &mut news, &mut closed);
         assert!(closed.is_none());
         news
+    }
+
+    #[test]
+    fn the_tower_the_final_boss_the_day() {
+        let mut online = Online::default();
+        take(&mut online, r#"{"t":"welcome","map":{"w":1600,"h":1000,"wall":20,"desks":[],"coffee":{"x":90,"y":500},"doors":[]},"floors":[{"id":"hall","desks":[{"x":1,"y":2,"w":3,"h":4,"k":"sofa"}],"coffee":{"x":90,"y":500},"doors":[]},{"id":"roof","desks":[],"coffee":{"x":90,"y":500},"doors":[]}],"last":20}"#);
+        assert_eq!(online.floors.len(), 2);
+        assert_eq!((online.floors[1].id.as_str(), online.floors[1].w), ("roof", 1600.0));
+        assert_eq!(online.floor_map(0).unwrap().desks[0].k, "sofa");
+        assert_eq!(online.floor_map(9).unwrap().id, "");
+        take(&mut online, r#"{"t":"s","ph":0,"w":16,"tl":5,"zl":0,"tk":0,"p":[],"z":[1,7,10,10,90,0,0],"b":[],"fl":3,"ps":1}"#);
+        let f = online.frame.as_ref().unwrap();
+        assert_eq!((f.floor, f.paused, f.zombies[0].kind), (3, true, Kind::Board));
+        let news = take(&mut online, r#"{"t":"news","l":[{"t":"boss","final":true},{"t":"boss"},{"t":"floor","floor":2},{"t":"won"},{"t":"paused","on":true}]}"#);
+        assert_eq!(news.happened, vec![Happened::FinalBoss, Happened::Boss, Happened::Floor(2), Happened::Won, Happened::Paused(true)]);
+        let news = take(&mut online, r#"{"t":"over","wave":20,"kills":1,"revives":0,"won":true,"milestones":[{"kind":"final"},{"kind":"daily","id":"kills"},{"kind":"dailies","value":7}]}"#);
+        let over = news.over.unwrap();
+        assert!(over.won);
+        assert_eq!(over.milestones, vec![Milestone::Final, Milestone::Daily { id: "kills".into() }, Milestone::Dailies { value: 7 }]);
+        take(&mut online, r#"{"t":"profile","xp":0,"grade":0,"name":"Stagiaire","stars":0,"from":0,"next":500,"slots":0,"perks":[],"shop":[],"mastery":{},"games":0,"kills":0,"revives":0,"escorts":0,"letters":0,"bestWave":0,"horde":false,"week":[],"daily":["kills",40,120,false],"dailies":3,"wins":1}"#);
+        let c = online.career.as_ref().unwrap();
+        assert_eq!((c.daily.clone(), c.dailies, c.wins), (Some(("kills".into(), 40, 120, false)), 3, 1));
     }
 
     #[test]
