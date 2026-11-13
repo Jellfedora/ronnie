@@ -52,6 +52,8 @@ pub(super) struct Monday {
     seen: (usize, Vec<Seen>),
     /// The welcome screen's height, at the last frame (for its scrolling).
     lobby_h: f32,
+    /// A zombie of the bestiary opened (its place in BESTIARY).
+    beast: Option<usize>,
 }
 
 /// The welcome screen's cards.
@@ -227,6 +229,9 @@ impl App {
         }
         if self.monday.letters_open {
             self.monday_letters(ui.ctx());
+        }
+        if let Some(k) = self.monday.beast {
+            self.monday_beast(ui.ctx(), k, now);
         }
         if let Some((text, at)) = &self.monday.error
             && now - at < 3.0
@@ -554,7 +559,12 @@ impl App {
         self.lobby_title(ui, inner, t.monday_career, None);
         let (left, right, w) = (inner.min.x, inner.max.x, inner.width());
         let p = ui.painter().clone();
-        let mut y = inner.min.y + 38.0;
+        let mut y = inner.min.y + 36.0;
+        // What it's for, in a line or two.
+        let hint = p.layout(t.monday_career_hint.to_owned(), FontId::proportional(11.5), theme.text_muted, w);
+        let h = hint.size().y;
+        p.galley(Pos2::new(left, y), hint, theme.text_muted);
+        y += h + 12.0;
         p.text(Pos2::new(left, y + 8.0), Align2::LEFT_CENTER, grade_name(t, c.grade, c.stars), FontId::proportional(17.0), theme.accent);
         p.text(Pos2::new(right, y + 8.0), Align2::RIGHT_CENTER, t.monday_xp.replace("{xp}", &c.xp.to_string()).replace("{next}", &c.next.to_string()), FontId::monospace(11.5), theme.text_muted);
         y += 22.0;
@@ -642,8 +652,14 @@ impl App {
             let wave = t.monday_wave_short.replace("{n}", &from.to_string());
             let (label, color) = if boss { (format!("{}  ·  {wave}", t.monday_boss_tag), theme.ansi[1]) } else { (wave, theme.text_muted) };
             p.text(Pos2::new(tile.center().x, tile.max.y - 13.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), color.gamma_multiply(if seen[k] { 1.0 } else { 0.6 }));
-            let note = if seen[k] { notes.get(k).copied().unwrap_or_default() } else { t.monday_unseen };
-            resp.on_hover_text(note);
+            if seen[k] {
+                let resp = resp.on_hover_text(notes.get(k).copied().unwrap_or_default()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if ui.interact(tile, ui.id().with(("bestiary-click", k)), Sense::click()).clicked() || resp.clicked() {
+                    self.monday.beast = Some(k);
+                }
+            } else {
+                resp.on_hover_text(t.monday_unseen);
+            }
         }
         let rows = BESTIARY.len().div_ceil(cols);
         top + rows as f32 * (tile_h + gap) - gap - inner.min.y
@@ -1337,6 +1353,73 @@ impl App {
     }
 
     /// Agnès' letters to Gérard, those found (the others, still to find).
+    /// A zombie of the bestiary, opened: big, its name and wave, its life, its bite, its pace, what it
+    /// brings, what it does, its story.
+    fn monday_beast(&mut self, ctx: &egui::Context, k: usize, now: f64) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let Some(&(kind, from, boss)) = BESTIARY.get(k) else {
+            self.monday.beast = None;
+            return;
+        };
+        let name = t.monday_bestiary.split('|').nth(k).unwrap_or_default();
+        let note = t.monday_bestiary_notes.split('|').nth(k).unwrap_or_default();
+        let lore = t.monday_bestiary_lore.split('|').nth(k).unwrap_or_default();
+        let labels: Vec<&str> = t.monday_stat_names.split('|').collect();
+        let tint = if boss { theme.ansi[1] } else { theme.accent };
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(22.0).fill(theme.chrome_bg).stroke(Stroke::new(1.5, tint)).corner_radius(14.0);
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("monday-beast")).frame(frame).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.horizontal_top(|ui| {
+                // The zombie, big, on its tile.
+                let (tile, _) = ui.allocate_exact_size(Vec2::splat(170.0), Sense::hover());
+                let p = ui.painter_at(tile);
+                p.rect_filled(tile, 12.0, theme.bg);
+                let scale = (52.0 / kind.radius()).min(2.6);
+                let cycle = (now * 0.5) % 3.0 < 1.0;
+                let fx = Fx { frozen: kind == Kind::Visio && cycle, healing: kind == Kind::Coach, rebooting: kind == Kind::It && cycle, ..Fx::default() };
+                paint_zombie(&p, tile.center() - Vec2::new(0.0, 12.0), scale, kind, std::f32::consts::FRAC_PI_2, k as u32 * 7 + 3, (now * 3.0) as f32, 1.0, fx);
+                ui.add_space(18.0);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(name).size(22.0).strong().color(theme.text));
+                    let wave = t.monday_wave_short.replace("{n}", &from.to_string());
+                    let tag = if boss { format!("{}  ·  {wave}", t.monday_boss_tag) } else { wave };
+                    ui.label(egui::RichText::new(tag).size(12.0).color(tint));
+                    ui.add_space(12.0);
+                    // Its numbers, each with a bar against the strongest.
+                    let stats = kind_stats(kind);
+                    let tops = [900.0, 25.0, 125.0, 400.0];
+                    for (i, value) in stats.into_iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(Vec2::new(92.0, 18.0), egui::Label::new(egui::RichText::new(labels.get(i).copied().unwrap_or_default()).size(12.5).color(theme.text_muted)));
+                            let (bar, _) = ui.allocate_exact_size(Vec2::new(150.0, 18.0), Sense::hover());
+                            let line = Rect::from_center_size(bar.center(), Vec2::new(bar.width(), 6.0));
+                            ui.painter().rect_filled(line, 3.0, theme.bg);
+                            let k = (value / tops[i]).sqrt().clamp(0.04, 1.0);
+                            ui.painter().rect_filled(Rect::from_min_size(line.min, Vec2::new(line.width() * k, line.height())), 3.0, tint);
+                            ui.label(egui::RichText::new(format!("{value}")).size(12.5).monospace().color(theme.text));
+                        });
+                    }
+                });
+            });
+            ui.add_space(16.0);
+            ui.label(egui::RichText::new(note).size(14.0).strong().color(tint));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(lore).size(13.0).italics().color(theme.text_muted));
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.monday_stat_hint).size(11.0).color(theme.text_muted.gamma_multiply(0.7)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = ui.button(egui::RichText::new(t.close).size(13.0)).clicked();
+                });
+            });
+        });
+        if close || modal.should_close() {
+            self.monday.beast = None;
+        }
+    }
+
     fn monday_letters(&mut self, ctx: &egui::Context) {
         let t = self.t();
         let theme = self.theme.clone();
@@ -1831,6 +1914,25 @@ pub(super) struct Fx {
     pub(super) frozen: bool,
     pub(super) healing: bool,
     pub(super) rebooting: bool,
+}
+
+/// A kind's life, bite (each second at contact), pace (px/s) and the tickets it brings, as floor's
+/// KINDS has them (before the game's scaling).
+fn kind_stats(kind: Kind) -> [f32; 4] {
+    match kind {
+        Kind::Base => [40.0, 10.0, 62.0, 10.0],
+        Kind::Intern => [20.0, 6.0, 125.0, 8.0],
+        Kind::Meeting => [130.0, 12.0, 36.0, 25.0],
+        Kind::Sales => [80.0, 16.0, 52.0, 20.0],
+        Kind::ReplyAll => [50.0, 10.0, 60.0, 15.0],
+        Kind::Cc => [16.0, 5.0, 80.0, 3.0],
+        Kind::Hr => [900.0, 25.0, 38.0, 300.0],
+        Kind::Board => [650.0, 22.0, 44.0, 400.0],
+        Kind::Visio => [45.0, 9.0, 55.0, 14.0],
+        Kind::Accountant => [110.0, 12.0, 46.0, 22.0],
+        Kind::Coach => [70.0, 8.0, 50.0, 30.0],
+        Kind::It => [60.0, 10.0, 58.0, 25.0],
+    }
 }
 
 /// A zombie never met: its shadow only (the body, the arms, the head, what it carries), a « ? ».
