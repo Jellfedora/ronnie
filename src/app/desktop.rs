@@ -10,7 +10,7 @@
 //!
 //! With the wand or the lightsaber, the system's pointer is hidden everywhere on macOS (it comes back by
 //! itself when the process ends, even crashing); on Windows it stays, the wand drawn at its tip. macOS
-//! and Windows; not Linux (no way there to stay above everything for X11 and Wayland both).
+//! and Windows; Linux through X11 (XWayland under Wayland), with a compositor.
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,9 +64,9 @@ impl Fx {
     }
 }
 
-/// The systems where it works.
+/// The systems where it works: Linux, with an X11 display (XWayland under Wayland).
 pub(super) fn supported() -> bool {
-    cfg!(any(target_os = "macos", windows))
+    cfg!(any(target_os = "macos", windows)) || (cfg!(unix) && std::env::var_os("DISPLAY").is_some())
 }
 
 /// The effects' process, from Ronnie's side.
@@ -156,6 +156,10 @@ impl App {
             let Ok(exe) = std::env::current_exe() else { return };
             let mut cmd = std::process::Command::new(exe);
             cmd.arg("desktop-fx").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            // Linux: through X11 (XWayland under Wayland), where a window places itself and stays above,
+            // in pixels (as the screens are read).
+            #[cfg(all(unix, not(target_os = "macos")))]
+            cmd.env_remove("WAYLAND_DISPLAY").env("WINIT_UNIX_BACKEND", "x11").env("WINIT_X11_SCALE_FACTOR", "1");
             match cmd.spawn() {
                 Ok(mut child) => {
                     let Some(stdin) = child.stdin.take() else { return };
@@ -321,6 +325,12 @@ pub(super) fn paint_matheo(painter: &egui::Painter, foot: Pos2, size: f32, now: 
 
 /// `ronnie desktop-fx`: the effects' window, until its standard input closes.
 pub(crate) fn run() {
+    // Without a compositor, the transparent window would hide the screen in black: nothing then.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if !os::composited() {
+        crate::log::info("desktop effects: no compositor, nothing shown");
+        return;
+    }
     let fx: Arc<Mutex<Option<Fx>>> = Arc::new(Mutex::new(None));
     let mouse = Arc::new(Mutex::new(Mouse::default()));
     let follows = Arc::new(AtomicBool::new(false));
@@ -694,6 +704,9 @@ impl eframe::App for Overlay {
         // Another app full screen (a film...): nothing over it, the pointer its own. Looked at each second.
         if self.full.1.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
             self.full = (os::full_screen(self.screen), Some(Instant::now()));
+            // Linux: the window manager told about our windows once it lists them.
+            #[cfg(all(unix, not(target_os = "macos")))]
+            os::tune_all();
         }
         if self.full.0 {
             os::hide_pointer(false);
@@ -1099,8 +1112,9 @@ mod os {
 #[cfg(windows)]
 mod os {
     use egui::{Pos2, Rect};
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint};
+    use windows_sys::Win32::Foundation::{LPARAM, POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint};
+    use windows_sys::core::BOOL;
     use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
@@ -1109,12 +1123,17 @@ mod os {
 
     /// The monitor at `p` (pixels): its rect and work area in pixels, its scale.
     fn monitor(p: POINT) -> Option<(Rect, Rect, f32)> {
+        // SAFETY: a plain Win32 call.
+        monitor_info(unsafe { MonitorFromPoint(p, MONITOR_DEFAULTTONULL) })
+    }
+
+    /// Monitor `m`: its rect and work area in pixels, its scale.
+    fn monitor_info(m: HMONITOR) -> Option<(Rect, Rect, f32)> {
+        if m.is_null() {
+            return None;
+        }
         // SAFETY: plain Win32 calls on values owned here.
         unsafe {
-            let m = MonitorFromPoint(p, MONITOR_DEFAULTTONULL);
-            if m.is_null() {
-                return None;
-            }
             let mut info: MONITORINFO = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
             if GetMonitorInfoW(m, &mut info) == 0 {
@@ -1193,15 +1212,148 @@ mod os {
 
     pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
 
-    /// One screen only here (the pointer's).
+    /// Every screen and its work area (points: each monitor's pixels over its own scale, as
+    /// `screen_at` gives them), left to right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
-        Vec::new()
+        unsafe extern "system" fn each(m: HMONITOR, _dc: HDC, _r: *mut RECT, list: LPARAM) -> BOOL {
+            // SAFETY: `list` is the Vec handed to EnumDisplayMonitors below, alive during the call.
+            let list = unsafe { &mut *(list as *mut Vec<HMONITOR>) };
+            list.push(m);
+            1
+        }
+        let mut found: Vec<HMONITOR> = Vec::new();
+        // SAFETY: the callback only pushes into `found`, which outlives the call.
+        unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(each), &raw mut found as LPARAM) };
+        let pts = |r: Rect, s: f32| Rect::from_min_max((r.min.to_vec2() / s).to_pos2(), (r.max.to_vec2() / s).to_pos2());
+        let mut list: Vec<(Rect, Rect)> = found.into_iter().filter_map(monitor_info).map(|(rect, work, s)| (pts(rect, s), pts(work, s))).collect();
+        list.sort_by(|a, b| a.0.min.x.total_cmp(&b.0.min.x).then(a.0.min.y.total_cmp(&b.0.min.y)));
+        list
     }
 
     pub(super) fn tune_all() {}
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+/// Linux: over X11 (under Wayland, through XWayland: a Wayland window can neither place itself nor stay
+/// above the others), in pixels (the process is started at scale 1). Under Wayland the pointer is only
+/// known while it is over an X11 window: the walkers and the horde show, the trail and the wand hardly.
+#[cfg(all(unix, not(target_os = "macos")))]
+mod os {
+    use std::sync::OnceLock;
+
+    use egui::{Pos2, Rect, Vec2};
+    use x11rb::connection::Connection;
+    use x11rb::protocol::randr::ConnectionExt as _;
+    use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, KeyButMask, Window};
+    use x11rb::rust_connection::RustConnection;
+
+    use super::Mouse;
+
+    /// The display's connection and its root window, opened once.
+    fn x() -> Option<&'static (RustConnection, Window)> {
+        static X: OnceLock<Option<(RustConnection, Window)>> = OnceLock::new();
+        X.get_or_init(|| {
+            let (conn, screen) = x11rb::connect(None).ok()?;
+            let root = conn.setup().roots.get(screen)?.root;
+            Some((conn, root))
+        })
+        .as_ref()
+    }
+
+    fn atom(conn: &RustConnection, name: &str) -> Option<u32> {
+        Some(conn.intern_atom(false, name.as_bytes()).ok()?.reply().ok()?.atom)
+    }
+
+    /// A property of 32-bit values.
+    fn values(conn: &RustConnection, window: Window, name: &str) -> Vec<u32> {
+        let Some(prop) = atom(conn, name) else { return Vec::new() };
+        conn.get_property(false, window, prop, AtomEnum::ANY, 0, 4096).ok().and_then(|c| c.reply().ok()).and_then(|r| r.value32().map(Iterator::collect)).unwrap_or_default()
+    }
+
+    /// A compositor draws the windows: without one, the transparent window would be black.
+    pub(super) fn composited() -> bool {
+        let Some((conn, _)) = x() else { return false };
+        let screen = std::env::var("DISPLAY").ok().and_then(|d| d.rsplit('.').next().filter(|s| !s.contains(':')).and_then(|s| s.parse::<u32>().ok())).unwrap_or(0);
+        atom(conn, &format!("_NET_WM_CM_S{screen}")).and_then(|a| conn.get_selection_owner(a).ok()?.reply().ok()).is_some_and(|r| r.owner != x11rb::NONE)
+    }
+
+    pub(super) fn mouse() -> Mouse {
+        let Some((conn, root)) = x() else { return Mouse::default() };
+        match conn.query_pointer(*root).ok().and_then(|c| c.reply().ok()) {
+            Some(p) => Mouse { at: Some(Pos2::new(f32::from(p.root_x), f32::from(p.root_y))), pressed: p.mask.contains(KeyButMask::BUTTON1) },
+            None => Mouse::default(),
+        }
+    }
+
+    /// The system keeps its pointer (the wand drawn at its tip).
+    pub(super) fn hide_pointer(_hide: bool) {}
+
+    pub(super) fn plain_pointer() -> bool {
+        true
+    }
+
+    /// The active window (not ours, nor Ronnie's) is in full screen.
+    pub(super) fn full_screen(_screen: Rect) -> bool {
+        let Some((conn, root)) = x() else { return false };
+        let Some(&front) = values(conn, *root, "_NET_ACTIVE_WINDOW").first() else { return false };
+        if front == 0 {
+            return false;
+        }
+        let pid = values(conn, front, "_NET_WM_PID").first().copied();
+        if pid.is_some_and(|p| p == std::process::id() || p == std::os::unix::process::parent_id()) {
+            return false;
+        }
+        atom(conn, "_NET_WM_STATE_FULLSCREEN").is_some_and(|full| values(conn, front, "_NET_WM_STATE").contains(&full))
+    }
+
+    pub(super) fn screen_at(at: Pos2) -> Option<(Rect, Rect)> {
+        screens().into_iter().find(|(s, _)| s.contains(at))
+    }
+
+    /// Every monitor and its part left by the panels (the desktop's work area cut to it), left to right.
+    pub(super) fn screens() -> Vec<(Rect, Rect)> {
+        let Some((conn, root)) = x() else { return Vec::new() };
+        let Some(reply) = conn.randr_get_monitors(*root, true).ok().and_then(|c| c.reply().ok()) else { return Vec::new() };
+        let area = values(conn, *root, "_NET_WORKAREA");
+        let area = (area.len() >= 4).then(|| Rect::from_min_size(Pos2::new(area[0] as f32, area[1] as f32), Vec2::new(area[2] as f32, area[3] as f32)));
+        let mut list: Vec<(Rect, Rect)> = reply
+            .monitors
+            .iter()
+            .map(|m| {
+                let s = Rect::from_min_size(Pos2::new(f32::from(m.x), f32::from(m.y)), Vec2::new(f32::from(m.width), f32::from(m.height)));
+                let work = area.map(|a| a.intersect(s)).filter(|w| w.width() > 100.0 && w.height() > 100.0).unwrap_or(s);
+                (s, work)
+            })
+            .collect();
+        list.sort_by(|a, b| a.0.min.x.total_cmp(&b.0.min.x).then(a.0.min.y.total_cmp(&b.0.min.y)));
+        list
+    }
+
+    pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
+
+    /// Every window of ours out of the task bar and the pager, on every desktop (asked of the window
+    /// manager once each, when it lists them).
+    pub(super) fn tune_all() {
+        static DONE: std::sync::Mutex<Vec<Window>> = std::sync::Mutex::new(Vec::new());
+        let Some((conn, root)) = x() else { return };
+        let me = std::process::id();
+        let (Some(state), Some(desktop), Some(skip_bar), Some(skip_pager), Some(sticky)) = (atom(conn, "_NET_WM_STATE"), atom(conn, "_NET_WM_DESKTOP"), atom(conn, "_NET_WM_STATE_SKIP_TASKBAR"), atom(conn, "_NET_WM_STATE_SKIP_PAGER"), atom(conn, "_NET_WM_STATE_STICKY")) else { return };
+        let Ok(mut done) = DONE.lock() else { return };
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        for w in values(conn, *root, "_NET_CLIENT_LIST") {
+            if done.contains(&w) || values(conn, w, "_NET_WM_PID").first() != Some(&me) {
+                continue;
+            }
+            // 1: add; then the source, a normal application.
+            let _ = conn.send_event(false, *root, mask, ClientMessageEvent::new(32, w, state, [1, skip_bar, skip_pager, 1, 0]));
+            let _ = conn.send_event(false, *root, mask, ClientMessageEvent::new(32, w, state, [1, sticky, 0, 1, 0]));
+            let _ = conn.send_event(false, *root, mask, ClientMessageEvent::new(32, w, desktop, [0xFFFF_FFFF, 1, 0, 0, 0]));
+            done.push(w);
+        }
+        let _ = conn.flush();
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows, unix)))]
 mod os {
     use egui::{Pos2, Rect};
 

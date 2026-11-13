@@ -62,10 +62,11 @@ tiberius = { version = "0.13", default-features = false, features = ["tds73", "r
 libc = "0.2"
 
 # Files dragged out of the window (src/dragout): X11 and Wayland, on the window's own connection.
+# The desktop effects (src/app/desktop.rs) over X11 too: the screens through RandR.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
-x11rb = { version = "0.13", features = ["screensaver", "xtest"] }
+x11rb = { version = "0.13", features = ["randr", "screensaver", "xtest"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
