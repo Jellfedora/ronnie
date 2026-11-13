@@ -2320,6 +2320,10 @@ impl App {
                                         ui.label(egui::RichText::new(label).size(12.5).color(theme.text));
                                     });
                                 }
+                                // The horde switched on: it runs across the screen right now, to see it.
+                                if pointer == Some(t.desktop_horde) {
+                                    self.desktop.horde_demo = Some(chrono::Utc::now().timestamp_millis());
+                                }
                                 // One pointer at a time: the wand, the lightsaber or the sword.
                                 if let Some(on) = pointer.filter(|p| [t.desktop_wand, t.desktop_saber, t.desktop_sword].contains(p)) {
                                     let fx = &mut picked.desktop_fx;

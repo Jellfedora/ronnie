@@ -32,6 +32,9 @@ pub(crate) struct Fx {
     /// Gérard, Lundi matin's kind zombie, strolling now and then.
     #[serde(default)]
     gerard: bool,
+    /// The horde run once right now, to see it (switched on): when, in Unix milliseconds.
+    #[serde(default)]
+    horde_demo: Option<i64>,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -69,6 +72,8 @@ pub(super) struct Desktop {
     /// Starts that ended at once, in a row: past a few, not started again (until settings change).
     failures: u32,
     started: Option<Instant>,
+    /// The horde just switched on: run once now (Unix milliseconds).
+    pub(super) horde_demo: Option<i64>,
 }
 
 impl Drop for Desktop {
@@ -104,7 +109,7 @@ impl App {
         } else {
             None
         };
-        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), pointer, theme: s.theme.clone() }
+        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -287,10 +292,14 @@ const HORDE_RUN: f64 = 14.0;
 
 /// Lundi matin's horde, at 10 o'clock: the zombies running across the screen, shouting for the break.
 /// Whether it shows, and when to look again. (`RONNIE_HORDE=1`, in a build of one's own: every minute.)
-fn horde_run(painter: &egui::Painter, screen: Rect) -> (bool, f32) {
+fn horde_run(painter: &egui::Painter, screen: Rect, demo: Option<i64>) -> (bool, f32) {
     use chrono::{Datelike, Timelike};
     let now = chrono::Local::now();
-    let since = if !crate::config::OFFICIAL && std::env::var("RONNIE_HORDE").is_ok_and(|v| v == "1") {
+    // Just switched on: once, right now.
+    let shown = demo.map(|at| (now.timestamp_millis() - at) as f64 / 1000.0).filter(|t| (0.0..HORDE_RUN).contains(t));
+    let since = if let Some(t) = shown {
+        t
+    } else if !crate::config::OFFICIAL && std::env::var("RONNIE_HORDE").is_ok_and(|v| v == "1") {
         f64::from(now.second()) + f64::from(now.nanosecond()) / 1e9
     } else {
         let weekday = now.weekday().num_days_from_monday() < 5;
@@ -504,7 +513,7 @@ impl eframe::App for Overlay {
             next = next.min(again);
         }
         if self.shown.horde {
-            let (shown, again) = horde_run(&painter, Rect::from_min_size(Pos2::ZERO, self.screen.size()));
+            let (shown, again) = horde_run(&painter, Rect::from_min_size(Pos2::ZERO, self.screen.size()), self.shown.horde_demo);
             busy |= shown;
             next = next.min(again);
         }
@@ -778,7 +787,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

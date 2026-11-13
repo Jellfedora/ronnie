@@ -1101,8 +1101,10 @@ impl App {
             if button(HeadIcon::Pig, t.talk_pig) {
                 self.send_pig(&room.id);
             }
-            // Lundi matin's bite, once won.
-            if self.config.settings.monday_revives >= crate::zombie::REVIVES_BITE && button(HeadIcon::Bite, t.talk_bite) {
+            // Lundi matin's bite, once won (in a build of one's own, always: floor still says if it's
+            // won), to a colleague alone.
+            let bite_won = self.config.settings.monday_revives >= crate::zombie::REVIVES_BITE || !crate::config::OFFICIAL;
+            if bite_won && room.kind == crate::talk::Kind::Dm && button(HeadIcon::Bite, t.talk_bite) {
                 self.talk.bite(&room.id);
             }
             if button(HeadIcon::Media, t.talk_media) {
