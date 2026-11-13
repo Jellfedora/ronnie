@@ -766,10 +766,10 @@ mod tests {
 
     #[test]
     fn gerard_strolls_now_and_then() {
-        let shown = (0..1500).filter(|k| gerard_at(*k as f64 / 10.0).is_ok()).count();
+        let shown = (0..1500).filter(|k: &i32| gerard_at(f64::from(*k) / 10.0).is_ok()).count();
         // 34 s out of 150, waving 6 s of them, halfway.
         assert!((330..=350).contains(&shown), "{shown}");
-        let waving = (0..1500).filter_map(|k| gerard_at(*k as f64 / 10.0).ok()).filter(|w| w.2).count();
+        let waving = (0..1500).filter_map(|k: i32| gerard_at(f64::from(k) / 10.0).ok()).filter(|w| w.2).count();
         assert!((55..=65).contains(&waving), "{waving}");
         assert!(gerard_at(0.0).is_err_and(|again| again > 0.0));
     }
