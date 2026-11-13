@@ -3932,28 +3932,37 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
             max_w -= 30.0;
         }
         right -= 4.0;
+        // Room for the badges, the servers first: when it runs short, the Node.js version goes before them.
+        let limit = rect.min.x + rect.width() / 3.0;
+        let url_w = |url: &LocalUrl| 16.0 + 7.5 * (3 + url.port.to_string().len()) as f32;
+        let node_w = node.map(|version| 18.0 + 7.0 * (3 + version.len()) as f32);
+        let mut room = right - limit;
+        let mut shown_urls = 0;
+        for url in urls.iter().rev() {
+            if url_w(url) > room {
+                break;
+            }
+            room -= url_w(url) + 6.0;
+            shown_urls += 1;
+        }
+        let node = node.filter(|_| node_w.is_some_and(|w| w <= room));
         // The Node.js version picked: clicked, the menu to change it.
         if let Some(version) = node {
             // The hexagon is drawn (the fonts have no ⬢), in the space left before the number.
             let text = egui::RichText::new(format!("    {}", version.trim_start_matches('v'))).size(11.5).monospace().color(dev::NODE_GREEN);
-            let w = 18.0 + 7.0 * (3 + version.len()) as f32;
-            if right - w > rect.min.x + rect.width() / 3.0 {
-                let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
-                let button = egui::Button::new(text).fill(dev::NODE_GREEN.gamma_multiply(0.14)).stroke(Stroke::new(1.0, dev::NODE_GREEN.gamma_multiply(0.45))).corner_radius(4.0);
-                let resp = ui.put(at, button);
-                dev::paint_node_icon_sized(ui.painter(), Pos2::new(at.min.x + 15.0, at.center().y), dev::NODE_GREEN, 5.0);
-                clicks.node = Some(resp.on_hover_text(t.node_header_tip.replace("{v}", version)).on_hover_cursor(egui::CursorIcon::PointingHand));
-                right -= w + 6.0;
-                max_w = right - rect.min.x - 16.0;
-            }
+            let w = node_w.unwrap_or_default();
+            let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
+            let button = egui::Button::new(text).fill(dev::NODE_GREEN.gamma_multiply(0.14)).stroke(Stroke::new(1.0, dev::NODE_GREEN.gamma_multiply(0.45))).corner_radius(4.0);
+            let resp = ui.put(at, button);
+            dev::paint_node_icon_sized(ui.painter(), Pos2::new(at.min.x + 15.0, at.center().y), dev::NODE_GREEN, 5.0);
+            clicks.node = Some(resp.on_hover_text(t.node_header_tip.replace("{v}", version)).on_hover_cursor(egui::CursorIcon::PointingHand));
+            right -= w + 6.0;
+            max_w = right - rect.min.x - 16.0;
         }
-        for url in urls.iter().rev() {
+        for url in urls.iter().rev().take(shown_urls) {
             let text = egui::RichText::new(format!("↗ :{}", url.port)).size(12.0).monospace().color(theme.bg);
             let button = egui::Button::new(text).fill(theme.ansi[2]).corner_radius(4.0);
-            let w = 16.0 + 7.5 * (3 + url.port.to_string().len()) as f32;
-            if right - w < rect.min.x + rect.width() / 3.0 {
-                break;
-            }
+            let w = url_w(url);
             let at = Rect::from_min_max(Pos2::new(right - w, rect.min.y + 3.0), Pos2::new(right, rect.max.y - 3.0));
             if ui.put(at, button).on_hover_text(&url.url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 crate::terminal::open_url(&url.url);
