@@ -2694,7 +2694,12 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("talk-viewer")).frame(frame).show(ctx, |ui| {
             let size = texture.size_vec2();
             let scale = ((screen.width() - 120.0) / size.x).min((screen.height() - 160.0) / size.y).min(1.0);
-            if ui.add(egui::Image::new((texture.id(), size * scale)).corner_radius(6.0).sense(Sense::click())).clicked() {
+            // As wide as the image (the row of the name and the buttons would take all the screen's
+            // width, the image left alone on the left).
+            let wide = (size.x * scale).max(320.0);
+            ui.set_width(wide);
+            ui.set_max_width(wide);
+            if ui.vertical_centered(|ui| ui.add(egui::Image::new((texture.id(), size * scale)).corner_radius(6.0).sense(Sense::click()))).inner.clicked() {
                 close = true;
             }
             ui.add_space(10.0);
