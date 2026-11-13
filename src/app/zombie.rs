@@ -28,6 +28,8 @@ pub(super) struct Monday {
     sent: Option<((i8, i8, i32, bool), f64)>,
     /// Little texts on the field: text, x, y (world), color, since.
     floats: Vec<(String, f32, f32, Color32, f64)>,
+    /// Memos sent: where, when (a ring spreads, the megaphone's reach).
+    memo_rings: Vec<(f32, f32, f64)>,
     /// A line across the top: text, color, since.
     banner: Option<(String, Color32, f64)>,
     /// An error floor sent (a room full...), and since.
@@ -52,6 +54,8 @@ pub(super) struct Monday {
     seen: (usize, Vec<Seen>),
     /// The welcome screen's height, at the last frame (for its scrolling).
     lobby_h: f32,
+    /// The welcome screen's section opened (none: their tiles).
+    section: Option<Card>,
     /// A zombie of the bestiary opened (its place in BESTIARY).
     beast: Option<usize>,
 }
@@ -59,16 +63,18 @@ pub(super) struct Monday {
 /// The achievements, in floor's order: each gives the title of the same place.
 pub(super) const ACHIEVEMENTS: [&str; 12] = ["newcomer", "rescuer", "centurion", "roof", "ceo", "lonewolf", "untouchable", "hunter", "cupid", "faithful", "arsenal", "zoologist"];
 
-/// The welcome screen's cards.
-#[derive(Clone, Copy)]
+/// The welcome screen's sections, each opened by a click (beside the card to play).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Card {
-    Play,
     Career,
+    Grades,
     Bestiary,
     Howto,
     Rewards,
     Board,
 }
+
+const SECTIONS: [Card; 6] = [Card::Career, Card::Grades, Card::Bestiary, Card::Howto, Card::Rewards, Card::Board];
 
 /// Inside a card of the welcome screen, around.
 const LOBBY_PAD: f32 = 18.0;
@@ -331,6 +337,20 @@ impl App {
                         self.monday_sound(&[(523.0, 523.0, 0.08, 0.2), (784.0, 784.0, 0.15, 0.2)]);
                     }
                 }
+                Happened::Memo { player, x, y } => {
+                    self.monday.floats.push((t.monday_memo.to_owned(), x, y - 40.0, Color32::from_rgb(255, 181, 71), now));
+                    self.monday.memo_rings.push((x, y, now));
+                    self.monday_sound(&[(180.0, 260.0, 0.18, 0.25), (260.0, 180.0, 0.22, 0.25)]);
+                    let _ = player;
+                }
+                Happened::Parachute(player) => {
+                    if let Some(p) = self.monday.online.frame.as_ref().and_then(|f| f.players.iter().find(|q| q.id == player)) {
+                        self.monday.floats.push((t.monday_parachute.to_owned(), p.x, p.y - 30.0, Color32::from_rgb(232, 190, 80), now));
+                    }
+                    if Some(player) == me {
+                        self.monday_sound(&[(392.0, 784.0, 0.3, 0.2), (784.0, 784.0, 0.15, 0.2)]);
+                    }
+                }
                 Happened::CrateDrop { x, y } => {
                     self.monday.floats.push((t.monday_crate_drop.to_owned(), x, y - 30.0, Color32::from_rgb(255, 181, 71), now));
                     self.monday_sound(&[(330.0, 330.0, 0.06, 0.15), (440.0, 440.0, 0.1, 0.15)]);
@@ -445,53 +465,169 @@ impl App {
         }
     }
 
-    /// The welcome screen, in cards: to play (the rooms), the career, the bestiary, how to play, the
-    /// rewards, the world's board; three columns on a wide page, two, or one. Scrolls when too tall.
+    /// The welcome screen: the card to play (the rooms) and, beside it (under it on a narrow page),
+    /// the sections as tiles, each opened by a click: the career, the grades, the bestiary, how to play,
+    /// the rewards, the world's board. Scrolls when too tall.
     fn monday_lobby(&mut self, ui: &mut Ui, body: Rect, now: f64, has_pseudo: bool) {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
-        egui::ScrollArea::vertical().id_salt("monday-lobby").auto_shrink(false).show(&mut child, |ui| {
+        egui::ScrollArea::vertical().id_salt(("monday-lobby", self.monday.section.map(|c| c as u8))).auto_shrink(false).show(&mut child, |ui| {
             let w = ui.available_width();
             let (area, _) = ui.allocate_exact_size(Vec2::new(w, self.monday.lobby_h.max(body.height() - 8.0)), Sense::hover());
             self.monday.lobby_h = self.monday_lobby_cards(ui, area, now, has_pseudo);
         });
     }
 
-    /// The cards in `area`; the height they take.
+    /// A card in `col` (x, width) from `top`, drawn by `draw` (its height back); its bottom.
+    fn lobby_card(&mut self, ui: &mut Ui, x: f32, width: f32, top: f32, draw: impl FnOnce(&mut Self, &mut Ui, Rect) -> f32) -> f32 {
+        // The card's background, under what's drawn in it (its height known once drawn).
+        let back = ui.painter().add(egui::Shape::Noop);
+        let inner = Rect::from_min_size(Pos2::new(x + LOBBY_PAD, top + LOBBY_PAD), Vec2::new(width - 2.0 * LOBBY_PAD, 0.0));
+        let h = draw(self, ui, inner);
+        if h <= 0.0 {
+            return top;
+        }
+        let rect = Rect::from_min_size(Pos2::new(x, top), Vec2::new(width, h + 2.0 * LOBBY_PAD));
+        ui.painter().set(back, egui::Shape::rect_filled(rect, 14.0, self.theme.chrome_bg));
+        ui.painter().rect_stroke(rect, 14.0, Stroke::new(1.0, self.theme.tab_hover), egui::StrokeKind::Inside);
+        rect.max.y
+    }
+
+    /// The card to play and the sections in `area`; the height they take.
     fn monday_lobby_cards(&mut self, ui: &mut Ui, area: Rect, now: f64, has_pseudo: bool) -> f32 {
         let gap = 18.0;
-        let cols: usize = if area.width() >= 1180.0 { 3 } else if area.width() >= 760.0 { 2 } else { 1 };
-        let width = area.width().min(if cols == 3 { 1280.0 } else if cols == 2 { 900.0 } else { 480.0 });
-        let col_w = (width - gap * (cols - 1) as f32) / cols as f32;
+        let wide = area.width() >= 820.0;
+        let width = area.width().min(if wide { 1180.0 } else { 520.0 });
         let x0 = area.center().x - width / 2.0;
-        let mut bottoms = vec![area.min.y; cols];
-        let order: &[(Card, usize)] = match cols {
-            3 => &[(Card::Play, 0), (Card::Career, 0), (Card::Bestiary, 1), (Card::Howto, 1), (Card::Rewards, 2), (Card::Board, 2)],
-            2 => &[(Card::Play, 0), (Card::Career, 0), (Card::Howto, 0), (Card::Bestiary, 1), (Card::Rewards, 1), (Card::Board, 1)],
-            _ => &[(Card::Play, 0), (Card::Career, 0), (Card::Bestiary, 0), (Card::Howto, 0), (Card::Rewards, 0), (Card::Board, 0)],
-        };
-        for &(card, col) in order {
-            let x = x0 + col as f32 * (col_w + gap);
-            let top = bottoms[col];
-            // The card's background, under what's drawn in it (its height known once drawn).
-            let back = ui.painter().add(egui::Shape::Noop);
-            let inner = Rect::from_min_size(Pos2::new(x + LOBBY_PAD, top + LOBBY_PAD), Vec2::new(col_w - 2.0 * LOBBY_PAD, 0.0));
-            let h = match card {
-                Card::Play => self.lobby_play(ui, inner, has_pseudo),
-                Card::Career => self.lobby_career(ui, inner),
-                Card::Bestiary => self.lobby_bestiary(ui, inner, now),
-                Card::Howto => self.lobby_howto(ui, inner),
-                Card::Rewards => self.lobby_rewards(ui, inner),
-                Card::Board => self.lobby_board(ui, inner, now),
-            };
-            if h <= 0.0 {
-                continue;
+        let play_w = if wide { 380.0 } else { width };
+        let play_bottom = self.lobby_card(ui, x0, play_w, area.min.y, |app, ui, inner| app.lobby_play(ui, inner, has_pseudo));
+        let (sx, sw, stop) = if wide { (x0 + play_w + gap, width - play_w - gap, area.min.y) } else { (x0, width, play_bottom + gap) };
+        let bottom = match self.monday.section {
+            Some(card) => {
+                // Back to the sections, then the one opened.
+                let t = self.t();
+                let back = Rect::from_min_size(Pos2::new(sx, stop), Vec2::new(140.0, 26.0));
+                if ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.monday_sections)).size(12.5)).frame_when_inactive(false).corner_radius(6.0)).clicked() {
+                    self.monday.section = None;
+                }
+                self.lobby_card(ui, sx, sw, stop + 34.0, |app, ui, inner| match card {
+                    Card::Career => app.lobby_career(ui, inner),
+                    Card::Grades => app.lobby_grades(ui, inner, now),
+                    Card::Bestiary => app.lobby_bestiary(ui, inner, now),
+                    Card::Howto => app.lobby_howto(ui, inner),
+                    Card::Rewards => app.lobby_rewards(ui, inner),
+                    Card::Board => app.lobby_board(ui, inner, now),
+                })
             }
-            let rect = Rect::from_min_size(Pos2::new(x, top), Vec2::new(col_w, h + 2.0 * LOBBY_PAD));
-            ui.painter().set(back, egui::Shape::rect_filled(rect, 14.0, self.theme.chrome_bg));
-            ui.painter().rect_stroke(rect, 14.0, Stroke::new(1.0, self.theme.tab_hover), egui::StrokeKind::Inside);
-            bottoms[col] = rect.max.y + gap;
+            None => self.lobby_tiles(ui, Rect::from_min_size(Pos2::new(sx, stop), Vec2::new(sw, 0.0)), now),
+        };
+        play_bottom.max(bottom) - area.min.y
+    }
+
+    /// The sections as tiles, two or three a row: each its name, a picture, a line of what's in it.
+    /// The bottom of the last row.
+    fn lobby_tiles(&mut self, ui: &mut Ui, area: Rect, now: f64) -> f32 {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let cols = if area.width() >= 640.0 { 3 } else { 2 };
+        let gap = 14.0;
+        let tile_w = (area.width() - gap * (cols - 1) as f32) / cols as f32;
+        let tile_h = 150.0;
+        let s = &self.config.settings;
+        let seen = BESTIARY.iter().enumerate().filter(|(k, (_, from, _))| s.monday_seen & (1 << k) != 0 || s.monday_best >= *from).count();
+        let items = self.unlocks(HomeGame::Monday);
+        let (done, total) = (items.iter().filter(|u| u.done && !u.info).count(), items.iter().filter(|u| !u.info).count());
+        let career = self.monday.online.career.clone();
+        let grade = career.as_ref().map_or(0, |c| c.grade);
+        let teasers: Vec<&str> = t.monday_section_teasers.split('|').collect();
+        let mut open = None;
+        let painter = ui.painter().clone();
+        for (k, card) in SECTIONS.iter().enumerate() {
+            let tile = Rect::from_min_size(area.min + Vec2::new((k % cols) as f32 * (tile_w + gap), (k / cols) as f32 * (tile_h + gap)), Vec2::new(tile_w, tile_h));
+            let resp = ui.interact(tile, ui.id().with(("monday-section", k)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let hot = resp.hovered();
+            painter.rect(tile, 14.0, if hot { theme.tab_hover } else { theme.chrome_bg }, Stroke::new(1.0, if hot { theme.accent } else { theme.tab_hover }), egui::StrokeKind::Inside);
+            let (title, value) = match card {
+                Card::Career => (t.monday_career, career.as_ref().map(|c| grade_name(t, c.grade, c.stars))),
+                Card::Grades => (t.monday_grades_title, Some(format!("{}/8", grade + 1))),
+                Card::Bestiary => (t.monday_bestiary_title, Some(format!("{seen}/{}", BESTIARY.len()))),
+                Card::Howto => (t.bughunt_howto, None),
+                Card::Rewards => (t.monday_rewards, Some(format!("{done}/{total}"))),
+                Card::Board => (t.monday_board_title, (s.monday_best > 0).then(|| t.monday_best.replace("{n}", &s.monday_best.to_string()))),
+            };
+            // A picture of what's inside.
+            let pic = Pos2::new(tile.center().x, tile.min.y + 48.0);
+            match card {
+                Card::Career => paint_metal(&painter, pic, Align2::CENTER_CENTER, "XP", 30.0, theme.accent, 1.0),
+                Card::Grades => paint_colleague(&painter, pic, 1.1, COLORS[0], -std::f32::consts::FRAC_PI_2, 0.0, 0, now, grade.max(4)),
+                Card::Bestiary => paint_zombie(&painter, pic, 1.1, Kind::Hr, std::f32::consts::FRAC_PI_2, 3, (now * 4.0) as f32, 1.0, Fx::default()),
+                Card::Howto => paint_metal(&painter, pic, Align2::CENTER_CENTER, "Z Q S D", 22.0, theme.accent, 1.0),
+                Card::Rewards => paint_metal(&painter, pic, Align2::CENTER_CENTER, "★", 34.0, Color32::from_rgb(232, 190, 80), 1.0),
+                Card::Board => paint_metal(&painter, pic, Align2::CENTER_CENTER, "#1", 30.0, theme.accent, 1.0),
+            }
+            painter.text(Pos2::new(tile.center().x, tile.min.y + 92.0), Align2::CENTER_CENTER, title, FontId::proportional(15.0), theme.text);
+            let line = value.unwrap_or_else(|| teasers.get(k).copied().unwrap_or_default().to_owned());
+            let galley = painter.layout(line, FontId::proportional(11.5), theme.text_muted, tile_w - 24.0);
+            painter.galley(Pos2::new(tile.center().x - galley.size().x / 2.0, tile.min.y + 108.0), galley, theme.text_muted);
+            if resp.clicked() {
+                open = Some(*card);
+            }
         }
-        bottoms.into_iter().fold(0.0f32, f32::max) - area.min.y
+        if open.is_some() {
+            self.monday.section = open;
+        }
+        area.min.y + SECTIONS.len().div_ceil(cols) as f32 * (tile_h + gap) - gap
+    }
+
+    /// The grades, from the intern to the CEO: each one's outfit, the XP it starts at, what it
+    /// brings (its own perk, what it opens at the coffee machine, the perks to pick); the player's lit.
+    fn lobby_grades(&mut self, ui: &mut Ui, inner: Rect, now: f64) -> f32 {
+        use crate::zombie::{GRADE_PERKS, GRADE_XP, PERK_GRADE, SHOP_GRADE};
+        let t = self.t();
+        let theme = self.theme.clone();
+        self.lobby_title(ui, inner, t.monday_grades_title, None);
+        let (left, w) = (inner.min.x, inner.width());
+        let p = ui.painter().clone();
+        let mut y = inner.min.y + 34.0;
+        let hint = p.layout(t.monday_grade_perks.to_owned(), FontId::proportional(11.5), theme.text_muted, w);
+        let h = hint.size().y;
+        p.galley(Pos2::new(left, y), hint, theme.text_muted);
+        y += h + 12.0;
+        let mine = self.monday.online.career.as_ref().map_or(0, |c| c.grade);
+        let perk_lines: Vec<&str> = t.monday_grade_perk_names.split('|').collect();
+        let shop_names: Vec<&str> = t.monday_shop_items.split('|').collect();
+        let shop_ids = ["extinguisher", "confetti", "turret", "mug", "dmg", "mag", "tape", "stamp", "plant", "projector"];
+        let perk_names: Vec<&str> = t.monday_perk_names.split('|').collect();
+        for g in 0..8u32 {
+            let reached = mine >= g;
+            let ink = if reached { theme.text } else { theme.text_muted };
+            let mut gives: Vec<String> = GRADE_PERKS.iter().enumerate().filter(|(_, (_, at))| *at == g).map(|(k, _)| perk_lines.get(k).copied().unwrap_or_default().to_owned()).collect();
+            let shop: Vec<&str> = shop_ids.iter().enumerate().filter(|(_, id)| SHOP_GRADE.iter().any(|(i, at)| i == *id && *at == g)).map(|(k, _)| shop_names.get(k).copied().unwrap_or_default()).collect();
+            if !shop.is_empty() {
+                gives.push(t.monday_grade_shop.replace("{l}", &shop.join(", ")));
+            }
+            let perks: Vec<&str> = PERK_GRADE.iter().enumerate().filter(|(_, at)| **at == g).map(|(k, _)| perk_names.get(k).copied().unwrap_or_default()).collect();
+            if !perks.is_empty() {
+                gives.push(t.monday_grade_pick.replace("{l}", &perks.join(", ")));
+            }
+            let galleys: Vec<_> = gives.into_iter().map(|line| p.layout(format!("·  {line}"), FontId::proportional(11.5), if reached { theme.text_muted } else { theme.text_muted.gamma_multiply(0.7) }, w - 70.0)).collect();
+            let row_h = (28.0 + galleys.iter().map(|g| g.size().y + 2.0).sum::<f32>()).max(64.0);
+            let row = Rect::from_min_size(Pos2::new(left, y), Vec2::new(w, row_h));
+            p.rect_filled(row, 10.0, if g == mine { theme.accent.gamma_multiply(0.14) } else { theme.bg });
+            if g == mine {
+                p.rect_stroke(row, 10.0, Stroke::new(1.5, theme.accent), egui::StrokeKind::Inside);
+            }
+            paint_colleague(&p, Pos2::new(left + 32.0, row.min.y + 34.0), 0.95, if reached { COLORS[0] } else { COLORS[0].gamma_multiply(0.5) }, -std::f32::consts::FRAC_PI_2, 0.0, 0, now, g);
+            p.text(Pos2::new(left + 64.0, row.min.y + 14.0), Align2::LEFT_CENTER, grade_name(t, g, 0), FontId::proportional(14.0), if g == mine { theme.accent } else { ink });
+            p.text(Pos2::new(row.max.x - 12.0, row.min.y + 14.0), Align2::RIGHT_CENTER, if g == mine { format!("{}  ·  {} XP", t.monday_grade_you, GRADE_XP[g as usize]) } else { format!("{} XP", GRADE_XP[g as usize]) }, FontId::monospace(11.0), theme.text_muted);
+            let mut ly = row.min.y + 28.0;
+            for galley in galleys {
+                let gh = galley.size().y;
+                p.galley(Pos2::new(left + 64.0, ly), galley, theme.text_muted);
+                ly += gh + 2.0;
+            }
+            y += row_h + 8.0;
+        }
+        y - 8.0 - inner.min.y
     }
 
     /// A card's title, at the top of `inner`; with something on its right (a count...).
@@ -862,7 +998,7 @@ impl App {
         y += 36.0;
         for (k, (_, name, color)) in room.players.iter().enumerate() {
             let c = Pos2::new(left + 16.0, y);
-            paint_colleague(&painter, c, 0.9, COLORS[*color as usize % 4], 0.0, (now * 2.0 + k as f64).sin() as f32 * 0.3, k % 4, now);
+            paint_colleague(&painter, c, 0.9, COLORS[*color as usize % 4], 0.0, (now * 2.0 + k as f64).sin() as f32 * 0.3, k % 4, now, 0);
             let label = if *name == room.host { format!("{name}  ·  {}", t.monday_host_tag) } else { name.clone() };
             let title = room.titles.get(&room.players[k].0).and_then(|id| ACHIEVEMENTS.iter().position(|a| a == id)).and_then(|i| t.monday_titles.split('|').nth(i));
             let dy = if title.is_some() { -7.0 } else { 0.0 };
@@ -1106,7 +1242,7 @@ impl App {
             match p.state {
                 State::Up => {
                     let firing = p.reload <= 0.0 && Some(p.id) != me && (now * 30.0 + p.id as f64).sin() > 0.95;
-                    paint_colleague(&painter, c, scale, color, p.aim, 0.0, p.weapon, now);
+                    paint_colleague(&painter, c, scale, color, p.aim, 0.0, p.weapon, now, frame.grade_of(p.id));
                     if firing {
                         painter.circle_filled(c + Vec2::angled(p.aim) * 42.0 * scale, 5.0 * scale, Color32::from_rgb(255, 233, 168));
                     }
@@ -1126,6 +1262,12 @@ impl App {
             painter.text(c - Vec2::new(0.0, 34.0 * scale), Align2::CENTER_CENTER, label, FontId::proportional(13.0 * scale.max(0.7)), if p.offline { theme.text_muted } else { Color32::WHITE });
         }
         super::zombie_floors::paint_shade(&painter, field, map.id == "roof");
+        // The memos' blasts, spreading to the megaphone's reach.
+        self.monday.memo_rings.retain(|r| now - r.2 < 0.6);
+        for &(x, y, since) in &self.monday.memo_rings {
+            let k = ((now - since) / 0.6) as f32;
+            painter.circle_stroke(at(x, y), 200.0 * k * scale, Stroke::new(6.0 * (1.0 - k) * scale.max(0.5), Color32::from_rgb(255, 181, 71).gamma_multiply(1.0 - k)));
+        }
         for (text, x, y, color, since) in &self.monday.floats {
             let k = ((now - since) / 0.9) as f32;
             painter.text(at(*x, *y) - Vec2::new(0.0, 20.0 + 30.0 * k) * scale, Align2::CENTER_CENTER, text, FontId::proportional(14.0 * scale.max(0.7)), color.gamma_multiply(1.0 - k));
@@ -1273,6 +1415,12 @@ impl App {
         // The perks' keys, and when they're back.
         if let Some(p) = mine {
             let mut y = field.max.y - 16.0;
+            // The memo (from Manager), once a wave.
+            if frame.grade_of(p.id) >= crate::zombie::MEMO_GRADE {
+                let ready = frame.memos.contains(&p.id) && frame.wave_on;
+                hud.text(Pos2::new(field.min.x + 18.0, y), Align2::LEFT_CENTER, t.monday_memo_key, FontId::proportional(12.0), if ready { theme.accent } else { theme.text_muted });
+                y -= 18.0;
+            }
             for (perk, key, left) in [("rtt", t.monday_dash, p.dash_in), ("teletravail", t.monday_tp, p.teleport_in)] {
                 if self.monday.online.perks.iter().any(|q| q == perk) {
                     let text = if left > 0 { format!("{key}  {left} s") } else { key.to_owned() };
@@ -1334,6 +1482,7 @@ impl App {
     /// ready, the perks (Shift: dash, T: back to the coffee).
     fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame) {
         let free = ui.ctx().memory(|m| m.focused().is_none());
+        let memo = free && ui.input(|i| i.key_pressed(Key::E));
         let (mx, my, fire, pick, reload, ready, shift, tp) = ui.input(|i| {
             let down = |keys: &[Key]| free && keys.iter().any(|k| i.key_down(*k));
             let mx = f32::from(down(&[Key::D, Key::ArrowRight])) - f32::from(down(&[Key::Q, Key::A, Key::ArrowLeft]));
@@ -1367,6 +1516,9 @@ impl App {
         self.monday.shift_was = shift;
         if tp {
             self.monday.online.teleport();
+        }
+        if memo {
+            self.monday.online.memo();
         }
     }
 
@@ -2129,10 +2281,13 @@ pub(super) fn paint_zombie(painter: &egui::Painter, c: Pos2, scale: f32, kind: K
     }
 }
 
-/// A colleague seen from above, aiming at `aim`: a shirt in their color, both hands on the weapon
-/// held ahead, the hair, the face toward where they aim.
+/// A colleague seen from above, aiming at `aim`: both hands on the weapon held ahead, the hair, the
+/// face toward where they aim; in the outfit of their career `grade`: the intern in a plain shirt;
+/// from CDD a collar and a badge on its lanyard; from CDI a tie; the team leader's headset; from
+/// Manager a dark jacket (the shirt of their color showing); the director's gold pocket square; the
+/// deputy CEO's sunglasses and black suit; the CEO's gold tie and a gold ring around them.
 #[allow(clippy::too_many_arguments)]
-fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32, aim: f32, bob: f32, weapon: usize, now: f64) {
+fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32, aim: f32, bob: f32, weapon: usize, now: f64, grade: u32) {
     let c = c + Vec2::new(0.0, bob * 4.0 * scale);
     let r = 19.0 * scale;
     let dir = Vec2::angled(aim);
@@ -2149,10 +2304,50 @@ fn paint_colleague(painter: &egui::Painter, c: Pos2, scale: f32, color: Color32,
         painter.circle_filled(shoulder, r * 0.17, sleeve);
         painter.circle_filled(hand, r * 0.18, skin);
     }
-    fill(painter, oval(c, dir, r * 0.56, r * 1.0), color);
-    // A collar.
-    fill(painter, vec![c + dir * r * 0.5 - side * r * 0.2, c + dir * r * 0.18, c + dir * r * 0.5 + side * r * 0.2], Color32::from_rgb(245, 245, 245));
-    paint_head(painter, c - dir * r * 0.04, dir, r * 0.46, skin, Some(Color32::from_rgb(72, 50, 34)));
+    let gold = Color32::from_rgb(232, 190, 80);
+    let suit = grade >= 4;
+    let jacket = if grade >= 6 { Color32::from_rgb(28, 30, 38) } else { Color32::from_rgb(54, 58, 74) };
+    fill(painter, oval(c, dir, r * 0.56, r * 1.0), if suit { jacket } else { color });
+    if suit {
+        // The shirt of their color, in the jacket's opening.
+        fill(painter, vec![c + dir * r * 0.54 - side * r * 0.3, c - dir * r * 0.05, c + dir * r * 0.54 + side * r * 0.3], color);
+    }
+    if grade >= 1 {
+        // A collar.
+        fill(painter, vec![c + dir * r * 0.5 - side * r * 0.2, c + dir * r * 0.18, c + dir * r * 0.5 + side * r * 0.2], Color32::from_rgb(245, 245, 245));
+    }
+    if grade >= 2 {
+        // The tie: navy, red from Manager, gold for the CEO.
+        let tie = if grade >= 7 { gold } else if suit { Color32::from_rgb(196, 48, 52) } else { Color32::from_rgb(40, 52, 96) };
+        fill(painter, vec![c + dir * r * 0.5, c + dir * r * 0.66 - side * r * 0.09, c + dir * r * 0.86, c + dir * r * 0.66 + side * r * 0.09], tie);
+    }
+    if (1..4).contains(&grade) {
+        // The badge on its lanyard.
+        let badge = c + dir * r * 0.3 + side * r * 0.3;
+        painter.line_segment([c + dir * r * 0.5 - side * r * 0.12, badge], Stroke::new(r * 0.06, Color32::from_rgb(60, 110, 200)));
+        fill(painter, oval(badge, dir, r * 0.12, r * 0.16), Color32::from_rgb(250, 250, 250));
+    }
+    if grade >= 5 {
+        // The pocket square.
+        fill(painter, vec![c + dir * r * 0.3 - side * r * 0.36, c + dir * r * 0.42 - side * r * 0.26, c + dir * r * 0.24 - side * r * 0.22], gold);
+    }
+    let head = c - dir * r * 0.04;
+    let hr = r * 0.46;
+    paint_head(painter, head, dir, hr, skin, Some(Color32::from_rgb(72, 50, 34)));
+    if grade == 3 {
+        // The team leader's headset: the band over the head, the mic before the mouth.
+        painter.line_segment([head - side * hr * 1.05, head + side * hr * 1.05], Stroke::new(hr * 0.22, Color32::from_rgb(40, 40, 46)));
+        painter.line_segment([head - side * hr * 1.0, head - side * hr * 0.4 + dir * hr * 1.1], Stroke::new(hr * 0.12, Color32::from_rgb(40, 40, 46)));
+        painter.circle_filled(head - side * hr * 0.4 + dir * hr * 1.1, hr * 0.16, Color32::from_rgb(40, 40, 46));
+    }
+    if grade >= 6 {
+        // Sunglasses.
+        painter.line_segment([head + dir * hr * 0.62 - side * hr * 0.62, head + dir * hr * 0.62 + side * hr * 0.62], Stroke::new(hr * 0.3, Color32::from_rgb(16, 16, 20)));
+    }
+    if grade >= 7 {
+        let pulse = 0.5 + 0.5 * (now * 2.0).sin() as f32;
+        painter.circle_stroke(c, r * 1.35, Stroke::new(r * 0.08, gold.gamma_multiply(0.45 + 0.35 * pulse)));
+    }
 }
 
 /// A weapon dropped on the floor: a glow of its color, a cardboard box, its name; blinking before it

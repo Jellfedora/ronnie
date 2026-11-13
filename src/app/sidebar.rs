@@ -509,10 +509,13 @@ impl App {
                 HomeGame::Monday => super::zombie::paint_monday_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, 1.0),
             }
-            painter.text(Pos2::new(slot.min.x + 36.0, slot.center().y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), if active || resp.hovered() { theme.text } else { theme.text_muted });
-            if let Some(note) = note {
-                painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85));
-            }
+            // The note on the right; the name cut before it if both don't fit.
+            let note_w = note.map_or(0.0, |note| painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85)).width() + 10.0);
+            let color = if active || resp.hovered() { theme.text } else { theme.text_muted };
+            let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), FontId::proportional(13.0), color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width((slot.width() - 46.0 - note_w).max(30.0));
+            let galley = painter.layout_job(job);
+            painter.galley(Pos2::new(slot.min.x + 36.0, slot.center().y - galley.size().y / 2.0), galley, color);
             if resp.clicked() {
                 open = Some(game);
             }
@@ -544,7 +547,8 @@ impl App {
         let bughunt_best = (self.config.settings.bughunt_best > 0).then(|| self.config.settings.bughunt_best.to_string());
         let cards = self.config.settings.fish_cards.len();
         let fishing = (cards > 0).then(|| t.fishing_species.replace("{n}", &cards.to_string()).replace("{max}", &crate::fishing::FISH.len().to_string()));
-        let monday_best = (self.config.settings.monday_best > 0).then(|| t.monday_best.replace("{n}", &self.config.settings.monday_best.to_string()));
+        // Short, as the others: the wave reached.
+        let monday_best = (self.config.settings.monday_best > 0).then(|| t.monday_wave.to_lowercase().replace("{n}", &self.config.settings.monday_best.to_string()));
         let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing), (HomeGame::Monday, t.monday_name, monday_best)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
