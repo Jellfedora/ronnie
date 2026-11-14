@@ -206,9 +206,9 @@ struct Overlay {
     /// The system's pointer is the plain arrow (else a hand, a beam, a resize...: left as it is), and
     /// when last looked at.
     plain: (bool, Option<Instant>),
-    /// Another app fills the screen (a film, a full-screen window): nothing shown then; and when
+    /// The screens another app fills (a film, a full-screen window): nothing shown there; and when
     /// last looked at.
-    full: (bool, Option<Instant>),
+    full: (Vec<Rect>, Option<Instant>),
     matheo: Plant,
 }
 
@@ -413,7 +413,7 @@ pub(crate) fn run() {
             }
             let work = os::screen_at(start.center()).map_or(start, |(_, work)| work);
             let theme = crate::theme::Preset::find(crate::theme::DEFAULT_THEME).theme();
-            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None), full: (false, None), matheo: Plant::default() }))
+            Ok(Box::new(Overlay { fx, mouse, shown: Fx::default(), theme, screen: start, work, trail: Default::default(), wand: Default::default(), pressed: false, last: None, plain: (true, None), full: (Vec::new(), None), matheo: Plant::default() }))
         }),
     );
     if let Err(e) = result {
@@ -701,14 +701,18 @@ impl eframe::App for Overlay {
             self.shown = fx;
         }
         let mouse = self.mouse.lock().map(|m| *m).unwrap_or_default();
-        // Another app full screen (a film...): nothing over it, the pointer its own. Looked at each second.
+        // Another app full screen (a film...): nothing over it, the pointer its own; on the other
+        // screens either. Looked at each second.
         if self.full.1.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
-            self.full = (os::full_screen(self.screen), Some(Instant::now()));
+            let all = os::screens();
+            let screens: Vec<Rect> = if all.is_empty() { vec![self.screen] } else { all.into_iter().map(|s| s.0).collect() };
+            self.full = (screens.into_iter().filter(|s| os::full_screen(*s)).collect(), Some(Instant::now()));
             // Linux: the window manager told about our windows once it lists them.
             #[cfg(all(unix, not(target_os = "macos")))]
             os::tune_all();
         }
-        if self.full.0 {
+        let covered = |full: &[Rect], screen: Rect| full.iter().any(|f| (f.min - screen.min).length() < 1.0 && (f.max - screen.max).length() < 1.0);
+        if covered(&self.full.0, self.screen) {
             os::hide_pointer(false);
             self.trail = Default::default();
             ctx.request_repaint_after(Duration::from_secs(1));
@@ -799,7 +803,7 @@ impl eframe::App for Overlay {
             next = next.min(0.1);
         }
         for (i, (screen, work)) in screens.iter().enumerate() {
-            if i == here || !(walkers_on(&self.shown, now, i, n) || plant_on == Some(i)) {
+            if i == here || covered(&self.full.0, *screen) || !(walkers_on(&self.shown, now, i, n) || plant_on == Some(i)) {
                 continue;
             }
             let (screen, work, fx) = (*screen, *work, self.shown.clone());
@@ -975,14 +979,83 @@ mod os {
         fn CFNumberGetValue(number: *const c_void, kind: i32, out: *mut c_void) -> bool;
     }
 
-    /// The app in front (not Ronnie) has a window covering the whole of `screen` (points, top left
-    /// origin): a film, a game, a window in full screen.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGGetDisplaysWithPoint(point: CGPoint, max: u32, displays: *mut u32, count: *mut u32) -> i32;
+        fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> *const c_void;
+        fn CGSCopyManagedDisplaySpaces(cid: i32) -> *const c_void;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFUUIDCreateString(alloc: *const c_void, uuid: *const c_void) -> *const c_void;
+        fn CFEqual(a: *const c_void, b: *const c_void) -> bool;
+    }
+
+    /// `screen` (points, top left origin) shows a film, a game, a window in full screen: its desktop
+    /// is a full-screen one (an app's own, the menu bar hidden; on a screen with a notch the window
+    /// stops under it, so its size alone wouldn't tell), or the app in front covers it whole. Not when
+    /// that app is Ronnie.
     pub(super) fn full_screen(screen: Rect) -> bool {
         let Some(front) = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication() else { return false };
         let pid = front.processIdentifier();
         if pid as u32 == std::os::unix::process::parent_id() || pid as u32 == std::process::id() {
             return false;
         }
+        covered(screen, pid, full_space(screen))
+    }
+
+    /// The desktop shown on `screen` is an app's full-screen one (the window server's own list, read
+    /// as the window utilities do: type 4).
+    fn full_space(screen: Rect) -> bool {
+        let key = |s: &str| objc2_foundation::NSString::from_str(s);
+        let (display_key, current_key, type_key, main) = (key("Display Identifier"), key("Current Space"), key("type"), key("Main"));
+        let ptr = |s: &objc2::rc::Retained<objc2_foundation::NSString>| objc2::rc::Retained::as_ptr(s).cast::<c_void>();
+        // SAFETY: CoreGraphics' and the window server's lists, read then released; every value checked.
+        unsafe {
+            let mut display = 0u32;
+            let mut count = 0u32;
+            let center = CGPoint { x: f64::from(screen.center().x), y: f64::from(screen.center().y) };
+            if CGGetDisplaysWithPoint(center, 1, &mut display, &mut count) != 0 || count == 0 {
+                return false;
+            }
+            let uuid = CGDisplayCreateUUIDFromDisplayID(display);
+            if uuid.is_null() {
+                return false;
+            }
+            let name = CFUUIDCreateString(std::ptr::null(), uuid);
+            CFRelease(uuid);
+            if name.is_null() {
+                return false;
+            }
+            let list = CGSCopyManagedDisplaySpaces(_CGSDefaultConnection());
+            let mut full = false;
+            if !list.is_null() {
+                for k in 0..CFArrayGetCount(list) {
+                    let d = CFArrayGetValueAtIndex(list, k);
+                    let id = CFDictionaryGetValue(d, ptr(&display_key));
+                    // « Main »: the screens share their desktops.
+                    if id.is_null() || !(CFEqual(id, name) || CFEqual(id, ptr(&main))) {
+                        continue;
+                    }
+                    let current = CFDictionaryGetValue(d, ptr(&current_key));
+                    if !current.is_null() {
+                        let kind = CFDictionaryGetValue(current, ptr(&type_key));
+                        let mut v: i64 = 0;
+                        full = !kind.is_null() && CFNumberGetValue(kind, 4, (&raw mut v).cast()) && v == 4;
+                    }
+                    break;
+                }
+                CFRelease(list);
+            }
+            CFRelease(name);
+            full
+        }
+    }
+
+    /// The app `pid` has a window covering the whole of `screen`; on a full-screen desktop
+    /// (`in_space`), its top may stop under the notch.
+    fn covered(screen: Rect, pid: i32, in_space: bool) -> bool {
         // SAFETY: the window server's list, read then released; every value checked before use.
         unsafe {
             // On screen only (1), without the desktop's (16).
@@ -1006,7 +1079,9 @@ mod os {
                 let bounds = CFDictionaryGetValue(d, kCGWindowBounds);
                 if !bounds.is_null() && CGRectMakeWithDictionaryRepresentation(bounds, &mut b) {
                     let r = Rect::from_min_size(Pos2::new(b.x as f32, b.y as f32), Vec2::new(b.w as f32, b.h as f32));
-                    if (r.min - screen.min).length() < 2.0 && (r.max - screen.max).length() < 2.0 {
+                    let sides = (r.min.x - screen.min.x).abs() < 2.0 && (r.max - screen.max).length() < 2.0;
+                    let top = (r.min.y - screen.min.y).abs() < 2.0 || (in_space && r.min.y >= screen.min.y && r.min.y - screen.min.y < 60.0);
+                    if sides && top {
                         full = true;
                         break;
                     }
