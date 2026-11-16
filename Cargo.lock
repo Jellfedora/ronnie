@@ -3614,7 +3614,7 @@ dependencies = [
 
 [[package]]
 name = "ronnie"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "aes",
  "alacritty_terminal",
