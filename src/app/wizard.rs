@@ -772,6 +772,75 @@ fn owl(painter: &egui::Painter, c: Pos2, dir: f32, tm: f32) {
     painter.circle_filled(letter.center(), 1.0, SCARLET);
 }
 
+/// What the house-elf says when he stops, waving his sock.
+pub(super) const ELF_FREE: &str = "Dobby est libre !";
+
+/// The house-elf, `h` tall, his feet at `foot`, facing `dir` (1 right, -1 left): walking at `step` (app
+/// time), or stopped waving the sock he was given (`None`).
+pub(super) fn paint_elf(painter: &egui::Painter, foot: Pos2, h: f32, dir: f32, step: Option<f32>, now: f64) {
+    let k = h / 36.0;
+    let skin = Color32::from_rgb(0xc4, 0xbc, 0x9c);
+    let skin_dark = Color32::from_rgb(0x8e, 0x86, 0x6a);
+    let cloth = Color32::from_rgb(0xe8, 0xe0, 0xcc);
+    let cloth_dark = Color32::from_rgb(0xb4, 0xaa, 0x92);
+    // A bob at each step.
+    let bob = step.map_or(0.0, |s| (s * 9.0).sin().abs() * 1.2);
+    let at = |x: f32, y: f32| foot + Vec2::new(x * dir, y - bob) * k;
+    // The legs, thin, bare feet.
+    for side in [0.0f32, 1.0] {
+        let swing = step.map_or(0.0, |s| (s * 9.0 + side * std::f32::consts::PI).sin() * 3.0);
+        let hip = at(-1.0 + side * 2.0, -9.0);
+        let heel = foot + Vec2::new((swing - 1.0 + side * 2.0) * dir * k, 0.0);
+        painter.line_segment([hip, heel], Stroke::new(1.6 * k, skin_dark));
+        painter.line_segment([heel, heel + Vec2::new(3.2 * dir * k, 0.0)], Stroke::new(1.8 * k, skin_dark));
+    }
+    // The pillowcase he wears, a stain on it.
+    painter.add(egui::Shape::convex_polygon(vec![at(-4.5, -22.0), at(4.5, -22.0), at(6.5, -8.0), at(-6.5, -8.0)], cloth, Stroke::new(0.8 * k, cloth_dark)));
+    painter.circle_filled(at(-2.0, -12.5), 1.3 * k, cloth_dark.gamma_multiply(0.7));
+    // The arms; stopped, the front one up, waving the sock.
+    let shoulder = at(4.0, -20.0);
+    let back = at(-4.0, -20.0);
+    painter.line_segment([back, at(-6.0, -12.0) + Vec2::new(0.0, step.map_or(0.0, |s| (s * 9.0).sin() * 1.5 * k))], Stroke::new(1.4 * k, skin_dark));
+    let hand = match step {
+        Some(s) => at(6.5, -12.0) + Vec2::new(0.0, -(s * 9.0).sin() * 1.5 * k),
+        None => at(8.0 + (now as f32 * 10.0).sin() * 1.5, -31.0),
+    };
+    painter.line_segment([shoulder, hand], Stroke::new(1.4 * k, skin_dark));
+    if step.is_none() {
+        // The sock, striped.
+        let top = hand + Vec2::new(0.0, -k);
+        painter.line_segment([top, top + Vec2::new(0.0, -7.0 * k)], Stroke::new(3.0 * k, Color32::from_rgb(0x2e, 0x7d, 0x4f)));
+        painter.line_segment([top + Vec2::new(0.0, -3.0 * k), top + Vec2::new(0.0, -4.5 * k)], Stroke::new(3.0 * k, GOLD));
+        painter.line_segment([top + Vec2::new(0.0, -7.0 * k), top + Vec2::new(3.0 * dir * k, -8.0 * k)], Stroke::new(3.0 * k, Color32::from_rgb(0x2e, 0x7d, 0x4f)));
+    }
+    // The ears, wide like a bat's.
+    let head = at(0.5, -28.0);
+    for side in [-1.0f32, 1.0] {
+        let base = head + Vec2::new(side * 4.5 * k, -k);
+        let tip = head + Vec2::new(side * 15.0 * k, -5.5 * k);
+        painter.add(egui::Shape::convex_polygon(vec![base + Vec2::new(0.0, -3.0 * k), tip, base + Vec2::new(0.0, 2.5 * k)], skin, Stroke::new(0.7 * k, skin_dark)));
+        painter.line_segment([base, tip.lerp(base, 0.3)], Stroke::new(0.6 * k, Color32::from_rgb(0xd8, 0x9a, 0x94)));
+    }
+    // The head, big and round, the nose long and pointed.
+    painter.circle_filled(head, 6.2 * k, skin);
+    painter.circle_stroke(head, 6.2 * k, Stroke::new(0.7 * k, skin_dark));
+    painter.add(egui::Shape::convex_polygon(vec![head + Vec2::new(4.0 * dir * k, -k), head + Vec2::new(9.0 * dir * k, 1.5 * k), head + Vec2::new(4.0 * dir * k, 2.2 * k)], skin, Stroke::new(0.6 * k, skin_dark)));
+    // The eyes, huge and green; a blink now and then.
+    let blink = now % 4.0 < 0.15;
+    for x in [-1.2f32, 3.2] {
+        let eye = head + Vec2::new(x * dir * k, -1.5 * k);
+        if blink {
+            painter.line_segment([eye - Vec2::new(2.2 * k, 0.0), eye + Vec2::new(2.2 * k, 0.0)], Stroke::new(0.8 * k, skin_dark));
+        } else {
+            painter.circle_filled(eye, 2.4 * k, Color32::WHITE);
+            painter.circle_filled(eye + Vec2::new(0.5 * dir * k, 0.2 * k), 1.6 * k, Color32::from_rgb(0x3f, 0xa0, 0x4c));
+            painter.circle_filled(eye + Vec2::new(0.7 * dir * k, 0.2 * k), 0.8 * k, Color32::BLACK);
+        }
+    }
+    // The smile.
+    painter.line_segment([head + Vec2::new(0.5 * dir * k, 3.8 * k), head + Vec2::new(3.5 * dir * k, 3.4 * k)], Stroke::new(0.7 * k, skin_dark));
+}
+
 /// A spark of the wand.
 struct Spark {
     at: Pos2,

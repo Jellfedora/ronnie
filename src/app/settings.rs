@@ -1727,8 +1727,10 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests), picked.monday_wins > 0) {
-                            let how = if preset.id == crate::theme::HYPERSPACE_THEME {
+                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests), picked.monday_wins > 0, super::wallstreet::theme_unlocked(picked)) {
+                            let how = if preset.id == crate::theme::WALL_STREET_THEME {
+                                t.theme_locked_corp.to_owned()
+                            } else if preset.id == crate::theme::HYPERSPACE_THEME {
                                 t.theme_locked_larsen.to_owned()
                             } else if preset.id == crate::theme::THRONES_THEME {
                                 t.theme_locked_coffee.replace("{n}", &crate::coffee::THRONES_UNLOCK.to_string())
@@ -2238,6 +2240,22 @@ impl App {
                         super::desktop::paint_gerard(&painter, Pos2::new(x, rect.max.y - 8.0), 40.0, dir, now, !(0.08..=0.92).contains(&k));
                         ui.ctx().request_repaint();
                     }
+                    Some(Reward::Bills) => {
+                        super::wallstreet::bills_preview(&painter, rect, now);
+                        ui.ctx().request_repaint();
+                    }
+                    Some(Reward::Unicorn) => {
+                        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 8.0), rect.max), egui::CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, theme.tab_active);
+                        super::wallstreet::unicorn_preview(&painter, rect, now);
+                        ui.ctx().request_repaint();
+                    }
+                    Some(Reward::Cheque) => {
+                        let fr = self.config.settings.language == crate::i18n::Lang::Fr;
+                        let amount = crate::tycoon::money(super::wallstreet::cheque(&self.config.settings).unwrap_or(12_300_000.0), fr);
+                        let date = chrono::Local::now().format("%d/%m/%Y").to_string();
+                        let paper = Rect::from_center_size(rect.center(), Vec2::new(rect.width() - 12.0, (rect.width() - 12.0) * 0.44));
+                        super::wallstreet::paint_cheque(&painter, paper, &amount, name, &date, fr);
+                    }
                     _ => {
                         let mark = if u.done { "✓" } else if u.info { "•" } else { "?" };
                         painter.text(rect.center(), Align2::CENTER_CENTER, mark, FontId::proportional(30.0), theme.accent.gamma_multiply(0.7));
@@ -2307,13 +2325,14 @@ impl App {
                             if u.done && super::desktop::supported() {
                                 let fx = &mut picked.desktop_fx;
                                 let choices: Vec<(&str, &mut bool)> = match u.reward {
-                                    Some(super::unlocks::Reward::Trail) => vec![(t.desktop_trail, &mut fx.trail)],
+                                    Some(super::unlocks::Reward::Trail | super::unlocks::Reward::Bills) => vec![(t.desktop_trail, &mut fx.trail)],
+                                    Some(super::unlocks::Reward::Unicorn) => vec![(t.desktop_unicorn, &mut fx.unicorn)],
                                     Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
                                     Some(super::unlocks::Reward::Horde) => vec![(t.desktop_horde, &mut fx.horde)],
                                     Some(super::unlocks::Reward::Gerard) => vec![(t.desktop_gerard, &mut fx.gerard)],
                                     Some(super::unlocks::Reward::Matheo) => vec![(t.desktop_matheo, &mut fx.matheo)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
-                                    Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand)],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand), (t.desktop_elf, &mut fx.elf)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword)],
                                     _ => vec![],
                                 };
@@ -2366,8 +2385,11 @@ impl App {
                                 Some(super::unlocks::Reward::Sheep) => {
                                     toggle(ui, theme, &mut picked.sheep);
                                 }
+                                Some(super::unlocks::Reward::Bills) => {
+                                    toggle(ui, theme, &mut picked.money_trail);
+                                }
                                 Some(super::unlocks::Reward::Frame(_)) => account |= ui.button(t.reward_frame).on_hover_cursor(egui::CursorIcon::PointingHand).clicked(),
-                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde | super::unlocks::Reward::Gerard | super::unlocks::Reward::Matheo) | None => {}
+                                Some(super::unlocks::Reward::Badge(_) | super::unlocks::Reward::Horde | super::unlocks::Reward::Gerard | super::unlocks::Reward::Matheo | super::unlocks::Reward::Unicorn | super::unlocks::Reward::Cheque) | None => {}
                             }
                         });
                     });
