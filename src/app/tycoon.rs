@@ -921,7 +921,16 @@ impl App {
                     missing.push(format!("{} {}", tx(("étape", "stage"), fr), tx(corp::STAGES[kind.stage as usize].name, fr)));
                 }
                 if c.products.len() >= c.max_products() {
-                    missing.push(tx(("une place de produit (étapes, auto-scaling)", "a product slot (stages, auto-scaling)"), fr).to_owned());
+                    // Where the next slot comes from: the research if not had yet, the next stage that adds one, or closing a product.
+                    let mut ways = Vec::new();
+                    if !c.has_tech("autoscale") {
+                        ways.push(format!("{} {}", tx(("recherche", "research"), fr), corp::tech("autoscale").map_or("", |t| tx(t.name, fr))));
+                    }
+                    if let Some(s) = (c.stage as usize + 1..corp::STAGES.len()).find(|&s| s / 2 > c.stage as usize / 2) {
+                        ways.push(format!("{} {}", tx(("étape", "stage"), fr), tx(corp::STAGES[s].name, fr)));
+                    }
+                    ways.push(tx(("fermer un produit", "close a product"), fr).to_owned());
+                    missing.push(format!("{} ({})", tx(("une place de produit", "a product slot"), fr), ways.join(tx((" ou ", " or "), fr))));
                 }
                 if !missing.is_empty() {
                     ui.label(egui::RichText::new(format!("{} {}", tx(("Il faut :", "Needs:"), fr), missing.join(", "))).size(12.0).color(theme.ansi[3]));
