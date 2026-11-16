@@ -140,6 +140,18 @@ fn baits(base: Option<&Value>, local: Option<&Value>, remote: Option<&Value>) ->
     Value::Object(ids.into_iter().map(|id| (id.clone(), counter(b.get(id), l.get(id), r.get(id)))).filter(|(_, n)| int(Some(n)) > 0).collect())
 }
 
+/// Ronnie Corp's company: whole, from the side where the player did the most (the time it runs by
+/// itself doesn't make a side win, else two machines open would take turns); at a tie, the one run
+/// the latest.
+fn company(local: Option<&Value>, remote: Option<&Value>) -> Option<Value> {
+    let key = |v: &Value| (int(v.get("actions")), int(v.get("at")));
+    let (l, r) = (local.filter(|v| v.is_object()), remote.filter(|v| v.is_object()));
+    match (l, r) {
+        (Some(l), Some(r)) => Some(if key(r) > key(l) { r } else { l }.clone()),
+        (l, r) => l.or(r).cloned(),
+    }
+}
+
 /// Three ways: `base` (the last agreed, `Value::Null` when none), `local`, `remote` (floor's; Null
 /// when none). Each keys that travel, merged by its rule.
 pub fn merge(base: &Value, local: &Value, remote: &Value) -> Value {
@@ -153,6 +165,10 @@ pub fn merge(base: &Value, local: &Value, remote: &Value) -> Value {
             "fish_cards" => cards(b, l, r),
             "fish_baits" => baits(b, l, r),
             "fish_budget" => counter(b, l, r),
+            "tycoon" => match company(l, r) {
+                Some(v) => v,
+                None => continue,
+            },
             // The days in a row: the last machine opened tells them, carrying on the other's streak
             // when that one was opened the day before (it counts its day from its own last opening,
             // before floor answers: a day on the other machine would otherwise break the streak).
@@ -383,6 +399,38 @@ mod tests {
         assert_eq!(back.fish_cards["directeur"].count, 1);
         assert_eq!((back.fish_budget, back.fish_baits["cafe"]), (1, 2));
         assert_eq!(back.fish_dry, 4, "each machine's own luck");
+    }
+
+    #[test]
+    fn the_company_of_the_side_that_played_most_wins() {
+        let mut work = settings();
+        let mut c = crate::tycoon::Corp::new(1_000, 1, Default::default());
+        c.cash = 1e6;
+        work.tycoon = Some(c.clone());
+        let mut home = settings();
+        // Home ran longer by itself, work was played.
+        let mut idle = c.clone();
+        idle.at += 3_600;
+        home.tycoon = Some(idle);
+        c.hire(0);
+        work.tycoon = Some(c.clone());
+        let floor = merge(&Value::Null, &snapshot(&home), &Value::Null);
+        let merged = merge(&Value::Null, &snapshot(&work), &floor);
+        let mut back = home.clone();
+        apply(&mut back, &merged);
+        assert_eq!(back.tycoon.as_ref().map(|c| c.actions), Some(c.actions));
+        assert_eq!(back.tycoon.as_ref().map(|c| c.staff.len()), Some(2));
+        // At a tie, the one run the latest.
+        let mut later = c.clone();
+        later.at += 60;
+        home.tycoon = Some(later);
+        let merged = merge(&Value::Null, &snapshot(&work), &snapshot(&home));
+        assert_eq!(merged["tycoon"]["at"], serde_json::json!(c.at + 60));
+        // Only one side has one: kept.
+        let merged = merge(&Value::Null, &snapshot(&settings()), &snapshot(&home));
+        assert!(merged["tycoon"].is_object());
+        let merged = merge(&Value::Null, &snapshot(&settings()), &snapshot(&settings()));
+        assert!(merged.get("tycoon").is_none());
     }
 
     #[test]

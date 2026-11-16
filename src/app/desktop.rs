@@ -1,5 +1,6 @@
 //! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the wand, the lightsaber
-//! or the sword at the pointer, the sheep, the droid and Gérard walking along the foot of the screen.
+//! or the sword at the pointer, the sheep, the droid, Gérard and the house-elf walking along the foot of the screen,
+//! the unicorn galloping by.
 //!
 //! They live in a process of their own (`ronnie desktop-fx`), started by Ronnie while one of them is
 //! chosen: a transparent window over the screen where the pointer is, letting every click through, out of
@@ -41,6 +42,13 @@ pub(crate) struct Fx {
     /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
     #[serde(default)]
     matheo: bool,
+    #[serde(default)]
+    elf: bool,
+    #[serde(default)]
+    unicorn: bool,
+    /// The trail in bank notes (Ronnie Corp's).
+    #[serde(default)]
+    bills: bool,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -55,7 +63,7 @@ enum Pointer {
 
 impl Fx {
     fn any(&self) -> bool {
-        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.pointer.is_some()
+        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.elf || self.unicorn || self.pointer.is_some()
     }
 
     /// The pointer is followed (else it needn't be): Mathéo too, to be grabbed.
@@ -115,7 +123,9 @@ impl App {
         } else {
             None
         };
-        Fx { trail: d.trail && s.cursor_trail && trail::unlocked(s.runner_best), sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), pointer, theme: s.theme.clone() }
+        let bills = wallstreet::bills_on(s);
+        let trail = d.trail && (bills || (s.cursor_trail && trail::unlocked(s.runner_best)));
+        Fx { trail, sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), bills: trail && bills, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -643,13 +653,16 @@ fn walk_screen(lap: f64, salt: u64, n: usize) -> usize {
     ((h >> 33) % n as u64) as usize
 }
 
-/// The sheep's, the droid's and Gérard's walks under way, and the screen each goes along.
-fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 3] {
+/// The sheep's, the droid's, Gérard's, the house-elf's and the unicorn's walks under way, and the screen
+/// each goes along.
+fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 5] {
     let gerard = gerard_every();
     [
         (fx.sheep && (now + 20.0) % 50.0 <= 16.0, walk_screen(((now + 20.0) / 50.0).floor(), 1, n)),
         (fx.droid && (now + 55.0) % DROID_EVERY <= DROID_ROLL, walk_screen(((now + 55.0) / DROID_EVERY).floor(), 2, n)),
         (fx.gerard && gerard_at(now).is_ok(), walk_screen(((now + 95.0) / gerard).floor(), 3, n)),
+        (fx.elf && elf_at(now).is_ok(), walk_screen(((now + 75.0) / ELF_EVERY).floor(), 4, n)),
+        (fx.unicorn && wallstreet::unicorn_at(now).is_ok(), walk_screen(wallstreet::unicorn_lap(now), 5, n)),
     ]
 }
 
@@ -661,7 +674,7 @@ fn walkers_on(fx: &Fx, now: f64, here: usize, n: usize) -> bool {
 /// On screen `here` (of `n`): the walkers going along it (`strip`, its foot) and the horde (`whole`).
 /// Something shown, and when to look again.
 fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, n: usize, fx: &Fx) -> (bool, f32) {
-    let [sheep, droid, gerard] = walks(fx, now, n);
+    let [sheep, droid, gerard, elf, unicorn] = walks(fx, now, n);
     let (mut busy, mut next) = (false, 1.0f32);
     if fx.sheep && sheep.1 == here {
         let (shown, again) = office::sheep(painter, strip, now);
@@ -678,12 +691,67 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
         busy |= shown;
         next = next.min(again);
     }
+    if fx.elf && elf.1 == here {
+        let (shown, again) = elf_walk(painter, strip, now);
+        busy |= shown;
+        next = next.min(again);
+    }
+    if fx.unicorn && unicorn.1 == here {
+        let (shown, again) = wallstreet::unicorn_run(painter, strip, now);
+        busy |= shown;
+        next = next.min(again);
+    }
     if fx.horde {
         let (shown, again) = horde_run(painter, whole, fx.horde_demo, &fx.horde_kinds);
         busy |= shown;
         next = next.min(again);
     }
     (busy, next)
+}
+
+/// How often the house-elf walks by, how long it takes (a stop halfway, waving his sock).
+const ELF_EVERY: f64 = 90.0;
+const ELF_WALK: f64 = 15.0;
+
+/// Where the house-elf is in his walk at `now`: how far along (0 to 1), rightward, waving; or, out of
+/// sight, the seconds before he comes.
+fn elf_at(now: f64) -> Result<(f64, bool, bool), f32> {
+    // Mostly not at the sheep’s or the droid’s time.
+    let t = (now + 75.0) % ELF_EVERY;
+    if t > ELF_WALK {
+        return Err((ELF_EVERY - t) as f32);
+    }
+    let rightward = ((now + 75.0) / ELF_EVERY).floor() as i64 % 2 == 0;
+    // Walking 0-6 s, waving 6-9 s, walking 9-15 s.
+    let (along, waving) = if t < 6.0 {
+        (t / 6.0 * 0.5, false)
+    } else if t < 9.0 {
+        (0.5, true)
+    } else {
+        (0.5 + (t - 9.0) / 6.0 * 0.5, false)
+    };
+    Ok((along, rightward, waving))
+}
+
+/// The house-elf walking along `strip`, every so often, one way then the other, a stop halfway to wave the
+/// sock he was given (« Dobby est libre ! »): whether he shows, and when to draw again.
+fn elf_walk(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) {
+    let (along, rightward, waving) = match elf_at(now) {
+        Ok(at) => at,
+        Err(again) => return (false, again),
+    };
+    let x = strip.min.x - 30.0 + (strip.width() + 60.0) * along as f32;
+    let x = if rightward { x } else { strip.max.x + strip.min.x - x };
+    let foot = Pos2::new(x, strip.max.y - 2.0);
+    wizard::paint_elf(painter, foot, 36.0, if rightward { 1.0 } else { -1.0 }, (!waving).then_some(now as f32), now);
+    if waving {
+        let galley = painter.layout_no_wrap(wizard::ELF_FREE.to_owned(), FontId::proportional(14.0), Color32::from_rgb(0x2e, 0x24, 0x10));
+        let r = Rect::from_center_size(foot + Vec2::new(0.0, -64.0), galley.size() + Vec2::new(18.0, 10.0));
+        painter.rect(r, 8.0, Color32::from_rgb(0xfb, 0xf1, 0xd6), Stroke::new(1.0, wizard::GOLD), egui::StrokeKind::Inside);
+        painter.add(egui::Shape::convex_polygon(vec![Pos2::new(r.center().x - 5.0, r.max.y), Pos2::new(r.center().x + 5.0, r.max.y), Pos2::new(r.center().x, r.max.y + 7.0)], Color32::from_rgb(0xfb, 0xf1, 0xd6), Stroke::NONE));
+        painter.galley(r.center() - galley.size() / 2.0, galley, Color32::from_rgb(0x2e, 0x24, 0x10));
+    }
+    (true, 0.0)
 }
 
 impl eframe::App for Overlay {
@@ -835,6 +903,7 @@ impl eframe::App for Overlay {
             }
         }
         if self.shown.trail {
+            self.trail.bills = self.shown.bills;
             self.trail.step(local, dt);
             self.trail.paint(&painter, &self.theme);
             busy |= self.trail.alive();
@@ -1434,8 +1503,18 @@ mod tests {
     }
 
     #[test]
+    fn the_elf_walks_by_now_and_then() {
+        let shown = (0..900).filter(|k| elf_at(*k as f64 / 10.0).is_ok()).count();
+        // 15 s out of 90, 3 of them waving.
+        assert!((140..=160).contains(&shown), "{shown}");
+        let waving = (0..900).filter(|k| elf_at(*k as f64 / 10.0).is_ok_and(|a| a.2)).count();
+        assert!((25..=35).contains(&waving), "{waving}");
+        assert!(elf_at(40.0).is_err_and(|again| again > 0.0));
+    }
+
+    #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

@@ -48,6 +48,12 @@ pub(super) enum Reward {
     Gerard,
     /// Mathéo, the green plant at the foot of the screen.
     Matheo,
+    /// The pointer's trail in bank notes (Ronnie Corp).
+    Bills,
+    /// The unicorn galloping along the foot of the screen (Ronnie Corp).
+    Unicorn,
+    /// The giant cheque, sent from the chat (Ronnie Corp).
+    Cheque,
 }
 
 impl App {
@@ -131,6 +137,20 @@ impl App {
                     Unlock { what: horde.into(), how: t.unlock_horde_how.to_owned(), done: s.monday_horde, progress: None, info: false, reward: horde_won.then_some(Reward::Horde), gives: t.horde_setting_desc.into() },
                     Unlock { what: t.unlock_monday_theme.into(), how: t.unlock_monday_theme_how.replace("{n}", &crate::zombie::LAST_WAVE.to_string()), done: s.monday_wins > 0, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::MONDAY_THEME)), gives: t.unlock_gives_monday_theme.into() },
                     Unlock { what: t.unlock_monday_frame.into(), how: t.unlock_monday_frame_how.replace("{n}", &crate::zombie::DAILIES_FRAME.to_string()), done: s.monday_dailies >= crate::zombie::DAILIES_FRAME, progress: Some((s.monday_dailies.min(crate::zombie::DAILIES_FRAME), crate::zombie::DAILIES_FRAME)), info: false, reward: Some(Reward::Frame("survivor")), gives: t.unlock_gives_monday_frame.into() },
+                ]
+            }
+            HomeGame::Tycoon => {
+                use crate::tycoon::{BILLS_STAGE, STAGES, UNICORN_STAGE, WALL_STREET_STAGE};
+                let fr = s.language == crate::i18n::Lang::Fr;
+                let (stage, sales) = super::wallstreet::reached(s);
+                let at = |what: &str, k: u8, reward: Reward, gives: &str| Unlock { what: what.to_owned(), how: t.unlock_corp_how.replace("{s}", if fr { STAGES[k as usize].name.0 } else { STAGES[k as usize].name.1 }), done: stage >= k, progress: None, info: false, reward: Some(reward), gives: gives.to_owned() };
+                let ticker = super::frames::FRAMES.iter().find(|f| f.id == "ticker").expect("the ticker frame");
+                vec![
+                    at(t.unlock_bills, BILLS_STAGE, Reward::Bills, t.bills_setting_desc),
+                    at(t.unlock_wallstreet, WALL_STREET_STAGE, Reward::Theme(crate::theme::WALL_STREET_THEME), t.unlock_gives_theme),
+                    at(t.unlock_unicorn, UNICORN_STAGE, Reward::Unicorn, t.unicorn_desc),
+                    Unlock { what: t.unlock_frame.replace("{n}", super::frames::frame_name(t, ticker.id)), how: super::frames::how(ticker, t), done: super::frames::unlocked(ticker, s), progress: None, info: false, reward: Some(Reward::Frame(ticker.id)), gives: t.frame_unlocked_body.into() },
+                    Unlock { what: t.unlock_cheque.to_owned(), how: t.unlock_cheque_how.to_owned(), done: sales > 0, progress: None, info: false, reward: Some(Reward::Cheque), gives: t.cheque_desc.into() },
                 ]
             }
             _ => Vec::new(),

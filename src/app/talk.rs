@@ -1361,7 +1361,9 @@ impl App {
         let draft = self.talk_ui.drafts.entry(room.id.clone()).or_default();
         // Inside the frame drawn around it (a field without a frame of its own has no margin), the
         // emoji button on its right.
-        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(112.0, 9.0));
+        // Ronnie Corp's giant cheque, once won: its button before Claude's.
+        let cheque = super::wallstreet::cheque(&self.config.settings);
+        let inner = Rect::from_min_max(field.min + Vec2::new(12.0, 9.0), field.max - Vec2::new(if cheque.is_some() { 142.0 } else { 112.0 }, 9.0));
         let sheet = self.talk_ui.emoji_sheet.texture(ui.ctx()).cloned();
         painter.rect(field, 10.0, theme.chrome_bg, Stroke::new(1.0, if focused_before { theme.accent.gamma_multiply(0.6) } else { theme.tab_hover }), egui::StrokeKind::Inside);
         let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
@@ -1442,6 +1444,19 @@ impl App {
         // Claude's button, before the GIF one: the message's spelling and phrasing fixed (greyed without Claude Code).
         let fix_button = Rect::from_min_size(Pos2::new(field.max.x - 106.0, field.max.y - 33.0), Vec2::new(28.0, 24.0));
         self.talk_fix_button(ui, &room.id, fix_button, t, &theme);
+        if let Some(amount) = cheque {
+            let button = Rect::from_min_size(Pos2::new(field.max.x - 138.0, field.max.y - 33.0), Vec2::new(28.0, 24.0));
+            let resp = ui.interact(button, ui.id().with(("talk-cheque", room.id.as_str())), if ready { Sense::click() } else { Sense::hover() }).on_hover_text(t.talk_cheque);
+            if resp.hovered() {
+                painter.rect_filled(button, 6.0, theme.tab_hover);
+            }
+            let painter = ui.painter_at(button);
+            super::wallstreet::paint_bill(&painter, button.center(), if resp.hovered() { 22.0 } else { 19.0 }, -0.2, 1.0, if ready { 1.0 } else { 0.5 });
+            if ready && resp.clicked() {
+                let fr = self.config.settings.language == crate::i18n::Lang::Fr;
+                self.talk.say(&room.id, &crate::tycoon::cheque_text(amount, fr), None);
+            }
+        }
         if resp.changed() && !text.is_empty() {
             self.talk.typing(&room.id);
         }
@@ -1809,7 +1824,15 @@ impl App {
             self.talk_file(ui, file, t, theme);
         }
         if !m.text.is_empty() {
-            if crate::emoji::only_emojis(&m.text).is_some() {
+            if let Some(amount) = crate::tycoon::cheque_amount(&m.text) {
+                // Ronnie Corp's giant cheque, paid to its sender.
+                let fr = self.config.settings.language == crate::i18n::Lang::Fr;
+                let payee = if name.is_empty() { self.talk.name_of(&m.from).unwrap_or_default() } else { name.clone() };
+                let date = chrono::DateTime::from_timestamp_millis(m.at).map(|d| d.with_timezone(&chrono::Local).format("%d/%m/%Y").to_string()).unwrap_or_default();
+                let w = ui.available_width().min(340.0);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(w, w * 0.44), Sense::hover());
+                super::wallstreet::paint_cheque(ui.painter(), rect, amount, &payee, &date, fr);
+            } else if crate::emoji::only_emojis(&m.text).is_some() {
                 super::emojis::emoji_label(ui, sheet, &m.text, 14.0, theme.text);
             } else {
                 // Round, tighter on its author's side where its series goes on.

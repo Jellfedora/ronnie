@@ -34,6 +34,8 @@ impl App {
             HomeGame::BugHunt => usage.bughunt,
             HomeGame::Fishing => usage.fish >= FISH_CATCHES,
             HomeGame::Monday => usage.monday,
+            // Idle: it runs by itself, nothing to limit.
+            HomeGame::Tycoon => false,
         };
         used.then_some(p)
     }
@@ -64,7 +66,7 @@ impl App {
             HomeGame::President => &mut usage.president,
             HomeGame::BugHunt => &mut usage.bughunt,
             HomeGame::Monday => &mut usage.monday,
-            HomeGame::Blob | HomeGame::Mines | HomeGame::Fishing => return,
+            HomeGame::Blob | HomeGame::Mines | HomeGame::Fishing | HomeGame::Tycoon => return,
         };
         if !*played {
             *played = true;
@@ -124,6 +126,7 @@ impl App {
             HomeGame::BugHunt => t.bughunt_name,
             HomeGame::Fishing => t.fishing_name,
             HomeGame::Monday => t.monday_name,
+            HomeGame::Tycoon => t.tycoon_name,
         };
         match (game, p.morning) {
             (HomeGame::Blob, true) => t.playtime_blob_morning.to_owned(),

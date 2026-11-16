@@ -41,6 +41,8 @@ mod zombie;
 mod zombie_floors;
 mod monday_theme;
 mod fishing;
+mod tycoon;
+mod tycoon_scene;
 mod frames;
 mod trail;
 mod game;
@@ -53,6 +55,7 @@ mod issues;
 mod jurassic;
 mod hyperspace;
 mod thrones;
+mod wallstreet;
 mod wizard;
 mod office;
 mod library;
@@ -420,6 +423,7 @@ pub struct App {
     bughunt: bughunt::BugHunt,
     monday: zombie::Monday,
     fishing: fishing::Fishing,
+    tycoon: tycoon::Tycoon,
     /// The pointer's trail (unlocked at Ronnie Run).
     trail: trail::Trail,
     /// The trail run in its preview (Settings › Rewards).
@@ -1324,6 +1328,7 @@ impl App {
             bughunt: bughunt::BugHunt::default(),
             monday: zombie::Monday::default(),
             fishing: fishing::Fishing::default(),
+            tycoon: tycoon::Tycoon::default(),
             trail: trail::Trail::default(),
             trail_preview: trail::Trail::default(),
             wand: wizard::Wand::default(),
@@ -2251,6 +2256,10 @@ impl App {
                         term.flash(self.theme.accent);
                     } else if self.theme.metal && ended.iter().any(|f| f.duration.as_secs() >= settings.notify_after) {
                         term.flash(self.theme.cursor);
+                    } else if self.theme.wallstreet && ended.iter().any(|f| f.duration.as_secs() >= settings.notify_after) {
+                        // Wall Street: the bell rung.
+                        term.flash(self.theme.cursor);
+                        term.bell_at = Some(Instant::now());
                     }
                 }
                 finished.extend(ended);
@@ -5228,6 +5237,16 @@ impl App {
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     }
+                    // Wall Street: the opening bell over the pane, 2.5 s after a long command ended in it.
+                    if self.theme.wallstreet
+                        && let Some(at) = tab.panes.get(&id).and_then(|p| p.bell_at)
+                    {
+                        let k = 1.0 - at.elapsed().as_secs_f32() / 2.5;
+                        if k > 0.0 {
+                            wallstreet::bell(ui.painter(), r, k, self.config.settings.language.strings().wallstreet_bell);
+                            ui.ctx().request_repaint();
+                        }
+                    }
                     // Open space: « T'as 5 minutes ? » over the pane, 2.5 s after its bell.
                     if self.theme.office
                         && let Some(at) = tab.panes.get(&id).and_then(|p| p.bell_at)
@@ -5669,7 +5688,9 @@ impl App {
         }
         // Drawn over the whole screen instead (`desktop`): not twice.
         let (screen_trail, screen_pointer, _) = self.desktop_draws();
-        if self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best) && !screen_trail {
+        let bills = wallstreet::bills_on(&self.config.settings);
+        if (bills || (self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best))) && !screen_trail {
+            self.trail.bills = bills;
             self.trail.frame(ui.ctx(), &self.theme);
         }
         // The theme's own pointer, unless switched off.
@@ -5788,6 +5809,7 @@ impl eframe::App for App {
         self.auto_backup_poll(ctx);
         self.recap_poll(ctx);
         self.progress_tick(ctx);
+        self.tycoon_tick(ctx);
         self.notesync_tick(ctx);
         self.desktop_tick();
     }

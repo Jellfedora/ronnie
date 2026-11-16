@@ -39,7 +39,7 @@ impl App {
                 return;
             }
             // These fold the sidebar themselves, during a run, a song, a show.
-            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::Coffee | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing | super::four::HomeGame::Monday) {
+            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::Coffee | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing | super::four::HomeGame::Monday | super::four::HomeGame::Tycoon) {
                 self.games_drawn.push(self.home_which);
                 return match self.home_which {
                     super::four::HomeGame::Runner => self.runner_page(ui, rect),
@@ -47,6 +47,7 @@ impl App {
                     super::four::HomeGame::BugHunt => self.bughunt_page(ui, rect),
                     super::four::HomeGame::Fishing => self.fishing_page(ui, rect),
                     super::four::HomeGame::Monday => self.monday_page(ui, rect),
+                    super::four::HomeGame::Tycoon => self.tycoon_page(ui, rect),
                     super::four::HomeGame::Coffee => self.coffee_page(ui, rect),
                     _ => self.backstage_page(ui, rect),
                 };
@@ -508,6 +509,7 @@ impl App {
                 HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Monday => super::zombie::paint_monday_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Tycoon => super::tycoon::paint_tycoon_icon(&painter, icon, &theme, 1.0),
             }
             // The note on the right; the name cut before it if both don't fit.
             let note_w = note.map_or(0.0, |note| painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85)).width() + 10.0);
@@ -531,7 +533,7 @@ impl App {
     /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
     /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
     /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 13] {
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 14] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
@@ -546,10 +548,11 @@ impl App {
         let coffee_best = (coffee_total > 0).then(|| coffee_total.to_string());
         let bughunt_best = (self.config.settings.bughunt_best > 0).then(|| self.config.settings.bughunt_best.to_string());
         let cards = self.config.settings.fish_cards.len();
+        let tycoon = self.tycoon_note();
         let fishing = (cards > 0).then(|| t.fishing_species.replace("{n}", &cards.to_string()).replace("{max}", &crate::fishing::FISH.len().to_string()));
         // Short, as the others: the wave reached.
         let monday_best = (self.config.settings.monday_best > 0).then(|| t.monday_wave.to_lowercase().replace("{n}", &self.config.settings.monday_best.to_string()));
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing), (HomeGame::Monday, t.monday_name, monday_best)];
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::President, t.president_name, None), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing), (HomeGame::Monday, t.monday_name, monday_best), (HomeGame::Tycoon, t.tycoon_name, tycoon)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
@@ -613,6 +616,7 @@ impl App {
             HomeGame::BugHunt => self.open_bughunt(),
             HomeGame::Fishing => self.open_fishing(),
             HomeGame::Monday => self.open_monday(),
+            HomeGame::Tycoon => self.open_tycoon(),
         }
     }
 
@@ -1890,6 +1894,16 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::wizard::castle_rect(field), ui.id().with("castle"), Sense::hover()).on_hover_text(t.wizard_castle);
         }
+        if self.theme.wallstreet {
+            // Wall Street: the towers at night and the ticker over them, the company's valuation first,
+            // just above the cards.
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 110.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            let now = ui.input(|i| i.time);
+            let fr = self.config.settings.language == crate::i18n::Lang::Fr;
+            let valuation = self.tycoon.live.as_ref().or(self.config.settings.tycoon.as_ref()).map(|c| crate::tycoon::money(c.valuation(), fr));
+            let again = super::wallstreet::scene(ui.painter(), field, &self.theme, valuation.as_deref(), now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+        }
         if self.theme.office {
             // Open space: the cork board, the plant, the coffee machine (it speaks when hovered), the water
             // cooler, just above the cards.
@@ -1915,6 +1929,9 @@ impl App {
         if self.theme.jurassic {
             // Jurassic Park: safety stripes above the settings (the ferns are under the cards).
             super::jurassic::hazard(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else if self.theme.wallstreet {
+            // Wall Street: a ticker tape above the settings.
+            super::wallstreet::tape(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 1.5), Pos2::new(bar.max.x - 1.0, footer_top + 1.5)));
         } else if self.theme.office {
             // Open space: post-its above the settings.
             super::office::strip(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 10.0, footer_top - 3.0), Pos2::new(bar.max.x - 11.0, footer_top + 3.0)));

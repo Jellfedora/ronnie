@@ -33,6 +33,9 @@ pub struct Theme {
     pub thrones: bool,
     /// Lundi matin: the stapler for a pointer.
     pub monday: bool,
+    /// Wall Street: the skyline, a stock ticker with the company's valuation, the opening bell when a
+    /// long command ends (see `app::wallstreet`).
+    pub wallstreet: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -96,10 +99,12 @@ pub const WIZARD_DAYS: u32 = 7;
 pub const WIZARD_THEME: &str = "gryffondor";
 /// Game of Thrones, won by finishing levels of Pause Café.
 pub const THRONES_THEME: &str = "game-of-thrones";
+/// Wall Street, won at Ronnie Corp: the company a big one (`crate::tycoon::WALL_STREET_STAGE`).
+pub const WALL_STREET_THEME: &str = "wall-street";
 /// The themes with their own touches, most won in the games, shown apart in the settings.
 /// Lundi matin, won by beating the executive committee on the roof.
 pub const MONDAY_THEME: &str = "lundi-matin";
-pub const SPECIAL_THEMES: [&str; 7] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME, MONDAY_THEME];
+pub const SPECIAL_THEMES: [&str; 8] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME, MONDAY_THEME, WALL_STREET_THEME];
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -356,6 +361,23 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // Wall Street: a trading screen at night, the market's green for the accent, the amber of the
+    // quotes for the cursor, the red of a crash.
+    Preset {
+        id: WALL_STREET_THEME,
+        name: "Wall Street",
+        bg: 0x0a0f15,
+        fg: 0xe4ebf2,
+        cursor: 0xf5b700,
+        chrome: 0x05080c,
+        surface: 0x1a2533,
+        accent: 0x19c37d,
+        ansi: [
+            0x18212c, 0xf0454d, 0x19c37d, 0xf5b700, 0x4ea1ff, 0xc678dd, 0x3fd0c9, 0xcfd8e2, //
+            0x46546a, 0xff6b72, 0x52e3a2, 0xffd24d, 0x7fbcff, 0xdb9cec, 0x77e6e0, 0xffffff,
+        ],
+        dark: true,
+    },
     // Open space: a light office, beige walls and grey carpet, the corporate blue, post-it yellow.
     Preset {
         id: OFFICE_THEME,
@@ -442,6 +464,7 @@ impl Preset {
             wizard: self.id == WIZARD_THEME,
             thrones: self.id == THRONES_THEME,
             monday: self.id == MONDAY_THEME,
+            wallstreet: self.id == WALL_STREET_THEME,
         }
     }
 
@@ -449,8 +472,8 @@ impl Preset {
     /// the park, whether Larsen unlocked hyperspace, and whether the fishing's binder is full (never in
     /// a dev build, to try them).
     #[allow(clippy::too_many_arguments)]
-    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool, monday: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == MONDAY_THEME && !monday) || (self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
+    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool, monday: bool, wallstreet: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == WALL_STREET_THEME && !wallstreet) || (self.id == MONDAY_THEME && !monday) || (self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
     }
 
     /// The preset with this id, or the default one.

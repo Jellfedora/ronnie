@@ -1,4 +1,4 @@
-//! The frames around an avatar, unlocked in the games (for now at Bug Hunt, by the wave reached):
+//! The frames around an avatar, unlocked in the games (Bug Hunt's waves, the fishing's binder, Ronnie Corp):
 //! chosen in the account window, kept on floor so that the others see them too, drawn around the
 //! avatar wherever a player shows (the chat, the boards, who is online). Development builds have them
 //! all, to try them.
@@ -14,6 +14,8 @@ pub(super) enum Need {
     Cards(u32),
     /// So many of Lundi matin's daily challenges done (floor checks the same, `survivor`).
     Dailies(u32),
+    /// Ronnie Corp listed, or sold once (floor checks the score's `stage` and `stars`).
+    Listed,
 }
 
 /// A frame: its id on floor, what unlocks it.
@@ -24,12 +26,13 @@ pub(super) struct FrameDef {
 
 /// The frames, in the order they unlock: Bug Hunt's (the first once the first boss is beaten), then
 /// the fishing's full binder.
-pub(super) const FRAMES: [FrameDef; 5] = [
+pub(super) const FRAMES: [FrameDef; 6] = [
     FrameDef { id: "glitch", need: Need::Wave(6) },
     FrameDef { id: "swarm", need: Need::Wave(11) },
     FrameDef { id: "circuit", need: Need::Wave(16) },
     FrameDef { id: "holo", need: Need::Cards(crate::fishing::FISH.len() as u32) },
     FrameDef { id: "survivor", need: Need::Dailies(crate::zombie::DAILIES_FRAME) },
+    FrameDef { id: "ticker", need: Need::Listed },
 ];
 
 /// How far the player is toward a frame, and how far they must go.
@@ -38,6 +41,11 @@ pub(super) fn progress(def: &FrameDef, s: &crate::config::Settings) -> (u32, u32
         Need::Wave(w) => (s.bughunt_best_wave, w),
         Need::Cards(n) => (s.fish_cards.values().filter(|c| c.count > 0).count() as u32, n),
         Need::Dailies(n) => (s.monday_dailies, n),
+        // The stages, a sale counting as the last one.
+        Need::Listed => {
+            let (stage, sales) = super::wallstreet::reached(s);
+            (if sales > 0 { crate::tycoon::LISTED_STAGE } else { stage } as u32, crate::tycoon::LISTED_STAGE as u32)
+        }
     }
 }
 
@@ -53,6 +61,7 @@ pub(super) fn how(def: &FrameDef, t: &Strings) -> String {
         Need::Wave(w) => t.frame_how.replace("{n}", &w.to_string()),
         Need::Cards(n) => t.frame_how_cards.replace("{n}", &n.to_string()),
         Need::Dailies(n) => t.unlock_monday_frame_how.replace("{n}", &n.to_string()),
+        Need::Listed => t.frame_how_listed.to_owned(),
     }
 }
 
@@ -175,6 +184,30 @@ pub(super) fn paint_frame(painter: &egui::Painter, c: Pos2, r: f32, id: Option<&
             if r >= 14.0 {
                 super::monday_theme::hand(painter, c - Vec2::new(-r * 0.5, ring - w), r * 0.7, 0.8 + 0.2 * (now as f32 * 2.0).sin());
             }
+        }
+        // Ronnie Corp's: a thick gold ring, a ring of quotes turning round it (up in green, down in
+        // red), a green arrow climbing at the top.
+        "ticker" => {
+            let gold = Color32::from_rgb(0xf2, 0xc2, 0x3a);
+            let (green, red) = (Color32::from_rgb(0x19, 0xc3, 0x7d), Color32::from_rgb(0xf0, 0x45, 0x4d));
+            painter.circle_stroke(c, ring + w * 0.4, Stroke::new(w * 1.8, gold.gamma_multiply(0.3)));
+            painter.circle_stroke(c, ring, Stroke::new(w * 1.2, gold));
+            let n = if r < 12.0 { 12 } else { 20 };
+            let out = ring + w * 1.7;
+            for k in 0..n {
+                let a = k as f32 / n as f32 * tau + now as f32 * 0.35;
+                let up = (k * 7 + 3) % 5 < 3;
+                let dir = Vec2::angled(a);
+                let side = Vec2::angled(a + tau / 4.0) * w * 0.55;
+                let tip = c + dir * (out + if up { w * 0.6 } else { -w * 0.6 });
+                let base = c + dir * (out + if up { -w * 0.5 } else { w * 0.5 });
+                painter.add(egui::Shape::convex_polygon(vec![tip, base + side, base - side], if up { green } else { red }.gamma_multiply(0.85), Stroke::NONE));
+            }
+            // The arrow at the top, rising and falling back.
+            let lift = ((now * 2.0).sin() as f32 * 0.5 + 0.5) * w * 1.2;
+            let top = c + Vec2::new(0.0, -(ring + w * 3.2 + lift));
+            let s = w * 1.5;
+            painter.add(egui::Shape::convex_polygon(vec![top, top + Vec2::new(s, s * 1.1), top + Vec2::new(-s, s * 1.1)], green, Stroke::new(w * 0.3, gold)));
         }
         _ => return,
     }
