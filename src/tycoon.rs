@@ -636,7 +636,13 @@ pub struct Corp {
     /// The tutorial's step (`TUTORIAL_DONE`: over, or skipped).
     #[serde(default)]
     pub tutorial: u8,
+    /// The roles whose automations are paused (job id → seconds left, `PAUSED_UNTIL_RESUMED` until resumed).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub paused: std::collections::BTreeMap<String, f64>,
 }
+
+/// A role paused until the player resumes it.
+pub const PAUSED_UNTIL_RESUMED: f64 = -1.0;
 
 /// What the techs, fittings, policies, team and stars make of the work.
 #[derive(Clone, Debug)]
@@ -710,6 +716,7 @@ impl Corp {
             stats: Stats::default(),
             legacy,
             tutorial: 0,
+            paused: Default::default(),
         };
         let founder = Employee { id: c.id(), name: String::new(), job: "founder".into(), level: 1, xp: 0.0, morale: 70.0, salary: 0.0, skills: JOBS[0].skills, trait_id: None, task: Task::Contracts };
         c.staff.push(founder);
@@ -983,6 +990,20 @@ impl Corp {
         self.say(NewsKind::Fired, &e.name, 0.0, 0.0);
         self.acted();
         true
+    }
+
+    /// A role's automations stopped for `secs` (`PAUSED_UNTIL_RESUMED`: until resumed), or resumed (`None`).
+    pub fn pause_role(&mut self, job: &str, secs: Option<f64>) {
+        match secs {
+            Some(s) => self.paused.insert(job.to_owned(), s),
+            None => self.paused.remove(job),
+        };
+        self.acted();
+    }
+
+    /// The role's automations run (someone in it, not paused).
+    fn works(&self, special: Special) -> bool {
+        self.staff.iter().any(|e| e.job().special == special && !self.paused.contains_key(&e.job))
     }
 
     pub fn set_task(&mut self, id: u32, task: Task) {
@@ -1477,13 +1498,19 @@ impl Corp {
             }
             self.offer_in += 75.0 * (0.7 + 0.6 * self.rand());
         }
-        if p.auto_accept && self.sales() > 0 {
+        if p.auto_accept && self.works(Special::Sales) {
             while !self.offers.is_empty() && self.contracts.len() < self.max_contracts() {
                 let mut c = self.offers.remove(0);
                 c.left = c.time;
                 self.contracts.push(c);
             }
         }
+        for left in self.paused.values_mut() {
+            if *left > 0.0 {
+                *left = (*left - dt).max(0.0);
+            }
+        }
+        self.paused.retain(|_, left| *left == PAUSED_UNTIL_RESUMED || *left > 0.0);
         self.auto_in -= dt;
         if self.auto_in <= 0.0 {
             self.auto_in = 10.0;
@@ -1521,7 +1548,7 @@ impl Corp {
                 }
             } else {
                 self.event_age += dt;
-                if self.policy.auto.events && self.count(Special::Assistant) > 0 && self.event_age >= ASSISTANT_WAIT {
+                if self.policy.auto.events && self.works(Special::Assistant) && self.event_age >= ASSISTANT_WAIT {
                     let actions = self.actions;
                     self.choose(0);
                     self.actions = actions;
@@ -1567,19 +1594,19 @@ impl Corp {
         let actions = self.actions;
         let a = self.policy.auto.clone();
         let reserve = self.reserve();
-        if a.hire && self.has_role(Special::Hr) {
+        if a.hire && self.works(Special::Hr) {
             self.auto_hire(reserve);
         }
-        if a.tasks && self.has_role(Special::Lead) {
+        if a.tasks && self.works(Special::Lead) {
             self.auto_tasks();
         }
-        if a.research && self.has_role(Special::Cto) {
+        if a.research && self.works(Special::Cto) {
             let next = TECHS.iter().filter(|t| self.can_research(t.id)).min_by(|x, y| x.cost.total_cmp(&y.cost)).map(|t| t.id);
             if let Some(id) = next {
                 self.learn(id);
             }
         }
-        if self.has_role(Special::Office) {
+        if self.works(Special::Office) {
             let next = OFFICES.get(self.office as usize + 1);
             if a.moving && self.staff.len() >= self.capacity() && next.is_some_and(|o| self.cash >= o.price + reserve * 2.0) {
                 self.move_office();
@@ -1592,7 +1619,7 @@ impl Corp {
                 }
             }
         }
-        if a.products && self.has_role(Special::Po) {
+        if a.products && self.works(Special::Po) {
             let cash = self.cash;
             let next = (0..PRODUCTS.len()).filter(|&k| self.can_launch(k) && cash >= PRODUCTS[k].cost + reserve * 2.0).min_by(|&x, &y| PRODUCTS[x].cost.total_cmp(&PRODUCTS[y].cost));
             if let Some(k) = next {

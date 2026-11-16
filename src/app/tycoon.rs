@@ -195,6 +195,26 @@ fn card<R>(ui: &mut Ui, theme: &Theme, add: impl FnOnce(&mut Ui) -> R) -> R {
     egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.tab_hover)).corner_radius(10.0).inner_margin(12.0).show(ui, add).inner
 }
 
+/// The team's blocks, in their order.
+const TEAM_GROUPS: [corp::Tx; 3] = [("Tech", "Tech"), ("Pilotage", "Steering"), ("Support", "Support")];
+
+/// Which block of the team a job goes in: the ones who make (founder, devs, design, data, DevOps, QA, CTO),
+/// the ones who steer (project manager, product owner), the support roles (sales, HR, office manager, assistant).
+fn team_group(special: corp::Special) -> u8 {
+    use corp::Special::*;
+    match special {
+        Lead | Po => 1,
+        Sales | Hr | Office | Assistant => 2,
+        _ => 0,
+    }
+}
+
+/// The roles that do something by themselves (and can be paused).
+fn automates(special: corp::Special) -> bool {
+    use corp::Special::*;
+    matches!(special, Sales | Hr | Lead | Cto | Office | Po | Assistant)
+}
+
 fn heading(ui: &mut Ui, text: &str, theme: &Theme) {
     ui.label(egui::RichText::new(text).size(16.0).color(theme.text).strong());
 }
@@ -652,9 +672,31 @@ impl App {
         ui.add_space(6.0);
         let mut fire = None;
         let mut tasks = Vec::new();
-        let ids: Vec<u32> = c.staff.iter().map(|e| e.id).collect();
-        for id in ids {
+        let mut pauses: Vec<(String, Option<f64>)> = Vec::new();
+        // In three blocks (the ones who make, the ones who steer, the support roles), each sorted by job then level.
+        let rank = |e: &corp::Employee| (team_group(e.job().special), corp::JOBS.iter().position(|j| j.id == e.job).unwrap_or(99), std::cmp::Reverse(e.level), e.id);
+        let mut ids: Vec<(u8, usize, std::cmp::Reverse<u8>, u32)> = c.staff.iter().map(rank).collect();
+        ids.sort();
+        let mut shown = None;
+        for (group, _, _, id) in ids {
             let Some(e) = c.staff.iter().find(|e| e.id == id).cloned() else { continue };
+            if shown != Some(group) {
+                shown = Some(group);
+                let members: Vec<&corp::Employee> = c.staff.iter().filter(|x| team_group(x.job().special) == group).collect();
+                ui.add_space(if group == 0 { 2.0 } else { 12.0 });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{} ({})", tx(TEAM_GROUPS[group as usize], fr), members.len())).size(14.0).color(theme.accent).strong());
+                    // How the ones who make are shared out between the tasks.
+                    let split: Vec<String> = corp::TASKS.iter().filter_map(|(task, label)| {
+                        let n = members.iter().filter(|x| x.makes() && x.task == *task).count();
+                        (n > 0).then(|| format!("{} {}", tx(*label, fr), n))
+                    }).collect();
+                    if !split.is_empty() {
+                        muted(ui, split.join(" · "), theme);
+                    }
+                });
+                ui.add_space(4.0);
+            }
             card(ui, theme, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
@@ -688,6 +730,28 @@ impl App {
                     } else {
                         muted(ui, tx(e.job().about, fr), theme);
                     }
+                    // The roles that play alone: paused for a while, so the player can do it by hand.
+                    if automates(e.job().special) {
+                        ui.add_space(12.0);
+                        let tip = tx(("Met en pause ce que ce rôle fait tout seul (tou·te·s les « {} »), pour le faire toi-même.", "Pauses what this role does alone (every “{}”), to do it yourself."), fr).replace("{}", tx(e.job().name, fr));
+                        match c.paused.get(&e.job).copied() {
+                            Some(left) => {
+                                let text = if left == corp::PAUSED_UNTIL_RESUMED { tx(("⏸ en pause", "⏸ paused"), fr).to_owned() } else { format!("{} {}", tx(("⏸ en pause encore", "⏸ paused for"), fr), corp::duration(left, fr)) };
+                                ui.label(egui::RichText::new(text).size(12.0).color(theme.ansi[3]));
+                                if small(ui, tx(("Reprendre", "Resume"), fr)) {
+                                    pauses.push((e.job.clone(), None));
+                                }
+                            }
+                            None => {
+                                if ui.add(egui::Button::new(egui::RichText::new(tx(("⏸ 5 min", "⏸ 5 min"), fr)).size(12.0)).corner_radius(6.0)).on_hover_text(&tip).clicked() {
+                                    pauses.push((e.job.clone(), Some(300.0)));
+                                }
+                                if ui.add(egui::Button::new(egui::RichText::new(tx(("⏸ jusqu'à reprise", "⏸ until resumed"), fr)).size(12.0)).corner_radius(6.0)).on_hover_text(&tip).clicked() {
+                                    pauses.push((e.job.clone(), Some(corp::PAUSED_UNTIL_RESUMED)));
+                                }
+                            }
+                        }
+                    }
                     if !e.founder() {
                         ui.add_space(12.0);
                         if self.tycoon.confirm == Some(e.id) {
@@ -707,6 +771,9 @@ impl App {
         }
         for (id, task) in tasks {
             c.set_task(id, task);
+        }
+        for (job, secs) in pauses {
+            c.pause_role(&job, secs);
         }
         if let Some(id) = fire {
             c.fire(id);
@@ -1105,7 +1172,9 @@ impl App {
                     let has = c.has_role(special);
                     ui.horizontal_wrapped(|ui| {
                         ui.add_enabled(has, egui::Checkbox::new(flag, egui::RichText::new(tx(label, fr)).size(13.0).color(if has { theme.text } else { theme.text_muted })));
-                        if has {
+                        if has && c.paused.contains_key(job) {
+                            ui.label(egui::RichText::new(format!("⏸ {} {}", tx(j.name, fr), tx(("en pause (onglet Équipe)", "paused (Team tab)"), fr))).size(12.0).color(theme.ansi[3]));
+                        } else if has {
                             ui.label(egui::RichText::new(format!("⚙ {}", tx(j.name, fr))).size(12.0).color(theme.ansi[2]));
                         } else {
                             let when = if c.stage < j.stage { format!(" ({} {})", tx(("dès l'étape", "from stage"), fr), tx(corp::STAGES[j.stage as usize].name, fr)) } else { String::new() };
