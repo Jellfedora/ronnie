@@ -650,6 +650,8 @@ pub struct GameFloor {
     board: Option<Vec<GameEntry>>,
     last: Option<f64>,
     pending: Option<GameRound>,
+    /// The lines fetched.
+    limit: usize,
 }
 
 /// A round to send: its score, and the body floor reads it from.
@@ -677,6 +679,8 @@ pub struct GameEntry {
     pub badges: Vec<String>,
     /// The Lundi matin title they wear (an achievement's id).
     pub title: Option<String>,
+    /// When floor got it (unix ms; an older floor: none).
+    pub at: Option<i64>,
 }
 
 #[derive(Default)]
@@ -688,7 +692,13 @@ struct GameShared {
 
 impl GameFloor {
     pub fn new(game: &'static str, lower_wins: bool) -> Self {
-        Self { game, lower_wins, shared: Default::default(), board: None, last: None, pending: None }
+        Self { game, lower_wins, shared: Default::default(), board: None, last: None, pending: None, limit: BOARD }
+    }
+
+    /// More lines than the usual board (Ronnie Corp's Players tab).
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
     }
 
     /// floor's board when it answered, the best first.
@@ -733,9 +743,9 @@ impl GameFloor {
         }
         let account = account.filter(|a| a.url == url && a.name.is_some()).cloned();
         let round = self.pending.take().filter(|_| account.is_some());
-        let (game, shared, ctx) = (self.game, self.shared.clone(), ctx.clone());
+        let (game, shared, ctx, limit) = (self.game, self.shared.clone(), ctx.clone(), self.limit);
         std::thread::spawn(move || {
-            let done = match game_sync(&url, game, account.as_ref(), round.as_ref()) {
+            let done = match game_sync(&url, game, account.as_ref(), round.as_ref(), limit) {
                 Ok(board) => (Some(board), None),
                 Err(e) => {
                     crate::log::info(&format!("floor: {e}"));
@@ -752,7 +762,7 @@ impl GameFloor {
     }
 }
 
-fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Option<&GameRound>) -> Result<Vec<GameEntry>, ureq::Error> {
+fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Option<&GameRound>, limit: usize) -> Result<Vec<GameEntry>, ureq::Error> {
     #[derive(Deserialize)]
     struct Line {
         rank: u32,
@@ -771,6 +781,8 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
         badges: Vec<String>,
         #[serde(default)]
         title: Option<String>,
+        #[serde(default)]
+        at: Option<i64>,
     }
     #[derive(Deserialize)]
     struct Answer {
@@ -781,12 +793,12 @@ fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Optio
     if let (Some(account), Some(round)) = (account, round) {
         agent.post(format!("{url}/v1/games/{game}/scores")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).send_json(&round.details)?;
     }
-    let mut request = agent.get(format!("{url}/v1/games/{game}/leaderboard")).query("limit", BOARD.to_string()).header("User-Agent", USER_AGENT);
+    let mut request = agent.get(format!("{url}/v1/games/{game}/leaderboard")).query("limit", limit.to_string()).header("User-Agent", USER_AGENT);
     if let Some(a) = account {
         request = request.header("Authorization", format!("Bearer {}", a.token));
     }
     let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame, badges: l.badges, title: l.title }).collect())
+    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame, badges: l.badges, title: l.title, at: l.at }).collect())
 }
 
 #[cfg(test)]

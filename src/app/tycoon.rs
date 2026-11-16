@@ -24,9 +24,11 @@ enum Tab {
     Research,
     Premises,
     Board,
+    Players,
+    Rewards,
 }
 
-const TABS: [(Tab, corp::Tx); 7] = [
+const TABS: [(Tab, corp::Tx); 9] = [
     (Tab::Office, ("Bureau", "Office")),
     (Tab::Team, ("Équipe", "Team")),
     (Tab::Contracts, ("Contrats", "Contracts")),
@@ -34,6 +36,8 @@ const TABS: [(Tab, corp::Tx); 7] = [
     (Tab::Research, ("Recherche", "Research")),
     (Tab::Premises, ("Locaux", "Premises")),
     (Tab::Board, ("Direction", "Management")),
+    (Tab::Players, ("Joueurs", "Players")),
+    (Tab::Rewards, ("Récompenses", "Rewards")),
 ];
 
 /// What a step of the tutorial points at.
@@ -131,18 +135,49 @@ pub(super) struct Tycoon {
     confirm: Option<u32>,
     sell_confirm: bool,
     pub(super) scene: super::tycoon_scene::Scene,
-    tab_rects: [Rect; 7],
+    tab_rects: [Rect; 9],
     /// The tutorial seen again (from its button): each step goes on with « Next ».
     replay: bool,
     pub(super) floor: crate::floor::GameFloor,
     /// What was sent to floor: the best valuation (k€), the furthest stage, the stars.
     sent: (u32, u8, u32),
+    /// When the company as it is was last put to send (the Players tab of the others).
+    now_sent: Option<f64>,
+    /// What the last event's choice made, shown until closed.
+    outcome: Option<Outcome>,
+}
+
+/// What an event's choice made: its text, and what moved.
+struct Outcome {
+    title: String,
+    text: String,
+    changes: Vec<(String, f64, bool)>,
 }
 
 impl Default for Tycoon {
     fn default() -> Self {
-        Self { tab: Tab::Office, live: None, written: None, wrote_at: 0.0, started: false, away: None, confirm: None, sell_confirm: false, scene: Default::default(), tab_rects: [Rect::NOTHING; 7], replay: false, floor: crate::floor::GameFloor::new("ronnie-corp", false), sent: (0, 0, 0) }
+        Self { tab: Tab::Office, live: None, written: None, wrote_at: 0.0, started: false, away: None, confirm: None, sell_confirm: false, scene: Default::default(), tab_rects: [Rect::NOTHING; 9], replay: false, floor: crate::floor::GameFloor::new("ronnie-corp", false).with_limit(50), sent: (0, 0, 0), now_sent: None, outcome: None }
     }
+}
+
+/// What goes to floor: the best valuation (k€), the furthest stage, the stars; and, `with_now`, the
+/// company as it is (the Players tab). None below 1 k€ (floor refuses it).
+fn corp_round(c: &Corp, with_now: bool) -> Option<crate::floor::GameRound> {
+    let best = (c.legacy.best / 1_000.0).min(u32::MAX as f64) as u32;
+    if best == 0 {
+        return None;
+    }
+    let mut details = serde_json::json!({ "valuation": best, "stage": c.best_stage(), "stars": c.legacy.stars });
+    if with_now {
+        details["now"] = serde_json::json!({
+            "valuation": (c.valuation() / 1_000.0).clamp(0.0, u32::MAX as f64) as u64,
+            "stage": c.stage,
+            "staff": c.staff.len().max(1),
+            "products": c.products.len().min(100),
+            "net": ((c.income - c.spend) * 60.0).clamp(-1e12, 1e12) as i64,
+        });
+    }
+    Some(crate::floor::GameRound { score: best, details })
 }
 
 fn unix_now() -> i64 {
@@ -385,6 +420,7 @@ impl App {
                 self.push_toast(super::Toast { ok: true, title: t.corp_reward_title.to_owned(), body: format!("{}\n{}", won.join(" · "), t.corp_reward_where), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
             }
         }
+        let round = corp_round(&c, true);
         self.config.settings.tycoon = Some(c.clone());
         self.tycoon.written = Some(c);
         self.tycoon.wrote_at = time;
@@ -392,7 +428,9 @@ impl App {
         let (was, was_stage, was_stars) = self.tycoon.sent;
         if (best > was || stage > was_stage || stars > was_stars) && best > 0 && crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
             self.tycoon.sent = (best.max(was), stage.max(was_stage), stars.max(was_stars));
-            self.tycoon.floor.finished(crate::floor::GameRound { score: best, details: serde_json::json!({ "valuation": best, "stage": stage, "stars": stars }) });
+            if let Some(round) = round {
+                self.tycoon.floor.finished(round);
+            }
             self.tycoon.floor.sync(ctx, time, None, self.config.settings.floor.as_ref());
         }
     }
@@ -407,6 +445,16 @@ impl App {
         ui.painter_at(rect).rect_filled(rect, 0.0, theme.bg);
         let account = self.config.settings.floor.clone();
         self.tycoon.floor.poll();
+        // The company as it is, for the others' Players tab: sent again with the same record now and then.
+        if self.tycoon.now_sent.is_none_or(|at| time - at > 110.0)
+            && crate::floor::pseudo(account.as_ref()).is_some()
+            && let Some(c) = &self.tycoon.live
+        {
+            self.tycoon.now_sent = Some(time);
+            if let Some(round) = corp_round(c, true) {
+                self.tycoon.floor.finished(round);
+            }
+        }
         self.tycoon.floor.sync(ui.ctx(), time, Some(120.0), account.as_ref());
 
         let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
@@ -458,12 +506,15 @@ impl App {
                 Tab::Research => self.tycoon_research(ui, &mut c, fr, &theme),
                 Tab::Premises => self.tycoon_premises(ui, &mut c, fr, &theme),
                 Tab::Board => self.tycoon_board(ui, &mut c, now, fr, &theme),
+                Tab::Players => self.tycoon_players(ui, &c, fr, &theme),
+                Tab::Rewards => self.tycoon_rewards(ui, &c, fr, &theme),
             }
             ui.add_space(20.0);
             });
         }
         self.tycoon_tutorial(ui.ctx(), rect, &mut c, fr, &theme);
         self.tycoon_event(ui.ctx(), &mut c, fr, &theme);
+        self.tycoon_outcome(ui.ctx(), fr, &theme);
         self.tycoon_away(ui.ctx(), fr, &theme);
         if self.tycoon.live.as_ref() != Some(&c) {
             self.tycoon.live = Some(c);
@@ -1237,6 +1288,10 @@ impl App {
 
     /// The event waiting, in a card over the page.
     fn tycoon_event(&mut self, ctx: &egui::Context, c: &mut Corp, fr: bool, theme: &Theme) {
+        // One window at a time: the last choice's outcome first.
+        if self.tycoon.outcome.is_some() {
+            return;
+        }
         let Some(def) = c.event.as_deref().and_then(corp::event) else { return };
         let who = c.staff.iter().find(|e| e.id == c.event_who).map(|e| e.name.clone()).unwrap_or_else(|| tx(("Quelqu'un", "Someone"), fr).to_owned());
         let mut chosen = None;
@@ -1252,7 +1307,192 @@ impl App {
             }
         });
         if let Some(k) = chosen {
-            c.choose(k);
+            // What moved, measured around the choice.
+            let morale = |c: &Corp| if c.staff.is_empty() { 0.0 } else { c.staff.iter().map(|e| e.morale).sum::<f64>() / c.staff.len() as f64 };
+            let users = |c: &Corp| c.products.iter().map(|p| p.users).sum::<f64>();
+            let work = |c: &Corp| c.contracts.iter().map(|k| k.need.iter().sum::<f64>()).sum::<f64>();
+            let pay = |c: &Corp| c.contracts.iter().map(|k| k.pay).sum::<f64>();
+            let before = (c.cash, c.rep, morale(c), c.staff.len() as f64, users(c), c.debt, work(c), pay(c), c.boosts.len());
+            let label = tx(def.choices[k].label, fr).to_owned();
+            if let Some(outcome) = c.choose(k) {
+                let after = (c.cash, c.rep, morale(c), c.staff.len() as f64, users(c), c.debt, work(c), pay(c), c.boosts.len());
+                let text = def.choices[k].outcomes.get(outcome).map_or(String::new(), |o| tx(*o, fr).replace("{who}", &who));
+                let mut changes: Vec<(String, f64, bool)> = Vec::new();
+                // (what, by how much, the more the better)
+                let mut add = |name: corp::Tx, d: f64, eps: f64, good: bool| {
+                    if d.abs() >= eps {
+                        changes.push((tx(name, fr).to_owned(), d, good));
+                    }
+                };
+                add(("Trésorerie", "Cash"), after.0 - before.0, 1.0, true);
+                add(("Réputation", "Reputation"), after.1 - before.1, 0.05, true);
+                add(("Moral moyen", "Average morale"), after.2 - before.2, 0.1, true);
+                add(("Effectif", "Headcount"), after.3 - before.3, 0.5, true);
+                add(("Utilisateurs", "Users"), after.4 - before.4, 1.0, true);
+                add(("Dette technique", "Technical debt"), after.5 - before.5, 0.05, false);
+                add(("Travail des contrats", "Contracts' work"), after.6 - before.6, 1.0, false);
+                add(("Prix des contrats", "Contracts' price"), after.7 - before.7, 1.0, true);
+                if after.8 > before.8 {
+                    changes.push((tx(("Un effet pour un moment (voir le Bureau)", "An effect for a while (see the Office)"), fr).to_owned(), 0.0, true));
+                }
+                self.tycoon.outcome = Some(Outcome { title: format!("{} — {label}", tx(def.title, fr)), text, changes });
+            }
+        }
+    }
+
+    /// The other players' companies, as floor last got them.
+    fn tycoon_players(&mut self, ui: &mut Ui, c: &Corp, fr: bool, theme: &Theme) {
+        heading(ui, tx(("Les autres boîtes", "The other companies"), fr), theme);
+        muted(ui, tx(("Telles que chacun·e les a laissées la dernière fois que sa page Ronnie Corp était ouverte. Le rang : la meilleure valorisation jamais atteinte (reventes comprises).", "As each one left them the last time their Ronnie Corp page was open. The rank: the best valuation ever reached (sales included)."), fr), theme);
+        ui.add_space(8.0);
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
+        let board: Vec<crate::floor::GameEntry> = self.tycoon.floor.board().map(<[_]>::to_vec).unwrap_or_default();
+        if pseudo.is_none() {
+            muted(ui, self.t().game_need_pseudo, theme);
+            return;
+        }
+        if self.tycoon.floor.board().is_none() {
+            muted(ui, "…", theme);
+            return;
+        }
+        if board.is_empty() {
+            muted(ui, self.t().game_board_empty, theme);
+            return;
+        }
+        let now_ms = unix_now() * 1000;
+        for e in &board {
+            card(ui, theme, |ui| {
+                ui.set_width(ui.available_width());
+                let color = if e.me { theme.accent } else { theme.text };
+                let name = if e.me { pseudo.clone().unwrap_or_default() } else { e.name.clone().unwrap_or_else(|| self.t().game_anonymous.to_owned()) };
+                let stars = e.details.get("stars").and_then(|v| v.as_u64()).unwrap_or(0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{}.", e.rank)).size(13.0).color(theme.text_muted));
+                    ui.label(egui::RichText::new(name).size(14.0).strong().color(color));
+                    if stars > 0 {
+                        ui.label(egui::RichText::new(format!("★ {stars}")).size(12.5).color(theme.ansi[3]));
+                    }
+                    muted(ui, format!("{} {}", tx(("record", "record"), fr), money(e.score as f64 * 1_000.0, fr)), theme);
+                    if let Some(at) = e.at.filter(|_| !e.me) {
+                        let ago = ((now_ms - at).max(0) / 1000) as f64;
+                        muted(ui, format!("· {} {}", tx(("vue il y a", "seen"), fr), if fr { corp::duration(ago, fr) } else { format!("{} ago", corp::duration(ago, fr)) }), theme);
+                    }
+                });
+                // Mine from the game itself (always fresh); the others' from floor.
+                let now = e.details.get("now");
+                let figures: Option<(f64, u8, u64, u64, f64)> = if e.me {
+                    Some((c.valuation(), c.stage, c.staff.len() as u64, c.products.len() as u64, (c.income - c.spend) * 60.0))
+                } else {
+                    now.map(|n| {
+                        let f = |k: &str| n.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        (f("valuation") * 1_000.0, f("stage") as u8, f("staff") as u64, f("products") as u64, f("net"))
+                    })
+                };
+                match figures {
+                    Some((valuation, stage, staff, products, net)) => {
+                        ui.horizontal_wrapped(|ui| {
+                            let stat = |ui: &mut Ui, label: &str, value: String, color: Color32| {
+                                ui.label(egui::RichText::new(label).size(12.0).color(theme.text_muted));
+                                ui.label(egui::RichText::new(value).size(13.0).strong().color(color));
+                                ui.add_space(10.0);
+                            };
+                            stat(ui, tx(("Étape", "Stage"), fr), tx(corp::STAGES[(stage as usize).min(corp::STAGES.len() - 1)].name, fr).to_owned(), theme.text);
+                            stat(ui, tx(("Valorisation", "Valuation"), fr), money(valuation, fr), theme.accent);
+                            stat(ui, tx(("Effectif", "Headcount"), fr), staff.to_string(), theme.text);
+                            stat(ui, tx(("Produits", "Products"), fr), products.to_string(), theme.text);
+                            stat(ui, tx(("Solde", "Net"), fr), format!("{}{}/min", if net >= 0.0 { "+" } else { "−" }, money(net.abs(), fr)), if net < 0.0 { theme.ansi[1] } else { theme.ansi[2] });
+                        });
+                    }
+                    None => muted(ui, tx(("Pas encore de nouvelles de sa boîte (une version de Ronnie plus ancienne, ou pas rejoué depuis).", "No news of their company yet (an older Ronnie, or not played since)."), fr), theme),
+                }
+            });
+            ui.add_space(6.0);
+        }
+    }
+
+    /// What Ronnie Corp unlocks, and how far the player is from each.
+    fn tycoon_rewards(&mut self, ui: &mut Ui, c: &Corp, fr: bool, theme: &Theme) {
+        let t = self.t();
+        let items = self.unlocks(super::four::HomeGame::Tycoon);
+        let done = items.iter().filter(|u| u.done).count();
+        heading(ui, &format!("{} ({done}/{})", tx(("Récompenses", "Rewards"), fr), items.len()), theme);
+        muted(ui, format!("{} {}", tx(("Elles servent dans tout Ronnie, pas seulement ici.", "They're for all of Ronnie, not only here."), fr), t.corp_reward_where), theme);
+        ui.add_space(8.0);
+        // How far the best valuation is from each stage that unlocks something.
+        let best = c.legacy.best.max(c.valuation());
+        let toward = |k: u8| {
+            let need = corp::STAGES[k as usize].valuation;
+            (best / need).clamp(0.0, 1.0)
+        };
+        let stages = [corp::BILLS_STAGE, corp::WALL_STREET_STAGE, corp::UNICORN_STAGE, corp::LISTED_STAGE];
+        for (k, u) in items.iter().enumerate() {
+            card(ui, theme, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(if u.done { "✓" } else { "🔒" }).size(14.0).color(if u.done { theme.ansi[2] } else { theme.text_muted }));
+                    ui.label(egui::RichText::new(&u.what).size(14.0).strong().color(if u.done { theme.ansi[2] } else { theme.text }));
+                });
+                if u.done {
+                    muted(ui, if u.gives.is_empty() { t.unlock_done.to_owned() } else { u.gives.clone() }, theme);
+                } else {
+                    ui.label(egui::RichText::new(&u.how).size(12.5).color(theme.ansi[3]));
+                    // The three first ones go by a stage, the frame by the listing (or a sale).
+                    let stage = match k {
+                        0..=2 => Some(stages[k]),
+                        3 => Some(corp::LISTED_STAGE),
+                        _ => None,
+                    };
+                    if let Some(st) = stage {
+                        ui.horizontal(|ui| {
+                            bar(ui, toward(st), theme.accent, 220.0, 8.0, theme);
+                            muted(ui, format!("{} / {}", money(best, fr), money(corp::STAGES[st as usize].valuation, fr)), theme);
+                        });
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+        ui.add_space(8.0);
+        heading(ui, tx(("Et en revendant la boîte", "And by selling the company"), fr), theme);
+        muted(ui, format!("{} ★ {} · {}", tx(("Étoiles :", "Stars:"), fr), c.legacy.stars, tx(("chacune donne pour toujours +5 % de productivité, +3 % sur ce que tu encaisses et 1 000 € de plus au départ (onglet Direction).", "each one gives forever +5 % productivity, +3 % on what you earn and €1,000 more to start with (Management tab)."), fr)), theme);
+    }
+
+    /// What the last event's choice made, until closed.
+    fn tycoon_outcome(&mut self, ctx: &egui::Context, fr: bool, theme: &Theme) {
+        let Some(o) = &self.tycoon.outcome else { return };
+        let mut close = false;
+        egui::Window::new(tx(("Ce que ton choix a donné", "What your choice did"), fr)).id(egui::Id::new("tycoon-outcome")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent)).corner_radius(12.0).inner_margin(18.0)).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            muted(ui, &o.title, theme);
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(&o.text).size(14.0).color(theme.text));
+            ui.add_space(10.0);
+            if o.changes.is_empty() {
+                muted(ui, tx(("Rien d'autre n'a bougé.", "Nothing else moved."), fr), theme);
+            }
+            for (name, d, good) in &o.changes {
+                let (value, ok) = if *d == 0.0 {
+                    (String::new(), *good)
+                } else if name == tx(("Trésorerie", "Cash"), fr) || name == tx(("Prix des contrats", "Contracts' price"), fr) {
+                    (format!("{}{}", if *d > 0.0 { "+" } else { "−" }, money(d.abs(), fr)), (*d > 0.0) == *good)
+                } else {
+                    let n = if d.abs() >= 10.0 { format!("{:.0}", d.abs()) } else { format!("{:.1}", d.abs()) };
+                    (format!("{}{n}", if *d > 0.0 { "+" } else { "−" }), (*d > 0.0) == *good)
+                };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(name).size(13.0).color(theme.text));
+                    if !value.is_empty() {
+                        ui.label(egui::RichText::new(value).size(13.0).strong().color(if ok { theme.ansi[2] } else { theme.ansi[1] }));
+                    }
+                });
+            }
+            ui.add_space(10.0);
+            if button(ui, true, "OK", theme) {
+                close = true;
+            }
+        });
+        if close {
+            self.tycoon.outcome = None;
         }
     }
 
