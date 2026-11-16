@@ -2,6 +2,23 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [1.3.0] - 2026-11-17
+
+### Nouveautés
+
+- **Ronnie Corp, l'onglet Joueurs** : les boîtes des autres telles qu'ils les ont laissées (étape, valorisation, effectif, produits, solde par minute, record, étoiles) et quand ils sont passés pour la dernière fois.
+- **Ronnie Corp, l'onglet Récompenses** : tout ce que le jeu débloque, ce qu'il faut faire pour l'avoir et où tu en es.
+- **Ronnie Corp, ce que ton choix a donné** : après un imprévu, une fenêtre montre ce qui s'est passé et les chiffres qui ont bougé (trésorerie, réputation, moral, utilisateurs, dette…).
+- **Ronnie Corp, une équipe rangée** : en trois blocs (Tech, Pilotage, Support), triée par métier, avec la répartition des devs entre contrats, produits, recherche et refacto.
+- **Ronnie Corp, combien en prendre** : chaque rôle affiche combien sont utiles (« 2/5 utiles » pour les commerciaux, par exemple), avec au survol ce que chacun rapporte, sur l'équipe comme sur les candidats.
+- **Ronnie Corp, des rôles en pause** : les rôles qui jouent tout seuls (RH, commerciaux, chef·fe de projet, CTO, office manager, product owner, assistant·e) se mettent en pause 5 minutes ou jusqu'à reprise, pour faire les choses toi-même.
+- **Ronnie Corp, des RH plus malignes** : elles recrutent d'abord les rôles qui manquent (commerciaux jusqu'à 5, chefs de projet, QA, DevOps, RH), jamais plus que ce qui est utile.
+
+### Corrections
+
+- Ronnie Corp : « Il faut une place de produit » dit maintenant comment en avoir une (l'étape suivante qui en donne, ou fermer un produit).
+- Ronnie Corp : le « ? » du tutoriel est centré.
+
 ## [1.2.1] - 2026-11-16
 
 ### Nouveautés
