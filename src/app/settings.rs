@@ -2324,20 +2324,22 @@ impl App {
                             // Over the whole screen too (`desktop`), for those that can.
                             if u.done && super::desktop::supported() {
                                 let fx = &mut picked.desktop_fx;
-                                let choices: Vec<(&str, &mut bool)> = match u.reward {
-                                    Some(super::unlocks::Reward::Trail | super::unlocks::Reward::Bills) => vec![(t.desktop_trail, &mut fx.trail)],
-                                    Some(super::unlocks::Reward::Unicorn) => vec![(t.desktop_unicorn, &mut fx.unicorn)],
-                                    Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep)],
-                                    Some(super::unlocks::Reward::Horde) => vec![(t.desktop_horde, &mut fx.horde)],
-                                    Some(super::unlocks::Reward::Gerard) => vec![(t.desktop_gerard, &mut fx.gerard)],
-                                    Some(super::unlocks::Reward::Matheo) => vec![(t.desktop_matheo, &mut fx.matheo)],
-                                    Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber), (t.desktop_droid, &mut fx.droid)],
-                                    Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand), (t.desktop_elf, &mut fx.elf)],
-                                    Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword)],
+                                // Each with, for the walkers, whether it goes along the other screens too.
+                                let every = &mut fx.everywhere;
+                                let choices: Vec<(&str, &mut bool, Option<&mut bool>)> = match u.reward {
+                                    Some(super::unlocks::Reward::Trail | super::unlocks::Reward::Bills) => vec![(t.desktop_trail, &mut fx.trail, None)],
+                                    Some(super::unlocks::Reward::Unicorn) => vec![(t.desktop_unicorn, &mut fx.unicorn, Some(&mut every.unicorn))],
+                                    Some(super::unlocks::Reward::Sheep) => vec![(t.desktop_sheep, &mut fx.sheep, Some(&mut every.sheep))],
+                                    Some(super::unlocks::Reward::Horde) => vec![(t.desktop_horde, &mut fx.horde, Some(&mut every.horde))],
+                                    Some(super::unlocks::Reward::Gerard) => vec![(t.desktop_gerard, &mut fx.gerard, Some(&mut every.gerard))],
+                                    Some(super::unlocks::Reward::Matheo) => vec![(t.desktop_matheo, &mut fx.matheo, None)],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber, None), (t.desktop_droid, &mut fx.droid, Some(&mut every.droid))],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand, None), (t.desktop_elf, &mut fx.elf, Some(&mut every.elf))],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword, None)],
                                     _ => vec![],
                                 };
                                 let mut pointer = None;
-                                for (label, on) in choices {
+                                for (label, on, everywhere) in choices {
                                     ui.add_space(6.0);
                                     ui.horizontal(|ui| {
                                         if toggle(ui, theme, on).changed() && *on {
@@ -2345,6 +2347,15 @@ impl App {
                                         }
                                         ui.label(egui::RichText::new(label).size(12.5).color(theme.text));
                                     });
+                                    // Shown once it is on, a step in.
+                                    if let (Some(everywhere), true) = (everywhere, *on) {
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(20.0);
+                                            toggle(ui, theme, everywhere);
+                                            ui.label(egui::RichText::new(t.desktop_everywhere).size(12.5).color(theme.text));
+                                        });
+                                    }
                                 }
                                 // The horde switched on: it runs across the screen right now, to see it.
                                 if pointer == Some(t.desktop_horde) {
