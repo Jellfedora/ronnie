@@ -1534,9 +1534,14 @@ impl App {
     /// The tutorial: a card at the bottom of the page, what it's about blinking; the steps to play go
     /// on by themselves once done. And its button, to see it again.
     fn tycoon_tutorial(&mut self, ctx: &egui::Context, page: Rect, c: &mut Corp, fr: bool, theme: &Theme) {
-        let help = Rect::from_min_size(Pos2::new(page.max.x - 46.0, page.min.y + 14.0), Vec2::new(30.0, 28.0));
+        let help = Rect::from_min_size(Pos2::new(page.max.x - 46.0, page.min.y + 14.0), Vec2::new(30.0, 30.0));
         let replay = egui::Area::new(egui::Id::new("tycoon-help")).fixed_pos(help.min).order(egui::Order::Foreground).show(ctx, |ui| {
-            ui.add(egui::Button::new(egui::RichText::new("?").size(15.0).strong()).corner_radius(14.0).min_size(help.size())).on_hover_text(tx(("Revoir le tutoriel", "See the tutorial again"), fr)).clicked()
+            // Drawn by hand: a button wider than its text puts the text on the left.
+            let (rect, resp) = ui.allocate_exact_size(help.size(), Sense::click());
+            let visuals = ui.style().interact(&resp);
+            ui.painter().rect_filled(rect, rect.height() / 2.0, visuals.weak_bg_fill);
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, "?", FontId::proportional(15.0), visuals.text_color());
+            resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tx(("Revoir le tutoriel", "See the tutorial again"), fr)).clicked()
         });
         if replay.inner {
             c.tutorial = 0;
