@@ -2,6 +2,17 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [1.2.1] - 2026-11-16
+
+### Nouveautés
+
+- **Les promeneurs restent sur ton écran si tu veux** : dans les réglages des récompenses, sous le mouton, le droïde, Gérard, Dobby, la licorne et la horde, « Sur les autres écrans aussi » (activé par défaut). Décoché, il ne passe que sur l'écran où est le pointeur. Merci à Jonathan !
+- **Ronnie Corp, la dette technique expliquée** : passe le pointeur sur « Dette tech. » en haut pour voir ce qu'elle te coûte en ce moment, ce qui la fait monter et comment la faire baisser.
+
+### Corrections
+
+- Plus de grand carré blanc sur les autres écrans quand un promeneur y passe.
+
 ## [1.2.0] - 2026-11-16
 
 ### Nouveautés
