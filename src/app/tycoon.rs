@@ -203,6 +203,41 @@ fn muted(ui: &mut Ui, text: impl Into<String>, theme: &Theme) {
     ui.label(egui::RichText::new(text.into()).size(12.5).color(theme.text_muted));
 }
 
+/// The technical debt explained (under the pointer, over its figure): what it is, what it costs now,
+/// what makes it rise, how to bring it down.
+fn debt_help(ui: &mut Ui, c: &Corp, fr: bool, theme: &Theme) {
+    ui.set_max_width(340.0);
+    let line = |ui: &mut Ui, text: String, color: Color32| {
+        ui.add(egui::Label::new(egui::RichText::new(text).size(12.5).color(color)).wrap());
+    };
+    ui.label(egui::RichText::new(format!("{} {:.0} %", tx(("Dette technique :", "Technical debt:"), fr), c.debt)).size(14.0).color(theme.text).strong());
+    line(ui, tx(("Le code fait à la va-vite qui s'accumule. Elle monte toute seule tant que l'équipe travaille sur des contrats ou des produits, et ralentit tout.", "Code written in a hurry piling up. It rises by itself while the team works on contracts or products, and slows everything down."), fr).into(), theme.text_muted);
+    ui.add_space(6.0);
+    line(ui, tx(("En ce moment :", "Right now:"), fr).into(), theme.text);
+    let costs = [
+        format!("{} −{:.0} %", tx(("• productivité", "• productivity"), fr), c.debt / 2.5),
+        format!("{} −{:.0}", tx(("• moral de l'équipe", "• the team's morale"), fr), c.debt / 10.0),
+        format!("{} −{:.0} % {}", tx(("• qualité des livraisons", "• quality of deliveries"), fr), c.debt / 1.5, tx(("(contrats moins bien payés)", "(contracts paid less)"), fr)),
+        tx(("• plus de bugs dans tes produits", "• more bugs in your products"), fr).to_owned(),
+    ];
+    let color = if c.debt < 10.0 { theme.text_muted } else { theme.ansi[1] };
+    for cost in costs {
+        line(ui, cost, color);
+    }
+    ui.add_space(6.0);
+    line(ui, tx(("Elle monte plus vite avec le crunch (×2), les profils « Rapide », les Microservices, ou en restant sur un vieux framework.", "It rises faster with crunch (×2), \"Fast\" people, Microservices, or staying on an old framework."), fr).into(), theme.text_muted);
+    let refactoring = c.staff.iter().filter(|e| e.task == corp::Task::Refactor).count();
+    line(
+        ui,
+        format!(
+            "{} {refactoring} {}",
+            tx(("Pour la faire baisser : mets des gens en Refacto (clique sur quelqu'un dans le bureau) :", "To bring it down: put people on Refactoring (click someone in the office):"), fr),
+            tx(("en ce moment. Un·e DevOps ou un·e CTO la fait baisser en continu ; la techno Git et CI et les horaires Cool la font monter moins vite. Un·e chef·fe de projet en automatique envoie quelqu'un en Refacto au-delà de 40 %.", "right now. A DevOps or a CTO keeps lowering it; the Git and CI tech and relaxed hours make it rise slower. A project manager on automatic sends someone to Refactoring past 40 %."), fr)
+        ),
+        theme.text,
+    );
+}
+
 fn button(ui: &mut Ui, enabled: bool, text: impl Into<String>, theme: &Theme) -> bool {
     let b = egui::Button::new(egui::RichText::new(text.into()).size(13.0).color(if enabled { theme.bg } else { theme.text_muted })).fill(if enabled { theme.accent } else { theme.tab_hover }).corner_radius(6.0);
     ui.add_enabled(enabled, b).clicked()
@@ -452,14 +487,19 @@ impl App {
             (tx(("Équipe", "Team"), fr).into(), format!("{}/{}", c.staff.len(), c.capacity()), theme.text),
             (tx(("Dette tech.", "Tech debt"), fr).into(), format!("{:.0} %", c.debt), level_color(1.0 - c.debt / 100.0, theme)),
         ];
+        let last = items.len() - 1;
         ui.horizontal_wrapped(|ui| {
-            for (label, value, color) in items {
-                egui::Frame::new().fill(theme.chrome_bg).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            for (k, (label, value, color)) in items.into_iter().enumerate() {
+                let shown = egui::Frame::new().fill(theme.chrome_bg).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(label).size(11.0).color(theme.text_muted));
                         ui.label(egui::RichText::new(value).size(15.0).color(color).strong());
                     });
                 });
+                // The debt explained under the pointer, with what it costs right now.
+                if k == last {
+                    shown.response.on_hover_ui(|ui| debt_help(ui, c, fr, theme));
+                }
             }
             if c.legacy.stars > 0 {
                 egui::Frame::new().fill(theme.chrome_bg).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
