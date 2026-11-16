@@ -1008,11 +1008,31 @@ pub struct DesktopFx {
     pub gerard: bool,
     /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
     pub matheo: bool,
+    /// Which of the walkers (and the horde) go along the other screens too, not only the pointer's.
+    pub everywhere: Everywhere,
 }
 
 impl Default for DesktopFx {
     fn default() -> Self {
-        Self { trail: false, sheep: false, saber: false, droid: false, wand: false, elf: false, unicorn: false, sword: false, horde: true, gerard: true, matheo: true }
+        Self { trail: false, sheep: false, saber: false, droid: false, wand: false, elf: false, unicorn: false, sword: false, horde: true, gerard: true, matheo: true, everywhere: Everywhere::default() }
+    }
+}
+
+/// The walkers that go along every screen (on, at first), else only along the pointer's.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct Everywhere {
+    pub sheep: bool,
+    pub droid: bool,
+    pub elf: bool,
+    pub unicorn: bool,
+    pub horde: bool,
+    pub gerard: bool,
+}
+
+impl Default for Everywhere {
+    fn default() -> Self {
+        Self { sheep: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true }
     }
 }
 
