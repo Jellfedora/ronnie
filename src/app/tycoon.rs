@@ -244,6 +244,34 @@ fn team_group(special: corp::Special) -> u8 {
     }
 }
 
+/// How many of a role the company has, how many are worth it (`Corp::role_useful`), and what each
+/// one does (None: the devs).
+fn role_use(c: &Corp, special: corp::Special) -> Option<(usize, usize, corp::Tx)> {
+    use corp::Special::*;
+    let useful = c.role_useful(special)?;
+    let about = match special {
+        Sales => ("Chacun·e : +40 % d'offres de contrats, +5 % sur tout ce que tu encaisses (produits compris). Utile jusqu'à 5.", "Each: +40 % contract offers, +5 % on all you earn (products too). Worth it up to 5."),
+        Hr => ("Chacun·e : +3 de moral pour toute l'équipe, un candidat de plus. Utile jusqu'à 3.", "Each: +3 morale for the whole team, one more candidate. Worth it up to 3."),
+        Lead => ("Chacun·e rend 6 personnes 15 % plus productives (un·e pour 6 qui produisent) et donne un contrat en cours de plus.", "Each makes 6 people 15 % more productive (one per 6 who make) and gives one more running contract."),
+        Qa => ("Moins de bugs, meilleures livraisons : un·e pour 5 qui produisent.", "Fewer bugs, better deliveries: one per 5 who make."),
+        Ops => ("Chacun·e : −15 % de pannes (et produit aussi). Utile jusqu'à 4.", "Each: −15 % outages (and makes too). Worth it up to 4."),
+        Cto => ("Un·e seul·e possible.", "Only one possible."),
+        _ => ("N'automatise qu'une chose : un·e seul·e suffit.", "Only automates one thing: one is enough."),
+    };
+    Some((c.count(special), useful, about))
+}
+
+/// « 2/5 utiles », green while worth it, orange past it; its hover says why.
+fn role_use_label(ui: &mut Ui, c: &Corp, special: corp::Special, fr: bool, theme: &Theme) {
+    let Some((have, useful, about)) = role_use(c, special) else { return };
+    let (text, color) = if have > useful {
+        (format!("{have}/{useful} {}", tx(("utiles : trop", "worth it: too many"), fr)), theme.ansi[3])
+    } else {
+        (format!("{have}/{useful} {}", tx(("utiles", "worth it"), fr)), theme.ansi[2])
+    };
+    ui.label(egui::RichText::new(text).size(12.0).color(color)).on_hover_text(tx(about, fr));
+}
+
 /// The roles that do something by themselves (and can be paused).
 fn automates(special: corp::Special) -> bool {
     use corp::Special::*;
@@ -603,6 +631,7 @@ impl App {
                     let name = if e.founder() { tx(("Toi", "You"), fr).to_owned() } else { e.name.clone() };
                     ui.label(egui::RichText::new(name).size(14.0).color(theme.text).strong());
                     ui.label(egui::RichText::new(format!("{} · {} {}", tx(e.job().name, fr), tx(("niv.", "lvl"), fr), e.level)).size(12.5).color(theme.accent));
+                    role_use_label(ui, c, e.job().special, fr, theme);
                     if let Some(tr) = e.trait_id.as_deref().and_then(corp::trait_def) {
                         ui.label(egui::RichText::new(format!("« {} »", tx(tr.name, fr))).size(12.0).color(theme.ansi[5])).on_hover_text(tx(tr.about, fr));
                     }
@@ -754,6 +783,7 @@ impl App {
                     let name = if e.founder() { tx(("Toi", "You"), fr).to_owned() } else { e.name.clone() };
                     ui.label(egui::RichText::new(name).size(14.0).color(theme.text).strong());
                     ui.label(egui::RichText::new(format!("{} · {} {}", tx(e.job().name, fr), tx(("niv.", "lvl"), fr), e.level)).size(12.5).color(theme.accent));
+                    role_use_label(ui, c, e.job().special, fr, theme);
                     if let Some(tr) = e.trait_id.as_deref().and_then(corp::trait_def) {
                         ui.label(egui::RichText::new(format!("« {} »", tx(tr.name, fr))).size(12.0).color(theme.ansi[5])).on_hover_text(tx(tr.about, fr));
                     }
@@ -853,6 +883,11 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new(&e.name).size(14.0).color(theme.text).strong());
                     ui.label(egui::RichText::new(format!("{} · {} {}", tx(e.job().name, fr), tx(("niv.", "lvl"), fr), e.level)).size(12.5).color(theme.accent)).on_hover_text(tx(e.job().about, fr));
+                    // How many the company has already (hiring one more: worth it?).
+                    if let Some((have, useful, about)) = role_use(c, e.job().special) {
+                        let (text, color) = if have >= useful { (format!("{} {have}/{useful}", tx(("tu en as déjà", "you already have"), fr)), theme.ansi[3]) } else { (format!("{} {have}/{useful}", tx(("tu en as", "you have"), fr)), theme.ansi[2]) };
+                        ui.label(egui::RichText::new(text).size(12.0).color(color)).on_hover_text(tx(about, fr));
+                    }
                     if let Some(tr) = e.trait_id.as_deref().and_then(corp::trait_def) {
                         ui.label(egui::RichText::new(format!("« {} »", tx(tr.name, fr))).size(12.0).color(theme.ansi[5])).on_hover_text(tx(tr.about, fr));
                     }

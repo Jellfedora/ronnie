@@ -772,7 +772,23 @@ impl Corp {
         self.perks.iter().any(|p| p == id)
     }
 
-    fn count(&self, special: Special) -> usize {
+    /// How many of a role are worth having (more do nothing more): None for the jobs with no such
+    /// ceiling (the devs). Follows `mods` and `max_contracts`.
+    pub fn role_useful(&self, special: Special) -> Option<usize> {
+        let makers = self.staff.iter().filter(|e| e.makes()).count();
+        let makers_no_qa = self.staff.iter().filter(|e| e.makes() && e.job().special != Special::Qa).count();
+        Some(match special {
+            Special::Sales => 5,
+            Special::Hr => 3,
+            Special::Lead => makers.div_ceil(6).max(1),
+            Special::Qa => makers_no_qa.div_ceil(5).max(1),
+            Special::Ops => 4,
+            Special::Office | Special::Assistant | Special::Po | Special::Cto => 1,
+            Special::None | Special::Founder => return None,
+        })
+    }
+
+    pub fn count(&self, special: Special) -> usize {
         self.staff.iter().filter(|e| e.job().special == special).count()
     }
 
@@ -1643,7 +1659,17 @@ impl Corp {
         let total: f64 = need.iter().sum();
         let weights = if total > 0.0 { need.map(|x| 0.3 + x / total) } else { [1.0; 5] };
         let net = self.income - self.spend;
-        let want_sales = self.sales() == 0 && self.staff.len() >= 3;
+        // The roles still worth one more (HR doesn't pick the ones that steer or spend: CTO, office
+        // manager, assistant, product owner, the player's call); first the salespeople, then the others.
+        let wanted = |special: Special| -> Option<f64> {
+            let first = match special {
+                Special::Sales => 3.0,
+                Special::Lead => 2.0,
+                Special::Qa | Special::Ops | Special::Hr => 1.0,
+                _ => return None,
+            };
+            (self.staff.len() >= 3 && self.count(special) < self.role_useful(special)?).then_some(first)
+        };
         let pick = self
             .candidates
             .iter()
@@ -1652,13 +1678,16 @@ impl Corp {
                 let special = e.job().special;
                 let fee = self.hire_fee(e);
                 let affordable = self.cash - fee > reserve && (net > e.salary * 1.2 || self.cash - fee > reserve * 3.0);
-                let fits = matches!(special, Special::None | Special::Qa | Special::Ops) || (want_sales && special == Special::Sales);
+                let fits = special == Special::None || wanted(special).is_some();
                 affordable && fits
             })
             .map(|(k, e)| {
                 let worth: f64 = (0..5).map(|s| e.skills[s] * weights[s]).sum::<f64>() * e.level_mult();
-                let worth = if e.job().special == Special::Sales { f64::MAX } else { worth };
-                (k, worth / e.salary.max(0.1))
+                // A role still missing comes before the devs (the most missing first, then the cheapest).
+                match wanted(e.job().special) {
+                    Some(first) => (k, 1e12 * first + 1.0 / e.salary.max(0.1)),
+                    None => (k, worth / e.salary.max(0.1)),
+                }
             })
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(k, _)| k);
@@ -2713,6 +2742,36 @@ mod tests {
 
     fn corp() -> Corp {
         Corp::new(1_000_000, 42, Legacy::default())
+    }
+
+    #[test]
+    fn hr_hires_the_roles_only_up_to_what_is_worth_it() {
+        let mut c = corp();
+        c.office = 4;
+        c.cash = 1e9;
+        c.income = 1e6;
+        for job in ["back", "back", "front", "front", "sales", "sales", "sales", "sales"] {
+            let e = c.make_employee(job, 1);
+            c.staff.push(e);
+        }
+        assert_eq!(c.role_useful(Special::Sales), Some(5));
+        let candidates: Vec<Employee> = ["sales", "sales", "office", "cto", "po", "assistant"].iter().map(|j| c.make_employee(j, 1)).collect();
+        c.candidates = candidates;
+        for _ in 0..6 {
+            c.auto_hire(0.0);
+        }
+        assert_eq!(c.sales(), 5, "a fifth salesperson, not a sixth");
+        for special in [Special::Office, Special::Cto, Special::Po, Special::Assistant] {
+            assert_eq!(c.count(special), 0, "the player's call");
+        }
+        // A missing role before a dev; none past its ceiling.
+        let candidates: Vec<Employee> = ["back", "lead", "lead"].iter().map(|j| c.make_employee(j, 1)).collect();
+        c.candidates = candidates;
+        c.auto_hire(0.0);
+        assert_eq!(c.count(Special::Lead), 1);
+        c.auto_hire(0.0);
+        assert_eq!(c.count(Special::Lead), 1, "one per 6 who make: 6 here");
+        assert_eq!(c.staff.iter().filter(|e| e.job == "back").count(), 3);
     }
 
     #[test]
