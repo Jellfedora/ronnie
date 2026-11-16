@@ -2,6 +2,18 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [1.2.0] - 2026-11-16
+
+### Nouveautés
+
+- **Ronnie Corp**, un nouveau jeu dans Jeux : monte ta boîte, d'un garage tout seul jusqu'à la licorne cotée en bourse. Embauche, décroche des contrats, lance tes produits SaaS, aménage les bureaux, choisis ta politique (télétravail, crunch, salaires…) et laisse tes managers faire tourner la boutique. La boîte continue sans toi quand le jeu est fermé, et se synchronise entre tes machines. Revends-la pour des étoiles qui te donnent un bonus pour la suivante. Pas de limite de temps de jeu, il tourne tout seul. Merci à Jonathan !
+- **Ses récompenses** : une traînée de billets derrière le pointeur (petite entreprise), le thème **Wall Street** (grande entreprise), une licorne qui galope en bas de l'écran (licorne), le cadre d'avatar **ticker doré** (en bourse ou revendue une fois) et le **chèque géant** à envoyer dans le tchat (revendue une fois).
+- **Dobby** : gagné avec Gryffondor, l'elfe de maison traverse de temps en temps le bas de l'écran et s'arrête pour agiter sa chaussette.
+
+### Corrections
+
+- Les effets sur tout l'écran ne passent plus sur un film en plein écran sur un Mac à encoche, ni sur aucun écran en plein écran (pas seulement celui du pointeur).
+
 ## [1.1.1] - 2026-11-13
 
 ### Corrections
