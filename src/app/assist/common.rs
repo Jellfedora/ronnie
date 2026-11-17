@@ -46,9 +46,13 @@ pub(super) struct Field<E> {
 pub(super) const MESSAGES: usize = 15;
 pub(super) const MESSAGE_CHARS: usize = 600;
 
-/// A button of the row under the box (`under`): its size, and just under the box.
-pub(super) fn is_tool(r: Rect, under: Rect) -> bool {
-    (20.0..=48.0).contains(&r.width()) && (20.0..=48.0).contains(&r.height()) && r.min.y >= under.max.y - 4.0 && r.min.y <= under.max.y + 60.0
+/// A button of the box's tools (`field` the box): its size, and in the row under the box (a draft of
+/// several lines) or in the box's own row, right of it (a draft of one line).
+pub(super) fn is_tool(r: Rect, field: Rect) -> bool {
+    let sized = (20.0..=48.0).contains(&r.width()) && (20.0..=48.0).contains(&r.height());
+    let under = r.min.y >= field.max.y - 4.0 && r.min.y <= field.max.y + 60.0;
+    let beside = r.min.x >= field.max.x - 4.0 && r.min.x <= field.max.x + 400.0 && r.center().y >= field.min.y - 10.0 && r.center().y <= field.max.y + 10.0;
+    sized && (under || beside)
 }
 
 /// The leftmost of `found`.
