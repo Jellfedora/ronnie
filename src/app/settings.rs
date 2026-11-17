@@ -1367,11 +1367,40 @@ impl App {
             });
             if super::assist::supported() {
                 divider(ui, theme);
-                let note = if cfg!(target_os = "macos") { t.teams_claude_mac } else { t.teams_claude_linux };
+                let note = if cfg!(target_os = "macos") { t.teams_claude_mac } else if cfg!(windows) { t.teams_claude_windows } else { t.teams_claude_linux };
                 let desc = format!("{} {note}", t.teams_claude_desc);
                 setting_row(ui, theme, t.teams_claude_row, Some(&desc), |ui| {
                     toggle(ui, theme, &mut picked.teams_claude);
                 });
+            }
+        });
+        card(ui, theme, Some(t.outlook_claude_section), |ui| {
+            setting_row(ui, theme, t.outlook_claude_row, Some(t.outlook_claude_desc), |ui| {
+                toggle(ui, theme, &mut picked.outlook_claude);
+            });
+            if picked.outlook_claude
+                && let Some(dir) = crate::outlook::extension_dir()
+            {
+                divider(ui, theme);
+                setting_row(ui, theme, t.outlook_claude_steps_title, Some(t.outlook_claude_steps), |_| {});
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(dir.to_string_lossy()).monospace().size(12.5).color(theme.text_muted)).truncate());
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let b = |text: &str| egui::Button::new(egui::RichText::new(text).size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
+                    if ui.add(b(t.outlook_claude_open)).clicked() {
+                        crate::config::open_folder(&dir);
+                    }
+                    if ui.add(b(t.outlook_claude_copy)).clicked() {
+                        ui.ctx().copy_text(dir.to_string_lossy().into_owned());
+                    }
+                });
+                if let Some(error) = crate::outlook::last_error() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(error).size(12.5).color(theme.ansi[1]));
+                }
+                ui.add_space(4.0);
             }
         });
         card(ui, theme, Some(t.recap_section), |ui| {

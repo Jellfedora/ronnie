@@ -32,6 +32,7 @@ mod envs;
 mod eta;
 mod projects;
 mod notify;
+mod outlook;
 mod openwith;
 #[cfg(target_os = "macos")]
 mod menu;
@@ -233,6 +234,11 @@ fn tune_macos_window(cc: &eframe::CreationContext<'_>, bg: egui::Color32) {
 }
 
 fn main() -> eframe::Result {
+    // Started by Chrome or Edge for Ronnie's Outlook extension: one request answered, no window.
+    if outlook::is_host_call() {
+        outlook::run_host();
+        return Ok(());
+    }
     // Started by ssh to type a saved password: answer and exit before any window opens.
     ssh::run_askpass();
     if std::env::args().skip(1).any(|a| a == "--version" || a == "-V") {

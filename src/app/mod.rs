@@ -5821,6 +5821,7 @@ impl eframe::App for App {
         self.notesync_tick(ctx);
         self.desktop_tick();
         self.assist_tick();
+        crate::outlook::sync(self.config.settings.outlook_claude);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

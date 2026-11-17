@@ -1,5 +1,5 @@
-//! The Claude button beside Microsoft Teams's message box: macOS, and Linux under X11 (Teams there in its
-//! web app, a window of Chrome or Edge).
+//! The Claude button beside Microsoft Teams's message box: macOS, Windows (the new Teams), and Linux under
+//! X11 (Teams there in its web app, a window of Chrome or Edge).
 //!
 //! It lives in a process of its own (`ronnie teams-claude`), started by Ronnie while the setting is on,
 //! like the desktop effects: what it needs (the language, the theme) comes on its standard input, one
@@ -27,9 +27,9 @@ struct Told {
     theme: String,
 }
 
-/// Where it works: macOS; Linux through X11 (no window can place itself over another under Wayland).
+/// Where it works: macOS, Windows; Linux through X11 (no window can place itself over another under Wayland).
 pub(super) fn supported() -> bool {
-    cfg!(target_os = "macos") || (cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some() && std::env::var("XDG_SESSION_TYPE").map_or(true, |s| s != "wayland"))
+    cfg!(any(target_os = "macos", windows)) || (cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some() && std::env::var("XDG_SESSION_TYPE").map_or(true, |s| s != "wayland"))
 }
 
 #[derive(Default)]
@@ -118,13 +118,13 @@ impl App {
 
 /// `ronnie teams-claude`: the button over Teams (started by Ronnie).
 pub(super) fn run() {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     overlay::run();
 }
 
 /// What Claude is asked: the draft said again better, its tone kept, in the light of the conversation's
 /// last messages (who wrote each, None for the user), given as what was said, not as orders.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", windows)), allow(dead_code))]
 fn prompt(draft: &str, messages: &[(Option<String>, String)], redo: Option<(&str, &str)>) -> String {
     let mut context = String::new();
     if !messages.is_empty() {
@@ -159,7 +159,7 @@ fn prompt(draft: &str, messages: &[(Option<String>, String)], redo: Option<(&str
     )
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod common;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -169,9 +169,14 @@ mod mac;
 use linux as os;
 #[cfg(target_os = "macos")]
 use mac as os;
+// `win`, not `windows`: that would hide the `windows` crate here.
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+use win as os;
 
 /// The button and its panel, the same on every system (`os` reading and driving Teams).
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod overlay {
     use std::io::BufRead;
     use std::sync::{Arc, Mutex};
@@ -247,10 +252,18 @@ mod overlay {
             .with_resizable(false)
             .with_position(Pos2::new(0.0, 0.0))
             .with_inner_size(Vec2::splat(1.0));
-        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        #[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_mut))]
         let mut options = eframe::NativeOptions { viewport, persist_window: false, ..Default::default() };
         #[cfg(target_os = "macos")]
         os::options(&mut options);
+        // Windows: a transparent window needs DirectX 12 through DirectComposition (as the desktop effects).
+        #[cfg(windows)]
+        {
+            let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+            setup.instance_descriptor.backend_options.dx12.presentation_system = eframe::wgpu::Dx12SwapchainKind::DxgiFromVisual;
+            options.wgpu_options.wgpu_setup = setup.into();
+        }
         let result = eframe::run_native(
             "ronnie-teams-claude",
             options,
