@@ -1,7 +1,9 @@
-// Ronnie — Claude pour Outlook: Claude's button in Outlook's mail editor. Clicked, Claude (through Ronnie,
-// with the user's Claude Code account) rephrases the draft in its tone, in the light of the mail answered;
-// an instruction typed under its version has it reworked. "Replace" puts it in place of the draft (the
-// signature and the quoted mail kept, Ctrl Z takes it back). Nothing is ever sent: the user sends.
+// Ronnie — Claude pour Outlook: Claude's button in Outlook's mail editor. Clicked, a panel asks what to do
+// (anything: answer this mail saying…, rephrase my draft, sum the thread up…); Claude (through Ronnie, with
+// the user's Claude Code account) answers with the conversation shown in Outlook, the subject and the
+// draft as context. Its version can be changed, reworked with another instruction, then put in place of the
+// draft (the signature and the quoted mail kept, the editor's undo takes it back). Nothing is ever sent:
+// the user sends.
 (() => {
   "use strict";
   if (window.__ronnieClaude) return;
@@ -10,32 +12,50 @@
   const FR = !(navigator.language || "fr").toLowerCase().startsWith("en");
   const T = FR
     ? {
-        tip: "Reformuler avec Claude",
+        tip: "Demander à Claude",
+        ask: "Que doit faire Claude ? Ex. : réponds-lui que je suis d'accord pour jeudi, en restant poli…",
+        send: "Demander",
+        rephrase: "Reformuler mon brouillon",
+        fix: "Corriger les fautes",
+        rephraseAsk: "Reformule mon brouillon pour qu'il soit plus clair et plus fluide, en gardant son ton.",
+        fixAsk: "Corrige seulement les fautes de mon brouillon (orthographe, grammaire, accents, ponctuation), sans rien changer d'autre.",
+        noDraft: "Pas de brouillon : Claude écrira le mail.",
+        draftSeen: (n) => `Brouillon lu (${n} caractères).`,
+        threadSeen: (n) => (n ? `${n} mail${n > 1 ? "s" : ""} du fil lu${n > 1 ? "s" : ""}.` : "Aucun mail précédent trouvé."),
         thinking: "Claude réfléchit…",
         replace: "Remplacer le brouillon",
+        put: "Mettre dans le mail",
         copy: "Copier",
         redo: "Relancer",
-        hint: "Demande autre chose à Claude : plus court, plus formel, en anglais…",
-        empty: "Le brouillon est vide : écris-le d'abord.",
+        hint: "Autre chose ? Plus court, plus formel, en anglais…",
         failed: "Claude n'a pas répondu. Claude Code est-il installé et connecté ?",
         host: "Ronnie n'est pas prêt : active « Bouton Claude dans Outlook » dans Ronnie (Paramètres › Claude Code), puis recharge la page.",
         reload: "L'extension a été mise à jour : recharge la page.",
       }
     : {
-        tip: "Rephrase with Claude",
+        tip: "Ask Claude",
+        ask: "What should Claude do? E.g.: answer that Thursday suits me, politely…",
+        send: "Ask",
+        rephrase: "Rephrase my draft",
+        fix: "Fix the mistakes",
+        rephraseAsk: "Rephrase my draft to make it clearer and smoother, keeping its tone.",
+        fixAsk: "Only fix my draft's mistakes (spelling, grammar, punctuation), changing nothing else.",
+        noDraft: "No draft: Claude will write the mail.",
+        draftSeen: (n) => `Draft read (${n} characters).`,
+        threadSeen: (n) => (n ? `${n} mail${n > 1 ? "s" : ""} of the thread read.` : "No earlier mail found."),
         thinking: "Claude is thinking…",
         replace: "Replace the draft",
+        put: "Put in the mail",
         copy: "Copy",
         redo: "Again",
-        hint: "Ask Claude for more: shorter, more formal, in French…",
-        empty: "The draft is empty: write it first.",
+        hint: "Anything else? Shorter, more formal, in French…",
         failed: "Claude didn't answer. Is Claude Code installed and signed in?",
         host: "Ronnie isn't ready: turn on « Claude button in Outlook » in Ronnie (Settings › Claude Code), then reload the page.",
         reload: "The extension was updated: reload the page.",
       };
 
   // Where the user's own text ends in the editor: the signature, the quoted mail of a reply or a forward.
-  const ENDS = '[id^="Signature"], [id*="divRplyFwdMsg"], [id^="appendonsend"], [id*="x_divRplyFwdMsg"]';
+  const ENDS = '[id^="Signature"], [id*="divRplyFwdMsg"], [id^="appendonsend"], [id*="x_divRplyFwdMsg"], [id^="mail-editor-reference-message"]';
   const EDITORS = 'div[contenteditable="true"][role="textbox"], div[contenteditable="true"][aria-multiline="true"]';
 
   /** The mail editors on screen. */
@@ -46,66 +66,81 @@
     });
   }
 
-  /** The editor's own part: in which container it ends, and before which of its children (none: all). */
+  /** A range's text as shown (its lines kept), read off screen. */
+  function rangeText(range) {
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;left:-99999px;top:0;width:800px;white-space:pre-wrap;";
+    box.appendChild(range.cloneContents());
+    document.body.appendChild(box);
+    const text = box.innerText;
+    box.remove();
+    return text.replace(/ /g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /**
+   * The user's own part of the editor: from its start to the first end (signature, quoted mail) that
+   * leaves some text before it; the whole editor without one.
+   */
   function bounds(editor) {
-    const end = editor.querySelector(ENDS);
-    if (!end) return { container: editor, cut: editor.childNodes.length, ended: false };
-    // Down the wrappers that hold everything, to the level where the text and the end are siblings.
-    let container = editor;
-    for (;;) {
-      const kids = [...container.children];
-      if (kids.length === 1 && kids[0] !== end && kids[0].contains(end)) container = kids[0];
-      else break;
+    const ends = [...editor.querySelectorAll(ENDS)];
+    const split = (end) => {
+      const before = document.createRange();
+      before.setStart(editor, 0);
+      before.setEndBefore(end);
+      const after = document.createRange();
+      after.setStartBefore(end);
+      after.setEnd(editor, editor.childNodes.length);
+      return { mine: before, rest: after, ended: true };
+    };
+    for (const end of ends) {
+      const parts = split(end);
+      if (rangeText(parts.mine)) return parts;
     }
-    let top = end;
-    while (top.parentNode !== container) top = top.parentNode;
-    return { container, cut: [...container.childNodes].indexOf(top), ended: true };
+    // Nothing written yet above the signature or the quoted mail: an empty place before them.
+    if (ends.length) return split(ends[0]);
+    const whole = document.createRange();
+    whole.selectNodeContents(editor);
+    return { mine: whole, rest: null, ended: false };
   }
 
-  const textOf = (nodes) =>
-    nodes
-      .map((n) => (n.nodeType === Node.ELEMENT_NODE ? n.innerText : n.textContent))
-      .join("\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-
-  /** The draft (the user's own text) and what follows it (the quoted mail). */
+  /** The draft (the user's own text) and what follows it (signature, quoted mail). */
   function parts(editor) {
-    const { container, cut } = bounds(editor);
-    const kids = [...container.childNodes];
-    return { draft: textOf(kids.slice(0, cut)), quoted: textOf(kids.slice(cut)) };
+    const { mine, rest } = bounds(editor);
+    return { draft: rangeText(mine), quoted: rest ? rangeText(rest) : "" };
   }
 
-  /** The subject and the mails around (the one read, the quoted one), for Claude to understand the draft. */
-  function context(editor) {
-    const subject = document.querySelector(
-      'input[aria-label="Objet"], input[aria-label="Ajouter un objet"], input[aria-label="Add a subject"], input[aria-label="Subject"]',
-    );
-    const thread = [];
-    for (const body of document.querySelectorAll('[aria-label="Corps du message"], [aria-label="Message body"]')) {
-      if (body === editor || body.contains(editor) || editor.contains(body) || body.isContentEditable) continue;
-      const text = body.innerText.trim();
-      if (text) thread.push(text.slice(0, 3000));
+  /** The conversation shown in Outlook (the reading pane: the mails before, with who and when), without the editor. */
+  function conversation(editor) {
+    const pane = document.querySelector('[aria-label="Volet de lecture"], [aria-label="Reading Pane"], [aria-label="Reading pane"]') || document.querySelector('[role="main"]');
+    const texts = [];
+    if (pane && !editor.contains(pane)) {
+      let text = pane.innerText;
+      const own = editor.innerText;
+      if (own && own.trim()) text = text.replace(own, "");
+      text = text.replace(/ /g, " ").replace(/\n{3,}/g, "\n\n").trim();
+      if (text) texts.push(text.slice(0, 12000));
     }
     const { quoted } = parts(editor);
-    if (quoted) thread.push(quoted.slice(0, 4000));
-    return { subject: subject ? subject.value : "", thread: thread.slice(-4) };
+    if (quoted && !texts.some((t) => t.includes(quoted.slice(0, 200)))) texts.push(quoted.slice(0, 6000));
+    return texts;
+  }
+
+  function subjectOf() {
+    const input = document.querySelector('input[aria-label="Objet"], input[aria-label="Ajouter un objet"], input[aria-label="Add a subject"], input[aria-label="Subject"]');
+    return input ? input.value : "";
   }
 
   /** `text` in place of the draft, as typed (Outlook's undo takes it back). */
   function replace(editor, text) {
-    const { container, cut, ended } = bounds(editor);
+    const { mine, ended } = bounds(editor);
     editor.focus();
-    const range = document.createRange();
-    range.setStart(container, 0);
-    range.setEnd(container, cut);
     const selection = getSelection();
     selection.removeAllRanges();
-    selection.addRange(range);
+    selection.addRange(mine);
     const typed = ended ? text + "\n\n" : text;
     if (!document.execCommand("insertText", false, typed)) {
-      range.deleteContents();
-      range.insertNode(document.createTextNode(typed));
+      mine.deleteContents();
+      mine.insertNode(document.createTextNode(typed));
       editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
     }
   }
@@ -133,26 +168,29 @@
         background: transparent; display: none; align-items: center; justify-content: center; }
       .button:hover { background: rgba(127, 127, 127, 0.18); }
       .button img { width: 17px; height: 17px; display: block; }
-      .panel { position: fixed; width: 420px; display: none; flex-direction: column; gap: 10px; padding: 12px;
+      .panel { position: fixed; width: 460px; display: none; flex-direction: column; gap: 10px; padding: 12px;
         border-radius: 10px; border: 1px solid rgba(217, 119, 87, 0.55); background: #fff; color: #1f1f1f;
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22); font-size: 13.5px; }
       .head { display: flex; align-items: center; justify-content: space-between; }
       .title { color: #d97757; font-weight: 600; font-size: 15px; }
       .close { border: none; background: none; font-size: 18px; cursor: pointer; color: inherit; line-height: 1; padding: 0 4px; }
-      .muted { color: #6b6b6b; }
+      .muted { color: #6b6b6b; font-size: 12.5px; }
       .waiting { display: flex; align-items: center; gap: 8px; }
       .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(217, 119, 87, 0.3); border-top-color: #d97757;
         animation: spin 0.8s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
       textarea, input { width: 100%; border: 1px solid rgba(127, 127, 127, 0.35); border-radius: 6px; padding: 7px 8px;
         font-size: 13.5px; background: transparent; color: inherit; }
-      textarea { min-height: 120px; max-height: 260px; resize: vertical; }
-      .row { display: flex; gap: 8px; align-items: center; }
+      textarea { resize: vertical; }
+      .request { min-height: 64px; max-height: 200px; }
+      .answer { min-height: 140px; max-height: 300px; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
       .pill { border: 1px solid rgba(127, 127, 127, 0.35); background: transparent; color: inherit; border-radius: 6px;
         padding: 6px 10px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
       .pill:hover { background: rgba(127, 127, 127, 0.12); }
       .main { background: #d97757; border-color: #d97757; color: #fff; }
       .main:hover { background: #c4684a; }
+      .grow { flex: 1; min-width: 0; }
       @media (prefers-color-scheme: dark) {
         .panel { background: #1f1f1f; color: #eee; }
         .muted { color: #a8a8a8; }
@@ -170,7 +208,7 @@
   document.documentElement.appendChild(host);
 
   let current = null; // The editor the button is on.
-  let open = null; // The panel's editor, its draft, its version, while open.
+  let open = null; // While the panel is open: its editor, the draft, the thread, Claude's version.
 
   function place() {
     if (!document.documentElement.contains(host)) document.documentElement.appendChild(host);
@@ -192,8 +230,8 @@
     button.style.left = `${right}px`;
     button.style.top = `${top}px`;
     if (open) {
-      panel.style.left = `${Math.max(8, Math.min(right + 28 - 420, innerWidth - 428))}px`;
-      panel.style.top = `${Math.min(top + 34, innerHeight - panel.offsetHeight - 8)}px`;
+      panel.style.left = `${Math.max(8, Math.min(right + 28 - 460, innerWidth - 468))}px`;
+      panel.style.top = `${Math.max(8, Math.min(top + 34, innerHeight - panel.offsetHeight - 8))}px`;
     }
   }
 
@@ -212,12 +250,41 @@
     return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   }
 
+  /** The first view: what to ask, with what was read. */
+  function asking() {
+    const seen = `${open.draft ? T.draftSeen(open.draft.length) : T.noDraft} ${T.threadSeen(open.thread.length)}`;
+    show(`
+      <textarea class="request" placeholder="${escape(T.ask)}"></textarea>
+      <div class="row">
+        <button class="pill main send">${T.send}</button>
+        ${open.draft ? `<button class="pill rephrase">${T.rephrase}</button><button class="pill fix">${T.fix}</button>` : ""}
+      </div>
+      <div class="muted">${escape(seen)}</div>`);
+    const request = body.querySelector(".request");
+    const send = () => {
+      const said = request.value.trim();
+      if (said) run(said);
+    };
+    body.querySelector(".send").addEventListener("click", send);
+    request.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+    if (open.draft) {
+      body.querySelector(".rephrase").addEventListener("click", () => run(T.rephraseAsk));
+      body.querySelector(".fix").addEventListener("click", () => run(T.fixAsk));
+    }
+    setTimeout(() => request.focus(), 0);
+  }
+
+  /** Claude asked `instruction` (on its last version, if any). */
   async function run(instruction) {
     const state = open;
     show(`<div class="waiting"><div class="spinner"></div><span class="muted">${T.thinking}</span></div>`);
-    const { subject, thread } = context(state.editor);
-    const request = { kind: "mail", draft: state.draft, subject, thread };
-    if (instruction && state.version) Object.assign(request, { instruction, version: state.version });
+    const request = { kind: "mail", draft: state.draft, subject: subjectOf(), thread: state.thread, instruction };
+    if (state.version) request.version = state.version;
     const answer = await ask(request);
     if (open !== state) return;
     if (answer && typeof answer.text === "string" && answer.text.trim()) {
@@ -232,8 +299,8 @@
   function answered() {
     show(`
       <textarea class="answer"></textarea>
-      <div class="row"><button class="pill main replace">${T.replace}</button><button class="pill copy">${T.copy}</button></div>
-      <div class="row"><button class="pill redo">${T.redo}</button><input class="instruction" placeholder="${escape(T.hint)}"></div>`);
+      <div class="row"><button class="pill main replace">${open.draft ? T.replace : T.put}</button><button class="pill copy">${T.copy}</button></div>
+      <div class="row"><input class="instruction grow" placeholder="${escape(T.hint)}"><button class="pill redo">${T.redo}</button></div>`);
     const answer = body.querySelector(".answer");
     const instruction = body.querySelector(".instruction");
     answer.value = open.version;
@@ -263,9 +330,8 @@
     if (!current) return;
     if (open) return close();
     const { draft } = parts(current);
-    open = { editor: current, draft, version: null };
-    if (!draft) return show(`<div class="muted">${T.empty}</div>`);
-    run(null);
+    open = { editor: current, draft, thread: conversation(current), version: null };
+    asking();
   });
   root.querySelector(".close").addEventListener("click", close);
   root.addEventListener("keydown", (e) => {

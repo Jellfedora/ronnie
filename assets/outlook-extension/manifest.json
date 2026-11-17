@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ronnie — Claude pour Outlook",
   "description": "Un bouton Claude dans l'éditeur de mail d'Outlook : reformule le brouillon par Ronnie, sans jamais rien envoyer.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArLVxlcX88kulwmTV7eZE2+ea2OxHXL/kFNwApKqXYk/fSF3mQGrM9YvRqInIR9VanBwob/Wrzw4/h91C7d9kzKHzIDlvzwI3IhjNPMFHO/LKKFlTmOzrPPf/M5B00wL66CjgjuQMqNAgDSWwiTit21cxKCdivCfQWSA9rExmi+ooLBRyZMivUUTFb4wBwN1kBOI5peHlciQdJxxDXGH0so11W3JEIB1RzXi6vhAhQSiLkQlguvuA5lqNcBgJ/kSSEA2aIQoEXCdG+bF1/1F5DiHDd08oDvCLEh02yWXK9/lr2i9mtM+QGcHFIalCCAvtIn/SNhKSXM0hOulO32B7cQIDAQAB",
   "icons": {
     "48": "icon.png",
