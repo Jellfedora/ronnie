@@ -1707,19 +1707,29 @@ impl Corp {
         } else if self.debt < 10.0 && on(self, Task::Refactor) > 0 {
             moves.push((Task::Refactor, Task::Contracts));
         }
+        let idle = self.contracts.is_empty() && self.offers.is_empty();
         let suffering = self.products.iter().any(|p| p.version == 0 || p.bugs > 25.0);
         if !self.products.is_empty() && (suffering || on(self, Task::Products) == 0) {
             moves.push((Task::Contracts, Task::Products));
-        } else if (self.products.is_empty() && on(self, Task::Products) > 0) || (!suffering && on(self, Task::Products) > 1 && self.products.iter().all(|p| p.bugs < 5.0)) {
+        } else if (self.products.is_empty() && on(self, Task::Products) > 0) || (!suffering && !idle && on(self, Task::Products) > 1 && self.products.iter().all(|p| p.bugs < 5.0)) {
             moves.push((Task::Products, Task::Contracts));
         }
-        let idle = self.contracts.is_empty() && self.offers.is_empty();
         let makers = self.staff.iter().filter(|e| movable(e)).count();
-        if idle && on(self, Task::Contracts) > 1 {
+        let researching = TECHS.iter().any(|t| !self.has_tech(t.id));
+        if !researching {
+            // Everything researched: nobody left on it (to the products when there's nothing to deliver).
+            if on(self, Task::Research) > 0 {
+                let to = if idle && !self.products.is_empty() { Task::Products } else { Task::Contracts };
+                moves.push((Task::Research, to));
+            }
+            if idle && !self.products.is_empty() && on(self, Task::Contracts) > 1 {
+                moves.push((Task::Contracts, Task::Products));
+            }
+        } else if idle && on(self, Task::Contracts) > 1 {
             moves.push((Task::Contracts, Task::Research));
         } else if !idle && on(self, Task::Research) > (makers / 5).max(1) {
             moves.push((Task::Research, Task::Contracts));
-        } else if !idle && on(self, Task::Research) == 0 && makers >= 4 && TECHS.iter().any(|t| !self.has_tech(t.id)) {
+        } else if !idle && on(self, Task::Research) == 0 && makers >= 4 {
             moves.push((Task::Contracts, Task::Research));
         }
         for (from, to) in moves {
@@ -2742,6 +2752,23 @@ mod tests {
 
     fn corp() -> Corp {
         Corp::new(1_000_000, 42, Legacy::default())
+    }
+
+    #[test]
+    fn nobody_sent_to_research_once_everything_is_researched() {
+        let mut c = corp();
+        c.techs = TECHS.iter().map(|t| t.id.to_owned()).collect();
+        for k in 0..6 {
+            let mut e = c.make_employee("fullstack", 1);
+            e.task = if k < 2 { Task::Research } else { Task::Contracts };
+            c.staff.push(e);
+        }
+        c.contracts.clear();
+        c.offers.clear();
+        for _ in 0..10 {
+            c.auto_tasks();
+        }
+        assert!(c.staff.iter().all(|e| e.task != Task::Research));
     }
 
     #[test]
