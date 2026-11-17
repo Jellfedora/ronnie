@@ -1103,7 +1103,7 @@ mod os {
         fn CFArrayGetCount(array: *const c_void) -> isize;
         fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
         fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
-        fn CFNumberGetValue(number: *const c_void, kind: i32, out: *mut c_void) -> bool;
+        fn CFNumberGetValue(number: *const c_void, kind: isize, out: *mut c_void) -> bool;
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]

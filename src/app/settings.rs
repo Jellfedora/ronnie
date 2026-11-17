@@ -1365,6 +1365,12 @@ impl App {
                     self.claude_error = done.err();
                 }
             });
+            if super::assist::supported() {
+                divider(ui, theme);
+                setting_row(ui, theme, t.teams_claude_row, Some(t.teams_claude_desc), |ui| {
+                    toggle(ui, theme, &mut picked.teams_claude);
+                });
+            }
         });
         card(ui, theme, Some(t.recap_section), |ui| {
             setting_row(ui, theme, t.recap_row, Some(t.recap_desc), |ui| {

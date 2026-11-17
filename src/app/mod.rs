@@ -21,6 +21,7 @@ mod backup;
 mod bell;
 mod bigtext;
 mod desktop;
+mod assist;
 mod sshclaude;
 mod complete;
 mod blob;
@@ -502,6 +503,7 @@ pub struct App {
     ssh_claude: sshclaude::Remote,
     /// The rewards over the whole screen, in a process of their own.
     desktop: desktop::Desktop,
+    assist: assist::Assist,
     /// The notices not seen yet, for every window (see `bell`), the last one's id, and the window
     /// listing them.
     notices: Vec<bell::Notice>,
@@ -1368,6 +1370,7 @@ impl App {
             claude_typing: Vec::new(),
             ssh_claude: Default::default(),
             desktop: Default::default(),
+            assist: Default::default(),
             notices: Vec::new(),
             next_notice: 0,
             bell_open: None,
@@ -5791,6 +5794,11 @@ pub fn run_desktop_fx() {
     desktop::run();
 }
 
+/// `ronnie teams-claude`: the Claude button over Teams (started by Ronnie, see `assist`).
+pub fn run_teams_claude() {
+    assist::run();
+}
+
 impl eframe::App for App {
     // Also called while the window is minimized or hidden, when `ui` isn't: that's when commands done and
     // Claude done are worth telling.
@@ -5812,6 +5820,7 @@ impl eframe::App for App {
         self.tycoon_tick(ctx);
         self.notesync_tick(ctx);
         self.desktop_tick();
+        self.assist_tick();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

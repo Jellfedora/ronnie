@@ -269,6 +269,11 @@ fn main() -> eframe::Result {
         app::run_desktop_fx();
         return Ok(());
     }
+    // The Claude button over Teams (started by Ronnie).
+    if std::env::args().nth(1).as_deref() == Some("teams-claude") {
+        app::run_teams_claude();
+        return Ok(());
+    }
     // A note for the Ronnie running (Claude adds them so).
     if std::env::args().nth(1).as_deref() == Some("note") {
         if let Err(e) = claude::run_note() {
