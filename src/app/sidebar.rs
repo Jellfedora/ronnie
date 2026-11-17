@@ -1898,6 +1898,7 @@ impl App {
             // Wall Street: the towers at night and the ticker over them, the company's valuation first,
             // just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 110.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
             let now = ui.input(|i| i.time);
             let fr = self.config.settings.language == crate::i18n::Lang::Fr;
             let valuation = self.tycoon.live.as_ref().or(self.config.settings.tycoon.as_ref()).map(|c| crate::tycoon::money(c.valuation(), fr));
