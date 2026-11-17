@@ -7,6 +7,12 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 ### Nouveautés
 
 - **Lundi matin, la pause à plusieurs** : Échap met la partie en pause pour toute la salle, et seul celui qui l'a mise la lève. Au bout d'une minute, les collègues peuvent l'exclure (sa partie compte jusque-là) et la partie reprend sans lui. Demande floor 0.17.1.
+- **Lundi matin, le tchat** : dans la salle d'attente, et en partie avec les collègues (Entrée pour écrire, les messages s'effacent après quelques secondes ; toujours ouvert pour qui regarde).
+- **Lundi matin, prêt pour la vague** : pendant la pause café, un encart en bas du terrain rappelle qu'Espace te met prêt pour la vague suivante, avec combien sont prêts et dans combien de temps elle part.
+
+### Corrections
+
+- Lundi matin : si le serveur redémarre pendant une partie, Ronnie ne reste plus figé sur « Connexion perdue » : il revient à l'accueil et dit que la partie a été perdue.
 
 ## [1.3.0] - 2026-11-17
 

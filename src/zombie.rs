@@ -612,6 +612,8 @@ pub struct News {
     pub over: Option<Over>,
     /// An error floor sent that doesn't close (a room full, gone...).
     pub error: Option<String>,
+    /// Back after a lost connection, the game under way is gone (floor restarted meanwhile).
+    pub lost: bool,
 }
 
 #[derive(Deserialize)]
@@ -731,7 +733,7 @@ pub struct Online {
     pub frame: Option<Frame>,
     /// The frame before (to move things smoothly between the two).
     pub before: Option<Frame>,
-    pub chat: Vec<(String, String)>,
+    pub chat: Vec<crate::blob::Said>,
     /// A room to join as soon as connected (the host's pseudo, after their invitation).
     pub join_host: Option<String>,
     pub career: Option<Career>,
@@ -821,6 +823,11 @@ impl Online {
     /// To watch the game under way in room `id` (not playing in it).
     pub fn watch(&self, id: u32) {
         self.send(json!({ "t": "watch", "id": id }));
+    }
+
+    /// A message to the room's chat (players and colleagues watching).
+    pub fn say(&self, text: &str) {
+        self.send(json!({ "t": "say", "text": text }));
     }
 
     /// The title worn (an achievement won), or none.
@@ -964,6 +971,14 @@ impl Online {
             Wire::Profile(career) => self.career = Some(career),
             Wire::Perks { list } => self.perks = list,
             Wire::Welcome { map, floors, shop } => {
+                // Back after a lost connection: floor sends the room again if it still has it (right
+                // after the welcome). Restarted meanwhile, its rooms are gone and it says nothing more:
+                // without this, the game stayed on the screen, frozen.
+                if let Some(room) = self.room.take() {
+                    news.lost |= room.started && !room.watching;
+                    self.frame = None;
+                    self.before = None;
+                }
                 self.floors = floors.into_iter().map(|f| Map { w: map.w, h: map.h, wall: map.wall, ..f }).collect();
                 self.map = Some(map);
                 self.prices = shop;
@@ -1076,7 +1091,7 @@ impl Online {
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
             Wire::Chat { from, text } => {
-                self.chat.push((from, text));
+                self.chat.push(crate::blob::Said { from, text, at: Instant::now() });
                 if self.chat.len() > CHAT {
                     self.chat.remove(0);
                 }
@@ -1226,6 +1241,25 @@ mod tests {
         online.take(serde_json::from_str(text).unwrap(), Instant::now(), &mut news, &mut closed);
         assert!(closed.is_none());
         news
+    }
+
+    #[test]
+    fn floor_restarted_the_game_is_gone() {
+        let mut online = Online::default();
+        let welcome = r#"{"t":"welcome","map":{"w":1600,"h":1000,"wall":20,"desks":[],"coffee":{"x":90,"y":500},"doors":[]},"floors":[]}"#;
+        take(&mut online, welcome);
+        take(&mut online, r#"{"t":"room","id":3,"host":"Dan","players":[[1,"Dan",0],[2,"Jo",1]],"started":true}"#);
+        take(&mut online, r#"{"t":"s","ph":0,"w":4,"tl":5,"zl":0,"tk":0,"p":[],"z":[],"b":[]}"#);
+        assert!(online.playing() && online.frame.is_some());
+        // Back, and floor no longer has the room: back to the lobby, told so.
+        let news = take(&mut online, welcome);
+        assert!(news.lost && !online.playing() && online.frame.is_none());
+        // Back, and floor still has it: it sends it again right after.
+        take(&mut online, r#"{"t":"room","id":3,"host":"Dan","players":[[1,"Dan",0],[2,"Jo",1]],"started":true}"#);
+        assert!(online.playing());
+        online.chat.clear();
+        take(&mut online, r#"{"t":"chat","from":"Jo","text":"go"}"#);
+        assert_eq!(online.chat[0].text, "go");
     }
 
     #[test]

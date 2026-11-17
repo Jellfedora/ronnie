@@ -60,6 +60,8 @@ pub(super) struct Monday {
     section: Option<Card>,
     /// A zombie of the bestiary opened (its place in BESTIARY).
     beast: Option<usize>,
+    /// The room's chat: always there while waiting, opened by Enter in a game.
+    chat: super::chat::Chat,
 }
 
 /// The achievements, in floor's order: each gives the title of the same place.
@@ -265,6 +267,12 @@ impl App {
         let me = pseudo.and_then(|p| self.monday.online.me(p));
         if let Some(error) = news.error {
             self.monday.error = Some((error, now));
+        }
+        if news.lost {
+            self.monday.menu = false;
+            self.monday.ready = false;
+            // (Shown twice as long as an error.)
+            self.monday.error = Some((t.monday_lost.to_owned(), now + 3.0));
         }
         for h in news.happened {
             match h {
@@ -1110,6 +1118,23 @@ impl App {
                 self.versus.invite_to(&name, "lundi-matin");
             }
         }
+        // The room's chat: wide, under the colleagues to invite (or in their place); narrow, under
+        // them, or under the card.
+        let invited = area.height() > 80.0 && room.players.len() < 4;
+        let chat = if wide {
+            let top = if invited { area.max.y + 14.0 } else { body.min.y };
+            Rect::from_min_max(Pos2::new(card.max.x + 32.0, top), Pos2::new(x0 + width, card.max.y.max(top + 140.0).min(body.max.y)))
+        } else {
+            let top = if invited { area.max.y + 14.0 } else { chat_y };
+            Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x0 + width, (top + 220.0).min(body.max.y)))
+        };
+        if chat.height() >= 110.0 {
+            let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
+            let lines: Vec<super::chat::Line> = self.monday.online.chat.iter().map(|s| super::chat::Line { from: &s.from, text: &s.text, mine: pseudo == Some(s.from.as_str()), age: None }).collect();
+            if let Some(text) = self.monday.chat.ui(ui, chat, &lines, true, true, "monday-room", &theme, t) {
+                self.monday.online.say(&text);
+            }
+        }
     }
 
     /// The game: the office as big as the page lets it, everyone in it, the counters around.
@@ -1300,7 +1325,8 @@ impl App {
         // (An older floor doesn't say who paused: alone, it's the player.)
         let mine_pause = frame.paused && (solo || (frame.paused_by != 0 && Some(frame.paused_by) == me));
         let theirs = frame.paused && !solo && frame.paused_by != 0 && Some(frame.paused_by) != me;
-        let escape = self.monday.over.is_none() && ui.input(|i| i.key_pressed(Key::Escape));
+        // (Escape while typing only closes the chat.)
+        let escape = self.monday.over.is_none() && !self.monday.chat.typing && ui.input(|i| i.key_pressed(Key::Escape));
         // Watching a colleague's game: nothing to steer; Escape, or the button, to stop.
         let watching = self.monday.online.watching();
         if watching {
@@ -1454,10 +1480,68 @@ impl App {
         if let Status::Reconnecting(_) = self.monday.online.status {
             paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 30.0), t.monday_reconnecting, theme.accent, &theme);
         }
+        if let (false, false, Some(p)) = (frame.wave_on, self.monday.menu, mine.filter(|p| p.state == State::Up)) {
+            self.monday_ready_call(ui, field, &frame, p.ready, now);
+        }
+        if !self.monday.menu {
+            self.monday_chat_in_game(ui, field, watching);
+        }
         if self.monday.menu {
             self.monday_menu(ui, field, solo, now);
         } else if theirs && !watching {
             self.monday_paused_by(ui, field, &frame);
+        }
+    }
+
+    /// The coffee break: Space to be ready for the next wave, in plain sight at the bottom of the
+    /// field (the key drawn, beating until pressed), how many are ready, when the wave starts anyway.
+    fn monday_ready_call(&self, ui: &Ui, field: Rect, frame: &Frame, ready: bool, now: f64) {
+        let t = self.t();
+        let theme = &self.theme;
+        let hud = ui.painter_at(field);
+        let up: Vec<&crate::zombie::Player> = frame.players.iter().filter(|p| p.state == State::Up).collect();
+        let done = up.iter().filter(|p| p.ready).count();
+        let green = theme.ansi[2];
+        let card = Rect::from_center_size(Pos2::new(field.center().x, field.max.y - 52.0), Vec2::new(360.0, 70.0));
+        hud.rect_filled(card, 14.0, Color32::from_rgba_unmultiplied(18, 20, 26, 225));
+        let beat = if ready { 1.0 } else { (0.6 + 0.4 * (now * 4.0).sin().abs()) as f32 };
+        let edge = if ready { green } else { theme.accent };
+        hud.rect_stroke(card, 14.0, Stroke::new(1.5, edge.gamma_multiply(beat)), egui::StrokeKind::Inside);
+        // The key: a space bar, pressed down once ready.
+        let key = Rect::from_min_size(card.min + Vec2::new(16.0, 18.0), Vec2::new(96.0, 34.0));
+        let sink = if ready { 3.0 } else { 0.0 };
+        hud.rect_filled(key.translate(Vec2::new(0.0, 4.0)), 7.0, Color32::from_black_alpha(160));
+        let top = key.translate(Vec2::new(0.0, sink));
+        hud.rect_filled(top, 7.0, if ready { green } else { Color32::from_rgb(236, 238, 244) });
+        hud.rect_stroke(top, 7.0, Stroke::new(1.0, Color32::from_black_alpha(60)), egui::StrokeKind::Inside);
+        hud.text(top.center(), Align2::CENTER_CENTER, if ready { "✓" } else { t.monday_ready_key }, FontId::monospace(if ready { 18.0 } else { 13.0 }), Color32::from_rgb(24, 26, 32));
+        let x = key.max.x + 16.0;
+        let title = if ready { t.monday_ready_done.to_owned() } else { t.monday_ready_call.replace("{n}", &(frame.wave + 1).to_string()) };
+        hud.text(Pos2::new(x, card.min.y + 25.0), Align2::LEFT_CENTER, title, FontId::proportional(16.0), if ready { green } else { Color32::WHITE });
+        let count = t.monday_ready_count.replace("{k}", &done.to_string()).replace("{n}", &up.len().to_string()).replace("{s}", &frame.break_left.to_string());
+        hud.text(Pos2::new(x, card.min.y + 48.0), Align2::LEFT_CENTER, count, FontId::proportional(12.5), theme.text_muted);
+    }
+
+    /// The chat during a game, under the wave's counter: the last messages a moment, the field opened
+    /// by Enter (closed once sent, back to the game); always there while watching. With colleagues only.
+    fn monday_chat_in_game(&mut self, ui: &mut Ui, field: Rect, watching: bool) {
+        let together = self.monday.online.room.as_ref().is_some_and(|r| r.players.len() >= 2 || r.spectators > 0);
+        if !together && self.monday.online.chat.is_empty() {
+            return;
+        }
+        let t = self.t();
+        let theme = self.theme.clone();
+        if !watching && !self.monday.chat.typing && ui.memory(|m| m.focused().is_none()) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+            self.monday.chat.open();
+        }
+        let area = Rect::from_min_size(field.min + Vec2::new(12.0, 82.0), Vec2::new((field.width() * 0.3).clamp(220.0, 320.0), 200.0f32.min(field.height() - 260.0).max(90.0)));
+        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
+        let lines: Vec<super::chat::Line> = self.monday.online.chat.iter().map(|s| super::chat::Line { from: &s.from, text: &s.text, mine: pseudo == Some(s.from.as_str()), age: Some(s.at.elapsed().as_secs_f32()) }).collect();
+        if let Some(text) = self.monday.chat.ui(ui, area, &lines, watching, watching, "monday", &theme, t) {
+            self.monday.online.say(&text);
+        }
+        if !watching && !self.monday.chat.typing {
+            ui.painter().text(Pos2::new(area.min.x + 2.0, area.max.y + 10.0), Align2::LEFT_CENTER, t.chat_open, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.7));
         }
     }
 
