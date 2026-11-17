@@ -2335,7 +2335,7 @@ impl App {
                                     Some(super::unlocks::Reward::Matheo) => vec![(t.desktop_matheo, &mut fx.matheo, None)],
                                     Some(super::unlocks::Reward::Theme(crate::theme::HYPERSPACE_THEME)) => vec![(t.desktop_saber, &mut fx.saber, None), (t.desktop_droid, &mut fx.droid, Some(&mut every.droid))],
                                     Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)) => vec![(t.desktop_wand, &mut fx.wand, None), (t.desktop_elf, &mut fx.elf, Some(&mut every.elf))],
-                                    Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword, None)],
+                                    Some(super::unlocks::Reward::Theme(crate::theme::THRONES_THEME)) => vec![(t.desktop_sword, &mut fx.sword, None), (t.desktop_wolf, &mut fx.wolf, Some(&mut every.wolf))],
                                     _ => vec![],
                                 };
                                 let mut pointer = None;

@@ -178,6 +178,8 @@ pub(super) struct TalkUi {
     shake: Option<(Instant, Option<Pos2>)>,
     /// The pig dancing (pig.rs): since when, who sent it.
     pub(super) pig: Option<(Instant, String)>,
+    /// Hodor holding the door (westeros.rs): since when, who sent him.
+    pub(super) hodor: Option<(Instant, String)>,
     /// Someone's face shown large (their id).
     avatar_open: Option<String>,
     /// The conversation whose files are shown, all of them.
@@ -228,6 +230,8 @@ enum HeadIcon {
     Media,
     Wizz,
     Pig,
+    /// Hodor (Game of Thrones).
+    Hodor,
     /// Lundi matin's bite.
     Bite,
     Pencil,
@@ -257,6 +261,7 @@ fn paint_head_icon(painter: &egui::Painter, c: Pos2, icon: HeadIcon, color: Colo
             painter.add(egui::Shape::closed_line(bolt, stroke));
         }
         HeadIcon::Pig => super::pig::paint_pig_icon(painter, c, color),
+        HeadIcon::Hodor => super::westeros::paint_hodor_icon(painter, c, color),
         HeadIcon::Bite => {
             // Teeth: two rows of points.
             for (y, dir) in [(-3.0, 1.0), (3.0, -1.0)] {
@@ -464,6 +469,7 @@ fn event_text(t: &Strings, m: &Message) -> String {
         Some("icon") => t.talk_event_icon,
         Some("wizz") => t.talk_event_wizz,
         Some("pig") => t.talk_event_pig,
+        Some("hodor") => t.talk_event_hodor,
         Some("bite") => t.talk_event_bite,
         _ => "{a}",
     };
@@ -536,7 +542,7 @@ impl App {
         }
         // A wizz: told of, and the window shakes.
         // (One's own shakes one's window too, as it did on MSN, but isn't told of.)
-        // Busy: the others' wizz and pig don't come (nor bring Ronnie to the front).
+        // Busy: the others' wizz, pig and Hodor don't come (nor bring Ronnie to the front).
         let busy = self.talk.presence() == Presence::Busy;
         for (room, m) in &news.wizzed {
             let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
@@ -579,25 +585,18 @@ impl App {
         // The dancing pig: as a wizz, Ronnie brought to the front, the conversation shown; it dances
         // on everyone's screen, the sender's too.
         for (room, m) in &news.pigged {
-            let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
-            if busy && !mine {
-                continue;
+            if let Some(shown) = self.talk_summoned(ctx, focused, busy, room, m, t.talk_pigged) {
+                self.talk_ui.pig = Some(shown);
             }
-            let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
-            let mut wait = Duration::ZERO;
-            if !mine {
-                self.talk_notify(ctx, focused, room.clone(), t.talk_pigged.replace("{n}", &who), String::new());
-                if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    wait = Duration::from_millis(600);
-                }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                self.talk_ui.room = Some(room.clone());
-                self.open_talk_page();
-            }
-            self.talk_ui.pig = Some((Instant::now() + wait, who));
         }
         self.talk_pig(ctx);
+        // Hodor: as the pig, holding the door instead.
+        for (room, m) in &news.hodored {
+            if let Some(shown) = self.talk_summoned(ctx, focused, busy, room, m, t.talk_hodored) {
+                self.talk_ui.hodor = Some(shown);
+            }
+        }
+        self.talk_hodor(ctx);
         // Someone left a group: told of, with those still in it.
         for (room, m) in &news.departed {
             let me = self.talk.me.as_ref().map_or("", |m| m.id.as_str());
@@ -629,6 +628,29 @@ impl App {
     /// why not, or when the next one may go.
     fn send_wizz(&mut self, room: &str) {
         self.talk.wizz(room);
+    }
+
+    /// The pig or Hodor come to conversation `room` (message `m`): from someone else (and not busy), told
+    /// of with `said`, Ronnie brought to the front, the conversation shown. When to show it (a moment
+    /// later, out of the task bar), who sent it; None, not shown.
+    fn talk_summoned(&mut self, ctx: &egui::Context, focused: bool, busy: bool, room: &str, m: &Message, said: &str) -> Option<(Instant, String)> {
+        let mine = self.talk.me.as_ref().is_some_and(|me| me.id == m.from);
+        if busy && !mine {
+            return None;
+        }
+        let who = self.talk.name_of(&m.from).or_else(|| m.name.clone()).unwrap_or_else(|| "?".into());
+        let mut wait = Duration::ZERO;
+        if !mine {
+            self.talk_notify(ctx, focused, room.to_owned(), said.replace("{n}", &who), String::new());
+            if ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                wait = Duration::from_millis(600);
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.talk_ui.room = Some(room.to_owned());
+            self.open_talk_page();
+        }
+        Some((Instant::now() + wait, who))
     }
 
     /// The dancing pig sent: floor checks it is unlocked (a Backstage game of 1000 points and more with
@@ -1114,6 +1136,10 @@ impl App {
             if button(HeadIcon::Pig, t.talk_pig) {
                 self.send_pig(&room.id);
             }
+            // Hodor: floor checks it is unlocked (three Pause Café levels with this account).
+            if button(HeadIcon::Hodor, t.talk_hodor) {
+                self.talk.hodor(&room.id);
+            }
             // Lundi matin's bite, once won (in a build of one's own, always: floor still says if it's
             // won), to a colleague alone.
             let bite_won = self.config.settings.monday_revives >= crate::zombie::REVIVES_BITE || !crate::config::OFFICIAL;
@@ -1155,6 +1181,10 @@ impl App {
             }
             if button(HeadIcon::Pig, t.talk_pig) {
                 self.send_pig(&room.id);
+            }
+            // Hodor: floor checks it is unlocked (three Pause Café levels with this account).
+            if button(HeadIcon::Hodor, t.talk_hodor) {
+                self.talk.hodor(&room.id);
             }
             if button(HeadIcon::Pencil, t.talk_rename) {
                 self.talk_ui.renaming = Some((room.id.clone(), room.name.clone().unwrap_or_default()));
@@ -1593,7 +1623,7 @@ impl App {
                 ui.vertical_centered(|ui| {
                     // A wizz stands out: in the accent, bold.
                     let text = egui::RichText::new(format!("{}  ·  {}", event_text(t, m), clock(m.at))).size(12.0).italics();
-                    ui.label(if matches!(m.event.as_deref(), Some("wizz" | "pig" | "bite")) { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
+                    ui.label(if matches!(m.event.as_deref(), Some("wizz" | "pig" | "hodor" | "bite")) { text.strong().color(theme.accent) } else { text.color(theme.text_muted.gamma_multiply(0.85)) });
                 });
                 ui.add_space(4.0);
                 prev = None;

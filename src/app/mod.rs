@@ -64,6 +64,7 @@ mod procs;
 mod mailhtml;
 mod mines;
 mod pig;
+mod westeros;
 mod riff;
 mod runner;
 mod loading;

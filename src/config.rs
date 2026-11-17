@@ -1002,6 +1002,8 @@ pub struct DesktopFx {
     pub unicorn: bool,
     /// The pointer as a sword (Game of Thrones).
     pub sword: bool,
+    /// The white direwolf cub trotting along the foot of the screen, sitting down to howl (Game of Thrones).
+    pub wolf: bool,
     /// Lundi matin's zombies running across the screen at 10, shouting for the break.
     pub horde: bool,
     /// Gérard, Lundi matin's kind zombie, strolling along the foot of the screen.
@@ -1014,7 +1016,7 @@ pub struct DesktopFx {
 
 impl Default for DesktopFx {
     fn default() -> Self {
-        Self { trail: false, sheep: false, saber: false, droid: false, wand: false, elf: false, unicorn: false, sword: false, horde: true, gerard: true, matheo: true, everywhere: Everywhere::default() }
+        Self { trail: false, sheep: false, saber: false, droid: false, wand: false, elf: false, unicorn: false, sword: false, wolf: false, horde: true, gerard: true, matheo: true, everywhere: Everywhere::default() }
     }
 }
 
@@ -1028,11 +1030,12 @@ pub struct Everywhere {
     pub unicorn: bool,
     pub horde: bool,
     pub gerard: bool,
+    pub wolf: bool,
 }
 
 impl Default for Everywhere {
     fn default() -> Self {
-        Self { sheep: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true }
+        Self { sheep: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true, wolf: true }
     }
 }
 

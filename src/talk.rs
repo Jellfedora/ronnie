@@ -463,6 +463,8 @@ pub struct News {
     pub wizzed: Vec<(String, Message)>,
     /// The dancing pig sent to a conversation, by someone or by the player (room id, the message saying so).
     pub pigged: Vec<(String, Message)>,
+    /// Hodor sent to a conversation, by someone or by the player (room id, the message saying so).
+    pub hodored: Vec<(String, Message)>,
     /// Bitten by someone (their name), helped up by someone (their name).
     pub bitten_me: Option<String>,
     pub unbitten: Option<String>,
@@ -750,6 +752,9 @@ impl Talk {
                 if m.event.as_deref() == Some("pig") {
                     news.pigged.push((room.clone(), m.clone()));
                 }
+                if m.event.as_deref() == Some("hodor") {
+                    news.hodored.push((room.clone(), m.clone()));
+                }
                 if m.event.as_deref() == Some("bite") && !mine {
                     news.bitten_me = Some(m.name.clone().unwrap_or_default());
                 }
@@ -999,6 +1004,12 @@ impl Talk {
     /// `pig` event).
     pub fn pig(&mut self, room: &str) {
         self.send(json!({ "t": "pig", "room": room }));
+    }
+
+    /// Hodor to a conversation: he holds the door on everyone's screen (floor sends him back as a
+    /// `hodor` event).
+    pub fn hodor(&mut self, room: &str) {
+        self.send(json!({ "t": "hodor", "room": room }));
     }
 
     /// A name given to someone (None: their pseudo back), for floor to keep with the account.

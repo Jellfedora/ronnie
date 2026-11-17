@@ -1,5 +1,5 @@
 //! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the wand, the lightsaber
-//! or the sword at the pointer, the sheep, the droid, Gérard and the house-elf walking along the foot of the screen,
+//! or the sword at the pointer, the sheep, the droid, Gérard, the house-elf and the direwolf cub walking along the foot of the screen,
 //! the unicorn galloping by.
 //!
 //! They live in a process of their own (`ronnie desktop-fx`), started by Ronnie while one of them is
@@ -46,6 +46,8 @@ pub(crate) struct Fx {
     elf: bool,
     #[serde(default)]
     unicorn: bool,
+    #[serde(default)]
+    wolf: bool,
     /// The trail in bank notes (Ronnie Corp's).
     #[serde(default)]
     bills: bool,
@@ -66,7 +68,7 @@ enum Pointer {
 
 impl Fx {
     fn any(&self) -> bool {
-        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.elf || self.unicorn || self.pointer.is_some()
+        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.elf || self.unicorn || self.wolf || self.pointer.is_some()
     }
 
     /// The pointer is followed (else it needn't be): Mathéo too, to be grabbed.
@@ -128,7 +130,7 @@ impl App {
         };
         let bills = wallstreet::bills_on(s);
         let trail = d.trail && (bills || (s.cursor_trail && trail::unlocked(s.runner_best)));
-        Fx { trail, sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), bills: trail && bills, everywhere: d.everywhere, pointer, theme: s.theme.clone() }
+        Fx { trail, sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), wolf: d.wolf && (!official || crate::coffee::thrones_won(&s.coffee_bests)), bills: trail && bills, everywhere: d.everywhere, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -671,9 +673,9 @@ fn walk_screen(lap: f64, salt: u64, n: usize) -> usize {
     ((h >> 33) % n as u64) as usize
 }
 
-/// The sheep's, the droid's, Gérard's, the house-elf's and the unicorn's walks under way, and the screen
+/// The sheep's, the droid's, Gérard's, the house-elf's, the unicorn's and the direwolf's walks under way, and the screen
 /// each goes along: any of the `n` for those going everywhere, else the pointer's (`home`).
-fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 5] {
+fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 6] {
     let gerard = gerard_every();
     let every = &fx.everywhere;
     let at = |all: bool, lap: f64, salt: u64| if all { walk_screen(lap, salt, n) } else { home };
@@ -683,6 +685,7 @@ fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 5] {
         (fx.gerard && gerard_at(now).is_ok(), at(every.gerard, ((now + 95.0) / gerard).floor(), 3)),
         (fx.elf && elf_at(now).is_ok(), at(every.elf, ((now + 75.0) / ELF_EVERY).floor(), 4)),
         (fx.unicorn && wallstreet::unicorn_at(now).is_ok(), at(every.unicorn, wallstreet::unicorn_lap(now), 5)),
+        (fx.wolf && wolf_at(now).is_ok(), at(every.wolf, ((now + 40.0) / WOLF_EVERY).floor(), 6)),
     ]
 }
 
@@ -700,7 +703,7 @@ fn walkers_on(fx: &Fx, now: f64, here: usize, home: usize, n: usize) -> bool {
 /// the horde (`whole`). Something shown, and when to look again.
 #[allow(clippy::too_many_arguments)]
 fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, home: usize, n: usize, fx: &Fx) -> (bool, f32) {
-    let [sheep, droid, gerard, elf, unicorn] = walks(fx, now, home, n);
+    let [sheep, droid, gerard, elf, unicorn, wolf] = walks(fx, now, home, n);
     let (mut busy, mut next) = (false, 1.0f32);
     if fx.sheep && sheep.1 == here {
         let (shown, again) = office::sheep(painter, strip, now);
@@ -724,6 +727,11 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
     }
     if fx.unicorn && unicorn.1 == here {
         let (shown, again) = wallstreet::unicorn_run(painter, strip, now);
+        busy |= shown;
+        next = next.min(again);
+    }
+    if fx.wolf && wolf.1 == here {
+        let (shown, again) = wolf_walk(painter, strip, now);
         busy |= shown;
         next = next.min(again);
     }
@@ -776,6 +784,47 @@ fn elf_walk(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) {
         painter.rect(r, 8.0, Color32::from_rgb(0xfb, 0xf1, 0xd6), Stroke::new(1.0, wizard::GOLD), egui::StrokeKind::Inside);
         painter.add(egui::Shape::convex_polygon(vec![Pos2::new(r.center().x - 5.0, r.max.y), Pos2::new(r.center().x + 5.0, r.max.y), Pos2::new(r.center().x, r.max.y + 7.0)], Color32::from_rgb(0xfb, 0xf1, 0xd6), Stroke::NONE));
         painter.galley(r.center() - galley.size() / 2.0, galley, Color32::from_rgb(0x2e, 0x24, 0x10));
+    }
+    (true, 0.0)
+}
+
+/// How often the direwolf cub trots by, how long it takes (sitting halfway to howl).
+const WOLF_EVERY: f64 = 110.0;
+const WOLF_TROT: f64 = 16.0;
+
+/// Where the direwolf cub is in its walk at `now`: how far along (0 to 1), rightward, howling; or, out
+/// of sight, the seconds before it comes.
+fn wolf_at(now: f64) -> Result<(f64, bool, bool), f32> {
+    // Mostly not at the others' time.
+    let t = (now + 40.0) % WOLF_EVERY;
+    if t > WOLF_TROT {
+        return Err((WOLF_EVERY - t) as f32);
+    }
+    let rightward = ((now + 40.0) / WOLF_EVERY).floor() as i64 % 2 == 0;
+    // Trotting 0-6 s, sitting and howling 6-10 s, trotting 10-16 s.
+    let (along, howling) = if t < 6.0 {
+        (t / 6.0 * 0.5, false)
+    } else if t < 10.0 {
+        (0.5, true)
+    } else {
+        (0.5 + (t - 10.0) / 6.0 * 0.5, false)
+    };
+    Ok((along, rightward, howling))
+}
+
+/// The white direwolf cub trotting along `strip`, every so often, one way then the other, sitting down
+/// halfway to howl: whether it shows, and when to draw again.
+fn wolf_walk(painter: &egui::Painter, strip: Rect, now: f64) -> (bool, f32) {
+    let (along, rightward, howling) = match wolf_at(now) {
+        Ok(at) => at,
+        Err(again) => return (false, again),
+    };
+    let x = strip.min.x - 30.0 + (strip.width() + 60.0) * along as f32;
+    let x = if rightward { x } else { strip.max.x + strip.min.x - x };
+    let foot = Pos2::new(x, strip.max.y - 2.0);
+    westeros::paint_wolf(painter, foot, 34.0, if rightward { 1.0 } else { -1.0 }, (!howling).then_some(now as f32), now);
+    if howling {
+        westeros::paint_howl(painter, foot);
     }
     (true, 0.0)
 }
@@ -1650,6 +1699,16 @@ mod tests {
     }
 
     #[test]
+    fn the_wolf_trots_by_now_and_then() {
+        let shown = (0..1100).filter(|k| wolf_at(*k as f64 / 10.0).is_ok()).count();
+        // 16 s out of 110, 4 of them howling.
+        assert!((150..=170).contains(&shown), "{shown}");
+        let howling = (0..1100).filter(|k| wolf_at(*k as f64 / 10.0).is_ok_and(|a| a.2)).count();
+        assert!((35..=45).contains(&howling), "{howling}");
+        assert!(wolf_at(30.0).is_err_and(|again| again > 0.0));
+    }
+
+    #[test]
     fn the_elf_walks_by_now_and_then() {
         let shown = (0..900).filter(|k| elf_at(*k as f64 / 10.0).is_ok()).count();
         // 15 s out of 90, 3 of them waving.
@@ -1661,7 +1720,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, bills: true, everywhere: Default::default(), pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, wolf: true, bills: true, everywhere: Default::default(), pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());
