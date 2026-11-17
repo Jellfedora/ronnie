@@ -326,7 +326,7 @@ fn rainbow(painter: &egui::Painter, from: f32, to: f32, ground: f32, s: f32, now
 }
 
 /// How often the unicorn gallops by, how long it takes.
-const UNICORN_EVERY: f64 = 120.0;
+const UNICORN_EVERY: f64 = 540.0;
 const UNICORN_RUN: f64 = 7.0;
 
 /// Where the unicorn is at `now`: how far along (0 to 1), rightward; out of sight, the seconds before it
@@ -425,8 +425,8 @@ mod tests {
 
     #[test]
     fn the_unicorn_comes_by_now_and_then() {
-        let shown = (0..1200).filter(|k| unicorn_at(*k as f64 / 10.0).is_ok()).count();
-        // 7 s out of 120.
+        let shown = (0..5400).filter(|k| unicorn_at(*k as f64 / 10.0).is_ok()).count();
+        // 7 s out of 540.
         assert!((65..=75).contains(&shown), "{shown}");
         assert!(unicorn_at(50.0).is_err_and(|again| again > 0.0));
     }

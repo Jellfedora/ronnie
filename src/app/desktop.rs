@@ -538,7 +538,7 @@ fn paint_runner(painter: &egui::Painter, at: Pos2, size: f32, step: f32) {
 }
 
 /// How often Gérard strolls by, how long it takes him (he's in no hurry).
-const GERARD_EVERY: f64 = 150.0;
+const GERARD_EVERY: f64 = 600.0;
 const GERARD_STROLL: f64 = 34.0;
 
 /// Gérard strolling along `strip` now and then, one way then the other, a coffee in his hand: halfway, he
@@ -625,7 +625,7 @@ pub(super) fn paint_gerard(painter: &egui::Painter, foot: Pos2, size: f32, dir: 
 }
 
 /// How often the droid rolls by, how long it takes.
-const DROID_EVERY: f64 = 70.0;
+const DROID_EVERY: f64 = 420.0;
 const DROID_ROLL: f64 = 12.0;
 
 /// The droid rolling along `strip`, every so often, one way then the other: whether it shows, and when to
@@ -678,7 +678,7 @@ fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 5] {
     let every = &fx.everywhere;
     let at = |all: bool, lap: f64, salt: u64| if all { walk_screen(lap, salt, n) } else { home };
     [
-        (fx.sheep && (now + 20.0) % 50.0 <= 16.0, at(every.sheep, ((now + 20.0) / 50.0).floor(), 1)),
+        (fx.sheep && (now + 20.0) % office::SHEEP_EVERY <= 16.0, at(every.sheep, ((now + 20.0) / office::SHEEP_EVERY).floor(), 1)),
         (fx.droid && (now + 55.0) % DROID_EVERY <= DROID_ROLL, at(every.droid, ((now + 55.0) / DROID_EVERY).floor(), 2)),
         (fx.gerard && gerard_at(now).is_ok(), at(every.gerard, ((now + 95.0) / gerard).floor(), 3)),
         (fx.elf && elf_at(now).is_ok(), at(every.elf, ((now + 75.0) / ELF_EVERY).floor(), 4)),
@@ -736,7 +736,7 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
 }
 
 /// How often the house-elf walks by, how long it takes (a stop halfway, waving his sock).
-const ELF_EVERY: f64 = 90.0;
+const ELF_EVERY: f64 = 480.0;
 const ELF_WALK: f64 = 15.0;
 
 /// Where the house-elf is in his walk at `now`: how far along (0 to 1), rightward, waving; or, out of
@@ -1597,8 +1597,8 @@ mod tests {
         let ctx = egui::Context::default();
         let painter = egui::Painter::new(ctx, egui::LayerId::background(), Rect::EVERYTHING);
         let strip = Rect::from_min_max(Pos2::new(0.0, 800.0), Pos2::new(1400.0, 834.0));
-        let shown = (0..700).filter(|k| droid_walk(&painter, strip, *k as f64 / 10.0).0).count();
-        // 12 s out of 70.
+        let shown = (0..4200).filter(|k| droid_walk(&painter, strip, *k as f64 / 10.0).0).count();
+        // 12 s out of 420.
         assert!((110..=130).contains(&shown), "{shown}");
         let (_, again) = droid_walk(&painter, strip, 30.0);
         assert!(again > 0.0);
@@ -1606,10 +1606,10 @@ mod tests {
 
     #[test]
     fn gerard_strolls_now_and_then() {
-        let shown = (0..1500).filter(|k: &i32| gerard_at(f64::from(*k) / 10.0).is_ok()).count();
-        // 34 s out of 150, waving 6 s of them, halfway.
+        let shown = (0..6000).filter(|k: &i32| gerard_at(f64::from(*k) / 10.0).is_ok()).count();
+        // 34 s out of 600, waving 6 s of them, halfway.
         assert!((330..=350).contains(&shown), "{shown}");
-        let waving = (0..1500).filter_map(|k: i32| gerard_at(f64::from(k) / 10.0).ok()).filter(|w| w.2).count();
+        let waving = (0..6000).filter_map(|k: i32| gerard_at(f64::from(k) / 10.0).ok()).filter(|w| w.2).count();
         assert!((55..=65).contains(&waving), "{waving}");
         assert!(gerard_at(0.0).is_err_and(|again| again > 0.0));
     }
@@ -1631,8 +1631,8 @@ mod tests {
         let seen: std::collections::HashSet<usize> = (0..60).map(|lap| walk_screen(f64::from(lap), 2, 3)).collect();
         assert_eq!(seen.len(), 3);
         let fx = Fx { sheep: true, ..Default::default() };
-        let at = walks(&fx, 32.0, 0, 3)[0];
-        assert!(at.0 && (0..30).all(|k| walks(&fx, 32.0 + f64::from(k) * 0.4, 0, 3)[0] == at));
+        let at = walks(&fx, 282.0, 0, 3)[0];
+        assert!(at.0 && (0..30).all(|k| walks(&fx, 282.0 + f64::from(k) * 0.4, 0, 3)[0] == at));
     }
 
     #[test]
@@ -1651,10 +1651,10 @@ mod tests {
 
     #[test]
     fn the_elf_walks_by_now_and_then() {
-        let shown = (0..900).filter(|k| elf_at(*k as f64 / 10.0).is_ok()).count();
-        // 15 s out of 90, 3 of them waving.
+        let shown = (0..4800).filter(|k| elf_at(*k as f64 / 10.0).is_ok()).count();
+        // 15 s out of 480, 3 of them waving.
         assert!((140..=160).contains(&shown), "{shown}");
-        let waving = (0..900).filter(|k| elf_at(*k as f64 / 10.0).is_ok_and(|a| a.2)).count();
+        let waving = (0..4800).filter(|k| elf_at(*k as f64 / 10.0).is_ok_and(|a| a.2)).count();
         assert!((25..=35).contains(&waving), "{waving}");
         assert!(elf_at(40.0).is_err_and(|again| again > 0.0));
     }

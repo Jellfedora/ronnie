@@ -137,17 +137,18 @@ impl super::App {
     }
 }
 
+/// How often the sheep walks by (a walk of 16 s every 5 min).
+pub(super) const SHEEP_EVERY: f64 = 300.0;
+
 /// The sheep's walk: every so often, along `strip` (the foot of the terminals), from one side to the
 /// other, a stop to graze halfway. Its rect when it shows (to hover), and when to draw again.
 pub(super) fn sheep(painter: &egui::Painter, strip: Rect, now: f64) -> (Option<Rect>, f32) {
-    // A walk of 16 s every 50 s.
-    const EVERY: f64 = 50.0;
     const WALK: f64 = 16.0;
-    let t = (now + 20.0) % EVERY;
+    let t = (now + 20.0) % SHEEP_EVERY;
     if t > WALK {
-        return (None, (EVERY - t) as f32);
+        return (None, (SHEEP_EVERY - t) as f32);
     }
-    let lap = ((now + 20.0) / EVERY).floor() as i64;
+    let lap = ((now + 20.0) / SHEEP_EVERY).floor() as i64;
     let rightward = lap % 2 == 0;
     // Walking 0-6 s, grazing 6-10 s, walking 10-16 s.
     let (along, grazing) = if t < 6.0 {
