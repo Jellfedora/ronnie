@@ -1008,7 +1008,7 @@ pub struct DesktopFx {
     pub gerard: bool,
     /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
     pub matheo: bool,
-    /// Which of the walkers (and the horde) go along the other screens too, not only the pointer's.
+    /// Which of the walkers (and the horde) go along the other screens too, not only Ronnie's.
     pub everywhere: Everywhere,
 }
 
@@ -1018,7 +1018,7 @@ impl Default for DesktopFx {
     }
 }
 
-/// The walkers that go along every screen (on, at first), else only along the pointer's.
+/// The walkers that go along every screen (on, at first), else only along Ronnie's.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct Everywhere {

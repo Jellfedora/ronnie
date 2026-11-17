@@ -5811,7 +5811,7 @@ impl eframe::App for App {
         self.progress_tick(ctx);
         self.tycoon_tick(ctx);
         self.notesync_tick(ctx);
-        self.desktop_tick();
+        self.desktop_tick(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

@@ -49,9 +49,13 @@ pub(crate) struct Fx {
     /// The trail in bank notes (Ronnie Corp's).
     #[serde(default)]
     bills: bool,
-    /// The walkers (and the horde) that go along the other screens too, not only the pointer's.
+    /// The walkers (and the horde) that go along the other screens too, not only Ronnie's.
     #[serde(default)]
     everywhere: crate::config::Everywhere,
+    /// The middle of Ronnie's window in pixels, and its screen's scale: the walkers kept home go
+    /// along that screen (none known: the pointer's).
+    #[serde(default)]
+    ronnie: Option<[f32; 3]>,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
@@ -128,7 +132,7 @@ impl App {
         };
         let bills = wallstreet::bills_on(s);
         let trail = d.trail && (bills || (s.cursor_trail && trail::unlocked(s.runner_best)));
-        Fx { trail, sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), bills: trail && bills, everywhere: d.everywhere, pointer, theme: s.theme.clone() }
+        Fx { trail, sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), bills: trail && bills, everywhere: d.everywhere, ronnie: None, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -139,11 +143,14 @@ impl App {
     }
 
     /// The process started, told what changed, or stopped, as the settings say.
-    pub(super) fn desktop_tick(&mut self) {
+    pub(super) fn desktop_tick(&mut self, ctx: &egui::Context) {
         if !supported() {
             return;
         }
-        let fx = self.desktop_wanted();
+        let mut fx = self.desktop_wanted();
+        if fx.any() {
+            fx.ronnie = ronnie_at(ctx);
+        }
         // Ended by itself: noted, started again below (not after failing again and again).
         if let Some((child, _)) = self.desktop.child.as_mut()
             && !matches!(child.try_wait(), Ok(None))
@@ -194,6 +201,13 @@ impl App {
             self.desktop.stop();
         }
     }
+}
+
+/// The middle of Ronnie's window in pixels (to the nearest one), and its screen's scale.
+fn ronnie_at(ctx: &egui::Context) -> Option<[f32; 3]> {
+    let (rect, native) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().native_pixels_per_point));
+    let px = rect?.center() * ctx.pixels_per_point();
+    Some([px.x.round(), px.y.round(), native.unwrap_or(1.0)])
 }
 
 /// The pointer as last read: where (in points, the screens' space), the main button down.
@@ -672,7 +686,7 @@ fn walk_screen(lap: f64, salt: u64, n: usize) -> usize {
 }
 
 /// The sheep's, the droid's, Gérard's, the house-elf's and the unicorn's walks under way, and the screen
-/// each goes along: any of the `n` for those going everywhere, else the pointer's (`home`).
+/// each goes along: any of the `n` for those going everywhere, else Ronnie's (`home`).
 fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 5] {
     let gerard = gerard_every();
     let every = &fx.everywhere;
@@ -686,7 +700,7 @@ fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 5] {
     ]
 }
 
-/// The horde runs across screen `here` (all of them, or only the pointer's: `home`).
+/// The horde runs across screen `here` (all of them, or only Ronnie's: `home`).
 fn horde_on(fx: &Fx, here: usize, home: usize) -> bool {
     fx.horde && (fx.everywhere.horde || here == home)
 }
@@ -696,7 +710,7 @@ fn walkers_on(fx: &Fx, now: f64, here: usize, home: usize, n: usize) -> bool {
     (horde_on(fx, here, home) && horde_since(fx.horde_demo).is_ok()) || walks(fx, now, home, n).iter().any(|&(on, at)| on && at == here)
 }
 
-/// On screen `here` (of `n`, the pointer's `home`): the walkers going along it (`strip`, its foot) and
+/// On screen `here` (of `n`, Ronnie's `home`): the walkers going along it (`strip`, its foot) and
 /// the horde (`whole`). Something shown, and when to look again.
 #[allow(clippy::too_many_arguments)]
 fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, home: usize, n: usize, fx: &Fx) -> (bool, f32) {
@@ -887,7 +901,9 @@ impl eframe::App for Overlay {
         // all of them at once. This window covers the pointer's; the others get one each while needed.
         let n = screens.len().max(1);
         let here = screens.iter().position(|(s, _)| (s.min - self.screen.min).length() < 1.0).unwrap_or(0);
-        let (shown, again) = paint_walkers(&painter, strip, self.screen.translate(-origin.to_vec2()), now, here, here, n, &self.shown);
+        // The walkers kept home go along Ronnie's screen (wherever the pointer is).
+        let home = self.shown.ronnie.and_then(|[x, y, scale]| os::screen_of(Pos2::new(x, y), scale)).and_then(|r| screens.iter().position(|(s, _)| (s.min - r.min).length() < 1.0)).unwrap_or(here);
+        let (shown, again) = paint_walkers(&painter, strip, self.screen.translate(-origin.to_vec2()), now, here, home, n, &self.shown);
         busy |= shown || plant_busy;
         next = next.min(again);
         // Mathéo on the screen he's on (this window's, or another's).
@@ -898,7 +914,6 @@ impl eframe::App for Overlay {
         }
         // A window over another screen is made hidden, shown once drawn (else, on Windows, a white
         // square first), hidden again when nothing goes along it, closed a while after.
-        let home = here;
         for (i, (screen, work)) in screens.iter().enumerate() {
             let walking = walkers_on(&self.shown, now, i, home, n);
             let needed = walking || plant_on == Some(i);
@@ -1257,6 +1272,11 @@ mod os {
         screens.iter().map(|s| (flip(s.frame()), flip(s.visibleFrame()))).find(|(frame, _)| frame.contains(at))
     }
 
+    /// The screen holding the pixel `px` of a window on a screen of that `scale` (points).
+    pub(super) fn screen_of(px: Pos2, scale: f32) -> Option<Rect> {
+        screen_at((px.to_vec2() / scale.max(0.1)).to_pos2()).map(|(screen, _)| screen)
+    }
+
     /// Every screen and its part left by the Dock and the menu bar (points, top left origin), left to
     /// right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
@@ -1414,6 +1434,12 @@ mod os {
 
     pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
 
+    /// The screen holding the pixel `px` (points, as `screens` gives them).
+    pub(super) fn screen_of(px: Pos2, _scale: f32) -> Option<Rect> {
+        let (rect, _, s) = monitor(POINT { x: px.x as i32, y: px.y as i32 })?;
+        Some(Rect::from_min_max((rect.min.to_vec2() / s).to_pos2(), (rect.max.to_vec2() / s).to_pos2()))
+    }
+
     /// Every screen and its work area (points: each monitor's pixels over its own scale, as
     /// `screen_at` gives them), left to right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
@@ -1511,6 +1537,11 @@ mod os {
         screens().into_iter().find(|(s, _)| s.contains(at))
     }
 
+    /// The screen holding the pixel `px` (in pixels, as the screens are read).
+    pub(super) fn screen_of(px: Pos2, _scale: f32) -> Option<Rect> {
+        screen_at(px).map(|(screen, _)| screen)
+    }
+
     /// Every monitor and its part left by the panels (the desktop's work area cut to it), left to right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
         let Some((conn, root)) = x() else { return Vec::new() };
@@ -1579,6 +1610,10 @@ mod os {
         None
     }
 
+    pub(super) fn screen_of(_px: Pos2, _scale: f32) -> Option<Rect> {
+        None
+    }
+
     pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
 
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
@@ -1636,8 +1671,8 @@ mod tests {
     }
 
     #[test]
-    fn a_walker_kept_home_stays_on_the_pointers_screen() {
-        // The sheep only on the pointer's screen (2 of 4): never elsewhere, the droid still anywhere.
+    fn a_walker_kept_home_stays_on_ronnies_screen() {
+        // The sheep only on Ronnie's screen (2 of 4): never elsewhere, the droid still anywhere.
         let mut fx = Fx { sheep: true, droid: true, horde: true, ..Default::default() };
         fx.everywhere.sheep = false;
         fx.everywhere.horde = false;
@@ -1661,7 +1696,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, bills: true, everywhere: Default::default(), pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, bills: true, everywhere: Default::default(), ronnie: Some([2400.0, 500.0, 1.25]), pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());
