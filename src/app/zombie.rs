@@ -43,8 +43,10 @@ pub(super) struct Monday {
     letters_open: bool,
     /// Shift, at the last frame.
     shift_was: bool,
-    /// The menu of Escape is open (alone, the game is paused meanwhile).
+    /// The menu of Escape is open (the game is paused meanwhile, for the whole room).
     menu: bool,
+    /// When the player last resumed (the frames, once a second in pause, may still say paused).
+    resumed: f64,
     /// The game won: the end credits rolling, since (NaN: from the next frame).
     credits: Option<f64>,
     /// Blood on the floor, for a while: x, y (world), since, seed, size. A zombie gone leaves a pool,
@@ -291,6 +293,9 @@ impl App {
                     self.monday_sound(&[(523.0, 523.0, 0.15, 0.25), (659.0, 659.0, 0.15, 0.25), (784.0, 784.0, 0.15, 0.25), (1046.0, 1046.0, 0.6, 0.25)]);
                 }
                 Happened::Paused(_) => {}
+                Happened::Kicked(name) => {
+                    self.monday.banner = Some((t.monday_kicked.replace("{n}", &name), theme.ansi[1], now));
+                }
                 Happened::Boss | Happened::Recruit => {
                     let text = if h == Happened::Boss { t.monday_boss } else { t.monday_recruit };
                     self.monday.banner = Some((text.to_owned(), theme.ansi[1], now));
@@ -1289,9 +1294,12 @@ impl App {
         // The player: the keys and the mouse; the crosshair.
         let mine = me.and_then(|id| frame.players.iter().find(|p| p.id == id)).copied();
         let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| field.contains(*p));
-        // Escape: the menu (alone, the game pauses meanwhile). Back paused (the page left alone): the
-        // menu too.
+        // Escape: the menu, and the game paused for the whole room. Back paused (the page left alone):
+        // the menu too. Paused by a colleague: who, and a minute later, kicking them out.
         let solo = self.monday.online.room.as_ref().is_some_and(|r| r.players.len() == 1);
+        // (An older floor doesn't say who paused: alone, it's the player.)
+        let mine_pause = frame.paused && (solo || (frame.paused_by != 0 && Some(frame.paused_by) == me));
+        let theirs = frame.paused && !solo && frame.paused_by != 0 && Some(frame.paused_by) != me;
         let escape = self.monday.over.is_none() && ui.input(|i| i.key_pressed(Key::Escape));
         // Watching a colleague's game: nothing to steer; Escape, or the button, to stop.
         let watching = self.monday.online.watching();
@@ -1303,12 +1311,15 @@ impl App {
             if ui.put(b, egui::Button::new(egui::RichText::new(t.monday_stop_watching).size(12.5)).corner_radius(8.0)).clicked() || escape {
                 self.monday.online.leave();
             }
+        } else if theirs {
+            self.monday.menu = false;
         } else if escape {
             self.monday.menu = !self.monday.menu;
-            if solo {
-                self.monday.online.pause(self.monday.menu);
+            self.monday.online.pause(self.monday.menu);
+            if !self.monday.menu {
+                self.monday.resumed = now;
             }
-        } else if frame.paused && solo && !self.monday.menu && !watching {
+        } else if mine_pause && !self.monday.menu && now - self.monday.resumed > 2.0 {
             self.monday.menu = true;
         }
         if self.monday.menu {
@@ -1444,32 +1455,62 @@ impl App {
             paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 30.0), t.monday_reconnecting, theme.accent, &theme);
         }
         if self.monday.menu {
-            self.monday_menu(ui, field, solo);
+            self.monday_menu(ui, field, solo, now);
+        } else if theirs && !watching {
+            self.monday_paused_by(ui, field, &frame);
         }
     }
 
-    /// The menu of Escape: resume, or quit the game (alone it ends there and counts; with colleagues,
-    /// the game goes on without the player).
-    fn monday_menu(&mut self, ui: &mut Ui, field: Rect, solo: bool) {
+    /// The game paused by a colleague: who, then (a minute later) kicking them out; or quitting.
+    fn monday_paused_by(&mut self, ui: &mut Ui, field: Rect, frame: &Frame) {
         let t = self.t();
         let theme = self.theme.clone();
         let painter = ui.painter_at(field);
         painter.rect_filled(field, 0.0, Color32::from_black_alpha(150));
-        let card = Rect::from_center_size(field.center(), Vec2::new(320.0, if solo { 190.0 } else { 220.0 }));
+        let card = Rect::from_center_size(field.center(), Vec2::new(340.0, 220.0));
+        painter.rect(card, 14.0, theme.chrome_bg, Stroke::new(1.5, theme.accent), egui::StrokeKind::Inside);
+        paint_metal(&painter, card.center_top() + Vec2::new(0.0, 38.0), Align2::CENTER_CENTER, t.monday_paused, 28.0, theme.accent, 1.0);
+        let name = self.monday.online.room.as_ref().and_then(|r| r.players.iter().find(|p| p.0 == frame.paused_by)).map(|p| p.1.clone()).unwrap_or_default();
+        let y = card.min.y + 78.0;
+        painter.text(Pos2::new(card.center().x, y), Align2::CENTER_CENTER, t.monday_paused_by.replace("{n}", &name), FontId::proportional(13.5), theme.text);
+        let kick = Rect::from_center_size(Pos2::new(card.center().x, y + 44.0), Vec2::new(220.0, 34.0));
+        if frame.kick_in > 0 {
+            painter.text(kick.center(), Align2::CENTER_CENTER, t.monday_kick_in.replace("{n}", &frame.kick_in.to_string()), FontId::monospace(13.0), theme.text_muted);
+        } else {
+            let b = egui::Button::new(egui::RichText::new(t.monday_kick.replace("{n}", &name)).size(14.0).strong().color(theme.bg)).fill(theme.ansi[1]).corner_radius(8.0);
+            if ui.put(kick, b).clicked() {
+                self.monday.online.kick();
+            }
+        }
+        let quit = Rect::from_center_size(Pos2::new(card.center().x, y + 92.0), Vec2::new(220.0, 34.0));
+        if ui.put(quit, egui::Button::new(egui::RichText::new(t.monday_quit).size(14.0).color(theme.ansi[1])).corner_radius(8.0)).clicked() {
+            self.monday.online.quit();
+        }
+    }
+
+    /// The menu of Escape, the game paused: resume, or quit the game (alone it ends there and counts;
+    /// with colleagues, the game goes on without the player).
+    fn monday_menu(&mut self, ui: &mut Ui, field: Rect, solo: bool, now: f64) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let painter = ui.painter_at(field);
+        painter.rect_filled(field, 0.0, Color32::from_black_alpha(150));
+        let card = Rect::from_center_size(field.center(), Vec2::new(320.0, if solo { 190.0 } else { 236.0 }));
         painter.rect(card, 14.0, theme.chrome_bg, Stroke::new(1.5, theme.accent), egui::StrokeKind::Inside);
         paint_metal(&painter, card.center_top() + Vec2::new(0.0, 38.0), Align2::CENTER_CENTER, t.monday_paused, 28.0, theme.accent, 1.0);
         let mut y = card.min.y + 70.0;
         if !solo {
-            painter.text(Pos2::new(card.center().x, y + 8.0), Align2::CENTER_CENTER, t.monday_pause_multi, FontId::proportional(12.5), theme.text_muted);
-            y += 30.0;
+            let text = painter.layout(t.monday_pause_multi.to_owned(), FontId::proportional(12.5), theme.text_muted, card.width() - 40.0);
+            let h = text.size().y;
+            painter.galley(Pos2::new(card.center().x - text.size().x / 2.0, y), text, theme.text_muted);
+            y += h + 14.0;
         }
         let resume = Rect::from_center_size(Pos2::new(card.center().x, y + 20.0), Vec2::new(200.0, 34.0));
         let b = egui::Button::new(egui::RichText::new(t.monday_resume).size(14.0).strong().color(theme.bg)).fill(theme.accent).corner_radius(8.0);
         if ui.put(resume, b).clicked() {
             self.monday.menu = false;
-            if solo {
-                self.monday.online.pause(false);
-            }
+            self.monday.resumed = now;
+            self.monday.online.pause(false);
         }
         let quit = Rect::from_center_size(Pos2::new(card.center().x, y + 66.0), Vec2::new(200.0, 34.0));
         if ui.put(quit, egui::Button::new(egui::RichText::new(t.monday_quit).size(14.0).color(theme.ansi[1])).corner_radius(8.0)).clicked() {
@@ -1529,13 +1570,19 @@ impl App {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_black_alpha(140));
         let lines: Vec<(String, String)> = over.milestones.iter().map(|m| self.milestone_text(m)).collect();
-        let card = Rect::from_center_size(rect.center(), Vec2::new(440.0, 250.0 + lines.len() as f32 * 22.0 + if over.won { 30.0 } else { 0.0 }));
+        let card = Rect::from_center_size(rect.center(), Vec2::new(440.0, 250.0 + lines.len() as f32 * 22.0 + if over.won || over.kicked { 30.0 } else { 0.0 }));
         let gold = Color32::from_rgb(222, 180, 80);
         let accent = if over.won { gold } else { theme.accent };
         painter.rect(card, 14.0, theme.chrome_bg, Stroke::new(1.5, accent), egui::StrokeKind::Inside);
         paint_metal(&painter, card.center_top() + Vec2::new(0.0, 40.0), Align2::CENTER_CENTER, if over.won { t.monday_won } else { t.monday_over }, 28.0, accent, 1.0);
         let body = t.monday_over_body.replace("{w}", &over.wave.to_string()).replace("{k}", &over.kills.to_string()).replace("{r}", &over.revives.to_string());
         let mut y = card.min.y + 88.0;
+        if over.kicked {
+            let kicked = painter.layout(t.monday_kicked_you.to_owned(), FontId::proportional(13.5), theme.ansi[1], card.width() - 40.0);
+            let h = kicked.size().y;
+            painter.galley(Pos2::new(card.center().x - kicked.size().x / 2.0, y - 10.0), kicked, theme.ansi[1]);
+            y += h + 6.0;
+        }
         if over.won {
             let won = painter.layout(t.monday_over_won.to_owned(), FontId::proportional(13.5), gold, card.width() - 40.0);
             let h = won.size().y;

@@ -2,6 +2,12 @@
 
 Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi de notes à sa release GitHub.
 
+## [Unreleased]
+
+### Nouveautés
+
+- **Lundi matin, la pause à plusieurs** : Échap met la partie en pause pour toute la salle, et seul celui qui l'a mise la lève. Au bout d'une minute, les collègues peuvent l'exclure (sa partie compte jusque-là) et la partie reprend sans lui. Demande floor 0.17.1.
+
 ## [1.3.0] - 2026-11-17
 
 ### Nouveautés

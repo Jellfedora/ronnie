@@ -326,8 +326,12 @@ pub struct Frame {
     pub heal_zones: Vec<(f32, f32, f32)>,
     /// The floor of the tower (0 the hall, 1 the open space, 2 the boardroom, 3 the roof).
     pub floor: usize,
-    /// Paused (alone, Escape or another page).
+    /// Paused (Escape, or the page left alone).
     pub paused: bool,
+    /// Paused by this player (0: unknown, an older floor), and the seconds before the others may
+    /// kick them out (with colleagues; 0 alone or now).
+    pub paused_by: u32,
+    pub kick_in: u32,
     pub at: Instant,
 }
 
@@ -521,6 +525,9 @@ pub struct Over {
     /// The executive committee beaten: the game won.
     #[serde(default)]
     pub won: bool,
+    /// Kicked out by the colleagues, after a pause too long (the game counts so far).
+    #[serde(default)]
+    pub kicked: bool,
 }
 
 /// What happened once, for the app (sounds, toasts, little texts on the field).
@@ -536,6 +543,8 @@ pub enum Happened {
     /// The executive committee beaten.
     Won,
     Paused(bool),
+    /// A colleague kicked out after a pause too long (their name).
+    Kicked(String),
     Recruit,
     Kill { kind: Kind, x: f32, y: f32, by: u32 },
     Down(u32),
@@ -670,6 +679,10 @@ enum Wire {
         fl: usize,
         #[serde(default)]
         ps: u8,
+        #[serde(default)]
+        pb: u32,
+        #[serde(default)]
+        pk: u32,
         #[serde(default)]
         tq: Vec<f32>,
         #[serde(default)]
@@ -820,9 +833,14 @@ impl Online {
         self.room.as_ref().is_some_and(|r| r.watching)
     }
 
-    /// Paused or going again (alone only).
+    /// Paused (for the whole room) or going again (only who paused).
     pub fn pause(&self, on: bool) {
         self.send(json!({ "t": "pause", "on": on }));
+    }
+
+    /// Kicks out who paused, a minute later (with colleagues).
+    pub fn kick(&self) {
+        self.send(json!({ "t": "kick" }));
     }
 
     /// The floor `k` of the tower (the first one, before floor sent them).
@@ -967,7 +985,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, pa, fl, ps, tq, c, pt, gr, mm } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
                 let mut players: Vec<Player> = p
                     .chunks_exact(22)
                     .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
@@ -1053,7 +1071,7 @@ impl Online {
                 let grades = gr.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 let memos = mm.iter().map(|&id| id as u32).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, at });
+                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -1100,6 +1118,7 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "floor" => Happened::Floor(u("floor") as usize),
         "won" => Happened::Won,
         "paused" => Happened::Paused(v.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false)),
+        "kicked" => Happened::Kicked(v.get("name")?.as_str()?.to_owned()),
         "recruit" => Happened::Recruit,
         "kill" => {
             let kind = Kind::of(v.get("kind")?.as_str()?);
@@ -1220,6 +1239,14 @@ mod tests {
         take(&mut online, r#"{"t":"s","ph":0,"w":16,"tl":5,"zl":0,"tk":0,"p":[],"z":[1,7,10,10,90,0,0],"b":[],"fl":3,"ps":1}"#);
         let f = online.frame.as_ref().unwrap();
         assert_eq!((f.floor, f.paused, f.zombies[0].kind), (3, true, Kind::Board));
+        assert_eq!((f.paused_by, f.kick_in), (0, 0), "an older floor: nobody named");
+        take(&mut online, r#"{"t":"s","ph":0,"w":16,"tl":5,"zl":0,"tk":0,"p":[],"z":[],"b":[],"fl":3,"ps":1,"pb":4,"pk":37}"#);
+        let f = online.frame.clone().unwrap();
+        assert_eq!((f.paused_by, f.kick_in), (4, 37));
+        let news = take(&mut online, r#"{"t":"news","l":[{"t":"kicked","name":"Dan"}]}"#);
+        assert_eq!(news.happened, vec![Happened::Kicked("Dan".into())]);
+        let news = take(&mut online, r#"{"t":"over","wave":7,"kills":3,"revives":0,"kicked":true}"#);
+        assert!(news.over.is_some_and(|o| o.kicked));
         let news = take(&mut online, r#"{"t":"news","l":[{"t":"boss","final":true},{"t":"boss"},{"t":"floor","floor":2},{"t":"won"},{"t":"paused","on":true}]}"#);
         assert_eq!(news.happened, vec![Happened::FinalBoss, Happened::Boss, Happened::Floor(2), Happened::Won, Happened::Paused(true)]);
         let news = take(&mut online, r#"{"t":"over","wave":20,"kills":1,"revives":0,"won":true,"milestones":[{"kind":"final"},{"kind":"daily","id":"kills"},{"kind":"dailies","value":7}]}"#);
