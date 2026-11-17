@@ -67,6 +67,8 @@ libc = "0.2"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
 x11rb = { version = "0.13", features = ["randr", "screensaver", "xtest"] }
+# The Claude button over Teams (src/app/assist/linux.rs): AT-SPI, the accessibility's bus.
+zbus = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

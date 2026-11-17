@@ -1367,7 +1367,9 @@ impl App {
             });
             if super::assist::supported() {
                 divider(ui, theme);
-                setting_row(ui, theme, t.teams_claude_row, Some(t.teams_claude_desc), |ui| {
+                let note = if cfg!(target_os = "macos") { t.teams_claude_mac } else { t.teams_claude_linux };
+                let desc = format!("{} {note}", t.teams_claude_desc);
+                setting_row(ui, theme, t.teams_claude_row, Some(&desc), |ui| {
                     toggle(ui, theme, &mut picked.teams_claude);
                 });
             }
