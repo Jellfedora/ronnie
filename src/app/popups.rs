@@ -1134,6 +1134,9 @@ enum Asked {
     Password,
     Avatar,
     Frame,
+    /// The titles won, read as the window opens.
+    Titles,
+    Title,
     SignOut,
 }
 
@@ -1203,7 +1206,14 @@ impl App {
         }
         let settings = &self.config.settings;
         self.pseudo_prompt = Some(match crate::floor::pseudo(settings.floor.as_ref()) {
-            Some(name) => PseudoPrompt::new(AccountMode::Account, name.to_owned()),
+            Some(name) => {
+                // The titles won, read again (one may have been won since).
+                let mut p = PseudoPrompt::new(AccountMode::Account, name.to_owned());
+                p.asked = Some(Asked::Titles);
+                let (ctx, account) = (self.ctx.clone(), settings.floor.clone());
+                self.floor.ask(&ctx, account.as_ref(), crate::floor::AccountAsk::Titles);
+                p
+            }
             None => {
                 // The pseudo taken on floor's former address, else the name typed in the games.
                 let former = settings.floor.as_ref().and_then(|a| a.name.as_deref()).unwrap_or(&settings.player_name);
@@ -1257,6 +1267,8 @@ impl App {
                 match (asked, &mut self.pseudo_prompt) {
                     (Some(Asked::Avatar), Some(p)) => p.notice = Some(t.account_avatar_saved),
                     (Some(Asked::Frame), Some(p)) => p.notice = Some(t.frame_saved),
+                    (Some(Asked::Title), Some(p)) => p.notice = Some(t.title_saved),
+                    (Some(Asked::Titles), Some(_)) => {}
                     (Some(Asked::Rename), Some(p)) => p.notice = Some(t.account_saved),
                     // Signed in or up: done.
                     _ => self.pseudo_prompt = None,
@@ -1392,6 +1404,30 @@ impl App {
                         }
                     }
                 });
+                // The title worn beside the pseudo (chat, sidebar): one won in Lundi matin, or none.
+                ui.add_space(12.0);
+                caption(ui, t.title_caption);
+                ui.add_space(4.0);
+                let won = account.as_ref().map(|a| a.titles.clone()).unwrap_or_default();
+                let worn = account.as_ref().and_then(|a| a.title.clone());
+                if won.is_empty() {
+                    ui.label(egui::RichText::new(t.title_none_won).size(12.0).color(theme.text_muted));
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        let choices = std::iter::once(None).chain(won.iter().map(|w| Some(w.as_str())));
+                        for id in choices {
+                            let name = id.map_or(t.title_none.to_owned(), |id| super::talk::title_name(t, id).map_or(id.to_owned(), |n| format!("« {n} »")));
+                            let on = worn.as_deref() == id;
+                            let color = if on { theme.bg } else if id.is_some() { super::talk::GOLD } else { theme.text_muted };
+                            let b = egui::Button::new(egui::RichText::new(name).size(12.0).color(color)).corner_radius(12.0);
+                            let b = if on { b.fill(if id.is_some() { super::talk::GOLD } else { theme.text_muted }) } else { b };
+                            if ui.add_enabled(!busy, b).clicked() && !on {
+                                go = Some(AccountAsk::Title(id.map(str::to_owned)));
+                                asked = Some(Asked::Title);
+                            }
+                        }
+                    });
+                }
                 ui.add_space(14.0);
             } else {
                 ui.label(egui::RichText::new(t.account_desc).size(13.0).color(theme.text_muted));

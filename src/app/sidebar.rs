@@ -657,8 +657,15 @@ impl App {
             painter.circle_filled(dot, 3.5, theme.ansi[2]);
         }
         let x = avatar.x + 28.0;
+        // Over the pseudo: the title worn (in gold), else the word.
+        let worn = account.as_ref().and_then(|a| self.talk.title_of(&a.id).or_else(|| a.title.clone())).and_then(|id| super::talk::title_name(t, &id));
+        let (over, over_color) = match worn {
+            Some(title) => (title.to_uppercase(), super::talk::GOLD),
+            None => (t.pseudo_row.to_uppercase(), theme.text_muted),
+        };
         let mut job = egui::text::LayoutJob::default();
-        job.append(&t.pseudo_row.to_uppercase(), 0.0, egui::TextFormat { font_id: FontId::proportional(10.0), color: theme.text_muted, extra_letter_spacing: 1.2, ..Default::default() });
+        job.wrap = egui::text::TextWrapping::truncate_at_width(card.max.x - 40.0 - x);
+        job.append(&over, 0.0, egui::TextFormat { font_id: FontId::proportional(10.0), color: over_color, extra_letter_spacing: 1.2, ..Default::default() });
         painter.galley(Pos2::new(x, card.center().y - 17.0), painter.layout_job(job), theme.text_muted);
         let (name, color) = match &pseudo {
             Some(name) => (name.clone(), theme.text),

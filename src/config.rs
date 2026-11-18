@@ -1360,6 +1360,12 @@ pub struct FloorAccount {
     /// and then).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// The title worn (a Lundi matin achievement's id), kept on floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The titles won, to pick one (as floor said last).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub titles: Vec<String>,
 }
 
 /// Places kept on the leaderboard.

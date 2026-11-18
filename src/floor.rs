@@ -143,6 +143,10 @@ pub enum AccountAsk {
     Avatar(Option<Vec<u8>>),
     /// The frame around it (`app::frames`), or none.
     Frame(Option<String>),
+    /// The titles won, and the one worn.
+    Titles,
+    /// The title worn (an achievement won), or none.
+    Title(Option<String>),
 }
 
 /// What floor did.
@@ -477,7 +481,7 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
     let signed = |res: ureq::http::Response<ureq::Body>| -> Result<AccountDone, ClaimError> {
         let mut res = res;
         let s: Signed = res.body_mut().read_json().map_err(bad)?;
-        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, frame: s.frame, pending: !s.approved }))
+        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, frame: s.frame, pending: !s.approved, title: None, titles: Vec::new() }))
     };
     // A request with the session's token: none, or floor no longer knows it, and it is over.
     let token = || account.map(|a| format!("Bearer {}", a.token)).ok_or(ClaimError::Expired);
@@ -544,6 +548,25 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
             let answer: Framed = res.body_mut().read_json().map_err(bad)?;
             let mut a = account.cloned().ok_or(ClaimError::Expired)?;
             a.frame = answer.frame;
+            Ok(AccountDone::Account(a))
+        }
+        AccountAsk::Titles | AccountAsk::Title(_) => {
+            #[derive(Deserialize)]
+            struct Titles {
+                title: Option<String>,
+                #[serde(default)]
+                earned: Vec<String>,
+            }
+            let target = format!("{url}/v1/players/me/title");
+            let res = match &ask {
+                AccountAsk::Title(title) => agent.put(&target).header("User-Agent", USER_AGENT).header("Authorization", token()?).send_json(serde_json::json!({ "id": title })),
+                _ => agent.get(format!("{target}s")).header("User-Agent", USER_AGENT).header("Authorization", token()?).call(),
+            };
+            let mut res = answered(res, expired)?;
+            let answer: Titles = res.body_mut().read_json().map_err(bad)?;
+            let mut a = account.cloned().ok_or(ClaimError::Expired)?;
+            a.title = answer.title;
+            a.titles = answer.earned;
             Ok(AccountDone::Account(a))
         }
     }

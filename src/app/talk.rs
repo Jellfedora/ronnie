@@ -818,16 +818,16 @@ impl App {
             .map(|r| {
                 let read = self.talk_read_up_to(r, &me);
                 let online = r.peer(&me).filter(|p| self.talk.is_online(&p.id)).map(|p| self.talk.presence_of(&p.id));
-                let peer = r.peer(&me).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id), self.talk.frame_of(&p.id)));
+                let peer = r.peer(&me).filter(|_| r.kind == Kind::Dm).map(|p| (p.id.clone(), self.talk.avatar_of(&p.id), self.talk.frame_of(&p.id), self.talk.title_of(&p.id)));
                 (r.id.clone(), shown_title(t, r, &me), r.kind == Kind::Group, r.unread(&me, read), online, peer, r.icon.clone())
             })
             .collect();
         for (id, title, group, unread, online, peer, icon) in &rooms {
             let face = match peer {
-                Some((pid, v, _)) => self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()),
+                Some((pid, v, _, _)) => self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), pid, v.as_deref()),
                 None => self.avatars.get(ui.ctx(), self.config.settings.floor.as_ref(), id, icon.as_deref()),
             };
-            let worn = peer.as_ref().and_then(|(_, _, f)| f.as_deref());
+            let worn = peer.as_ref().and_then(|(_, _, f, _)| f.as_deref());
             let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 4.0));
             *y += slot.height() + ROW_GAP;
             let resp = ui.interact(slot, ui.id().with(("talk-room", id.as_str())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -851,7 +851,16 @@ impl App {
             } else {
                 galley
             };
+            let name_end = slot.min.x + 34.0 + galley.size().x;
             painter.galley(Pos2::new(slot.min.x + 34.0, slot.center().y - galley.size().y / 2.0), galley, color);
+            // With one person: their Lundi matin title after the name, in gold, when there's room.
+            if let Some(title) = peer.as_ref().and_then(|(_, _, _, w)| w.as_deref()).and_then(|id| title_name(t, id)) {
+                let room_left = slot.max.x - (if strong { 34.0 } else { 8.0 }) - name_end;
+                let g = painter.layout_no_wrap(format!("« {title} »"), FontId::proportional(10.5), GOLD);
+                if g.size().x + 6.0 < room_left {
+                    painter.galley(Pos2::new(name_end + 6.0, slot.center().y - g.size().y / 2.0), g, GOLD);
+                }
+            }
             if strong {
                 let text = if *unread > 99 { "99+".to_owned() } else { unread.to_string() };
                 let galley = painter.layout_no_wrap(text, FontId::proportional(10.5), theme.bg);
@@ -937,9 +946,9 @@ impl App {
                 // Its Lundi matin title, after it, in gold.
                 if let Some(title) = m.title.as_deref().and_then(|id| title_name(t, id)) {
                     let room_left = slot.max.x - 8.0 - name.max.x;
-                    let galley = painter.layout_no_wrap(format!("« {title} »"), FontId::proportional(10.5), Color32::from_rgb(222, 180, 80));
+                    let galley = painter.layout_no_wrap(format!("« {title} »"), FontId::proportional(10.5), GOLD);
                     if galley.size().x + 6.0 < room_left {
-                        painter.galley(Pos2::new(name.max.x + 6.0, slot.center().y - galley.size().y / 2.0), galley, Color32::from_rgb(222, 180, 80));
+                        painter.galley(Pos2::new(name.max.x + 6.0, slot.center().y - galley.size().y / 2.0), galley, GOLD);
                     }
                 }
             }
@@ -1082,10 +1091,14 @@ impl App {
         let sub_galley = painter.layout_no_wrap(sub.0, FontId::proportional(12.0), sub.1);
         let sub_rect = Rect::from_min_size(Pos2::new(text_x, head.center().y + 2.0), sub_galley.size());
         painter.galley(sub_rect.min, sub_galley, sub.1);
-        // A name given: their pseudo beside it.
+        // A name given: their pseudo beside it; then their Lundi matin title, in gold.
+        let mut after = text_x + title_rect.width() + 8.0;
         if let Some(pseudo) = room.peer(&me).filter(|_| room.kind == Kind::Dm).and_then(|p| self.talk.pseudo_of(&p.id)) {
-            let w = painter.layout_no_wrap(title.clone(), FontId::proportional(16.0), theme.text).size().x;
-            painter.text(Pos2::new(text_x + w + 8.0, head.center().y - 7.0), Align2::LEFT_CENTER, t.talk_nickname_pseudo.replace("{n}", pseudo), FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
+            let r = painter.text(Pos2::new(after, head.center().y - 7.0), Align2::LEFT_CENTER, t.talk_nickname_pseudo.replace("{n}", pseudo), FontId::proportional(12.0), theme.text_muted.gamma_multiply(0.8));
+            after = r.max.x + 8.0;
+        }
+        if let Some(title) = room.peer(&me).filter(|_| room.kind == Kind::Dm).and_then(|p| self.talk.title_of(&p.id)).and_then(|id| title_name(t, &id)) {
+            painter.text(Pos2::new(after, head.center().y - 7.0), Align2::LEFT_CENTER, format!("« {title} »"), FontId::proportional(12.5), GOLD);
         }
         // With one person: its actions.
         if room.kind == Kind::Dm && room.peer(&me).is_some() {
@@ -1798,7 +1811,7 @@ impl App {
                     if room.kind == Kind::Group {
                         ui.label(egui::RichText::new(&name).size(12.5).strong().color(tint(theme, &name)));
                         if let Some(title) = self.talk.title_of(&m.from).and_then(|id| title_name(t, &id)) {
-                            ui.label(egui::RichText::new(format!("« {title} »")).size(11.0).color(Color32::from_rgb(222, 180, 80)));
+                            ui.label(egui::RichText::new(format!("« {title} »")).size(11.0).color(GOLD));
                         }
                     }
                     ui.label(egui::RichText::new(clock(m.at)).size(11.0).color(theme.text_muted.gamma_multiply(0.75)));
@@ -2957,6 +2970,9 @@ impl App {
         }
     }
 }
+
+/// A title's color.
+pub(super) const GOLD: Color32 = Color32::from_rgb(222, 180, 80);
 
 /// A Lundi matin title's words, from its achievement's id.
 pub(super) fn title_name(t: &Strings, id: &str) -> Option<&'static str> {

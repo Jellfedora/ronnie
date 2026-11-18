@@ -1535,7 +1535,7 @@ mod tests {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
         let account = |name: String| {
             let made: serde_json::Value = ureq::post(format!("{url}/v1/players")).send_json(json!({ "name": name })).unwrap().body_mut().read_json().unwrap();
-            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, frame: None, name: Some(name), pending: false }
+            FloorAccount { url: url.clone(), id: made["id"].as_str().unwrap().into(), token: made["token"].as_str().unwrap().into(), admin: false, avatar: None, frame: None, name: Some(name), pending: false, title: None, titles: Vec::new() }
         };
         let accounts = [account(format!("Dio{stamp}")), account(format!("Ozzy{stamp}")), account(format!("Lemmy{stamp}"))];
         let mut talks = [Talk::default(), Talk::default(), Talk::default()];
