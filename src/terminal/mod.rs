@@ -486,11 +486,14 @@ impl Terminal {
         if !self.has_output() || self.has_exited() || self.awaits_password() {
             return false;
         }
-        if let Ok(shell) = self.shell.lock() {
-            if shell.integrated {
-                return shell.at_prompt;
-            }
+        if let Ok(shell) = self.shell.lock()
+            && shell.integrated
+            && (shell.at_prompt || local)
+        {
+            return shell.at_prompt;
         }
+        // A server's shell: marks seen once (a program that sent some, Claude Code…) don't mean its
+        // prompt sends them, so the usual prompt on screen also counts.
         self.guess_prompt_input().is_some_and(|(typed, _)| typed.is_empty()) || (local && waited > Duration::from_secs(3))
     }
 

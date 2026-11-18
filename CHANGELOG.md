@@ -17,6 +17,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 ### Corrections
 
 - Utilisation de Claude : après une remise à zéro anticipée d'une limite, le badge ne reste plus bloqué à l'ancien pourcentage (100 %). Le nouveau chiffre d'une session qui répond fait foi, et une session restée ouverte qui répète son ancien chiffre ne l'écrase plus.
+- Claude Code sur un serveur : le bouton ne répond plus « Le terminal doit être à l'invite de commande » alors que l'invite est bien là. Un programme lancé avant dans le panneau (une session Claude…) avait laissé croire que le shell du serveur signalait lui-même son invite.
 - Windows 11 : les effets sur tout l'écran ne montrent plus de cadres vides par-dessus les écrans (par Jonathan).
 
 ## [1.4.1] - 2026-11-18
