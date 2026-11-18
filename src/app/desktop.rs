@@ -270,6 +270,20 @@ struct Plant {
     thirst: u32,
     /// Late in the evening, as last looked at (each minute).
     tired: (bool, Option<Instant>),
+    /// Friday afternoon, as last looked at (with `tired`).
+    friday: bool,
+    /// At the screen since then without a break (the pointer never still `BREAK` long), and when he
+    /// last asked for one.
+    active_since: Instant,
+    break_said: Option<Instant>,
+    /// Waving at Gérard (towards his side), and whether this walk of his was greeted.
+    wave: f32,
+    greeted: bool,
+    /// Hiding from the horde (0 to 1), and whether he was.
+    hide: f32,
+    hiding: bool,
+    /// How he grew: the day, waterings that day, days well watered (`GOOD_DAY` waterings).
+    growth: (String, u32, u32),
     /// When the next one is due, and the number of the next.
     next_tip: Instant,
     told: usize,
@@ -284,7 +298,7 @@ impl Default for Plant {
         // Not the same advice first at each start (water first all the same).
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 60) as usize;
         let quiet = matheo_quiet_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok());
-        Self { at: matheo_load(), vy: 0.0, grab: None, pass: true, press: None, vx: 0.0, tilt: 0.0, spin: 0.0, track: Default::default(), flips: Vec::new(), way: 0.0, quiet, dizzy: None, bonk: None, tip: None, can: None, glad: None, thirst: matheo_thirst_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok()).unwrap_or(0), tired: (false, None), next_tip: Instant::now() + TIP_FIRST, told: seed % 60 * 2, moved: (None, Instant::now()), bubble: None }
+        Self { at: matheo_load(), vy: 0.0, grab: None, pass: true, press: None, vx: 0.0, tilt: 0.0, spin: 0.0, track: Default::default(), flips: Vec::new(), way: 0.0, quiet, dizzy: None, bonk: None, tip: None, can: None, glad: None, thirst: matheo_thirst_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok()).unwrap_or(0), tired: (false, None), friday: false, active_since: Instant::now(), break_said: None, wave: 0.0, greeted: false, hide: 0.0, hiding: false, growth: matheo_growth_load(), next_tip: Instant::now() + TIP_FIRST, told: seed % 60 * 2, moved: (None, Instant::now()), bubble: None }
     }
 }
 
@@ -300,7 +314,19 @@ impl Plant {
             return;
         }
         let water = k.is_multiple_of(2);
-        self.tip = Some((if water && self.thirst >= 2 { Said::Thirsty } else { Said::Tip(k) }, Instant::now()));
+        let long = self.active_since.elapsed() >= LONG_WORK && self.break_said.is_none_or(|t| t.elapsed() >= TIP_EVERY);
+        let said = if long {
+            self.break_said = Some(Instant::now());
+            Said::Break(k / 2)
+        } else if water && self.thirst >= 2 {
+            Said::Thirsty
+        } else if !water && friday() {
+            // Friday afternoon: the weekend in place of moving.
+            Said::Weekend(k / 2)
+        } else {
+            Said::Tip(k)
+        };
+        self.tip = Some((said, Instant::now()));
         if water && self.can.is_none_or(|(_, pour)| pour.is_none()) {
             self.can = Some((Instant::now(), None));
         }
@@ -314,10 +340,42 @@ impl Plant {
         }
     }
 
+    /// Watered once more: a day with `GOOD_DAY` waterings counts as well watered (kept).
+    fn watered(&mut self) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        if self.growth.0 != today {
+            self.growth = (today, 0, self.growth.2);
+        }
+        self.growth.1 += 1;
+        if self.growth.1 == GOOD_DAY {
+            self.growth.2 += 1;
+        }
+        if let Some(f) = matheo_growth_file() {
+            let _ = std::fs::write(f, serde_json::to_string(&self.growth).unwrap_or_default());
+        }
+    }
+
     /// How wilted he looks (0 to 1).
     fn wilt(&self) -> f32 {
         self.thirst as f32 / THIRST_MAX as f32
     }
+}
+
+/// The pointer still that long: a break (two hours of work on end, he insists).
+const BREAK: Duration = Duration::from_secs(5 * 60);
+const LONG_WORK: Duration = Duration::from_secs(2 * 3600);
+/// Waterings in a day for it to count as well watered; such days for a leaf more (up to 3), and
+/// for his flower.
+const GOOD_DAY: u32 = 3;
+const DAYS_A_LEAF: u32 = 5;
+const DAYS_A_FLOWER: u32 = 20;
+
+fn matheo_growth_file() -> Option<std::path::PathBuf> {
+    crate::config::config_dir().map(|d| d.join("matheo-growth.json"))
+}
+
+fn matheo_growth_load() -> (String, u32, u32) {
+    matheo_growth_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
 /// Reminders to drink left without watering him, at most: then fully wilted.
@@ -330,13 +388,72 @@ fn matheo_thirst_file() -> Option<std::path::PathBuf> {
 /// Late in the evening (from 11 pm to 5 am): he's tired, and sends you to bed.
 fn late() -> bool {
     use chrono::Timelike;
+    if let Some(forced) = forced_clock() {
+        return forced == "late";
+    }
     let h = chrono::Local::now().hour();
     !(5..23).contains(&h)
 }
 
+/// Friday afternoon (from 2 pm, until he's tired): sunglasses on, the weekend is near.
+fn friday() -> bool {
+    use chrono::{Datelike, Timelike};
+    if let Some(forced) = forced_clock() {
+        return forced == "friday";
+    }
+    let now = chrono::Local::now();
+    now.weekday() == chrono::Weekday::Fri && (14..23).contains(&now.hour())
+}
+
+/// Debug builds: `RONNIE_MATHEO_GALLERY=1` shows each of his looks side by side in the middle of
+/// the screen, alive, to see them all at once.
+fn paint_matheo_gallery(painter: &egui::Painter, area: Rect, now: f64) {
+    let base = Look::default();
+    let pour = 0.3 + (now % 3.6) as f32;
+    let looks: [(&str, Look, Option<f32>); 10] = [
+        ("Normal", base, None),
+        ("Tenu", Look { held: true, ..base }, None),
+        ("Lancé", Look { tilt: (now as f32 * 6.0) % std::f32::consts::TAU, ..base }, None),
+        ("Contre un mur", Look { squash: 0.3 * (1.0 - ((now % 1.2) as f32 / 0.25).min(1.0)), dizzy: true, ..base }, None),
+        ("Secoué (6 h)", Look { dizzy: true, ..base }, None),
+        ("L'arrosoir", base, Some(-1.0)),
+        ("Arrosé", Look { glad: pour > POUR_FROM + 0.3, ..base }, Some(pour)),
+        ("Soif (1/3)", Look { wilt: 1.0 / 3.0, ..base }, None),
+        ("Dépéri (3/3)", Look { wilt: 1.0, ..base }, None),
+        ("Le soir, 23 h", Look { tired: true, ..base }, None),
+    ];
+    let more = [
+        ("Vendredi aprèm", Look { shades: true, ..base }, None),
+        ("2 h sans pause", Look { hop: { let e = (now % 3.0) as f32; if e < 2.0 { (e * 9.0).sin().abs() * 8.0 * (1.0 - e / 2.0) } else { 0.0 } }, ..base }, None),
+        ("Salut Gérard", Look { wave: 1.0, ..base }, None),
+        ("La horde, 10 h", Look { hide: 1.0, ..base }, None),
+        ("Grandi, 1 mois", Look { extra: 3, flower: true, ..base }, None),
+    ];
+    let all: Vec<_> = looks.into_iter().chain(more).collect();
+    let step = (area.width() / all.len() as f32).min(130.0);
+    let left = area.center().x - step * (all.len() as f32 - 1.0) / 2.0;
+    let y = area.center().y + 60.0;
+    painter.rect_filled(Rect::from_min_max(Pos2::new(left - step / 2.0, y - 190.0), Pos2::new(left + step * (all.len() as f32 - 0.5), y + 40.0)), 14.0, Color32::from_rgba_unmultiplied(30, 32, 40, 200));
+    for (i, (label, look, can)) in all.into_iter().enumerate() {
+        let foot = Pos2::new(left + step * i as f32, y);
+        paint_matheo_as(painter, foot, MATHEO_H, now, look);
+        if let Some(t) = can {
+            let pouring = (t >= 0.0).then(|| Instant::now() - Duration::from_secs_f32(t));
+            let v = can_view(foot, 1.0, Instant::now() - Duration::from_secs(5), pouring);
+            paint_can(painter, v, Vec2::ZERO);
+        }
+        painter.text(foot + Vec2::new(0.0, 22.0), egui::Align2::CENTER_CENTER, label, FontId::proportional(13.0), Color32::from_rgb(235, 235, 240));
+    }
+}
+
+/// Debug builds: `RONNIE_MATHEO_CLOCK=late|friday` makes it so, to see him.
+fn forced_clock() -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var("RONNIE_MATHEO_CLOCK").ok() } else { None }
+}
+
 impl Plant {
     /// His look's own part: held, tilted, dizzy, squashed, glad, tired, wilted.
-    fn look(&self, tired: bool) -> Look {
+    fn look(&self, tired: bool, shades: bool) -> Look {
         Look {
             held: self.grab.is_some(),
             tilt: self.tilt,
@@ -344,6 +461,19 @@ impl Plant {
             squash: self.bonk.map_or(0.0, |b| (1.0 - b.elapsed().as_secs_f32() / 0.25).max(0.0) * 0.3),
             glad: self.glad.is_some_and(|g| Instant::now() < g) || self.can.and_then(|c| c.1).is_some_and(|p| p.elapsed().as_secs_f32() > POUR_FROM + 0.3),
             tired,
+            shades: shades && !tired,
+            wave: self.wave,
+            hide: self.hide,
+            hop: match self.tip {
+                // Asking for a break: hopping a moment every ten seconds.
+                Some((Said::Break(_), since)) => {
+                    let e = since.elapsed().as_secs_f32() % 10.0;
+                    if e < 2.0 { (e * 9.0).sin().abs() * 8.0 * (1.0 - e / 2.0) } else { 0.0 }
+                }
+                _ => 0.0,
+            },
+            extra: (self.growth.2 / DAYS_A_LEAF).min(3) as usize,
+            flower: self.growth.2 >= DAYS_A_FLOWER,
             wilt: self.wilt(),
         }
     }
@@ -382,6 +512,16 @@ enum Said {
     Bed(usize),
     /// Not watered for a while: thirsty, both of you.
     Thirsty,
+    /// Friday afternoon, his advice number `k`: the weekend is near.
+    Weekend(usize),
+    /// Two hours on end without a break: number `k`, he insists (hopping).
+    Break(usize),
+    /// Gérard passing by.
+    Hello,
+    /// The 10 o'clock horde running across: hiding.
+    Hiding,
+    /// The horde gone.
+    Gone,
 }
 
 impl Said {
@@ -393,7 +533,10 @@ impl Said {
             Said::Quiet => Duration::from_secs(7),
             Said::Ouch => Duration::from_millis(1200),
             Said::Thanks => Duration::from_millis(3500),
-            Said::Bed(_) | Said::Thirsty => TIP_SHOWN,
+            Said::Bed(_) | Said::Thirsty | Said::Weekend(_) => TIP_SHOWN,
+            Said::Break(_) => TIP_SHOWN * 2,
+            Said::Hello | Said::Gone => Duration::from_secs(4),
+            Said::Hiding => Duration::from_millis(1500),
         }
     }
 
@@ -407,6 +550,11 @@ impl Said {
             Said::Thanks => t.matheo_thanks,
             Said::Bed(k) => t.matheo_bed.get(k % t.matheo_bed.len().max(1)).copied().unwrap_or_default(),
             Said::Thirsty => t.matheo_thirsty,
+            Said::Weekend(k) => t.matheo_weekend.get(k % t.matheo_weekend.len().max(1)).copied().unwrap_or_default(),
+            Said::Break(k) => t.matheo_break.get(k % t.matheo_break.len().max(1)).copied().unwrap_or_default(),
+            Said::Hello => t.matheo_hello,
+            Said::Hiding => t.matheo_hiding,
+            Said::Gone => t.matheo_gone,
         }
     }
 }
@@ -666,6 +814,17 @@ struct Look {
     glad: bool,
     /// Late in the evening: heavy eyelids, yawns, leaves hanging a little, z's floating up.
     tired: bool,
+    /// Friday afternoon: sunglasses.
+    shades: bool,
+    /// Waving a leaf at Gérard passing by: towards which side (1 right, -1 left, 0 not).
+    wave: f32,
+    /// Hiding from the 10 o'clock horde (0 to 1): leaves pulled in, trembling, eyes wide.
+    hide: f32,
+    /// Hopping to be noticed (points off the floor).
+    hop: f32,
+    /// Grown, well watered: leaves more (up to 3), and a flower.
+    extra: usize,
+    flower: bool,
     /// Not watered (0 to 1): his leaves hang and yellow, he sulks.
     wilt: f32,
 }
@@ -673,6 +832,9 @@ struct Look {
 fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, look: Look) {
     let held = look.held;
     let u = size / 70.0;
+    let ground = foot;
+    let tremble = if look.hide > 0.3 { (now * 47.0).sin() as f32 * 0.9 * look.hide } else { 0.0 };
+    let foot = foot - Vec2::new(-tremble, look.hop);
     let pivot = foot - Vec2::new(0.0, 20.0 * u);
     let (sin, cos) = look.tilt.sin_cos();
     let at = |x: f32, y: f32| {
@@ -683,7 +845,7 @@ fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, loo
     let ink = Color32::from_rgb(60, 36, 24);
     // The shadow (upright only), the pot (wider at the top), its rim, the soil.
     if look.tilt.abs() < 0.3 {
-        painter.add(egui::Shape::ellipse_filled(foot, Vec2::new(20.0, 4.0) * u, Color32::from_black_alpha(60)));
+        painter.add(egui::Shape::ellipse_filled(ground, Vec2::new(20.0, 4.0) * u * (1.0 - look.hop / 40.0), Color32::from_black_alpha(60)));
     }
     painter.add(egui::Shape::convex_polygon(vec![at(-14.0, 0.0), at(14.0, 0.0), at(18.0, -26.0), at(-18.0, -26.0)], Color32::from_rgb(196, 104, 62), Stroke::NONE));
     painter.add(egui::Shape::convex_polygon(quad((-21.0, -32.0), (21.0, -24.0)), Color32::from_rgb(214, 122, 76), Stroke::NONE));
@@ -699,7 +861,7 @@ fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, loo
         } else if look.glad {
             let arch: Vec<Pos2> = (0..=6).map(|k| { let a = k as f32 / 6.0 * std::f32::consts::PI; at(x - 2.4 * a.cos(), y - 1.6 * a.sin()) }).collect();
             painter.add(egui::Shape::line(arch, Stroke::new(1.5 * u, ink)));
-        } else if held {
+        } else if held || look.hide > 0.5 {
             painter.circle_filled(at(x, y), 3.2 * u, Color32::WHITE);
             painter.circle_filled(at(x, y), 1.8 * u, Color32::from_rgb(40, 30, 24));
         } else if look.tired {
@@ -740,6 +902,25 @@ fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, loo
     }
     painter.circle_filled(at(-10.0, -11.0), 2.2 * u, Color32::from_rgba_unmultiplied(255, 140, 140, 90));
     painter.circle_filled(at(10.0, -11.0), 2.2 * u, Color32::from_rgba_unmultiplied(255, 140, 140, 90));
+    // Friday afternoon: black sunglasses, a glint on each lens, the arms going round the pot.
+    if look.shades {
+        let frame = Color32::from_rgb(12, 12, 16);
+        painter.line_segment([at(-10.4, -16.4), at(-17.6, -18.0)], Stroke::new(1.4 * u, frame));
+        painter.line_segment([at(10.4, -16.4), at(17.6, -18.0)], Stroke::new(1.4 * u, frame));
+        let bridge: Vec<Pos2> = (0..=6).map(|k| { let a = k as f32 / 6.0 * std::f32::consts::PI; at(-1.6 * a.cos(), -16.6 - 0.9 * a.sin()) }).collect();
+        painter.add(egui::Shape::line(bridge, Stroke::new(1.3 * u, frame)));
+        for x in [-6.0f32, 6.0] {
+            let lens: Vec<Pos2> = (0..24)
+                .map(|i| {
+                    let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                    at(x + 4.9 * a.cos(), -15.0 + (3.9 * a.sin()).max(-2.6))
+                })
+                .collect();
+            painter.add(egui::Shape::convex_polygon(lens, Color32::from_rgb(28, 30, 38), Stroke::new(1.1 * u, frame)));
+            painter.line_segment([at(x - 3.0, -15.6), at(x - 1.2, -17.0)], Stroke::new(1.0 * u, Color32::from_rgba_unmultiplied(255, 255, 255, 150)));
+            painter.circle_filled(at(x + 2.6, -13.2), 0.6 * u, Color32::from_rgba_unmultiplied(255, 255, 255, 110));
+        }
+    }
     // His leaves: stems from the soil, big leaves swaying (flapping, held).
     // Hanging when thirsty (and yellowing), a little when tired.
     let speed = if held { 9.0 } else if look.tired { 0.6 } else { 1.3 };
@@ -749,12 +930,20 @@ fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, loo
         let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * w) as u8;
         Color32::from_rgb(m(c.r(), to.0), m(c.g(), to.1), m(c.b(), to.2))
     };
-    for (k, (angle, len)) in [(-1.0f32, 30.0f32), (-0.45, 38.0), (0.1, 42.0), (0.6, 36.0), (1.1, 28.0)].into_iter().enumerate() {
+    // Grown: younger leaves between the first ones, drawn behind them.
+    let leaves: Vec<(f32, f32)> = [(-0.75f32, 26.0f32), (0.35, 33.0), (0.85, 25.0)].into_iter().take(look.extra.min(3)).chain([(-1.0, 30.0), (-0.45, 38.0), (0.1, 42.0), (0.6, 36.0), (1.1, 28.0)]).collect();
+    let first = leaves.len() - 5;
+    // Waving at Gérard: the outer leaf on his side.
+    let waving = if look.wave > 0.0 { Some(leaves.len() - 1) } else if look.wave < 0.0 { Some(first) } else { None };
+    for (k, &(angle, len)) in leaves.iter().enumerate() {
         let sway = (now * speed + k as f64 * 0.9).sin() as f32 * if held { 0.25 } else { 0.08 };
-        let len = len * (1.0 - 0.15 * look.wilt);
+        let len = len * (1.0 - 0.15 * look.wilt) * (1.0 - 0.7 * look.hide);
         let bend = if angle.abs() < 0.3 { droop * 0.6 } else { 0.0 };
-        let a = -std::f32::consts::FRAC_PI_2 + angle * 0.8 * (1.0 + droop * 0.9) + bend + sway + look.tilt;
-        let base = at((k as f32 - 2.0) * 3.0, -32.0);
+        let mut a = -std::f32::consts::FRAC_PI_2 + angle * 0.8 * (1.0 + droop * 0.9) * (1.0 - 0.6 * look.hide) + bend + sway + look.tilt;
+        if waving == Some(k) {
+            a = -std::f32::consts::FRAC_PI_2 + look.wave * (0.75 + (now * 12.0).sin() as f32 * 0.35) + look.tilt;
+        }
+        let base = at(angle * 6.0, -32.0);
         let tip = base + Vec2::angled(a) * len * u;
         let mid = base.lerp(tip, 0.55);
         painter.line_segment([base, mid], Stroke::new(2.0 * u, fade(Color32::from_rgb(60, 120, 50), (120, 100, 50))));
@@ -772,7 +961,9 @@ fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, loo
                 mid + dir * f * (len * 0.6) * u - side * w
             }))
             .collect();
-        painter.add(egui::Shape::convex_polygon(leaf, fade([Color32::from_rgb(72, 160, 70), Color32::from_rgb(90, 180, 80)][k % 2], (186, 160, 72)), Stroke::new(1.0, fade(Color32::from_rgb(40, 100, 40), (120, 96, 44)))));
+        let young = k < first;
+        let green = if young { Color32::from_rgb(118, 196, 96) } else { [Color32::from_rgb(72, 160, 70), Color32::from_rgb(90, 180, 80)][k % 2] };
+        painter.add(egui::Shape::convex_polygon(leaf, fade(green, (186, 160, 72)), Stroke::new(1.0, fade(Color32::from_rgb(40, 100, 40), (120, 96, 44)))));
         painter.line_segment([mid, mid + dir * len * 0.55 * u], Stroke::new(1.0, fade(Color32::from_rgb(140, 210, 120), (214, 196, 120))));
         if look.glad {
             // Drops shining on his leaves.
@@ -780,6 +971,24 @@ fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, loo
             painter.circle_filled(drop, 1.9 * u, Color32::from_rgba_unmultiplied(150, 205, 255, 220));
             painter.circle_filled(drop - Vec2::new(0.6, 0.6) * u, 0.7 * u, Color32::WHITE);
         }
+    }
+    // Grown for a month: a pink flower on a stem of its own, nodding (hanging when thirsty).
+    if look.flower {
+        let sway = (now * speed * 0.8).sin() as f32 * 0.06;
+        let a = -std::f32::consts::FRAC_PI_2 + 0.12 + droop * 0.9 + sway + look.tilt;
+        let base = at(1.0, -32.0);
+        let top = base + Vec2::angled(a) * 50.0 * u * (1.0 - 0.6 * look.hide);
+        let bend = base.lerp(top, 0.5) + Vec2::angled(a + 1.4) * 3.0 * u;
+        let stem: Vec<Pos2> = (0..=10).map(|i| { let t = i as f32 / 10.0; let m = 1.0 - t; (base.to_vec2() * m * m + bend.to_vec2() * 2.0 * m * t + top.to_vec2() * t * t).to_pos2() }).collect();
+        painter.add(egui::Shape::line(stem, Stroke::new(1.6 * u, fade(Color32::from_rgb(60, 130, 50), (120, 100, 50)))));
+        let petal = fade(Color32::from_rgb(244, 128, 170), (196, 150, 130));
+        for i in 0..6 {
+            let p = top + Vec2::angled(i as f32 * std::f32::consts::TAU / 6.0 + now as f32 * 0.2) * 4.2 * u;
+            painter.circle_filled(p, 3.4 * u, petal);
+            painter.circle_stroke(p, 3.4 * u, Stroke::new(0.6 * u, Color32::from_rgb(200, 80, 120)));
+        }
+        painter.circle_filled(top, 2.8 * u, Color32::from_rgb(255, 206, 64));
+        painter.circle_filled(top - Vec2::new(0.8, 0.8) * u, 0.9 * u, Color32::from_rgb(255, 240, 170));
     }
     // Tired: z's floating up from his leaves.
     if look.tired && !look.dizzy && !held {
@@ -1492,6 +1701,9 @@ impl eframe::App for Overlay {
                 if plant.moved.1.elapsed() >= TIP_AWAY {
                     plant.next_tip = plant.next_tip.max(moment + TIP_EVERY / 2);
                 }
+                if plant.moved.1.elapsed() >= BREAK {
+                    plant.active_since = moment;
+                }
                 plant.moved = (mouse.at, moment);
             }
             if plant.tip.is_some_and(|(said, since)| since.elapsed() >= said.lasts() || (!self.shown.matheo_tips && matches!(said, Said::Tip(_)))) {
@@ -1507,11 +1719,49 @@ impl eframe::App for Overlay {
                 Some((_, Some(pour))) if pour.elapsed().as_secs_f32() >= POUR_END => {
                     plant.can = None;
                     plant.set_thirst(0);
+                    plant.watered();
                     plant.glad = Some(Instant::now() + Duration::from_secs(4));
                     plant.tip = Some((Said::Thanks, Instant::now()));
                 }
                 Some(_) => plant_busy = true,
                 None => {}
+            }
+            // Gérard passing near him on his screen: a leaf waved, « Salut Gérard ! » once a walk.
+            let n = screens.len().max(1);
+            let mine = screens.iter().position(|(s, _)| s.contains(at - Vec2::new(0.0, 1.0))).unwrap_or(0);
+            let (walking, on) = walks(&self.shown, now, n)[2];
+            plant.wave = 0.0;
+            if walking && on == mine
+                && let (Ok((along, rightward, _)), Some(work)) = (gerard_at(now), works.get(mine))
+            {
+                let (from, to) = (work.min.x + 6.0, work.max.x - 6.0);
+                let x = from - 30.0 + (to - from + 60.0) * along;
+                let x = if rightward { x } else { from + to - x };
+                if (x - at.x).abs() < 150.0 && plant.grab.is_none() {
+                    plant.wave = (x - at.x).signum();
+                    if !plant.greeted && plant.tip.is_none_or(|(said, _)| matches!(said, Said::Ouch | Said::Gone)) {
+                        plant.tip = Some((Said::Hello, Instant::now()));
+                    }
+                    plant.greeted = true;
+                }
+                plant_busy = true;
+            } else {
+                plant.greeted = false;
+            }
+            // The 10 o'clock horde: he hides in his pot, trembling, and peeks out once it's gone.
+            let horde = self.shown.horde && horde_since(self.shown.horde_demo).is_ok();
+            plant.hide = (plant.hide + (if horde { 4.0 } else { -2.0 }) * dt).clamp(0.0, 1.0);
+            if horde {
+                if !matches!(plant.tip, Some((Said::Quiet, _))) {
+                    plant.tip = Some((Said::Hiding, Instant::now()));
+                }
+                plant.hiding = true;
+            } else if plant.hiding {
+                plant.hiding = false;
+                plant.tip = Some((Said::Gone, Instant::now()));
+            }
+            if plant.hide > 0.0 {
+                plant_busy = true;
             }
             let pass = !(over || plant.grab.is_some());
             if pass != plant.pass {
@@ -1524,9 +1774,10 @@ impl eframe::App for Overlay {
         }
         if self.matheo.tired.1.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
             self.matheo.tired = (late(), Some(Instant::now()));
+            self.matheo.friday = friday();
         }
         let m = &self.matheo;
-        let look = m.look(m.tired.0);
+        let look = m.look(m.tired.0, m.friday);
         let can = m.at.zip(m.can).map(|(at, (since, pour))| can_view(at, can_side(at, &works), since, pour));
         let plant = m.at.filter(|_| self.shown.matheo).map(|at| (at, look));
         let tip = m.tip.filter(|_| self.shown.matheo).map(|(said, _)| said.text(self.shown.lang));
@@ -1631,6 +1882,10 @@ impl eframe::App for Overlay {
                 // Mathéo alone there: his leaves sway gently.
                 next = next.min(0.1);
             }
+        }
+        if cfg!(debug_assertions) && std::env::var_os("RONNIE_MATHEO_GALLERY").is_some() {
+            paint_matheo_gallery(&painter, self.screen.translate(-origin.to_vec2()), now);
+            busy = true;
         }
         if self.shown.trail {
             self.trail.bills = self.shown.bills;
@@ -2396,7 +2651,7 @@ mod tests {
             let t = lang.strings();
             assert!(t.matheo_water.contains(&matheo_tip(lang, 0)));
             assert!(t.matheo_moves.contains(&matheo_tip(lang, 1)));
-            for said in [Said::Tip(7), Said::Shaking, Said::Quiet, Said::Ouch, Said::Thanks, Said::Bed(12), Said::Thirsty] {
+            for said in [Said::Tip(7), Said::Shaking, Said::Quiet, Said::Ouch, Said::Thanks, Said::Bed(12), Said::Thirsty, Said::Weekend(3), Said::Break(4), Said::Hello, Said::Hiding, Said::Gone] {
                 assert!(!said.text(lang).is_empty(), "{said:?}");
             }
         }
