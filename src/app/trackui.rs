@@ -157,6 +157,42 @@ fn chip(ui: &mut Ui, text: &str, color: Color32) -> egui::Response {
     Frame::NONE.fill(color.gamma_multiply(0.16)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(color)).truncate())).response
 }
 
+/// A segmented control: the choices side by side in one framed bar, thin lines between them, the
+/// chosen one filled (instead of a row of separate pills). Gives the one clicked.
+pub(super) fn segmented(ui: &mut Ui, theme: &Theme, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
+    let font = egui::FontId::proportional(12.0);
+    let height = ui.spacing().interact_size.y.max(24.0);
+    let galleys: Vec<_> = labels.iter().map(|l| ui.painter().layout_no_wrap((*l).to_owned(), font.clone(), theme.text)).collect();
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + 20.0).collect();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.iter().sum(), height), egui::Sense::hover());
+    let radius = 7.0;
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, radius, theme.bg.gamma_multiply(0.5));
+    let mut clicked = None;
+    let mut x = rect.left();
+    for (i, (galley, w)) in galleys.into_iter().zip(&widths).enumerate() {
+        let seg = egui::Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(*w, height));
+        let resp = ui.interact(seg, ui.id().with(("segmented", labels[i], i)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let on = chosen == Some(i);
+        if on {
+            painter.rect_filled(seg.shrink(2.0), radius - 2.0, theme.tab_active);
+        } else if resp.hovered() {
+            painter.rect_filled(seg.shrink(2.0), radius - 2.0, theme.tab_hover);
+        }
+        if i > 0 && !on && chosen != Some(i - 1) {
+            painter.vline(x, seg.y_range().shrink(6.0), Stroke::new(1.0, theme.tab_hover));
+        }
+        let color = if on { theme.text } else { theme.text_muted };
+        painter.galley_with_override_text_color(seg.center() - galley.size() / 2.0, galley, color);
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        x += w;
+    }
+    painter.rect_stroke(rect, radius, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
+    clicked
+}
+
 /// A filled button, the main action.
 fn primary(text: &str, theme: &Theme) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(text.to_owned()).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(8.0).min_size(Vec2::new(0.0, 32.0))
@@ -1439,10 +1475,10 @@ impl App {
                         ui.horizontal(|ui| {
                             let day_field = ui.add(egui::TextEdit::singleline(&mut f.day).desired_width(100.0).hint_text("18/11"));
                             day_picker(ui, &day_field, &mut f.day, t, &theme);
-                            for (label, value) in [(t.track_today_word, track::today()), (t.track_yesterday, track::parse_day("hier").unwrap_or_default())] {
-                                if ui.add(egui::Button::new(egui::RichText::new(label).size(11.5)).corner_radius(10.0).selected(track::parse_day(&f.day).as_deref() == Some(value.as_str()))).clicked() {
-                                    f.day = show_day(&value);
-                                }
+                            let days = [track::today(), track::parse_day("hier").unwrap_or_default()];
+                            let typed_day = track::parse_day(&f.day);
+                            if let Some(i) = segmented(ui, &theme, &[t.track_today_word, t.track_yesterday], days.iter().position(|d| typed_day.as_deref() == Some(d.as_str()))) {
+                                f.day = show_day(&days[i]);
                             }
                         });
                     });
@@ -1451,10 +1487,12 @@ impl App {
                         field(ui, t.track_duration);
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut f.duration).desired_width(70.0).hint_text("1h30"));
-                            for m in [15u32, 30, 60, 120, 240, 420] {
-                                if ui.add(egui::Button::new(egui::RichText::new(hm(m as i64)).size(11.5)).corner_radius(10.0).selected(track::parse_duration(&f.duration) == Some(m))).clicked() {
-                                    f.duration = typed(m as u64);
-                                }
+                            let presets = [15u32, 30, 60, 120, 240, 420];
+                            let names: Vec<String> = presets.iter().map(|m| hm(*m as i64)).collect();
+                            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                            let typed_minutes = track::parse_duration(&f.duration);
+                            if let Some(i) = segmented(ui, &theme, &names, presets.iter().position(|m| typed_minutes == Some(*m))) {
+                                f.duration = typed(presets[i] as u64);
                             }
                         });
                     });

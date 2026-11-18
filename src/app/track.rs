@@ -699,8 +699,14 @@ impl App {
                 return;
             }
             ui.horizontal_wrapped(|ui| {
-                for c in &clients {
-                    if ui.add(egui::Button::new(egui::RichText::new(c).size(11.5)).corner_radius(10.0).selected(client == c)).clicked() {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (i, c) in clients.iter().enumerate() {
+                    if i > 0 {
+                        ui.label(egui::RichText::new("·").size(12.0).color(theme.text_muted));
+                    }
+                    let on = client == c;
+                    let text = egui::RichText::new(c).size(12.0).color(if on { theme.accent } else { theme.text_muted });
+                    if ui.add(egui::Button::new(text).frame_when_inactive(false)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         *client = c.clone();
                     }
                 }
