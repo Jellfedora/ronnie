@@ -1707,19 +1707,28 @@ impl Corp {
         } else if self.debt < 10.0 && on(self, Task::Refactor) > 0 {
             moves.push((Task::Refactor, Task::Contracts));
         }
+        let idle = self.contracts.is_empty() && self.offers.is_empty();
         let suffering = self.products.iter().any(|p| p.version == 0 || p.bugs > 25.0);
         if !self.products.is_empty() && (suffering || on(self, Task::Products) == 0) {
             moves.push((Task::Contracts, Task::Products));
-        } else if (self.products.is_empty() && on(self, Task::Products) > 0) || (!suffering && on(self, Task::Products) > 1 && self.products.iter().all(|p| p.bugs < 5.0)) {
+        } else if (self.products.is_empty() && on(self, Task::Products) > 0) || (!idle && !suffering && on(self, Task::Products) > 1 && self.products.iter().all(|p| p.bugs < 5.0)) {
             moves.push((Task::Products, Task::Contracts));
         }
-        let idle = self.contracts.is_empty() && self.offers.is_empty();
         let makers = self.staff.iter().filter(|e| movable(e)).count();
-        if idle && on(self, Task::Contracts) > 1 {
+        // Every tech found: research gives nothing more, all back to work at once (the products
+        // first, they always take more versions).
+        let searching = TECHS.iter().any(|t| !self.has_tech(t.id));
+        let back = if self.products.is_empty() { Task::Contracts } else { Task::Products };
+        if !searching {
+            moves.extend(std::iter::repeat_n((Task::Research, back), on(self, Task::Research)));
+            if idle && !self.products.is_empty() && on(self, Task::Contracts) > 1 {
+                moves.push((Task::Contracts, Task::Products));
+            }
+        } else if idle && on(self, Task::Contracts) > 1 {
             moves.push((Task::Contracts, Task::Research));
         } else if !idle && on(self, Task::Research) > (makers / 5).max(1) {
-            moves.push((Task::Research, Task::Contracts));
-        } else if !idle && on(self, Task::Research) == 0 && makers >= 4 && TECHS.iter().any(|t| !self.has_tech(t.id)) {
+            moves.extend(std::iter::repeat_n((Task::Research, Task::Contracts), on(self, Task::Research) - (makers / 5).max(1)));
+        } else if !idle && on(self, Task::Research) == 0 && makers >= 4 {
             moves.push((Task::Contracts, Task::Research));
         }
         for (from, to) in moves {
@@ -2972,6 +2981,32 @@ mod tests {
             c.step(1.0, false, &mut sum);
         }
         assert_eq!(c.staff.len(), staff);
+    }
+
+    #[test]
+    fn nobody_left_on_research_once_everything_is_found() {
+        let mut c = corp();
+        c.stage = 3;
+        for t in TECHS {
+            c.techs.push(t.id.to_owned());
+        }
+        c.launch(0);
+        let lead = c.make_employee("lead", 1);
+        c.staff.push(lead);
+        for k in 0..30 {
+            let mut e = c.make_employee(if k % 2 == 0 { "front" } else { "back" }, 1);
+            e.task = if k < 25 { Task::Research } else { Task::Contracts };
+            c.staff.push(e);
+        }
+        // Nothing to deliver: the project manager sends nobody to research.
+        c.contracts.clear();
+        c.offers.clear();
+        c.auto_tasks();
+        assert!(c.staff.iter().all(|e| e.task != Task::Research), "all back from research at once");
+        for _ in 0..20 {
+            c.auto_tasks();
+        }
+        assert!(c.staff.iter().all(|e| e.task != Task::Research));
     }
 
     #[test]
