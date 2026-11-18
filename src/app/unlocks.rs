@@ -89,7 +89,10 @@ impl App {
             HomeGame::Coffee => {
                 let need = crate::coffee::THRONES_UNLOCK as u32;
                 let done = s.coffee_bests.iter().filter(|&&b| b > 0).count() as u32;
-                vec![Unlock { what: t.unlock_thrones.into(), how: t.unlock_thrones_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || done >= need, progress: Some((done.min(need), need)), info: false, reward: Some(Reward::Theme(crate::theme::THRONES_THEME)), gives: t.unlock_gives_theme.into() }]
+                vec![
+                    Unlock { what: t.unlock_thrones.into(), how: t.unlock_thrones_how.replace("{n}", &need.to_string()), done: !crate::config::OFFICIAL || done >= need, progress: Some((done.min(need), need)), info: false, reward: Some(Reward::Theme(crate::theme::THRONES_THEME)), gives: t.unlock_gives_theme.into() },
+                    Unlock { what: t.unlock_hodor.into(), how: t.unlock_hodor_how.replace("{n}", &need.to_string()), done: done >= need, progress: Some((done.min(need), need)), info: false, reward: None, gives: t.hodor_unlocked_body.into() },
+                ]
             }
             HomeGame::Larsen => vec![Unlock { what: t.unlock_star_wars.into(), how: t.unlock_star_wars_how.to_owned(), done: s.hyperspace_unlocked, progress: None, info: false, reward: Some(Reward::Theme(crate::theme::HYPERSPACE_THEME)), gives: t.unlock_gives_theme.into() }],
             HomeGame::Riff => {

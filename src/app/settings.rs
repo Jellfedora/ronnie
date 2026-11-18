@@ -2383,6 +2383,7 @@ impl App {
             !official || picked.hyperspace_unlocked,
             !official || picked.wizard_unlocked,
             super::wallstreet::unicorn_unlocked(picked),
+            !official || crate::coffee::thrones_won(&picked.coffee_bests),
         ];
         let any_walker = desktop && walkers.iter().any(|w| *w);
         if pointers.len() < 2 && trails.len() < 2 && !sheep_won && !any_walker {
@@ -2437,7 +2438,7 @@ impl App {
             }
             let fx = &mut picked.desktop_fx;
             let on = fx.on;
-            let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn)];
+            let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn), (t.desktop_wolf, &mut fx.wolf)];
             for ((label, shown), won) in rows.into_iter().zip(walkers) {
                 if !won {
                     continue;

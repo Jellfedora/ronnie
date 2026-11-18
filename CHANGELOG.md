@@ -4,6 +4,14 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+### Nouveautés
+
+- **Game of Thrones, le louveteau blanc et Hodor** (par Jonathan) : avec le thème, un louveteau blanc trotte en bas de l'écran et s'assoit à mi-chemin pour hurler (Apparence › compagnons). Dans le tchat, un bouton envoie Hodor tenir la porte au milieu de l'écran de l'autre, comme le cochon qui danse ; il se débloque en finissant 3 niveaux de Pause Café, connecté avec son pseudo. Demande floor 0.22.1.
+
+### Corrections
+
+- Windows 11 : les effets sur tout l'écran ne montrent plus de cadres vides par-dessus les écrans (par Jonathan).
+
 ## [1.4.1] - 2026-11-18
 
 ### Nouveautés

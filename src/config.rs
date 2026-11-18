@@ -1014,11 +1014,13 @@ pub struct DesktopFx {
     pub gerard: bool,
     /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
     pub matheo: bool,
+    /// The white direwolf cub trotting along the foot of the screen, sitting down to howl (Game of Thrones).
+    pub wolf: bool,
 }
 
 impl Default for DesktopFx {
     fn default() -> Self {
-        Self { on: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true, matheo: true }
+        Self { on: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true, matheo: true, wolf: true }
     }
 }
 
