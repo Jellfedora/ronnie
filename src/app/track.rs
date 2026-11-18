@@ -96,9 +96,22 @@ struct EditProject {
     confirm: bool,
 }
 
-/// The profiles proposed to become projects: each one, picked or not, its client.
+/// The profiles proposed to become projects: each one, picked or not, its client; shown by group
+/// of the local profiles (a group ticked picks all its profiles, those of its sub-groups too).
 struct Import {
     rows: Vec<(Uuid, bool, String, String)>,
+    sections: Vec<Section>,
+}
+
+/// A group of local profiles in the take-up window (or those in none).
+struct Section {
+    /// Its name (None: the profiles in no group).
+    name: Option<String>,
+    depth: usize,
+    /// Its own profiles (rows).
+    own: Vec<usize>,
+    /// Its profiles and those of its sub-groups: what its box ticks.
+    all: Vec<usize>,
 }
 
 pub(super) struct Track {
@@ -412,6 +425,10 @@ impl App {
             "counters" => Tab::Counters,
             "quotes" => Tab::Quotes,
             "access" => Tab::Access,
+            "import" => {
+                self.track_import_open();
+                Tab::Tasks
+            }
             _ => Tab::Tasks,
         };
     }
@@ -451,12 +468,40 @@ impl App {
     fn track_import_open(&mut self) {
         let t = self.t();
         let tied: Vec<Uuid> = self.config.settings.track_profiles.values().copied().collect();
-        let rows: Vec<(Uuid, bool, String, String)> = self.config.profiles.iter().filter(|p| !tied.contains(&p.id)).map(|p| (p.id, false, p.name(t.untitled).to_owned(), String::new())).collect();
+        // The client is often the profile itself: its name, to change.
+        let rows: Vec<(Uuid, bool, String, String)> = self.config.profiles.iter().filter(|p| !tied.contains(&p.id)).map(|p| (p.id, false, p.name(t.untitled).to_owned(), p.name(t.untitled).to_owned())).collect();
         if rows.is_empty() {
             self.error = Some(t.track_import_none.to_owned());
             return;
         }
-        self.track.import = Some(Import { rows });
+        // The local groups, each followed by its sub-groups; then the profiles in none.
+        let groups: Vec<&crate::config::Group> = self.config.groups.iter().filter(|g| g.local).collect();
+        let row_of = |id: &Uuid| rows.iter().position(|r| r.0 == *id);
+        let mut sections = Vec::new();
+        fn walk(groups: &[&crate::config::Group], parent: Option<Uuid>, depth: usize, row_of: &dyn Fn(&Uuid) -> Option<usize>, sections: &mut Vec<Section>) -> Vec<usize> {
+            let mut under = Vec::new();
+            for g in groups.iter().filter(|g| g.parent == parent) {
+                let at = sections.len();
+                let own: Vec<usize> = g.items.iter().filter_map(row_of).collect();
+                sections.push(Section { name: Some(g.name.clone()), depth, own: own.clone(), all: Vec::new() });
+                let mut all = own;
+                // Guarded against a group its own ancestor (a broken config).
+                if depth < 8 {
+                    all.extend(walk(groups, Some(g.id), depth + 1, row_of, sections));
+                }
+                sections[at].all = all.clone();
+                under.extend(all);
+            }
+            under
+        }
+        let grouped = walk(&groups, None, 0, &row_of, &mut sections);
+        // Empty groups (all their profiles tied already) left out.
+        sections.retain(|s| !s.all.is_empty());
+        let rest: Vec<usize> = (0..rows.len()).filter(|k| !grouped.contains(k)).collect();
+        if !rest.is_empty() {
+            sections.push(Section { name: None, depth: 0, own: rest.clone(), all: rest });
+        }
+        self.track.import = Some(Import { rows, sections });
     }
 
     fn track_edit_open(&mut self) {
@@ -1470,19 +1515,39 @@ impl App {
         if let Some(import) = &mut self.track.import {
             let mut close = false;
             let modal = egui::Modal::new(egui::Id::new("track-import")).frame(frame).show(ctx, |ui| {
-                ui.set_width(520.0);
+                ui.set_width(560.0);
                 ui.label(egui::RichText::new(t.track_import_title).size(19.0).strong().color(theme.text));
                 ui.add_space(6.0);
                 ui.add(egui::Label::new(egui::RichText::new(t.track_import_body).size(13.0).color(theme.text_muted)).wrap());
                 ui.add_space(10.0);
-                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-                    for (k, (_, on, name, client)) in import.rows.iter_mut().enumerate() {
+                egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                    let Import { rows, sections } = import;
+                    for (s, section) in sections.iter().enumerate() {
+                        let indent = section.depth as f32 * 18.0;
+                        // The group's box: all its profiles (sub-groups too), ticked or not.
+                        let picked = section.all.iter().filter(|k| rows[**k].1).count();
+                        let mut all = picked == section.all.len();
+                        ui.add_space(if s == 0 { 0.0 } else { 6.0 });
                         ui.horizontal(|ui| {
-                            ui.checkbox(on, egui::RichText::new(name.as_str()).size(13.5).color(theme.text));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.add_enabled(*on, egui::TextEdit::singleline(client).id_salt(("track-import-client", k)).desired_width(170.0).hint_text(t.track_client));
-                            });
+                            ui.add_space(indent);
+                            let name = section.name.as_deref().unwrap_or(t.track_import_ungrouped);
+                            let label = egui::RichText::new(format!("{name}  ({})", section.all.len())).size(13.5).strong().color(theme.text);
+                            if ui.add(egui::Checkbox::new(&mut all, label).indeterminate(picked > 0 && picked < section.all.len())).changed() {
+                                for k in &section.all {
+                                    rows[*k].1 = all;
+                                }
+                            }
                         });
+                        for &k in &section.own {
+                            let (_, on, name, client) = &mut rows[k];
+                            ui.horizontal(|ui| {
+                                ui.add_space(indent + 22.0);
+                                ui.checkbox(on, egui::RichText::new(name.as_str()).size(13.0).color(theme.text));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.add_enabled(*on, egui::TextEdit::singleline(client).id_salt(("track-import-client", k)).desired_width(170.0).hint_text(t.track_client));
+                                });
+                            });
+                        }
                     }
                 });
                 ui.add_space(12.0);
