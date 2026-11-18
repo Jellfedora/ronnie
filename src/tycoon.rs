@@ -727,7 +727,20 @@ pub struct Corp {
     /// The season it was started in (`SEASON`).
     #[serde(default)]
     pub season: u32,
+    /// The tour of what season 2 brought, for those who had done the tutorial (`TUTORIAL_DONE`: over).
+    #[serde(default = "tour_done")]
+    pub whats_new: u8,
+    /// The one-off tips seen (bits: `TIP_RIVAL`).
+    #[serde(default)]
+    pub tips: u8,
 }
+
+fn tour_done() -> u8 {
+    TUTORIAL_DONE
+}
+
+/// The tip on the rivals, shown when the first one comes.
+pub const TIP_RIVAL: u8 = 1;
 
 fn first_rival() -> f64 {
     600.0
@@ -820,6 +833,8 @@ impl Corp {
             run_time: 0.0,
             life: Life::default(),
             season: SEASON,
+            whats_new: TUTORIAL_DONE,
+            tips: 0,
         };
         let founder = Employee { id: c.id(), name: String::new(), job: "founder".into(), level: 1, xp: 0.0, morale: 70.0, salary: 0.0, skills: JOBS[0].skills, trait_id: None, task: Task::Contracts, star: None };
         c.staff.push(founder);
@@ -1334,6 +1349,8 @@ impl Corp {
         // One more action: on a sync, the new season wins over the old company.
         c.actions = self.actions + 1;
         c.tutorial = self.tutorial;
+        // The tutorial done already: a tour of what's new instead (not done: its new steps will tell).
+        c.whats_new = if self.tutorial == TUTORIAL_DONE { 0 } else { TUTORIAL_DONE };
         c.say(NewsKind::Season, "", 0.0, 0.0);
         c
     }
@@ -1365,6 +1382,7 @@ impl Corp {
         legacy.best_sale = legacy.best_sale.max(self.valuation());
         let actions = self.actions + 1;
         let tutorial = self.tutorial;
+        let (whats_new, tips) = (self.whats_new, self.tips);
         let seed = self.next();
         let mut life = std::mem::take(&mut self.life);
         life.account += share;
@@ -1372,6 +1390,8 @@ impl Corp {
         *self = Corp::new(now, seed, legacy);
         self.actions = actions;
         self.tutorial = tutorial;
+        self.whats_new = whats_new;
+        self.tips = tips;
         self.life = life;
         self.policy.founder_pay = founder_pay;
         self.challenge = challenge.and_then(growth::challenge).map(|c| c.id.to_owned());
@@ -3516,6 +3536,11 @@ mod tests {
         assert_eq!(n.legacy.floor_stars(), 1, "a company sold: floor's golden ticker frame kept");
         assert_eq!(n.best_stage(), 5, "the furthest stage kept (the rewards)");
         assert_eq!(n.tutorial, TUTORIAL_DONE);
+        assert_eq!(n.whats_new, 0, "the tutorial done: the tour of what's new");
+        assert_eq!(corp().whats_new, TUTORIAL_DONE, "a new player: the tutorial tells");
+        let mut mid = corp();
+        mid.tutorial = 4;
+        assert_eq!(mid.new_season(0).whats_new, TUTORIAL_DONE, "mid-tutorial: its new steps tell");
         assert!(n.actions > old.actions, "wins a sync over the old company");
         assert!(n.news.iter().any(|x| x.kind == NewsKind::Season));
     }

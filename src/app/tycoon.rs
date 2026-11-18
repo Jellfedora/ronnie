@@ -64,7 +64,49 @@ struct Step {
     done: Option<fn(&Corp) -> bool>,
 }
 
-const STEPS: [Step; 10] = [
+/// The tour of what season 2 brought, for those who had done the tutorial already.
+const WHATS_NEW: [Step; 5] = [
+    Step {
+        title: ("Ta vie privée", "Your private life"),
+        text: ("Nouvel onglet : ton compte perso, ta maison, ta voiture, ta famille, tes placements et ton stress. Commence par te verser un salaire de fondateur·rice : sans lui, ton compte reste vide. Ta vie compte aussi pour la boîte : stressé·e, tu travailles moins ; en burn-out, plus du tout.", "New tab: your personal account, your home, your car, your family, your investments and your stress. Start by paying yourself a founder's salary: without it, your account stays empty. Your life matters for the company too: stressed, you work less; burnt out, not at all."),
+        spot: Spot::Tab(Tab::Life),
+        done: None,
+    },
+    Step {
+        title: ("Tes produits ont un cap", "Your products have a focus"),
+        text: ("Chaque produit en ligne a maintenant un cap (fonctionnalités, performance, croissance, monétisation), un prix (du gratuit avec pubs au luxe) et peut pivoter vers un autre produit.", "Each live product now has a focus (features, performance, growth, monetisation), a price (from free with ads to luxury) and can pivot to another product."),
+        spot: Spot::Tab(Tab::Products),
+        done: None,
+    },
+    Step {
+        title: ("Les étoiles et les défis", "Stars and challenges"),
+        text: ("Les étoiles gagnées en revendant se placent dans des talents (argent de départ, technos offertes, productivité…). Et en revendant, tu peux choisir un défi pour la boîte suivante : réussi, il rapporte des étoiles en plus.", "The stars won by selling now go into talents (starting money, free techs, productivity…). And when you sell, you can pick a challenge for the next company: won, it brings more stars."),
+        spot: Spot::Tab(Tab::Board),
+        done: None,
+    },
+    Step {
+        title: ("Le groupe", "The group"),
+        text: ("Dès la PME, des concurrents prennent des utilisateurs à tes produits : rachète-les. Ouvre des bureaux à l'étranger pour des places et des bonus. Et une fois en bourse, un conseil d'administration te fixe un objectif chaque trimestre.", "From the small business on, rivals take users from your products: buy them. Open offices abroad for seats and bonuses. And once listed, a board of directors sets you a goal each quarter."),
+        spot: Spot::Tab(Tab::Group),
+        done: None,
+    },
+    Step {
+        title: ("La recherche ne s'arrête plus", "Research never stops"),
+        text: ("Une fois toutes les technos trouvées, des optimisations sans fin prennent le relais. Et ton ou ta chef·fe de projet n'envoie plus qu'un cinquième de l'équipe en recherche.", "Once every tech is found, endless optimisations take over. And your project manager now sends only a fifth of the team to research."),
+        spot: Spot::Tab(Tab::Research),
+        done: None,
+    },
+];
+
+/// Shown once, when the first rival comes.
+const RIVAL_TIP: Step = Step {
+    title: ("Un concurrent arrive !", "A rival shows up!"),
+    text: ("Il prend une part du marché de son type de produit : tes produits du même type perdent des utilisateurs. Onglet Groupe : tu peux le racheter, avec ses utilisateurs et une partie de son équipe (et de sa dette).", "It takes a share of its kind of product's market: your products of the same kind lose users. Group tab: you can buy it, with its users and part of its team (and of its debt)."),
+    spot: Spot::Tab(Tab::Group),
+    done: None,
+};
+
+const STEPS: [Step; 11] = [
     Step {
         title: ("Bienvenue chez Ronnie Corp !", "Welcome to Ronnie Corp!"),
         text: ("Tu démarres seul·e dans le garage de tes parents, avec 1 500 €. Le but : faire grandir ta boîte, du garage jusqu'à la bourse. Tu vois ton bureau en vrai : c'est toi, avec la couronne.", "You start alone in your parents' garage, with €1,500. The goal: grow your company from the garage all the way to the stock exchange. That's your office, for real: you're the one with the crown."),
@@ -118,6 +160,12 @@ const STEPS: [Step; 10] = [
         text: ("Télétravail, horaires (le crunch va vite mais épuise), salaires, marketing, formation : tout se règle dans Direction. Plus tard, tu pourras y revendre la boîte contre des étoiles, des bonus pour toujours.", "Remote work, hours (crunch is fast but exhausting), salaries, marketing, training: all set in Management. Later you can sell the company there for stars, bonuses for good."),
         spot: Spot::Tab(Tab::Board),
         done: None,
+    },
+    Step {
+        title: ("Et toi, dans tout ça ?", "And what about you?"),
+        text: ("Tu as aussi une vie : un compte perso, une maison, peut-être une famille, et un niveau de stress. Onglet Vie privée : verse-toi un salaire de fondateur·rice (« Modeste » suffit pour commencer), payé par la boîte. Attention : trop de stress, et tu travailles moins bien.", "You have a life too: a personal account, a home, maybe a family, and a stress level. Private life tab: pay yourself a founder's salary (\"Modest\" is fine to start with), paid by the company. Careful: too much stress and you work less well."),
+        spot: Spot::Tab(Tab::Life),
+        done: Some(|c| c.policy.founder_pay > 0),
     },
     Step {
         title: ("C'est à toi !", "Over to you!"),
@@ -1760,6 +1808,7 @@ impl App {
         }
         if c.tutorial as usize >= STEPS.len() {
             self.tycoon.replay = false;
+            self.tycoon_tours(ctx, page, c, fr, theme);
             return;
         }
         // The steps already done skipped (unless seen again).
@@ -1770,8 +1819,61 @@ impl App {
             c.tutorial = corp::TUTORIAL_DONE;
             return;
         };
+        let k = c.tutorial as usize;
+        let last = k + 1 == STEPS.len();
+        let next_label = if step.done.is_none() || self.tycoon.replay {
+            Some(if last { tx(("Terminer", "Finish"), fr) } else if k == 0 { tx(("C'est parti !", "Let's go!"), fr) } else { tx(("Suivant", "Next"), fr) })
+        } else {
+            None
+        };
+        let head = format!("{} · {}/{}", tx(("Tutoriel", "Tutorial"), fr), k + 1, STEPS.len());
+        let skip_label = (!last).then(|| tx(("Passer le tutoriel", "Skip the tutorial"), fr));
+        let (next, skip) = self.tour_card(ctx, page, &head, step, next_label, skip_label, fr, theme);
+        if skip {
+            c.tutorial = corp::TUTORIAL_DONE;
+            self.tycoon.replay = false;
+        } else if next {
+            c.tutorial += 1;
+            if c.tutorial as usize >= STEPS.len() {
+                c.tutorial = corp::TUTORIAL_DONE;
+                self.tycoon.replay = false;
+            }
+        }
+    }
+
+    /// Past the tutorial: the tour of what's new (once), and the one-off tips; never over a window.
+    fn tycoon_tours(&mut self, ctx: &egui::Context, page: Rect, c: &mut Corp, fr: bool, theme: &Theme) {
+        if self.tycoon.outcome.is_some() || c.event.is_some() || self.tycoon.away.is_some() {
+            return;
+        }
+        if let Some(step) = WHATS_NEW.get(c.whats_new as usize) {
+            let k = c.whats_new as usize;
+            let last = k + 1 == WHATS_NEW.len();
+            let head = format!("{} · {}/{}", tx(("Quoi de neuf", "What's new"), fr), k + 1, WHATS_NEW.len());
+            let next_label = if last { tx(("Terminer", "Finish"), fr) } else { tx(("Suivant", "Next"), fr) };
+            let skip_label = (!last).then(|| tx(("Passer", "Skip"), fr));
+            let (next, skip) = self.tour_card(ctx, page, &head, step, Some(next_label), skip_label, fr, theme);
+            if skip || (next && last) {
+                c.whats_new = corp::TUTORIAL_DONE;
+            } else if next {
+                c.whats_new += 1;
+            }
+            return;
+        }
+        if !c.rivals.is_empty() && c.tips & corp::TIP_RIVAL == 0 {
+            let head = tx(("Astuce", "Tip"), fr).to_owned();
+            let (next, _) = self.tour_card(ctx, page, &head, &RIVAL_TIP, Some(tx(("Compris", "Got it"), fr)), None, fr, theme);
+            if next {
+                c.tips |= corp::TIP_RIVAL;
+            }
+        }
+    }
+
+    /// A step of a tour: what it's about blinking, a card at the bottom of the page. Whether « next »
+    /// (`next_label`; None: done by playing) or « skip » was clicked.
+    #[allow(clippy::too_many_arguments)]
+    fn tour_card(&self, ctx: &egui::Context, page: Rect, head: &str, step: &Step, next_label: Option<&str>, skip_label: Option<&str>, fr: bool, theme: &Theme) -> (bool, bool) {
         let now = ctx.input(|i| i.time);
-        // What it's about, blinking.
         let target = match step.spot {
             Spot::Tab(tab) if self.tycoon.tab != tab => TABS.iter().position(|(t, _)| *t == tab).map(|k| self.tycoon.tab_rects[k]),
             Spot::Board if self.tycoon.tab != Tab::Office => Some(self.tycoon.tab_rects[0]),
@@ -1791,38 +1893,26 @@ impl App {
         egui::Area::new(egui::Id::new("tycoon-tuto")).order(egui::Order::Foreground).anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -18.0)).show(ctx, |ui| {
             egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.ansi[3])).corner_radius(12.0).inner_margin(14.0).show(ui, |ui| {
                 ui.set_width(width);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{} · {}/{}", tx(("Tutoriel", "Tutorial"), fr), c.tutorial + 1, STEPS.len())).size(11.5).color(theme.ansi[3]));
-                });
+                ui.label(egui::RichText::new(head).size(11.5).color(theme.ansi[3]));
                 ui.label(egui::RichText::new(tx(step.title, fr)).size(15.0).color(theme.text).strong());
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(tx(step.text, fr)).size(13.0).color(theme.text));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let last = c.tutorial as usize + 1 == STEPS.len();
-                    if step.done.is_none() || self.tycoon.replay {
-                        let label = if last { tx(("Terminer", "Finish"), fr) } else if c.tutorial == 0 { tx(("C'est parti !", "Let's go!"), fr) } else { tx(("Suivant", "Next"), fr) };
-                        next = button(ui, true, label, theme);
-                    } else {
-                        ui.label(egui::RichText::new(tx(("À toi de jouer…", "Your turn…"), fr)).size(12.5).color(theme.text_muted).italics());
+                    match next_label {
+                        Some(label) => next = button(ui, true, label, theme),
+                        None => {
+                            ui.label(egui::RichText::new(tx(("À toi de jouer…", "Your turn…"), fr)).size(12.5).color(theme.text_muted).italics());
+                        }
                     }
-                    if !last {
+                    if let Some(label) = skip_label {
                         ui.add_space(12.0);
-                        skip = small(ui, tx(("Passer le tutoriel", "Skip the tutorial"), fr));
+                        skip = small(ui, label);
                     }
                 });
             });
         });
-        if skip {
-            c.tutorial = corp::TUTORIAL_DONE;
-            self.tycoon.replay = false;
-        } else if next {
-            c.tutorial += 1;
-            if c.tutorial as usize >= STEPS.len() {
-                c.tutorial = corp::TUTORIAL_DONE;
-                self.tycoon.replay = false;
-            }
-        }
+        (next, skip)
     }
 
     /// What happened while Ronnie was closed.
