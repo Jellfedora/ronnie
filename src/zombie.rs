@@ -320,6 +320,10 @@ pub struct Frame {
     pub drops: Vec<(f32, f32, usize, u32)>,
     /// First-aid kits on the floor: x, y, seconds left.
     pub kits: Vec<(f32, f32, u32)>,
+    /// The vests on the ground: x, y, seconds left.
+    pub armors: Vec<(f32, f32, u32)>,
+    /// Each player's shield (those who have one): id, points.
+    pub shields: Vec<(u32, f32)>,
     /// Players audited (can't fire): id, seconds left.
     pub audited: Vec<(u32, f32)>,
     /// The green plants' healing zones: x, y, seconds left.
@@ -647,6 +651,8 @@ pub enum Happened {
     Reboot { x: f32, y: f32 },
     /// A first-aid kit picked up (by whom, where).
     Healed { player: u32, x: f32, y: f32 },
+    /// A vest picked up (its shield points).
+    Armor { player: u32, x: f32, y: f32 },
     /// A turret crate dropped there; a turret set up on one (by whom, where).
     CrateDrop { x: f32, y: f32 },
     /// A memo sent (by whom, where); a golden parachute opened (whose).
@@ -740,6 +746,10 @@ enum Wire {
         d: Vec<f32>,
         #[serde(default)]
         m: Vec<f32>,
+        #[serde(default)]
+        ar: Vec<f32>,
+        #[serde(default)]
+        sh: Vec<f32>,
         #[serde(default)]
         fz: Vec<f32>,
         #[serde(default)]
@@ -1089,7 +1099,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, ob, dk, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, ar, sh, fz, hz, ob, dk, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
                 let mut players: Vec<Player> = p
                     .chunks_exact(22)
                     .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
@@ -1168,6 +1178,8 @@ impl Online {
                 let letters = l.chunks_exact(2).map(|v| (v[0], v[1])).collect();
                 let drops = d.chunks_exact(4).map(|v| (v[0], v[1], (v[2].max(0.0) as usize).min(WEAPONS.len() - 1), v[3] as u32)).collect();
                 let kits = m.chunks_exact(3).map(|v| (v[0], v[1], v[2] as u32)).collect();
+                let armors = ar.chunks_exact(3).map(|v| (v[0], v[1], v[2] as u32)).collect();
+                let shields = sh.chunks_exact(2).map(|v| (v[0] as u32, v[1])).collect();
                 let audited = fz.chunks_exact(2).map(|v| (v[0] as u32, v[1] / 10.0)).collect();
                 let heal_zones = hz.chunks_exact(3).map(|v| (v[0], v[1], v[2] / 10.0)).collect();
                 let crates = c.chunks_exact(4).map(|v| (v[0], v[1], v[2] / 10.0, v[3] as u32)).collect();
@@ -1176,7 +1188,7 @@ impl Online {
                 let memos = mm.iter().map(|&id| id as u32).collect();
                 self.before = self.frame.take();
                 let objective = ob.map(|o| *o);
-                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
+                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, armors, shields, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -1255,6 +1267,7 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "teleport" => Happened::Teleport(u("player")),
         "reboot" => Happened::Reboot { x: n("x") as f32, y: n("y") as f32 },
         "heal" => Happened::Healed { player: u("id"), x: n("x") as f32, y: n("y") as f32 },
+        "armor" => Happened::Armor { player: u("id"), x: n("x") as f32, y: n("y") as f32 },
         "memo" => Happened::Memo { player: u("player"), x: n("x") as f32, y: n("y") as f32 },
         "parachute" => Happened::Parachute(u("player")),
         "crate-drop" => Happened::CrateDrop { x: n("x") as f32, y: n("y") as f32 },

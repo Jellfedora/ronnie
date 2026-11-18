@@ -406,6 +406,12 @@ impl App {
                     self.monday_sound(&[(400.0, 200.0, 0.4, 0.22)]);
                 }
                 Happened::Call { x, y } => self.monday.floats.push((t.monday_call.to_owned(), x, y - 30.0, Color32::from_rgb(255, 140, 190), now)),
+                Happened::Armor { player, x, y } => {
+                    self.monday.floats.push((format!("+{} ◆", ARMOR_PICK as i32), x, y - 30.0, SHIELD, now));
+                    if Some(player) == me {
+                        self.monday_sound(&[(440.0, 660.0, 0.08, 0.2), (660.0, 880.0, 0.12, 0.2)]);
+                    }
+                }
                 Happened::Healed { player, x, y } => {
                     self.monday.floats.push(("+40 ♥".to_owned(), x, y - 30.0, Color32::from_rgb(120, 230, 120), now));
                     if Some(player) == me {
@@ -1345,6 +1351,9 @@ impl App {
         for &(x, y, left) in &frame.kits {
             paint_kit(&painter, at(x, y), scale, left, now);
         }
+        for &(x, y, left) in &frame.armors {
+            paint_vest(&painter, at(x, y), scale, left, now);
+        }
         if let Some((x, y, met)) = frame.gerard {
             paint_gerard(&painter, at(x, y), scale, now, met);
         }
@@ -1367,6 +1376,11 @@ impl App {
                     let bar = Rect::from_min_size(c + Vec2::new(-22.0, 26.0) * scale, Vec2::new(44.0, 5.0) * scale);
                     painter.rect_filled(bar, 0.0, Color32::from_black_alpha(150));
                     painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * (p.hp / 100.0).clamp(0.0, 1.0), bar.height())), 0.0, if p.hp > 60.0 { theme.ansi[2] } else { theme.accent });
+                    // The shield, over it (blue).
+                    if let Some(&(_, sh)) = frame.shields.iter().find(|s| s.0 == p.id) {
+                        let over = Rect::from_min_size(bar.min - Vec2::new(0.0, 4.0 * scale), Vec2::new(bar.width() * (sh / ARMOR_MAX).clamp(0.0, 1.0), 3.0 * scale));
+                        painter.rect_filled(over, 0.0, SHIELD);
+                    }
                 }
                 State::Down => {
                     paint_down(&painter, c, scale, color, p.revive / REVIVE, &theme);
@@ -1576,6 +1590,9 @@ impl App {
             match p.state {
                 State::Up => {
                     hud.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * (p.hp / 100.0).clamp(0.0, 1.0), bar.height())), 2.0, if p.hp > 60.0 { theme.ansi[2] } else { theme.accent });
+                    if let Some(&(_, sh)) = frame.shields.iter().find(|s| s.0 == p.id) {
+                        hud.rect_filled(Rect::from_min_size(bar.min - Vec2::new(0.0, 4.0), Vec2::new(bar.width() * (sh / ARMOR_MAX).clamp(0.0, 1.0), 3.0)), 1.0, SHIELD);
+                    }
                 }
                 State::Down => {
                     hud.text(bar.center(), Align2::CENTER_CENTER, "K.O.", FontId::monospace(11.0), theme.ansi[1]);
@@ -3091,6 +3108,29 @@ fn paint_shadow(painter: &egui::Painter, c: Pos2, scale: f32, kind: Kind, phase:
 }
 
 /// A first-aid kit on the floor: white, its red cross, a green glow breathing; blinking before it goes.
+/// The shield's color, its most (floor's ARMOR_MAX) and what a vest gives (ARMOR_PICK).
+const SHIELD: Color32 = Color32::from_rgb(90, 170, 255);
+const ARMOR_MAX: f32 = 50.0;
+const ARMOR_PICK: f32 = 25.0;
+
+/// A vest on the ground: blue, floating, a halo (blinking its last seconds).
+fn paint_vest(painter: &egui::Painter, c: Pos2, scale: f32, left: u32, now: f64) {
+    if left <= 5 && (now * 6.0).sin() < 0.0 {
+        return;
+    }
+    let pulse = 0.5 + 0.5 * (now * 3.0).sin() as f32;
+    painter.circle_filled(c, (24.0 + 5.0 * pulse) * scale, Color32::from_rgba_unmultiplied(90, 170, 255, (30.0 + 30.0 * pulse) as u8));
+    let c = c + Vec2::new(0.0, -2.5 * (now * 2.5).sin() as f32 * scale);
+    let s = scale;
+    // The vest: its body, the neck cut out, the straps.
+    let body = vec![c + Vec2::new(-12.0, -10.0) * s, c + Vec2::new(-5.0, -12.0) * s, c + Vec2::new(5.0, -12.0) * s, c + Vec2::new(12.0, -10.0) * s, c + Vec2::new(11.0, 12.0) * s, c + Vec2::new(-11.0, 12.0) * s];
+    painter.add(egui::Shape::convex_polygon(body.iter().map(|p| *p + Vec2::new(2.0, 3.0) * s).collect(), Color32::from_black_alpha(80), Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(body, Color32::from_rgb(60, 110, 190), Stroke::new(1.5 * s, Color32::from_rgb(30, 60, 110))));
+    // The neck, cut out.
+    painter.add(egui::Shape::convex_polygon(vec![c + Vec2::new(-5.0, -12.0) * s, c + Vec2::new(5.0, -12.0) * s, c + Vec2::new(0.0, -5.0) * s], Color32::from_rgb(30, 60, 110), Stroke::NONE));
+    painter.rect_filled(Rect::from_center_size(c + Vec2::new(0.0, 3.0) * s, Vec2::new(16.0, 3.0) * s), 1.0, Color32::from_rgb(220, 230, 255));
+}
+
 fn paint_kit(painter: &egui::Painter, c: Pos2, scale: f32, left: u32, now: f64) {
     if left <= 5 && (now * 6.0).sin() < 0.0 {
         return;
