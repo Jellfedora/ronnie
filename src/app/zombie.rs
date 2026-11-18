@@ -1721,7 +1721,17 @@ impl App {
         }
         // A floor bigger than the screen: where everyone is on it, in a corner.
         if map.w > size.x / scale + 1.0 || map.h > size.y / scale + 1.0 {
-            paint_minimap(&ui.painter_at(field), field, &map, &frame, &colors, cam, size / scale);
+            // Faded when one is under it (it hides that corner of the floor).
+            let under = Rect::from_min_max(Pos2::new(field.max.x - 214.0, field.min.y + 52.0), Pos2::new(field.max.x, field.min.y + 210.0));
+            let mine_at = me.and_then(|id| frame.players.iter().find(|p| p.id == id)).map(|p| {
+                let (x, y) = mix.player(p.id, p.x, p.y);
+                at(x, y)
+            });
+            let mut mini = ui.painter_at(field);
+            if mine_at.is_some_and(|c| under.contains(c)) {
+                mini.multiply_opacity(0.3);
+            }
+            paint_minimap(&mini, field, &map, &frame, &colors, cam, size / scale);
         }
         // The marks on the floor (5 s): a ring and « ! » in their color; out of sight, on the edge.
         self.monday.marks.retain(|m| now - m.3 < 5.0);
