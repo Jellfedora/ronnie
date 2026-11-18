@@ -3665,6 +3665,12 @@ fn eat_spaces(ui: &Ui) {
     ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t.chars().all(char::is_whitespace))));
 }
 
+/// The shortcuts of a pane's strip that can be left out (its menu, « Pane bar »): local panes, then
+/// SSH ones. "usage" and "health" stand for the settings `claude_usage` and `server_health`.
+pub(super) const BAR_ITEMS: [&str; 12] = ["usage", "mic", "urls", "node", "forge", "claude", "files", "commands", "search", "relaunch", "reconnect", "health"];
+const BAR_LOCAL: [&str; 10] = ["usage", "mic", "urls", "node", "forge", "claude", "files", "commands", "search", "relaunch"];
+const BAR_SSH: [&str; 6] = ["health", "claude", "files", "commands", "reconnect", "relaunch"];
+
 /// What was clicked in a pane's header strip.
 #[derive(Default)]
 struct HeaderClicks {
@@ -3672,6 +3678,8 @@ struct HeaderClicks {
     mic: bool,
     /// The ⚙ button: the pane's menu (the right-click one) opens under it.
     gear: Option<egui::Response>,
+    /// A right click on the strip: the ⚙ menu opens, as if clicked.
+    menu: bool,
     /// The Node.js version's badge: its menu opens under it.
     node: Option<egui::Response>,
     /// The Claude button: Claude Code started, or the folder's conversations listed under it.
@@ -3870,7 +3878,7 @@ enum Header<'a> {
 /// `mic`: Claude Code runs there and dictation works: Some(None), or Some(Some(level, text)) while
 /// listening.
 /// `claude_button`: Claude Code's button (Claude Code is installed and the pane's folder known).
-fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, mic: Option<Option<(f32, String)>>, claude_button: bool, theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
+fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option<&str>, startup: bool, focused: bool, claude: Option<&crate::claude::Usage>, mic: Option<Option<(f32, String)>>, claude_button: bool, hidden: &[String], theme: &Theme, t: &Strings, shortcuts: &config::Shortcuts) -> HeaderClicks {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme.chrome_bg);
     if focused && theme.metal {
@@ -3918,7 +3926,10 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     let color = if focused { theme.text } else { theme.text_muted };
     let mut max_w = rect.width() - 20.0;
 
-    let mut clicks = HeaderClicks { drag_started: resp.drag_started(), rename: resp.double_clicked(), ..Default::default() };
+    let mut clicks = HeaderClicks { drag_started: resp.drag_started(), rename: resp.double_clicked(), menu: resp.secondary_clicked(), ..Default::default() };
+    let shows = |key: &str| !hidden.iter().any(|h| h == key);
+    let (startup, claude_button) = (startup && shows("relaunch"), claude_button && shows("claude"));
+    let mic = mic.filter(|_| shows("mic"));
     let icon = |ui: &mut Ui, right: f32, text: &str, tip: String| {
         let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
         let button = egui::Button::new(egui::RichText::new(text).size(15.0)).frame_when_inactive(false).corner_radius(5.0);
@@ -3966,16 +3977,27 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     }
     // Local panes: history search, then the local servers (newest on the right), opened in the browser on click.
     if let Header::Local(_, urls, forge, node) = header {
-        clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label())).clicked();
-        right -= 30.0;
-        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
-        right -= 30.0;
+        let urls: &[LocalUrl] = if shows("urls") { urls } else { &[] };
+        let (forge, node) = (forge.filter(|_| shows("forge")), node.filter(|_| shows("node")));
+        if shows("search") {
+            clicks.search = icon(ui, right, "🔍", format!("{}  ({})", t.search_text_hint, shortcuts.find_text.label())).clicked();
+            right -= 30.0;
+            max_w -= 30.0;
+        }
+        if shows("commands") {
+            clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
+            right -= 30.0;
+            max_w -= 30.0;
+        }
         // This folder's files, with the editor.
-        let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
-        clicks.files = resp.clicked();
-        files_menu(&resp, &mut clicks);
-        right -= 30.0;
-        max_w -= 96.0;
+        if shows("files") {
+            let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open_here, shortcuts.toggle_files.label()));
+            clicks.files = resp.clicked();
+            files_menu(&resp, &mut clicks);
+            right -= 30.0;
+            max_w -= 30.0;
+        }
+        max_w -= 6.0;
         // Claude Code in this folder: started, or its conversations to take one up again.
         if claude_button {
             let at = Rect::from_min_size(Pos2::new(right - 26.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
@@ -4067,16 +4089,26 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         }
     }
     if let Header::Ssh(_, health) = header {
-        clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned()).clicked();
-        right -= 30.0;
-        clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
-        right -= 30.0;
+        if shows("reconnect") {
+            clicks.reconnect = icon(ui, right, "↻", t.reconnect.to_owned()).clicked();
+            right -= 30.0;
+            max_w -= 30.0;
+        }
+        if shows("commands") {
+            clicks.commands = icon(ui, right, "⚡", t.commands.to_owned()).clicked();
+            right -= 30.0;
+            max_w -= 30.0;
+        }
         // The server's files, FileZilla style.
-        let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
-        clicks.files = resp.clicked();
-        files_menu(&resp, &mut clicks);
-        right -= 34.0;
-        max_w -= 96.0;
+        if shows("files") {
+            let resp = icon(ui, right, "📁", format!("{}  ({})", t.files_open, shortcuts.toggle_files.label()));
+            clicks.files = resp.clicked();
+            files_menu(&resp, &mut clicks);
+            right -= 30.0;
+            max_w -= 30.0;
+        }
+        right -= 4.0;
+        max_w -= 6.0;
         // Claude Code on the server, its conversations kept here (`sshclaude`).
         if claude_button {
             let at = Rect::from_min_size(Pos2::new(right - 22.0, rect.min.y + 2.0), Vec2::new(26.0, rect.height() - 4.0));
@@ -4342,6 +4374,8 @@ enum PaneAction {
     Node(PaneId, Option<String>),
     /// Show the Node.js versions (the sidebar's Dev category).
     NodeManage,
+    /// Show or leave out a shortcut of the panes' strip (see `BAR_ITEMS`).
+    BarToggle(&'static str),
     /// Claude Code taking up that conversation if any: in this pane started again (true), or in a new
     /// pane beside it.
     Claude(PaneId, Option<String>, bool),
@@ -4363,7 +4397,7 @@ fn pane_path(term: &Terminal, local: bool, ssh: Option<&SshHost>, files: Option<
 /// Right-click menu of a terminal pane.
 #[allow(clippy::too_many_arguments)]
 /// `node`: for a local pane, the Node.js versions installed and the one it uses.
-fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[(Option<String>, String)], node: Option<(&[String], Option<&str>)>, action: &mut Option<PaneAction>) {
+fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId, can_copy: bool, local: bool, startup: bool, closed: &[String], commands: &[(Option<String>, String)], node: Option<(&[String], Option<&str>)>, bar_shown: &dyn Fn(&str) -> bool, action: &mut Option<PaneAction>) {
     ui.set_min_width(180.0);
     let shortcut = |mac: &str, other: &str| if cfg!(target_os = "macos") { mac.to_owned() } else { other.to_owned() };
     let mut item = |ui: &mut Ui, enabled: bool, label: &str, hint: String, a: PaneAction| {
@@ -4426,6 +4460,19 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
     if startup {
         item(ui, true, t.startup_relaunch, String::new(), PaneAction::Relaunch(id));
     }
+    // The strip's shortcuts, each shown or not (for every pane).
+    let mut bar_toggle = None;
+    ui.menu_button(t.pane_bar, |ui| {
+        ui.set_min_width(220.0);
+        let labels: Vec<&str> = t.pane_bar_items.split('|').collect();
+        for key in if local { &BAR_LOCAL[..] } else { &BAR_SSH[..] } {
+            let label = BAR_ITEMS.iter().position(|k| k == key).and_then(|i| labels.get(i)).copied().unwrap_or(key);
+            let mut on = bar_shown(key);
+            if ui.checkbox(&mut on, label).clicked() {
+                bar_toggle = Some(PaneAction::BarToggle(key));
+            }
+        }
+    });
     ui.separator();
     item(ui, true, t.rename_pane, String::new(), PaneAction::Rename(id));
     // Named panes closed, the latest first.
@@ -4442,8 +4489,8 @@ fn pane_menu(ui: &mut Ui, t: &Strings, shortcuts: &config::Shortcuts, id: PaneId
         });
     }
     item(ui, true, t.close_pane, shortcuts.close_pane.label(), PaneAction::Close(id));
-    if picked.is_some() || reopen.is_some() {
-        *action = picked.or(reopen);
+    if picked.is_some() || reopen.is_some() || bar_toggle.is_some() {
+        *action = picked.or(reopen).or(bar_toggle);
     }
     if let Some(version) = node_picked {
         *action = Some(PaneAction::Node(id, version));
@@ -4821,6 +4868,14 @@ impl App {
                 let ssh_label = host.map(|h| format!("{}  ·  {}", h.name, h.address())).unwrap_or_default();
                 let health = tab.ssh.filter(|_| self.config.settings.server_health).and_then(|id| self.health.get(id)).and_then(|m| m.stats());
                 let mut pane_action = None;
+                let bar_hidden = self.config.settings.pane_bar_hidden.clone();
+                let (usage_on, health_on) = (self.config.settings.claude_usage, self.config.settings.server_health);
+                let bar_shown = |key: &str| match key {
+                    "usage" => usage_on,
+                    "health" => health_on,
+                    _ => !bar_hidden.iter().any(|h| h == key),
+                };
+                let mut bar_toggle = None;
                 let mut reconnect: Option<Vec<PaneId>> = None;
                 let mut relaunch: Option<(PaneId, bool)> = None;
                 let mut reopen: Option<(PaneId, usize)> = None;
@@ -5019,7 +5074,7 @@ impl App {
                         let remote_label = (!local && self.config.settings.show_cwd).then(|| term.reported_cwd()).flatten().map(|dir| format!("{ssh_label}  ·  {dir}"));
                         let node = tab.nodes.get(&id).cloned();
                         let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref(), node.as_deref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
-                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, claude_dir.is_some() || !local, &self.theme, strings, &self.config.settings.shortcuts);
+                        let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, claude_dir.is_some() || !local, &bar_hidden, &self.theme, strings, &self.config.settings.shortcuts);
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
                                 // Dropped: stops listening, nothing sent.
@@ -5032,10 +5087,13 @@ impl App {
                         if clicks.rename {
                             self.pane_rename = Some((id, tab.names.get(&id).cloned().unwrap_or_default(), true));
                         }
+                        if let Some(gear) = clicks.gear.as_ref().filter(|_| clicks.menu) {
+                            egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(gear));
+                        }
                         if let Some(gear) = &clicks.gear {
                             let (can_copy, startup) = (term.has_selection(), tab.startup.contains_key(&id));
                             let node = local.then(|| (node_versions.as_slice(), tab.nodes.get(&id).map(String::as_str)));
-                            egui::Popup::menu(gear).show(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &mut pane_action));
+                            egui::Popup::menu(gear).show(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &bar_shown, &mut pane_action));
                         }
                         // Never a conversation here: Claude Code starts; else the list of them opens.
                         if let (Some(button), Some(dir)) = (&clicks.claude, &claude_dir) {
@@ -5245,7 +5303,7 @@ impl App {
                         let can_copy = term.has_selection();
                         let startup = tab.startup.contains_key(&id);
                         let node = local.then(|| (node_versions.as_slice(), tab.nodes.get(&id).map(String::as_str)));
-                        resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &mut pane_action));
+                        resp.context_menu(|ui| pane_menu(ui, strings, &self.config.settings.shortcuts, id, can_copy, local, startup, &closed_panes, &saved_commands, node, &bar_shown, &mut pane_action));
                     }
                     if let Some((_, since)) = self.ronnie_show.filter(|(p, _)| *p == id) {
                         let hand = self.metal_hand.get_or_insert_with(|| load_png(ui.ctx(), "metal-hand", include_bytes!("../../assets/icon/metal-hand.png"))).clone();
@@ -5499,6 +5557,7 @@ impl App {
                         self.focus_terminal = true;
                     }
                     Some(PaneAction::NodeManage) => self.open_dev_page(),
+                    Some(PaneAction::BarToggle(key)) => bar_toggle = Some(key),
                     Some(PaneAction::CopyPath(id)) => {
                         let path = tab.panes.get(&id).and_then(|term| pane_path(term, local, tab.ssh.and_then(|h| self.config.ssh.iter().find(|s| s.id == h)), tab.files.as_deref()));
                         if let Some(path) = path {
@@ -5548,6 +5607,21 @@ impl App {
                 }
                 if let Some((id, k)) = reopen {
                     self.reopen_pane(ui.ctx(), self.active, id, k);
+                }
+                if let Some(key) = bar_toggle {
+                    let s = &mut self.config.settings;
+                    match key {
+                        "usage" => s.claude_usage = !s.claude_usage,
+                        "health" => s.server_health = !s.server_health,
+                        _ => {
+                            if s.pane_bar_hidden.iter().any(|h| h == key) {
+                                s.pane_bar_hidden.retain(|h| h != key);
+                            } else {
+                                s.pane_bar_hidden.push(key.to_owned());
+                            }
+                        }
+                    }
+                    self.save_config();
                 }
             });
         self.sheep_walk(ui.ctx());
