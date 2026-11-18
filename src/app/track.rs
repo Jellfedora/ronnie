@@ -141,6 +141,9 @@ pub(super) struct Track {
     offered: bool,
     /// The conversations with Claude, by project.
     pub(super) chat: super::trackchat::ChatUi,
+    /// An account waiting for floor's administrator: when it was last looked at, the look going on.
+    pending_at: Option<f64>,
+    pending_check: Option<std::sync::Arc<std::sync::Mutex<Option<Option<bool>>>>>,
 }
 
 impl Default for Track {
@@ -167,6 +170,8 @@ impl Default for Track {
             show_archived: false,
             offered: false,
             chat: Default::default(),
+            pending_at: None,
+            pending_check: None,
         }
     }
 }
@@ -326,8 +331,48 @@ impl App {
     }
 
     /// Collects what floor answered; asks again now and then.
+    /// An account not allowed yet by floor's administrator: looked at again every minute, and
+    /// everything online starts again once it is.
+    fn account_pending_poll(&mut self) {
+        let Some(account) = self.config.settings.floor.clone().filter(|a| a.pending) else { return };
+        if let Some(slot) = &self.track.pending_check {
+            let Some(answer) = slot.lock().unwrap().take() else { return };
+            self.track.pending_check = None;
+            if answer == Some(true) {
+                if let Some(a) = &mut self.config.settings.floor {
+                    a.pending = false;
+                }
+                self.track.list = None;
+                self.track_refresh();
+            }
+            return;
+        }
+        let now = self.ctx.input(|i| i.time);
+        if self.track.pending_at.is_some_and(|at| now - at < 60.0) {
+            self.ctx.request_repaint_after(std::time::Duration::from_secs(60));
+            return;
+        }
+        self.track.pending_at = Some(now);
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        self.track.pending_check = Some(slot.clone());
+        let ctx = self.ctx.clone();
+        let _ = std::thread::Builder::new().name("floor-approved".into()).spawn(move || {
+            *slot.lock().unwrap() = Some(crate::floor::approved(&account));
+            ctx.request_repaint();
+        });
+    }
+
+    /// floor said the account isn't allowed (any more): marked so, looked at again now and then.
+    fn track_pending(&mut self) {
+        if let Some(a) = &mut self.config.settings.floor {
+            a.pending = true;
+        }
+        self.track.pending_at = None;
+    }
+
     pub(super) fn track_poll(&mut self) {
         self.track_chat_poll();
+        self.account_pending_poll();
         let t = self.t();
         while let Ok(done) = self.track.rx.try_recv() {
             self.track.busy = self.track.busy.saturating_sub(1);
@@ -350,12 +395,14 @@ impl App {
                         self.track_import_open();
                     }
                 }
+                Done::List(Err(e)) if e == track::PENDING => self.track_pending(),
                 Done::List(Err(e)) => {
                     if !matches!(self.track.list, Some(Ok(_))) {
                         self.track.list = Some(Err(e));
                     }
                 }
                 Done::Project { result, select } => match *result {
+                    Err(e) if e == track::PENDING => self.track_pending(),
                     Err(e) => self.error = Some(format!("{} : {e}", t.track_failed)),
                     Ok(project) => {
                         if let Some(Ok(list)) = &mut self.track.list {
@@ -415,7 +462,8 @@ impl App {
             }
         }
         // Asked again: often while shown, now and then otherwise (the sidebar's hours left).
-        if self.track_client().is_some() && !self.config.settings.hidden_categories.contains(&Category::Track) && !self.read_only {
+        let pending = self.config.settings.floor.as_ref().is_some_and(|a| a.pending);
+        if self.track_client().is_some() && !pending && !self.config.settings.hidden_categories.contains(&Category::Track) && !self.read_only {
             let now = self.ctx.input(|i| i.time);
             let every = if self.track_page { REFRESH_SECS } else { IDLE_REFRESH_SECS };
             if self.track.busy == 0 && self.track.fetched_at.is_none_or(|at| now - at > every) {
@@ -661,6 +709,13 @@ impl App {
             return;
         }
 
+        // Not allowed yet by floor's administrator.
+        if self.config.settings.floor.as_ref().is_some_and(|a| a.pending) {
+            ui.label(egui::RichText::new(t.cat_track).size(22.0).color(theme.text));
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(egui::RichText::new(t.account_pending).size(13.0).color(theme.ansi[3])).wrap());
+            return;
+        }
         let selected = self.config.settings.track_selected.clone().and_then(|id| self.track.projects.get(&id).cloned());
         match selected {
             Some(project) => self.track_project_ui(ui, &project, &mut acts),

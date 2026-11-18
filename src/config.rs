@@ -1356,6 +1356,10 @@ pub struct FloorAccount {
     /// The frame worn around it (`app::frames`), kept on floor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<String>,
+    /// Not yet allowed by floor's administrator: no online feature until then (looked at again now
+    /// and then).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 /// Places kept on the leaderboard.

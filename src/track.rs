@@ -11,6 +11,9 @@ use serde_json::Value;
 use crate::config::FloorAccount;
 use crate::floor::{USER_AGENT, account_agent};
 
+/// The error of a call refused because the account isn't allowed yet by floor's administrator.
+pub const PENDING: &str = "pending";
+
 /// A task: 24 h at most (as floor takes).
 pub const TASK_MAX: u32 = 24 * 60;
 
@@ -251,6 +254,9 @@ impl Client {
         let value: Value = res.body_mut().read_json().unwrap_or(Value::Null);
         if (200..300).contains(&status) {
             return Ok(Some(value));
+        }
+        if value.get("code").and_then(Value::as_str) == Some("pending") {
+            return Err(PENDING.to_owned());
         }
         match value.get("error").and_then(Value::as_str) {
             Some(e) => Err(e.to_owned()),
@@ -601,6 +607,10 @@ fn describe(p: &Project, all: bool) -> String {
 
 /// `ronnie track …`: the project tracking, straight with floor (the page in Ronnie follows).
 pub fn cli(rest: &[&str]) -> Result<String, String> {
+    cli_run(rest).map_err(|e| if e == PENDING { "The user's account waits for floor's administrator to allow it: no project tracking until then.".to_owned() } else { e })
+}
+
+fn cli_run(rest: &[&str]) -> Result<String, String> {
     let client = cli_client()?;
     let usage = || crate::drive::USAGE.to_owned();
     let open = |word: &str| -> Result<Project, String> {

@@ -427,6 +427,21 @@ fn answered(res: Result<ureq::http::Response<ureq::Body>, ureq::Error>, status: 
     Err(ClaimError::Refused(message))
 }
 
+/// Whether floor's administrator has allowed the account yet (None: floor didn't say).
+pub(crate) fn approved(account: &FloorAccount) -> Option<bool> {
+    #[derive(Deserialize)]
+    struct Me {
+        #[serde(default)]
+        approved: Option<bool>,
+    }
+    let mut res = account_agent().get(format!("{}/v1/players/me", account.url.trim_end_matches('/'))).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).call().ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    // A floor from before the approval: everyone is.
+    Some(res.body_mut().read_json::<Me>().ok()?.approved.unwrap_or(true))
+}
+
 pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Result<AccountDone, ClaimError> {
     #[derive(Deserialize)]
     struct Signed {
@@ -439,6 +454,12 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
         avatar: Option<String>,
         #[serde(default)]
         frame: Option<String>,
+        /// Allowed by the administrator (a floor from before: always).
+        #[serde(default = "yes")]
+        approved: bool,
+    }
+    fn yes() -> bool {
+        true
     }
     #[derive(Deserialize)]
     struct Avatar {
@@ -456,7 +477,7 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
     let signed = |res: ureq::http::Response<ureq::Body>| -> Result<AccountDone, ClaimError> {
         let mut res = res;
         let s: Signed = res.body_mut().read_json().map_err(bad)?;
-        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, frame: s.frame }))
+        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, frame: s.frame, pending: !s.approved }))
     };
     // A request with the session's token: none, or floor no longer knows it, and it is over.
     let token = || account.map(|a| format!("Bearer {}", a.token)).ok_or(ClaimError::Expired);

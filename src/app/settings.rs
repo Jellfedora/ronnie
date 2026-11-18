@@ -1210,6 +1210,9 @@ impl App {
                         sub = format!("{sub}  ·  {}", t.account_admin);
                     }
                     ui.label(egui::RichText::new(sub).size(12.0).color(theme.text_muted));
+                    if a.pending {
+                        ui.add(egui::Label::new(egui::RichText::new(t.account_pending).size(12.0).color(theme.ansi[3])).wrap());
+                    }
                 });
             });
             divider(ui, theme);
