@@ -42,6 +42,20 @@ pub struct Usage {
     /// When Claude Code last told (Unix seconds).
     #[serde(default)]
     pub updated: i64,
+    /// What each session (Claude Code's `session_id`) told last: an idle session tells its figures
+    /// again every minute, a repeat that must not undo a lower figure told since (a limit reset early).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sessions: std::collections::BTreeMap<String, Told>,
+}
+
+/// The figures a session told last, and when.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Told {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<Window>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seven_day: Option<Window>,
+    pub at: i64,
 }
 
 impl Usage {
@@ -50,24 +64,36 @@ impl Usage {
     fn from_status(input: &Value, now: i64) -> Option<Self> {
         let limits = input.get("rate_limits")?;
         let window = |key: &str| serde_json::from_value::<Window>(limits.get(key)?.clone()).ok();
-        let usage = Usage { five_hour: window("five_hour"), seven_day: window("seven_day"), updated: now };
+        let usage = Usage { five_hour: window("five_hour"), seven_day: window("seven_day"), updated: now, sessions: Default::default() };
         (usage.five_hour.is_some() || usage.seven_day.is_some()).then_some(usage)
     }
 
-    /// What a session just told, with what was kept (`older`, maybe told by another session): each
-    /// session tells the figures of its own last answer, and an idle one tells them again every minute.
-    /// In the same window the highest figure is the latest (usage only grows in it); a later window
-    /// than the one told is kept (that session's figures are older).
-    fn merged(self, older: Option<&Usage>) -> Usage {
-        let Some(older) = older else { return self };
+    /// What `session` just told, with what was kept (`older`, maybe told by other sessions). Each
+    /// session tells the figures of its own last answer, and an idle one tells them again every minute:
+    /// figures that changed since the session last told are the latest, even lower (a limit reset
+    /// early); a repeat changes nothing, unless it tells a later window. A window earlier than the one
+    /// kept is never taken back.
+    fn merged(mut self, older: Option<&Usage>, session: Option<&str>) -> Usage {
+        let told = Told { five_hour: self.five_hour, seven_day: self.seven_day, at: self.updated };
+        let mut sessions = older.map(|o| o.sessions.clone()).unwrap_or_default();
+        let fresh = session.is_none_or(|s| sessions.get(s).is_none_or(|t| (t.five_hour, t.seven_day) != (told.five_hour, told.seven_day)));
+        if let Some(s) = session {
+            sessions.insert(s.to_owned(), told);
+            // Sessions silent for over a week are forgotten.
+            sessions.retain(|_, t| told.at - t.at < 8 * 86400);
+        }
+        let Some(older) = older else {
+            self.sessions = sessions;
+            return self;
+        };
         // Claude Code may tell a reset a little apart from one answer to the next.
         const SAME: i64 = 600;
         let pick = |new: Option<Window>, old: Option<Window>| match (new, old) {
             (Some(n), Some(o)) if o.resets_at > n.resets_at + SAME => Some(o),
-            (Some(n), Some(o)) if (o.resets_at - n.resets_at).abs() <= SAME => Some(Window { used_percentage: n.used_percentage.max(o.used_percentage), ..n }),
+            (Some(n), Some(o)) if !fresh && n.resets_at <= o.resets_at + SAME => Some(o),
             (n, o) => n.or(o),
         };
-        Usage { five_hour: pick(self.five_hour, older.five_hour), seven_day: pick(self.seven_day, older.seven_day), updated: self.updated }
+        Usage { five_hour: pick(self.five_hour, older.five_hour), seven_day: pick(self.seven_day, older.seven_day), updated: self.updated, sessions }
     }
 }
 
@@ -210,7 +236,8 @@ pub fn run_statusline() {
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let status: Value = serde_json::from_slice(&input).unwrap_or(Value::Null);
     if let (Some(usage), Some(path)) = (Usage::from_status(&status, now()), usage_path()) {
-        let usage = usage.merged(read_usage().as_ref());
+        let session = status.get("session_id").and_then(Value::as_str);
+        let usage = usage.merged(read_usage().as_ref(), session);
         if let Ok(text) = serde_json::to_string(&usage) {
             let _ = write_atomic(&path, &text);
         }
@@ -962,18 +989,24 @@ mod tests {
     #[test]
     fn keeps_the_latest_usage() {
         let w = |used_percentage: f32, resets_at: i64| Some(Window { used_percentage, resets_at });
-        let usage = |five_hour, seven_day| Usage { five_hour, seven_day, updated: 0 };
-        // An idle session telling its old figures again: the higher ones of the same window stay.
-        let kept = usage(w(40.0, 18000), w(12.0, 600000));
-        let merged = usage(w(25.0, 18000), w(11.0, 600030)).merged(Some(&kept));
-        assert_eq!((merged.five_hour, merged.seven_day), (w(40.0, 18000), w(12.0, 600030)));
+        let usage = |five_hour, seven_day, updated| Usage { five_hour, seven_day, updated, sessions: Default::default() };
+        let kept = usage(w(40.0, 18000), w(100.0, 600000), 10).merged(None, Some("a"));
+        // Another session answering after the week's limit was reset early: its lower figure wins.
+        let after = usage(w(42.0, 18000), w(15.0, 600000), 20).merged(Some(&kept), Some("b"));
+        assert_eq!((after.five_hour, after.seven_day), (w(42.0, 18000), w(15.0, 600000)));
+        // The first session, idle, telling its old figures again: nothing changes.
+        let repeat = usage(w(40.0, 18000), w(100.0, 600000), 80).merged(Some(&after), Some("a"));
+        assert_eq!((repeat.five_hour, repeat.seven_day), (w(42.0, 18000), w(15.0, 600000)));
+        // That session answering again: its new figures.
+        let again = usage(w(45.0, 18000), w(16.0, 600030), 90).merged(Some(&repeat), Some("a"));
+        assert_eq!(again.seven_day, w(16.0, 600030));
         // A session still telling the window before: the later one kept.
-        let merged = usage(w(90.0, 0), w(12.0, 600000)).merged(Some(&kept));
-        assert_eq!(merged.five_hour, w(40.0, 18000));
-        // A new window: its figures, lower as they may be.
-        let merged = usage(w(3.0, 36000), None).merged(Some(&kept));
-        assert_eq!((merged.five_hour, merged.seven_day), (w(3.0, 36000), w(12.0, 600000)));
-        assert_eq!(usage(w(3.0, 36000), None).merged(None).five_hour, w(3.0, 36000));
+        let old = usage(w(90.0, 0), w(16.0, 600000), 95).merged(Some(&again), Some("c"));
+        assert_eq!(old.five_hour, w(45.0, 18000));
+        // A new window, told by a repeat: taken.
+        let next = usage(w(3.0, 36000), None, 100).merged(Some(&again), Some("a"));
+        assert_eq!((next.five_hour, next.seven_day), (w(3.0, 36000), w(16.0, 600030)));
+        assert_eq!(usage(w(3.0, 36000), None, 0).merged(None, None).five_hour, w(3.0, 36000));
     }
 
     #[test]
