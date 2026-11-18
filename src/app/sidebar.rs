@@ -1976,8 +1976,8 @@ impl App {
             super::monday_theme::drips(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)), now, 11, 0.0);
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
         } else if self.theme.shire {
-            // La Comté: a branch above the settings.
-            super::shire::vine_along(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 6.0, footer_top - 4.0), Pos2::new(bar.max.x - 7.0, footer_top + 4.0)), 1.0);
+            // La Comté: a fine gold line above the settings.
+            super::shire::fine_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 12.0, footer_top - 1.0), Pos2::new(bar.max.x - 12.0, footer_top + 1.0)));
         } else if self.theme.thrones {
             // Game of Thrones: a line of steel above the settings.
             super::thrones::iron_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));

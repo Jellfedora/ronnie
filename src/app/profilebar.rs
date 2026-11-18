@@ -57,8 +57,6 @@ impl App {
             super::wizard::diamonds_along(&painter, rect.x_range(), rect.max.y - 1.5, 160.0);
         } else if theme.thrones {
             super::thrones::sword_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), 1.0);
-        } else if theme.shire {
-            super::shire::vine_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), 1.0);
         } else if theme.hyperspace {
             super::hyperspace::beam(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max), theme.accent);
         } else {

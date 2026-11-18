@@ -5401,9 +5401,9 @@ impl App {
                     } else if split && !self.theme.shire {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     }
-                    // La Comté: branches around every pane, fuller around the one in focus.
-                    if self.theme.shire {
-                        shire::frame(ui.painter(), r, if !split || id == tab.focused { 1.0 } else { 0.45 });
+                    // La Comté: a flourish at the corners of the pane in focus.
+                    if self.theme.shire && (!split || id == tab.focused) {
+                        shire::frame(ui.painter(), r);
                     }
                     // Wall Street: the opening bell over the pane, 2.5 s after a long command ended in it.
                     if self.theme.wallstreet

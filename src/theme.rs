@@ -382,17 +382,17 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
-    // La Comté: the woods of the Shire at dusk, parchment text, the green of the leaves for the accent,
-    // the gold of the Ring for the cursor.
+    // La Comté: the warm wood of a hobbit hole, parchment text, the gold of the Ring for the accent and
+    // the cursor; green only in the leaves of the decor.
     Preset {
         id: SHIRE_THEME,
         name: "La Comté",
-        bg: 0x1a2318,
+        bg: 0x1e1b16,
         fg: 0xece3c6,
         cursor: 0xd9b44a,
-        chrome: 0x222e1f,
-        surface: 0x34462c,
-        accent: 0x9cc65a,
+        chrome: 0x27231c,
+        surface: 0x3d362b,
+        accent: 0xd9b44a,
         ansi: [
             0x28331f, 0xd65a42, 0x8fbf55, 0xe0b84e, 0x72a0c4, 0xb47ca6, 0x6cb8a0, 0xd8cfb2, //
             0x52604a, 0xef7558, 0xaed874, 0xf2cf6a, 0x94bcda, 0xcc9ac2, 0x8ed2bc, 0xfbf6e4,

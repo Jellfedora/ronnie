@@ -1,6 +1,6 @@
-//! The Shire theme (« La Comté »), there from the start: branches with their leaves around the panes,
-//! curls of the elvish manuscripts at their corners and on the dialogs, a twig under the bar of the
-//! pane in focus, the title in the gold of the Ring between two vines, and at the foot of the sidebar
+//! The Shire theme (« La Comté »), there from the start, sober: warm wood and parchment, a gold curl and
+//! a sprig of leaves at the corners of the pane in focus, curls on the dialogs, a twig under the bar of
+//! the pane in focus, the title in the gold of the Ring, and at the foot of the sidebar
 //! the hills of Hobbiton at dusk: a round green door in the hill, smoke from the chimney, fireflies.
 
 use super::*;
@@ -12,9 +12,7 @@ pub(super) const GOLD: Color32 = Color32::from_rgb(217, 180, 74);
 const GOLD_PALE: Color32 = Color32::from_rgb(246, 222, 150);
 const LEAF: Color32 = Color32::from_rgb(132, 178, 76);
 const LEAF_DARK: Color32 = Color32::from_rgb(82, 128, 52);
-const LEAF_YOUNG: Color32 = Color32::from_rgb(176, 206, 104);
 const BARK: Color32 = Color32::from_rgb(112, 88, 54);
-const BERRY: Color32 = Color32::from_rgb(196, 64, 52);
 
 /// A number in 0..1 that only depends on `n`.
 fn noise(n: u32) -> f32 {
@@ -81,8 +79,8 @@ enum Sides {
     One(f32),
 }
 
-/// A branch from `a` towards `b`, grown `lit` of the way (0 to 1), its leaves `s` times their usual
-/// size, a curling tendril now and then; `alpha` fades it all.
+/// A branch from `a` towards `b`, grown `lit` of the way (0 to 1), a leaf every `gap` points, `s`
+/// times their usual size; `alpha` fades it all.
 #[allow(clippy::too_many_arguments)]
 fn vine(
     painter: &egui::Painter,
@@ -90,6 +88,7 @@ fn vine(
     b: Pos2,
     lit: f32,
     s: f32,
+    gap: f32,
     seed: u32,
     sides: Sides,
     alpha: f32,
@@ -102,7 +101,7 @@ fn vine(
     let n = d.rot90();
     let end = len * lit.min(1.0);
     let phase = noise(seed) * TAU;
-    let wave = |x: f32| (x / (15.0 * s) + phase).sin() * 1.4 * s;
+    let wave = |x: f32| (x / (18.0 * s) + phase).sin() * 1.1 * s;
     let at = |x: f32| a + d * x + n * wave(x);
     let steps = ((end / 3.0) as usize).max(2);
     let stem: Vec<Pos2> = (0..=steps)
@@ -110,10 +109,9 @@ fn vine(
         .collect();
     painter.add(egui::Shape::line(
         stem,
-        Stroke::new(1.2 * s, BARK.gamma_multiply(alpha)),
+        Stroke::new(1.0 * s, BARK.gamma_multiply(alpha)),
     ));
-    let gap = 15.0 * s;
-    let mut x = gap * 0.5;
+    let mut x = gap * 0.6;
     let mut i = 0u32;
     while x < end - 1.0 {
         let side = match sides {
@@ -127,48 +125,22 @@ fn vine(
             Sides::One(sign) => sign,
         };
         let r = noise(seed.wrapping_add(i * 7 + 1));
-        let color = if r < 0.45 {
-            LEAF
-        } else if r < 0.8 {
-            LEAF_DARK
-        } else {
-            LEAF_YOUNG
-        };
-        // The leaves near the tip are still small.
-        let grow = ((end - x) / (gap * 1.5)).clamp(0.25, 1.0);
-        let angle = (d * 0.75 + n * side).angle() + (r - 0.5) * 0.5;
+        let color = if r < 0.6 { LEAF_DARK } else { LEAF };
+        let grow = ((end - x) / (gap * 0.8)).clamp(0.3, 1.0);
+        let angle = (d * 0.8 + n * side).angle() + (r - 0.5) * 0.4;
         leaf(
             painter,
             at(x),
             angle,
-            (6.0 + r * 3.0) * s * grow,
+            (5.5 + r * 2.0) * s * grow,
             color.gamma_multiply(alpha),
         );
-        if i % 4 == 2 && grow >= 1.0 {
-            // A tendril on the other side, curling up.
-            let base = at(x + gap * 0.5);
-            let out = -side;
-            let tip = base + n * out * 5.0 * s + d * 2.0 * s;
-            painter.line_segment(
-                [base, tip],
-                Stroke::new(0.8 * s, BARK.gamma_multiply(alpha)),
-            );
-            curl(
-                painter,
-                tip + n * out * 2.0 * s,
-                2.4 * s,
-                (n * -out).angle(),
-                1.2,
-                out,
-                Stroke::new(0.8 * s, LEAF_DARK.gamma_multiply(alpha)),
-            );
-        }
         x += gap;
         i += 1;
     }
 }
 
-/// A branch along the middle of `rect`, grown `lit` of the way.
+/// A twig along the middle of `rect`, grown `lit` of the way: a few leaves only.
 pub(super) fn vine_along(painter: &egui::Painter, rect: Rect, lit: f32) {
     let y = rect.center().y;
     vine(
@@ -176,86 +148,86 @@ pub(super) fn vine_along(painter: &egui::Painter, rect: Rect, lit: f32) {
         Pos2::new(rect.min.x + 2.0, y),
         Pos2::new(rect.max.x - 2.0, y),
         lit,
-        0.75,
+        0.7,
+        70.0,
         rect.min.x as u32,
         Sides::Both,
-        1.0,
+        0.9,
     );
 }
 
-/// A flourish at the corner `c` of a rect (`sx`, `sy` pointing inside it): a gold curl in the corner,
-/// two branches along the edges with their leaves turned outwards, two berries. `size` is how far the
-/// branches reach.
-fn flourish(painter: &egui::Painter, c: Pos2, sx: f32, sy: f32, size: f32, alpha: f32) {
-    let inward = Vec2::new(sx, sy);
-    let k = c + inward * 7.0;
-    let start = (-inward).angle();
-    curl(
-        painter,
-        k,
-        6.0,
-        start,
-        1.6,
-        sx * sy,
-        Stroke::new(1.3, GOLD.gamma_multiply(0.85 * alpha)),
-    );
-    painter.circle_filled(k, 1.4, GOLD.gamma_multiply(alpha));
-    let seed = (c.x as u32).wrapping_mul(31) ^ c.y as u32;
-    // Along the top or bottom edge, the leaves outside (normal of a vine going +x is +y).
-    let h_out = -sy * sx;
-    vine(
-        painter,
-        c + Vec2::new(sx * 12.0, sy * 1.5),
-        c + Vec2::new(sx * size, sy * 1.5),
-        1.0,
-        0.8,
-        seed,
-        Sides::One(h_out),
-        alpha,
-    );
-    // Along the left or right edge.
-    let v_out = sx * sy;
-    vine(
-        painter,
-        c + Vec2::new(sx * 1.5, sy * 12.0),
-        c + Vec2::new(sx * 1.5, sy * size * 0.75),
-        1.0,
-        0.8,
-        seed + 5,
-        Sides::One(v_out),
-        alpha,
-    );
-    for (dx, dy) in [(14.0, 4.0), (17.0, 6.5)] {
-        painter.circle_filled(
-            c + Vec2::new(sx * dx, sy * dy),
-            1.6,
-            BERRY.gamma_multiply(alpha),
+/// A thin line of gold across `rect`, fading at both ends, a small curl in its middle.
+pub(super) fn fine_line(painter: &egui::Painter, rect: Rect) {
+    let y = rect.center().y;
+    let parts = 16;
+    let step = rect.width() / parts as f32;
+    for p in 0..parts {
+        let mid = ((p as f32 + 0.5) / parts as f32 - 0.5).abs() * 2.0;
+        let x = rect.min.x + step * p as f32;
+        painter.hline(
+            x..=x + step,
+            y,
+            Stroke::new(1.0, GOLD.gamma_multiply(0.55 * (1.0 - mid * mid))),
         );
     }
 }
 
-/// A pane: a thin edge of moss and a flourish at each corner; `strength` 1 for the pane in focus, less
-/// for the others.
-pub(super) fn frame(painter: &egui::Painter, r: Rect, strength: f32) {
-    let r = r.shrink(1.0);
-    painter.rect_stroke(
-        r,
-        4.0,
-        Stroke::new(1.0, LEAF.gamma_multiply(0.45 * strength)),
-        egui::StrokeKind::Inside,
+/// A flourish at the corner `c` of a rect (`sx`, `sy` pointing inside it): a gold curl in the corner, a
+/// short sprig along each edge with two or three leaves turned outwards.
+fn flourish(painter: &egui::Painter, c: Pos2, sx: f32, sy: f32, size: f32) {
+    let inward = Vec2::new(sx, sy);
+    let k = c + inward * 6.0;
+    curl(
+        painter,
+        k,
+        5.0,
+        (-inward).angle(),
+        1.5,
+        sx * sy,
+        Stroke::new(1.2, GOLD.gamma_multiply(0.85)),
     );
-    let size = (r.width().min(r.height()) * 0.28).clamp(26.0, 74.0);
+    painter.circle_filled(k, 1.2, GOLD);
+    let seed = (c.x as u32).wrapping_mul(31) ^ c.y as u32;
+    // Along the top or bottom edge, the leaves outside (the normal of a vine going +x is +y).
+    vine(
+        painter,
+        c + Vec2::new(sx * 11.0, sy * 1.5),
+        c + Vec2::new(sx * size, sy * 1.5),
+        1.0,
+        0.75,
+        16.0,
+        seed,
+        Sides::One(-sy * sx),
+        0.9,
+    );
+    vine(
+        painter,
+        c + Vec2::new(sx * 1.5, sy * 11.0),
+        c + Vec2::new(sx * 1.5, sy * size * 0.7),
+        1.0,
+        0.75,
+        16.0,
+        seed + 5,
+        Sides::One(sx * sy),
+        0.9,
+    );
+}
+
+/// The pane in focus: a flourish at each corner, nothing else.
+pub(super) fn frame(painter: &egui::Painter, r: Rect) {
+    let r = r.shrink(1.0);
+    let size = (r.width().min(r.height()) * 0.2).clamp(22.0, 40.0);
     for (c, sx, sy) in [
         (r.left_top(), 1.0, 1.0),
         (r.right_top(), -1.0, 1.0),
         (r.left_bottom(), 1.0, -1.0),
         (r.right_bottom(), -1.0, -1.0),
     ] {
-        flourish(painter, c, sx, sy, size, strength);
+        flourish(painter, c, sx, sy, size);
     }
 }
 
-/// The corners of a dialog.
+/// The corners of a dialog: gold curls only.
 pub(super) fn corners(painter: &egui::Painter, r: Rect) {
     for (c, sx, sy) in [
         (r.left_top(), 1.0, 1.0),
@@ -263,39 +235,42 @@ pub(super) fn corners(painter: &egui::Painter, r: Rect) {
         (r.left_bottom(), 1.0, -1.0),
         (r.right_bottom(), -1.0, -1.0),
     ] {
-        flourish(painter, c, sx, sy, 44.0, 1.0);
+        let inward = Vec2::new(sx, sy);
+        curl(
+            painter,
+            c + inward * 7.0,
+            6.0,
+            (-inward).angle(),
+            1.5,
+            sx * sy,
+            Stroke::new(1.3, GOLD.gamma_multiply(0.85)),
+        );
     }
 }
 
-/// The title in the sidebar: « Ronnie » in the gold of the Ring, a branch on each side ending in a curl.
+/// The title in the sidebar: « Ronnie » in the gold of the Ring, a fine gold line on each side ending in
+/// a curl.
 pub(super) fn logo(painter: &egui::Painter, rect: Rect) {
     let c = rect.center() - Vec2::new(0.0, 2.0);
     super::paint_metal(painter, c, Align2::CENTER_CENTER, "Ronnie", 30.0, GOLD, 1.0);
-    let w = (rect.width() / 2.0 - 6.0).min(104.0);
-    if w < 64.0 {
+    let w = (rect.width() / 2.0 - 6.0).min(100.0);
+    if w < 66.0 {
         return;
     }
     for side in [-1.0f32, 1.0] {
-        let from = c + Vec2::new(side * 54.0, 4.0);
-        let to = c + Vec2::new(side * w, 4.0);
-        vine(
-            painter,
-            from,
-            to,
-            1.0,
-            0.7,
-            if side < 0.0 { 3 } else { 11 },
-            Sides::Both,
-            1.0,
+        let (from, to) = (c.x + side * 54.0, c.x + side * w);
+        painter.line_segment(
+            [Pos2::new(from, c.y + 4.0), Pos2::new(to, c.y + 4.0)],
+            Stroke::new(1.0, GOLD.gamma_multiply(0.6)),
         );
         curl(
             painter,
-            to + Vec2::new(0.0, -4.0),
+            Pos2::new(to, c.y),
             4.0,
             PI / 2.0,
             1.4,
             side,
-            Stroke::new(1.1, GOLD.gamma_multiply(0.9)),
+            Stroke::new(1.1, GOLD.gamma_multiply(0.8)),
         );
     }
 }
@@ -303,31 +278,29 @@ pub(super) fn logo(painter: &egui::Painter, rect: Rect) {
 /// The R of the folded sidebar, with a leaf.
 pub(super) fn mark(painter: &egui::Painter, c: Pos2) {
     super::paint_metal(painter, c, Align2::CENTER_CENTER, "R", 32.0, GOLD, 1.0);
-    leaf(painter, c + Vec2::new(7.0, -11.0), -0.6, 9.0, LEAF);
+    leaf(painter, c + Vec2::new(7.0, -11.0), -0.6, 8.0, LEAF_DARK);
 }
 
-/// After a title ending at `text_end`: a leaf, then a branch fading out across `rect`.
+/// After a title ending at `text_end`: a small leaf, then a fine gold line fading out across `rect`.
 pub(super) fn title_marks(painter: &egui::Painter, rect: Rect, text_end: f32) {
     let y = rect.center().y;
     let from = text_end + 10.0;
     if from + 30.0 >= rect.max.x {
         return;
     }
-    leaf(painter, Pos2::new(from, y + 1.0), -0.5, 8.0, LEAF);
-    let to = (rect.max.x - 6.0).min(from + 220.0);
-    let parts = 4;
+    leaf(painter, Pos2::new(from, y + 1.0), -0.5, 7.0, LEAF_DARK);
+    let to = (rect.max.x - 6.0).min(from + 200.0);
+    let parts = 8;
     let step = (to - from - 8.0) / parts as f32;
     for p in 0..parts {
         let x = from + 8.0 + step * p as f32;
-        vine(
-            painter,
-            Pos2::new(x, y),
-            Pos2::new(x + step, y),
-            1.0,
-            0.6,
-            p as u32 * 13 + 2,
-            Sides::Both,
-            1.0 - p as f32 / parts as f32,
+        painter.hline(
+            x..=x + step,
+            y,
+            Stroke::new(
+                1.0,
+                GOLD.gamma_multiply(0.5 * (1.0 - p as f32 / parts as f32)),
+            ),
         );
     }
 }
@@ -343,10 +316,10 @@ pub(super) fn active_mark(painter: &egui::Painter, r: Rect) {
     );
 }
 
-/// The sidebar's panel: the green of the woods going dark towards its foot, ivy climbing its edge.
+/// The sidebar's panel: warm wood going dark towards its foot.
 pub(super) fn panel_bg(painter: &egui::Painter, r: Rect) {
     let mut mesh = egui::Mesh::default();
-    let (top, foot) = (Color32::from_rgb(34, 46, 30), Color32::from_rgb(17, 23, 15));
+    let (top, foot) = (Color32::from_rgb(44, 38, 30), Color32::from_rgb(24, 21, 17));
     mesh.colored_vertex(r.left_top(), top);
     mesh.colored_vertex(r.right_top(), top);
     mesh.colored_vertex(r.left_bottom(), foot);
@@ -354,17 +327,6 @@ pub(super) fn panel_bg(painter: &egui::Painter, r: Rect) {
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(1, 3, 2);
     painter.add(mesh);
-    let x = r.max.x - 3.0;
-    vine(
-        painter,
-        Pos2::new(x, r.max.y),
-        Pos2::new(x, r.min.y + 60.0),
-        1.0,
-        0.7,
-        41,
-        Sides::One(-1.0),
-        0.55,
-    );
 }
 
 /// A shape filled from the curve `top` (y for an x) down to `bottom`.

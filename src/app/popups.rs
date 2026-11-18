@@ -627,10 +627,10 @@ impl App {
                 super::thrones::sword_along(ui.painter(), band, 1.0);
                 ui.add_space(10.0);
             }
-            // La Comté: a branch on top, the alert.
+            // La Comté: a fine gold line on top, the alert.
             if self.theme.shire {
-                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
-                super::shire::vine_along(ui.painter(), band, 1.0);
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                super::shire::fine_line(ui.painter(), band);
                 ui.add_space(10.0);
             }
             // Lundi matin: blood on top, the alert.
