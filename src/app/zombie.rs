@@ -1517,9 +1517,7 @@ impl App {
         self.monday.rewards.retain(|r| now - r.4 < RESCUE_AT + 3.0);
         super::zombie_rewards::paint_rewards(&painter, &self.monday.rewards, &at, scale, now, field);
         super::zombie_floors::paint_shade(&painter, field, map.id == "roof");
-        if map.id == "roof" {
-            super::zombie_floors::paint_storm(&painter, &map, &at, scale, now, field);
-        }
+        super::zombie_floors::paint_air(&painter, &map, &at, scale, now, field);
         // The memos' blasts, spreading to the megaphone's reach.
         self.monday.memo_rings.retain(|r| now - r.2 < 0.6);
         for &(x, y, since) in &self.monday.memo_rings {

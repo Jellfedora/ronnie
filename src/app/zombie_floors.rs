@@ -75,6 +75,7 @@ pub(super) fn paint_floor(painter: &egui::Painter, map: &Map, to: To, s: f32, no
         "roof" => ground_roof(painter, map, to, s, now),
         "canteen" => ground_lino(painter, map, to, s),
         "servers" => ground_raised(painter, map, to, s, now),
+        "openspace" => ground_office(painter, map, to, s),
         _ => ground_carpet(painter, map, to, s),
     }
     // The lights of the ceiling on the ground (the sun, on the roof).
@@ -95,8 +96,240 @@ pub(super) fn paint_floor(painter: &egui::Painter, map: &Map, to: To, s: f32, no
     for d in &map.desks {
         furniture(painter, d, to, s, now, boss);
     }
-    if map.id == "roof" {
-        roof_night(painter, map, to, s, now);
+    match map.id.as_str() {
+        "roof" => roof_night(painter, map, to, s, now),
+        "hall" => hall_morning(painter, map, to, s, now),
+        "openspace" => openspace_neons(painter, map, to, s, now),
+        "canteen" => canteen_lamps(painter, map, to, s, now),
+        "servers" => servers_dark(painter, map, to, s, now),
+        "board" => board_sunset(painter, map, to, s, now),
+        _ => {}
+    }
+}
+
+/// The windows along a floor's outer wall (the top one in the hall, the bottom one elsewhere): their
+/// left edge, where no door is.
+fn windows(map: &Map) -> Vec<f32> {
+    let y = if map.id == "hall" { 0.0 } else { map.h - map.wall };
+    let mut out = Vec::new();
+    let mut x = 260.0;
+    while x < 1360.0 {
+        if !map.doors.iter().chain(map.reception.as_ref()).any(|d| d.along == "x" && (d.x - x - 50.0).abs() < d.span / 2.0 + 60.0 && (d.y - y).abs() < 60.0) {
+            out.push(x);
+        }
+        x += 120.0;
+    }
+    out
+}
+
+/// Light coming in by the windows: a slanted shaft from each (`down`: from the top wall), `long`
+/// across the floor, `color` (added), shimmering a little.
+fn shafts(painter: &egui::Painter, map: &Map, to: To, now: f64, down: bool, long: f32, slant: f32, color: (f32, f32, f32)) {
+    let (y0, dir) = if down { (map.wall, 1.0) } else { (map.h - map.wall, -1.0) };
+    for (k, x) in windows(map).into_iter().enumerate() {
+        let shimmer = 0.8 + 0.2 * ((now * 0.7 + k as f64 * 1.3).sin() as f32);
+        let mut mesh = egui::Mesh::default();
+        let c = |f: f32| Color32::from_rgba_premultiplied((color.0 * f * shimmer) as u8, (color.1 * f * shimmer) as u8, (color.2 * f * shimmer) as u8, 0);
+        mesh.colored_vertex(to(x, y0), c(1.0));
+        mesh.colored_vertex(to(x + 100.0, y0), c(1.0));
+        mesh.colored_vertex(to(x + 100.0 + slant, y0 + dir * long), c(0.0));
+        mesh.colored_vertex(to(x - 30.0 + slant, y0 + dir * long), c(0.0));
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
+/// The hall, a sunny morning: the sun coming in by the glass front in long shafts, warm over the
+/// marble; the fountain's water sparkling.
+fn hall_morning(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    let all = Rect::from_min_max(to(0.0, 0.0), to(map.w, map.h));
+    gradient(painter, Rect::from_min_max(all.min, Pos2::new(all.max.x, to(0.0, 400.0).y)), glow(16, 12, 4), Color32::TRANSPARENT, true);
+    shafts(painter, map, to, now, true, 800.0, 380.0, (46.0, 36.0, 16.0));
+    for d in map.desks.iter().filter(|d| d.k == "fountain") {
+        let c = to(d.x + d.w / 2.0, d.y + d.h / 2.0);
+        radial(painter, c, d.w * 0.9 * s, glow(30, 60, 80), Color32::TRANSPARENT);
+        for k in 0..10 {
+            let a = hash(k, 3) * std::f32::consts::TAU;
+            let r = (0.2 + 0.25 * hash(3, k)) * d.w * s;
+            let on = ((now * 3.0 + k as f64 * 0.7).sin() as f32).max(0.0);
+            painter.circle_filled(c + Vec2::new(a.cos() * r, a.sin() * r * 0.6), 2.0 * s * on, Color32::from_white_alpha((220.0 * on) as u8));
+        }
+    }
+}
+
+/// The open space by day: soft daylight from the windows, a long pendant lamp over each island (its
+/// light a soft pool the island's shape), and over the table; one lamp failing, buzzing on and off.
+fn openspace_neons(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    shafts(painter, map, to, now, false, 500.0, -160.0, (40.0, 38.0, 30.0));
+    for (k, d) in map.desks.iter().filter(|d| d.k == "desk" || d.k == "table" || d.k == "babyfoot").enumerate() {
+        let failing = k == 3;
+        let on = !failing || ((now * 13.0).sin() + (now * 7.1).sin() * 0.8) > 0.2;
+        let c = to(d.x + d.w / 2.0, d.y + d.h / 2.0);
+        let pool = Rect::from_center_size(c, Vec2::new(d.w + 120.0, d.h + 120.0) * s);
+        if on {
+            // A soft rectangle: bright in, fading to its edges.
+            let mut mesh = egui::Mesh::default();
+            let (inner, outer) = (glow(30, 30, 26), Color32::TRANSPARENT);
+            let core = pool.shrink2(Vec2::new(70.0, 60.0) * s);
+            for p in [core.left_top(), core.right_top(), core.right_bottom(), core.left_bottom()] {
+                mesh.colored_vertex(p, inner);
+            }
+            for p in [pool.left_top(), pool.right_top(), pool.right_bottom(), pool.left_bottom()] {
+                mesh.colored_vertex(p, outer);
+            }
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            for e in 0..4u32 {
+                let n = (e + 1) % 4;
+                mesh.add_triangle(e, n, 4 + e);
+                mesh.add_triangle(n, 4 + n, 4 + e);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        // The lamp itself, hanging over the middle: a thin bar, lit or not.
+        let bar = Rect::from_center_size(c, Vec2::new(d.w * 0.8, 5.0) * s);
+        painter.rect_filled(bar.translate(Vec2::new(4.0, 8.0) * s), 2.0, Color32::from_black_alpha(40));
+        painter.rect_filled(bar, 2.5 * s, if on { rgb(250, 248, 236) } else { rgb(90, 92, 100) });
+        if on {
+            painter.rect_filled(bar.expand(3.0 * s), 4.0 * s, glow(40, 38, 30));
+        }
+    }
+}
+
+/// The canteen: warm lamps hanging over the tables (swaying a little), the kitchen's stoves alight
+/// (their flames, their glow), the vending machines glowing.
+fn canteen_lamps(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    let all = Rect::from_min_max(to(0.0, 0.0), to(map.w, map.h));
+    painter.rect_filled(all, 0.0, Color32::from_rgba_unmultiplied(30, 16, 6, 40));
+    for (k, d) in map.desks.iter().enumerate() {
+        let c = to(d.x + d.w / 2.0, d.y + d.h / 2.0);
+        match d.k.as_str() {
+            "cantable" => {
+                for f in [0.25, 0.75] {
+                    let sway = Vec2::new((now as f32 * 0.9 + k as f32 + f).sin() * 6.0, 0.0) * s;
+                    let p = to(d.x + d.w * f, d.y + d.h / 2.0) + sway;
+                    radial(painter, p, 170.0 * s, glow(60, 40, 16), Color32::TRANSPARENT);
+                    // The shade from above: copper, its bulb glowing inside.
+                    painter.circle_filled(p + Vec2::new(3.0, 5.0) * s, 15.0 * s, Color32::from_black_alpha(50));
+                    radial(painter, p, 15.0 * s, rgb(214, 140, 80), rgb(150, 86, 44));
+                    painter.circle_stroke(p, 15.0 * s, Stroke::new(1.5 * s, rgb(240, 180, 110)));
+                    radial(painter, p, 7.0 * s, rgb(255, 250, 220), rgb(255, 214, 140));
+                }
+            }
+            // In the kitchen (the wing below): stoves, alight.
+            "buffet" if d.y > 1000.0 => {
+                for m in 0..4 {
+                    let b = to(d.x + d.w * (0.14 + 0.24 * m as f32), d.y + d.h / 2.0);
+                    radial(painter, b, 50.0 * s, glow(90, 46, 10), Color32::TRANSPARENT);
+                    painter.circle_stroke(b, 12.0 * s, Stroke::new(2.0 * s, rgb(40, 40, 44)));
+                    for q in 0..8 {
+                        let a = q as f32 / 8.0 * std::f32::consts::TAU;
+                        let tall = 5.0 + 4.0 * ((now * 17.0 + q as f64 + m as f64).sin() as f32 * 0.5 + 0.5);
+                        painter.line_segment([b + Vec2::angled(a) * 7.0 * s, b + Vec2::angled(a) * (7.0 + tall) * s], Stroke::new(2.5 * s, if q % 2 == 0 { rgb(90, 150, 255) } else { rgb(255, 170, 60) }));
+                    }
+                }
+            }
+            "vending" => radial(painter, c, 90.0 * s, if k % 2 == 0 { glow(20, 60, 90) } else { glow(90, 20, 30) }, Color32::TRANSPARENT),
+            _ => {}
+        }
+    }
+}
+
+/// The basement: dark, but for the racks' cold blue (their lights in the dark), red beacons turning on
+/// the walls.
+fn servers_dark(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    let all = Rect::from_min_max(to(0.0, 0.0), to(map.w, map.h));
+    painter.rect_filled(all, 0.0, Color32::from_rgba_unmultiplied(4, 8, 22, 140));
+    for d in map.desks.iter().filter(|d| d.k == "rack") {
+        let r = Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h));
+        // The cold aisle each side, blue.
+        for side in [-1.0, 1.0] {
+            let band = if d.h > d.w { Rect::from_center_size(r.center() + Vec2::new(side * (r.width() / 2.0 + 30.0 * s), 0.0), Vec2::new(60.0 * s, r.height())) } else { Rect::from_center_size(r.center() + Vec2::new(0.0, side * (r.height() / 2.0 + 30.0 * s)), Vec2::new(r.width(), 60.0 * s)) };
+            let (a, b) = (glow(10, 34, 70), Color32::TRANSPARENT);
+            if d.h > d.w {
+                gradient(painter, band, if side < 0.0 { b } else { a }, if side < 0.0 { a } else { b }, false);
+            } else {
+                gradient(painter, band, if side < 0.0 { b } else { a }, if side < 0.0 { a } else { b }, true);
+            }
+        }
+    }
+    for d in map.desks.iter().filter(|d| d.k == "ups") {
+        radial(painter, to(d.x + d.w / 2.0, d.y + d.h / 2.0), 70.0 * s, glow(20, 70, 30), Color32::TRANSPARENT);
+    }
+    // Beacons on the walls, their red beams turning.
+    let spots = [(map.wall + 6.0, map.h / 2.0), (map.w / 2.0, map.wall + 6.0), (map.w - map.wall - 6.0, map.h - 120.0), (map.w / 2.0, map.h - map.wall - 6.0)];
+    for (k, (x, y)) in spots.into_iter().enumerate() {
+        let c = to(x, y);
+        let a = now as f32 * 2.2 + k as f32 * 1.7;
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(c, glow(90, 6, 4));
+        for q in 0..=8 {
+            mesh.colored_vertex(c + Vec2::angled(a - 0.25 + 0.5 * q as f32 / 8.0) * 420.0 * s, Color32::TRANSPARENT);
+        }
+        for q in 0..8 {
+            mesh.add_triangle(0, q + 1, q + 2);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+        painter.circle_filled(c, 8.0 * s, rgb(255, 50, 40));
+        radial(painter, c, 40.0 * s, glow(140, 20, 10), Color32::TRANSPARENT);
+    }
+}
+
+/// The top floor at sunset: the low sun in long orange shafts by the windows, the boardroom's two
+/// chandeliers over the table, the CEO's aquarium glowing blue (its fish going round).
+fn board_sunset(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    let all = Rect::from_min_max(to(0.0, 0.0), to(map.w, map.h));
+    gradient(painter, all, Color32::from_rgba_unmultiplied(40, 10, 30, 50), Color32::TRANSPARENT, true);
+    gradient(painter, Rect::from_min_max(to(0.0, map.h - 500.0), to(map.w, map.h)), Color32::TRANSPARENT, glow(40, 18, 4), true);
+    shafts(painter, map, to, now, false, 900.0, -420.0, (80.0, 38.0, 10.0));
+    for d in &map.desks {
+        match d.k.as_str() {
+            "boardtable" => {
+                for f in [0.27, 0.73] {
+                    let c = to(d.x + d.w * f, d.y + d.h / 2.0);
+                    radial(painter, c, 230.0 * s, glow(70, 54, 22), Color32::TRANSPARENT);
+                    // The chandelier from above: its arms and crystals, sparkling.
+                    for k in 0..8 {
+                        let a = k as f32 / 8.0 * std::f32::consts::TAU + 0.2;
+                        let tip = c + Vec2::angled(a) * 34.0 * s;
+                        painter.line_segment([c, tip], Stroke::new(2.0 * s, rgb(212, 172, 84)));
+                        let on = ((now * 2.5 + k as f64 * 0.9).sin() as f32 * 0.5 + 0.5) * 0.8 + 0.2;
+                        painter.circle_filled(tip, 4.0 * s, Color32::from_rgba_unmultiplied(255, 246, 220, (255.0 * on) as u8));
+                    }
+                    painter.circle_filled(c, 9.0 * s, rgb(240, 214, 140));
+                }
+            }
+            "aquarium" => {
+                let r = Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h));
+                radial(painter, r.center(), d.w * 0.8 * s, glow(10, 50, 80), Color32::TRANSPARENT);
+                painter.rect_filled(r.translate(Vec2::new(4.0, 6.0) * s), 3.0 * s, Color32::from_black_alpha(80));
+                gradient(painter, r, rgb(40, 150, 200), rgb(20, 70, 130), true);
+                painter.rect_stroke(r, 3.0 * s, Stroke::new(3.0 * s, rgb(30, 30, 36)), egui::StrokeKind::Inside);
+                let clip = painter.with_clip_rect(r.shrink(3.0 * s).intersect(painter.clip_rect()));
+                for k in 0..6 {
+                    let f = ((now * (0.06 + 0.03 * hash(k, 2) as f64) + hash(k, 1) as f64) % 1.0) as f32;
+                    let back = k % 2 == 0;
+                    let x = if back { r.min.x + f * r.width() } else { r.max.x - f * r.width() };
+                    let y = r.min.y + (0.2 + 0.6 * hash(k, 4)) * r.height() + (now as f32 * 2.0 + k as f32).sin() * 3.0 * s;
+                    let dir = if back { 1.0 } else { -1.0 };
+                    let color = [rgb(255, 150, 40), rgb(255, 220, 80), rgb(240, 90, 120)][k as usize % 3];
+                    poly(&clip, ellipse(Pos2::new(x, y), 14.0 * s, 7.0 * s, 0.0), color);
+                    poly(&clip, vec![Pos2::new(x - dir * 6.0 * s, y), Pos2::new(x - dir * 13.0 * s, y - 5.0 * s), Pos2::new(x - dir * 13.0 * s, y + 5.0 * s)], color);
+                }
+                for k in 0..5 {
+                    let f = ((now * 0.5 + k as f64 * 0.21) % 1.0) as f32;
+                    clip.circle_stroke(Pos2::new(r.min.x + (0.15 + 0.17 * k as f32) * r.width(), r.max.y - f * r.height()), 2.0 * s, Stroke::new(1.0, Color32::from_white_alpha((160.0 * (1.0 - f)) as u8)));
+                }
+                // Plants swaying at the bottom.
+                for k in 0..4 {
+                    let b = Pos2::new(r.min.x + (0.12 + 0.25 * k as f32) * r.width(), r.max.y - 3.0 * s);
+                    let sway = (now as f32 * 1.3 + k as f32).sin() * 4.0 * s;
+                    clip.line_segment([b, b + Vec2::new(sway, -r.height() * 0.5)], Stroke::new(3.0 * s, rgb(60, 160, 90)));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -215,9 +448,58 @@ fn roof_night(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
     }
 }
 
+/// The air over everyone, per floor: the dust in the hall's sun, papers blown about the open space,
+/// the kitchen's steam, the basement's cold mist; the storm on the roof.
+pub(super) fn paint_air(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64, field: Rect) {
+    let t = now as f32;
+    match map.id.as_str() {
+        "roof" => paint_storm(painter, map, to, s, now, field),
+        "hall" => {
+            for k in 0..90 {
+                let x = (hash(k, 1) * map.w + t * (4.0 + 6.0 * hash(k, 2))).rem_euclid(map.w);
+                let y = hash(k, 3) * 900.0 + (t * 0.4 + k as f32).sin() * 20.0;
+                let on = ((t * 0.8 + k as f32).sin() * 0.5 + 0.5) * 0.8;
+                painter.circle_filled(to(x, y), 1.6 * s.max(0.6), Color32::from_rgba_unmultiplied(255, 236, 190, (120.0 * on) as u8));
+            }
+        }
+        "openspace" => {
+            // Sheets of paper blown by the broken window's draught, end over end.
+            for k in 0..8 {
+                let f = (hash(k, 21) + t * (0.04 + hash(k, 22) * 0.03)).fract();
+                let x = map.w - f * map.w;
+                let y = 200.0 + hash(k, 23) * (map.h - 400.0) + (t * 1.5 + k as f32).sin() * 60.0;
+                let c = to(x, y);
+                let a = t * (1.5 + hash(k, 24) * 2.0);
+                let (u, v) = (Vec2::angled(a), Vec2::angled(a + 1.57));
+                let flip = (t * 3.0 + k as f32).sin().abs().max(0.25);
+                poly(painter, vec![c - u * 9.0 * s - v * 12.0 * s * flip, c + u * 9.0 * s - v * 12.0 * s * flip, c + u * 9.0 * s + v * 12.0 * s * flip, c - u * 9.0 * s + v * 12.0 * s * flip], Color32::from_white_alpha(190));
+            }
+        }
+        "canteen" => {
+            for d in map.desks.iter().filter(|d| d.k == "buffet" && d.y > 1000.0) {
+                for k in 0..10 {
+                    let f = ((t * 0.35 + hash(k, d.x as i32) * 1.0) % 1.0).fract();
+                    let x = d.x + hash(k, 5) * d.w + (t + k as f32).sin() * 14.0;
+                    let y = d.y + d.h / 2.0 - f * 260.0;
+                    painter.circle_filled(to(x, y), (14.0 + 30.0 * f) * s, Color32::from_white_alpha((50.0 * (1.0 - f)) as u8));
+                }
+            }
+        }
+        "servers" => {
+            for k in 0..26 {
+                let x = (hash(k, 31) * map.w + t * (10.0 + 10.0 * hash(k, 32))).rem_euclid(map.w + 400.0) - 200.0;
+                let y = hash(k, 33) * map.h;
+                let c = to(x, y);
+                poly(painter, ellipse(c, (260.0 + 200.0 * hash(k, 34)) * s, (60.0 + 40.0 * hash(k, 35)) * s, 0.0), Color32::from_rgba_unmultiplied(150, 190, 230, 14));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The storm over the roof, over everyone: the rain slanting across the screen and splashing, the
 /// leaves blown by, the lightning striking the antenna and its white flash over it all.
-pub(super) fn paint_storm(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64, field: Rect) {
+fn paint_storm(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64, field: Rect) {
     let t = now as f32;
     let wind = Vec2::new(-0.32, 1.0);
     for k in 0..320 {
@@ -361,6 +643,63 @@ fn ground_carpet(painter: &egui::Painter, map: &Map, to: To, s: f32) {
     let right = map.w.min(1600.0) - 60.0;
     gradient(painter, Rect::from_min_max(to(60.0, 560.0), to(right, 600.0)), Color32::TRANSPARENT, Color32::from_white_alpha(8), true);
     gradient(painter, Rect::from_min_max(to(60.0, 600.0), to(right, 640.0)), Color32::from_white_alpha(8), Color32::TRANSPARENT, true);
+}
+
+/// The island's colors in the open space: its rug, its chairs (each island its own).
+fn island_colors(d: &Desk) -> (Color32, Color32) {
+    let k = ((d.x / 420.0) as usize + (d.y / 520.0) as usize * 3) % 4;
+    [(rgb(72, 140, 142), rgb(240, 140, 60)), (rgb(204, 160, 70), rgb(50, 110, 150)), (rgb(206, 110, 92), rgb(60, 130, 120)), (rgb(104, 120, 176), rgb(236, 190, 70))][k]
+}
+
+/// The open space: light carpet tiles (their weave turning a quarter from one to the next), a colored
+/// rug under each island, the light oak floor of the middle aisle.
+fn ground_office(painter: &egui::Painter, map: &Map, to: To, s: f32) {
+    let tile = 60.0;
+    for i in 0..(map.w / tile).ceil() as i32 {
+        for j in 0..(map.h / tile).ceil() as i32 {
+            let v = hash(i, j);
+            let r = Rect::from_min_size(to(i as f32 * tile, j as f32 * tile), Vec2::splat(tile * s + 0.5));
+            painter.rect_filled(r, 0.0, rgb(150, 148, 142).lerp_to_gamma(rgb(166, 163, 156), v));
+            let weave = Stroke::new(1.0, Color32::from_black_alpha(14));
+            for k in 1..5 {
+                let f = k as f32 / 5.0;
+                if (i + j) % 2 == 0 {
+                    painter.vline(r.min.x + r.width() * f, r.y_range(), weave);
+                } else {
+                    painter.hline(r.x_range(), r.min.y + r.height() * f, weave);
+                }
+            }
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_black_alpha(18)), egui::StrokeKind::Inside);
+        }
+    }
+    // The aisle across the room: light oak boards.
+    let right = map.w.min(1600.0) - map.wall;
+    let aisle = Rect::from_min_max(to(map.wall, 560.0), to(right, 640.0));
+    painter.rect_filled(aisle, 0.0, rgb(196, 160, 112));
+    let mut x = map.wall;
+    let mut k = 0;
+    while x < right {
+        let len = 90.0 + hash(k, 7) * 80.0;
+        for (row, y) in [(0, 560.0), (1, 600.0)] {
+            let off = if row == 1 { 50.0 } else { 0.0 };
+            let a = (x + off).min(right);
+            let b = (x + off + len).min(right);
+            let plank = Rect::from_min_max(to(a, y), to(b, y + 40.0));
+            painter.rect_filled(plank, 0.0, rgb(200, 164, 116).lerp_to_gamma(rgb(214, 180, 130), hash(k, row)));
+            painter.rect_stroke(plank, 0.0, Stroke::new(1.0, Color32::from_black_alpha(30)), egui::StrokeKind::Inside);
+        }
+        x += len;
+        k += 1;
+    }
+    painter.hline(aisle.x_range(), aisle.min.y, Stroke::new(2.0 * s, rgb(120, 96, 66)));
+    painter.hline(aisle.x_range(), aisle.max.y, Stroke::new(2.0 * s, rgb(120, 96, 66)));
+    // The islands' rugs.
+    for d in map.desks.iter().filter(|d| d.k == "desk" && d.x < 1600.0) {
+        let rug = Rect::from_min_max(to(d.x - 40.0, d.y - 50.0), to(d.x + d.w + 40.0, d.y + d.h + 50.0));
+        let (color, _) = island_colors(d);
+        painter.rect_filled(rug, 10.0 * s, color);
+        painter.rect_stroke(rug.shrink(6.0 * s), 6.0 * s, Stroke::new(2.0 * s, color.lerp_to_gamma(Color32::WHITE, 0.3)), egui::StrokeKind::Inside);
+    }
 }
 
 /// The canteen: a linoleum checkerboard, cream and green, its trodden way to the self-service.
@@ -742,7 +1081,7 @@ fn inner_walls(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
     for d in &map.walls {
         let r = Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h));
         // No floor there (an L-shaped floor): the dark outside, a wall on its edge.
-        if d.k == "void" && map.id == "roof" {
+        if d.k == "void" && (map.id == "roof" || map.id == "board") {
             abyss(painter, r, s, now);
             continue;
         }
@@ -897,35 +1236,45 @@ fn furniture(painter: &egui::Painter, d: &Desk, to: To, s: f32, now: f64, boss: 
     let shadow = |radius: f32| painter.rect_filled(r.translate(Vec2::new(5.0, 8.0) * s), radius, Color32::from_black_alpha(70));
     match d.k.as_str() {
         "desk" => {
-            // An island of four desks: their chairs outside, the partition between them.
+            // An island of four white desks: their chairs outside (the island's color), two screens
+            // each, the partition between them with its plants.
+            let (_, seat) = island_colors(d);
             let (dw, dh) = ((d.w - 10.0) / 2.0, (d.h - 10.0) / 2.0);
             for (i, j) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
                 let out = if j == 0.0 { -1.0 } else { 1.0 };
                 let cx = d.x + i * (dw + 10.0) + dw / 2.0;
-                let cy = if j == 0.0 { d.y - 16.0 } else { d.y + d.h + 16.0 };
-                chair(painter, to(cx, cy), s, Vec2::new(0.0, out), rgb(40, 44, 54));
+                let cy = if j == 0.0 { d.y - 18.0 } else { d.y + d.h + 18.0 };
+                chair(painter, to(cx, cy), s, Vec2::new(0.0, out), seat);
             }
-            shadow(6.0 * s);
+            shadow(4.0 * s);
             for (k, (i, j)) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].into_iter().enumerate() {
                 let desk = Rect::from_min_size(to(d.x + i * (dw + 10.0), d.y + j * (dh + 10.0)), Vec2::new(dw, dh) * s);
-                gradient(painter, desk, rgb(214, 194, 158), rgb(186, 164, 128), true);
-                painter.rect_stroke(desk, 4.0 * s, Stroke::new(1.0, Color32::from_black_alpha(50)), egui::StrokeKind::Inside);
-                // The screen toward its chair, glowing; the keyboard, a mug, papers.
+                gradient(painter, desk, rgb(246, 246, 242), rgb(222, 222, 216), true);
+                painter.rect_stroke(desk, 3.0 * s, Stroke::new(1.0, Color32::from_black_alpha(40)), egui::StrokeKind::Inside);
                 let toward = if j == 0.0 { -1.0 } else { 1.0 };
-                let screen = Rect::from_center_size(desk.center() - Vec2::new(0.0, toward * dh * 0.22) * s, Vec2::new(46.0, 8.0) * s);
-                painter.rect_filled(screen, 2.0 * s, rgb(24, 28, 38));
-                let flicker = 0.75 + 0.25 * ((now * 3.0 + k as f64 * 1.7 + f64::from(d.x)).sin() as f32 * 0.5 + 0.5);
-                let glow = [rgb(90, 170, 255), rgb(120, 230, 160), rgb(255, 200, 110), rgb(200, 140, 255)][(k + d.x as usize) % 4];
-                painter.rect_filled(screen.shrink(1.5 * s).translate(Vec2::new(0.0, toward * 1.5 * s)), 1.0, glow.gamma_multiply(flicker * 0.8));
-                radial(painter, screen.center() + Vec2::new(0.0, toward * 14.0 * s), 26.0 * s, glow.gamma_multiply(0.18 * flicker), Color32::TRANSPARENT);
-                painter.rect_filled(Rect::from_center_size(desk.center() + Vec2::new(0.0, toward * dh * 0.12) * s, Vec2::new(36.0, 9.0) * s), 1.5 * s, rgb(232, 232, 236));
-                painter.circle_filled(desk.center() + Vec2::new(dw * 0.36, toward * dh * 0.1) * s, 5.0 * s, rgb(236, 230, 216));
-                painter.circle_filled(desk.center() + Vec2::new(dw * 0.36, toward * dh * 0.1) * s, 3.0 * s, rgb(90, 56, 30));
-                let paper = Rect::from_center_size(desk.center() + Vec2::new(-dw * 0.34, toward * dh * 0.08) * s, Vec2::new(16.0, 20.0) * s);
-                painter.rect_filled(paper, 0.0, Color32::from_white_alpha(220));
+                let flicker = 0.8 + 0.2 * ((now * 2.0 + k as f64 * 1.7 + f64::from(d.x)).sin() as f32 * 0.5 + 0.5);
+                let tint = [rgb(90, 170, 255), rgb(120, 230, 160), rgb(255, 200, 110), rgb(200, 140, 255)][(k + d.x as usize) % 4];
+                // Two screens, angled a little, toward the chair.
+                for side in [-1.0, 1.0] {
+                    let at = desk.center() + Vec2::new(side * 22.0, -toward * dh * 0.22) * s;
+                    let screen = Rect::from_center_size(at, Vec2::new(38.0, 6.0) * s);
+                    painter.rect_filled(screen, 2.0 * s, rgb(30, 32, 40));
+                    painter.rect_filled(screen.shrink(1.2 * s).translate(Vec2::new(0.0, toward * 1.2 * s)), 1.0, tint.gamma_multiply(flicker));
+                    radial(painter, at + Vec2::new(0.0, toward * 12.0 * s), 24.0 * s, tint.gamma_multiply(0.14 * flicker), Color32::TRANSPARENT);
+                }
+                painter.rect_filled(Rect::from_center_size(desk.center() + Vec2::new(0.0, toward * dh * 0.14) * s, Vec2::new(34.0, 8.0) * s), 1.5 * s, rgb(60, 62, 70));
+                painter.circle_filled(desk.center() + Vec2::new(dw * 0.38, toward * dh * 0.12) * s, 5.0 * s, rgb(250, 250, 248));
+                painter.circle_filled(desk.center() + Vec2::new(dw * 0.38, toward * dh * 0.12) * s, 3.0 * s, rgb(90, 56, 30));
             }
-            let mid = Rect::from_center_size(to(d.x + d.w / 2.0, d.y + d.h / 2.0), Vec2::new(d.w - 6.0, 6.0) * s);
-            painter.rect_filled(mid, 2.0 * s, rgb(92, 104, 128));
+            let mid = Rect::from_center_size(to(d.x + d.w / 2.0, d.y + d.h / 2.0), Vec2::new(d.w - 6.0, 8.0) * s);
+            painter.rect_filled(mid, 3.0 * s, rgb(70, 90, 80));
+            for k in 0..5 {
+                let c = mid.left_center() + Vec2::new(mid.width() * (0.1 + 0.2 * k as f32), 0.0);
+                for q in 0..5 {
+                    let a = q as f32 * 1.26 + k as f32 + (now as f32 * 0.8 + k as f32).sin() * 0.08;
+                    poly(painter, ellipse(c + Vec2::angled(a) * 5.0 * s, 9.0 * s, 4.0 * s, a), rgb(70, 150, 80).lerp_to_gamma(rgb(110, 190, 100), hash(k, q)));
+                }
+            }
         }
         "table" => {
             for k in 0..5 {
@@ -1224,6 +1573,75 @@ fn furniture(painter: &egui::Painter, d: &Desk, to: To, s: f32, now: f64, boss: 
             radial(painter, c, 30.0 * s, if blink { Color32::from_rgba_unmultiplied(255, 60, 50, 110) } else { Color32::TRANSPARENT }, Color32::TRANSPARENT);
             painter.circle_filled(c, 4.0 * s, if blink { rgb(255, 70, 60) } else { rgb(120, 40, 36) });
         }
+        // Drawn with the floor's lights (board_sunset), glowing.
+        "aquarium" => {}
+        "babyfoot" => {
+            // The table football: its green pitch, its rods and little players, the ball rolling.
+            shadow(6.0 * s);
+            painter.rect_filled(r, 6.0 * s, rgb(110, 70, 40));
+            let pitch = r.shrink(8.0 * s);
+            painter.rect_filled(pitch, 2.0 * s, rgb(50, 140, 70));
+            painter.rect_stroke(pitch.shrink(3.0 * s), 0.0, Stroke::new(1.0, Color32::from_white_alpha(140)), egui::StrokeKind::Inside);
+            painter.vline(pitch.center().x, pitch.y_range(), Stroke::new(1.0, Color32::from_white_alpha(140)));
+            for k in 0..8 {
+                let x = pitch.min.x + pitch.width() * (k as f32 + 0.5) / 8.0;
+                painter.vline(x, Rect::from_min_max(r.min - Vec2::new(0.0, 10.0 * s), r.max + Vec2::new(0.0, 10.0 * s)).y_range(), Stroke::new(2.0 * s, rgb(190, 194, 200)));
+                let team = if [0, 1, 3, 5].contains(&k) { rgb(220, 50, 50) } else { rgb(40, 90, 210) };
+                let slide = (now as f32 * 2.0 + k as f32).sin() * 6.0 * s;
+                for q in 0..3 {
+                    painter.circle_filled(Pos2::new(x, pitch.min.y + pitch.height() * (0.2 + 0.3 * q as f32) + slide), 4.0 * s, team);
+                }
+            }
+            let ball = pitch.center() + Vec2::new((now as f32 * 1.7).sin() * pitch.width() * 0.4, (now as f32 * 2.3).cos() * pitch.height() * 0.3);
+            painter.circle_filled(ball, 3.0 * s, Color32::WHITE);
+        }
+        "beanbag" => {
+            let c = r.center();
+            painter.circle_filled(c + Vec2::new(3.0, 5.0) * s, r.width() / 2.0, Color32::from_black_alpha(70));
+            let color = if d.x < 800.0 { rgb(230, 120, 60) } else { rgb(70, 150, 200) };
+            radial(painter, c, r.width() / 2.0, color.lerp_to_gamma(Color32::WHITE, 0.2), color.lerp_to_gamma(Color32::BLACK, 0.25));
+            painter.circle_filled(c + Vec2::new(-4.0, -4.0) * s, r.width() * 0.18, Color32::from_white_alpha(40));
+        }
+        "printer" => {
+            // The printer: grey, its tray of paper, a sheet coming out now and then, its green light.
+            shadow(4.0 * s);
+            gradient(painter, r, rgb(220, 222, 226), rgb(170, 174, 180), true);
+            painter.rect_stroke(r, 4.0 * s, Stroke::new(1.0, rgb(130, 134, 140)), egui::StrokeKind::Inside);
+            let tray = Rect::from_min_size(r.min + Vec2::new(10.0, 8.0) * s, Vec2::new(r.width() - 20.0 * s, 14.0 * s));
+            painter.rect_filled(tray, 1.0, rgb(60, 62, 70));
+            let out = (now * 0.4).fract() as f32;
+            if out < 0.5 {
+                let sheet = Rect::from_min_size(Pos2::new(tray.min.x + 4.0 * s, r.max.y - 6.0 * s), Vec2::new(tray.width() - 8.0 * s, 26.0 * s * (out * 2.0)));
+                painter.rect_filled(sheet, 0.0, Color32::WHITE);
+            }
+            painter.circle_filled(r.right_top() + Vec2::new(-8.0, 8.0) * s, 2.5 * s, if (now * 2.0).fract() < 0.5 { rgb(80, 230, 120) } else { rgb(40, 110, 60) });
+        }
+        "shelf" => {
+            // A bookcase against the wall: rows of colored books, a binder or two lying.
+            shadow(3.0 * s);
+            painter.rect_filled(r, 2.0 * s, rgb(120, 84, 54));
+            let inner = r.shrink(3.0 * s);
+            let mut x = inner.min.x;
+            let mut k = 0;
+            while x < inner.max.x - 4.0 * s {
+                let w = (6.0 + hash(k, d.x as i32) * 8.0) * s;
+                let color = [rgb(190, 60, 60), rgb(50, 100, 170), rgb(220, 180, 70), rgb(60, 140, 90), rgb(230, 230, 220), rgb(120, 70, 150)][(hash(d.x as i32, k) * 6.0) as usize % 6];
+                painter.rect_filled(Rect::from_min_max(Pos2::new(x, inner.min.y), Pos2::new((x + w).min(inner.max.x), inner.max.y)), 0.0, color);
+                painter.vline(x, inner.y_range(), Stroke::new(1.0, Color32::from_black_alpha(60)));
+                x += w;
+                k += 1;
+            }
+        }
+        "cooler" => {
+            // The water fountain: its blue bottle, bubbles going up.
+            let c = r.center();
+            painter.rect_filled(r.translate(Vec2::new(3.0, 5.0) * s), 4.0 * s, Color32::from_black_alpha(70));
+            painter.rect_filled(r, 4.0 * s, rgb(230, 232, 236));
+            painter.circle_filled(c, r.width() * 0.36, rgb(90, 170, 230));
+            painter.circle_stroke(c, r.width() * 0.36, Stroke::new(1.5 * s, rgb(160, 210, 250)));
+            let f = (now * 0.8).fract() as f32;
+            painter.circle_filled(c + Vec2::new(3.0 * s, r.width() * 0.25 * (1.0 - 2.0 * f)), 2.0 * s, Color32::from_white_alpha(200));
+        }
         _ => {
             shadow(6.0 * s);
             painter.rect_filled(r, 6.0 * s, rgb(150, 120, 90));
@@ -1316,7 +1734,7 @@ mod tests {
                     w: 1600.0,
                     h: 1000.0,
                     wall: 20.0,
-                    desks: ["desk", "table", "counter", "sofa", "lowtable", "plant", "fountain", "gates", "boardtable", "flipchart", "credenza", "heli", "hvac", "tank", "antenna", "cantable", "buffet", "vending", "rack", "ups", "crate", "winch", "skylight", "?"].iter().map(|k| desk(k)).collect(),
+                    desks: ["desk", "table", "counter", "sofa", "lowtable", "plant", "fountain", "gates", "boardtable", "flipchart", "credenza", "heli", "hvac", "tank", "antenna", "cantable", "buffet", "vending", "rack", "ups", "crate", "winch", "skylight", "aquarium", "babyfoot", "beanbag", "printer", "shelf", "cooler", "?"].iter().map(|k| desk(k)).collect(),
                     walls: vec![Desk { x: 700.0, y: 20.0, w: 200.0, h: 300.0, k: "void".into() }, Desk { x: 300.0, y: 500.0, w: 20.0, h: 300.0, k: "wall".into() }],
                     rooms: ["parquet", "rug", "concrete", "corridor", "gravel", "catwalk", "?"].iter().map(|k| crate::zombie::Ground { x: 100.0, y: 100.0, w: 400.0, h: 200.0, s: (*k).into() }).collect(),
                     ..Default::default()
@@ -1326,7 +1744,7 @@ mod tests {
                 for now in [1.0, 4.03, 9.1] {
                     paint_floor(&painter, &map, &to, 0.5, now, false);
                     paint_shade(&painter, field, id == "roof");
-                    paint_storm(&painter, &map, &to, 0.5, now, field);
+                    paint_air(&painter, &map, &to, 0.5, now, field);
                 }
             }
         });

@@ -39,6 +39,12 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
   Demande floor 0.22.0.
 - **Lundi matin, le toit sous l'orage** : nuit, pluie battante, éclairs qui frappent le paratonnerre, deux projecteurs qui balaient la terrasse, une enseigne néon « LUNDI MATIN » géante, des balises rouges, les feux de l'héliport qui tournent, et la ville tout en bas dans le vide.
+- **Lundi matin, chaque étage son ambiance** :
+  - **Hall** : le soleil du matin entre par la façade vitrée, de la poussière danse dans ses rayons, et la fontaine scintille.
+  - **Open space** : refait en plateau moderne. Moquette claire, un tapis de couleur sous chaque îlot, une allée en chêne, des bureaux blancs à double écran et des chaises de couleur. Des rampes lumineuses (dont une qui grésille), un baby-foot, des poufs, une imprimante, des bibliothèques et une fontaine à eau. Des feuilles volent depuis la fenêtre cassée.
+  - **Cantine** : des suspensions cuivrées qui se balancent au-dessus des tables, des feux allumés et de la vapeur en cuisine, des distributeurs qui brillent.
+  - **Serveurs** : un sous-sol sombre, le bleu froid des allées entre les baies, des gyrophares rouges, une brume au ras du sol.
+  - **Direction** : le coucher de soleil par les baies, deux lustres au-dessus de la table du conseil, la ville vue d'en haut dans le vide, et l'aquarium du DG.
 - **Lundi matin, des sorties d'étage jouées** :
   - de l'open space et de la direction, par l'escalier ;
   - de la cantine, quand le sol cède et qu'on tombe au sous-sol des serveurs ;
