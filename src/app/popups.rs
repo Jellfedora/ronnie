@@ -130,10 +130,10 @@ impl App {
                 let edit = ui.add(egui::TextEdit::singleline(&mut menu.new_command).hint_text(t.commands_new).font(FontId::monospace(12.5)).desired_width(f32::INFINITY));
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.horizontal(|ui| {
-                    if let Some((_, name)) = &tab_scope {
-                        if let Some(i) = super::segmented::segmented(ui, &theme, super::segmented::HEIGHT, &[name.as_str(), t.commands_general], Some(if menu.for_tab { 0 } else { 1 })) {
-                            menu.for_tab = i == 0;
-                        }
+                    if let Some((_, name)) = &tab_scope
+                        && let Some(i) = super::segmented::segmented(ui, &theme, super::segmented::HEIGHT, &[name.as_str(), t.commands_general], Some(if menu.for_tab { 0 } else { 1 }))
+                    {
+                        menu.for_tab = i == 0;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let button = egui::Button::new(egui::RichText::new(t.commands_add).size(12.5).color(theme.bg)).fill(theme.accent).corner_radius(5.0);
