@@ -512,11 +512,19 @@ impl Theme {
         v.selection.stroke.color = self.accent;
         v.hyperlink_color = self.accent;
         v.widgets.noninteractive.bg_stroke.color = self.tab_hover;
-        v.widgets.inactive.weak_bg_fill = self.tab_hover;
-        v.widgets.inactive.bg_fill = self.tab_hover;
-        v.widgets.hovered.weak_bg_fill = mix(self.tab_hover, self.fg, 0.08);
-        v.widgets.hovered.bg_fill = mix(self.tab_hover, self.fg, 0.08);
-        v.widgets.active.weak_bg_fill = mix(self.tab_hover, self.fg, 0.14);
+        // Buttons the macOS way: a face a little lighter than the window, a thin edge, round corners of
+        // 6, nothing growing under the pointer; lighter when hovered, lighter still when pressed (light
+        // themes: a white face, darker when pressed).
+        let (face, edge) = if self.dark { (mix(self.chrome_bg, self.fg, 0.11), mix(self.chrome_bg, self.fg, 0.2)) } else { (Color32::WHITE, mix(self.chrome_bg, Color32::BLACK, 0.16)) };
+        let hover = if self.dark { mix(face, self.fg, 0.07) } else { mix(face, Color32::BLACK, 0.03) };
+        let press = if self.dark { mix(face, self.fg, 0.16) } else { mix(face, Color32::BLACK, 0.09) };
+        for (w, fill) in [(&mut v.widgets.inactive, face), (&mut v.widgets.hovered, hover), (&mut v.widgets.active, press), (&mut v.widgets.open, hover)] {
+            w.weak_bg_fill = fill;
+            w.bg_fill = fill;
+            w.bg_stroke = egui::Stroke::new(1.0, edge);
+            w.expansion = 0.0;
+            w.corner_radius = 6.into();
+        }
         if self.thrones {
             // Game of Thrones: every window and menu in iron edged with gold, its corners squared.
             let gold = Color32::from_rgb(201, 162, 75);

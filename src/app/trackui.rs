@@ -162,12 +162,12 @@ const FIELD_HEIGHT: f32 = 28.0;
 
 /// A filled button, the main action.
 fn primary(text: &str, theme: &Theme) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_owned()).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(8.0).min_size(Vec2::new(0.0, 32.0))
+    egui::Button::new(egui::RichText::new(text.to_owned()).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))
 }
 
 /// A quiet button.
 fn quiet(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_owned()).size(12.5)).corner_radius(8.0).min_size(Vec2::new(0.0, 30.0))
+    egui::Button::new(egui::RichText::new(text.to_owned()).size(12.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 28.0))
 }
 
 /// A link-like button.
