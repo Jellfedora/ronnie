@@ -43,7 +43,7 @@ pub(super) struct Monday {
     /// A line across the top: text, color, since.
     banner: Option<(String, Color32, f64)>,
     /// The objective last seen (its id, the lift's stage): a banner when it changes.
-    objective_seen: Option<(usize, u8)>,
+    objective_seen: Option<(String, String, bool)>,
     /// An error floor sent (a room full...), and since.
     error: Option<(String, f64)>,
     sound: Option<super::blob::Sound>,
@@ -331,9 +331,11 @@ impl App {
         }
         for h in news.happened {
             match h {
-                Happened::Wave { wave, boss } => {
+                Happened::Wave { wave, boss, kind } => {
                     self.monday.ready = false;
-                    let text = if boss { format!("{}  ·  {}", t.monday_wave.replace("{n}", &wave.to_string()), t.monday_boss) } else { t.monday_wave.replace("{n}", &wave.to_string()) };
+                    // A boss's wave: which one comes (an older floor doesn't say: a boss).
+                    let who = kind.and_then(|kind| BESTIARY.iter().position(|b| b.0 == kind)).and_then(|k| t.monday_bestiary.split('|').nth(k)).map_or_else(|| t.monday_boss.to_owned(), |name| t.monday_miniboss.replace("{n}", name));
+                    let text = if boss { format!("{}  ·  {}", t.monday_wave.replace("{n}", &wave.to_string()), who) } else { t.monday_wave.replace("{n}", &wave.to_string()) };
                     self.monday.banner = Some((text, if boss { theme.ansi[1] } else { theme.accent }, now));
                     self.monday_sound(&[(220.0, 220.0, 0.12, 0.25), (330.0, 330.0, 0.12, 0.25), (440.0, 440.0, 0.25, 0.25)]);
                 }
@@ -1234,7 +1236,12 @@ impl App {
         let shop_col = Rect::from_min_max(Pos2::new((field.min.x - side).max(rect.min.x + 8.0), field.min.y), Pos2::new(field.min.x - 16.0, field.max.y));
         let followed = me.and_then(|id| frame.players.iter().find(|p| p.id == id)).or_else(|| frame.players.iter().find(|p| p.state == State::Up)).or(frame.players.first());
         let cam = camera(followed.map(|p| Pos2::from(mix.player(p.id, p.x, p.y))), Vec2::new(map.w, map.h), size / scale);
-        let origin = field.center() - cam.to_vec2() * scale;
+        let mut origin = field.center() - cam.to_vec2() * scale;
+        // The floor about to give way: the screen shakes, more and more.
+        if let Some(o) = frame.objective.as_ref().filter(|o| o.k == "collapse" && o.p > 60.0) {
+            let k = (o.p - 60.0) / 40.0;
+            origin += Vec2::new((now * 41.0).sin() as f32, (now * 37.0).cos() as f32) * 7.0 * k;
+        }
         let at = |x: f32, y: f32| origin + Vec2::new(x, y) * scale;
         let painter = ui.painter_at(field);
 
@@ -1452,14 +1459,16 @@ impl App {
         // What to do away from the room: its spot (a ring filling up), the lift's cabin; out of
         // sight, an arrow on the edge of the screen toward it. A new one (or the lift's next stage):
         // said in a banner.
-        let seen = frame.objective.map(|o| (o.id + if o.kind == crate::zombie::ObjectiveKind::Lift { 100 } else { 0 }, o.stage));
+        let seen = frame.objective.as_ref().map(|o| (o.id.clone(), o.stage().to_owned(), o.by.is_some()));
         if seen != self.monday.objective_seen {
-            self.monday.objective_seen = seen;
-            if let Some(o) = frame.objective {
-                self.monday.banner = Some((objective_said(&o, t).0, Color32::from_rgb(255, 200, 60), now));
+            // A new objective, the lift's next stage: said in a banner (not just picking something up).
+            let banner = frame.objective.as_ref().filter(|o| self.monday.objective_seen.as_ref().is_none_or(|(id, st, _)| *id != o.id || *st != o.stage()));
+            if let Some(o) = banner {
+                self.monday.banner = Some((objective_said(o, t).0, Color32::from_rgb(255, 200, 60), now));
             }
+            self.monday.objective_seen = seen;
         }
-        if let Some(o) = frame.objective {
+        if let Some(o) = &frame.objective {
             paint_objective(&painter, &o, &at, scale, field, now, t);
         }
         let top = Rect::from_min_size(field.min + Vec2::new(12.0, 12.0), Vec2::new(300.0, 58.0));
@@ -1592,7 +1601,7 @@ impl App {
             paint_minimap(&ui.painter_at(field), field, &map, &frame, &colors, cam, size / scale);
         }
         // The objective's order, under the top, as long as it isn't done.
-        if let Some(o) = frame.objective {
+        if let Some(o) = &frame.objective {
             paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 84.0), &objective_said(&o, t).1, Color32::from_rgb(255, 200, 60), &theme);
         }
         if let Some((text, color, since)) = &self.monday.banner {
@@ -2051,14 +2060,29 @@ impl Mix {
     }
 }
 
-/// An objective said: in a banner (short), and as an order (what to do).
+/// An objective said: in a banner (short), and as an order (what to do now).
 fn objective_said(o: &crate::zombie::Objective, t: &Strings) -> (String, String) {
-    use crate::zombie::ObjectiveKind;
-    match (o.kind, o.stage) {
-        (ObjectiveKind::Switch, _) => (t.monday_obj_power_banner.to_owned(), t.monday_obj_power.to_owned()),
-        (ObjectiveKind::Lift, 0) => (t.monday_lift_banner.to_owned(), t.monday_obj_lift_call.to_owned()),
-        (ObjectiveKind::Lift, 1) => (t.monday_lift_label.to_owned(), t.monday_obj_lift_coming.replace("{s}", &format!("{}", o.timer.ceil() as i32))),
-        (ObjectiveKind::Lift, _) => (t.monday_lift_open.to_owned(), t.monday_obj_lift_board.to_owned()),
+    let pct = |s: &str| s.replace("{p}", &format!("{}", o.p.round() as i32));
+    let secs = |s: &str| s.replace("{s}", &format!("{}", o.tm.ceil() as i32));
+    let carried = o.by.is_some();
+    match (o.id.as_str(), o.stage()) {
+        ("power", _) => (t.monday_obj_power_banner.to_owned(), t.monday_obj_power.to_owned()),
+        ("badge", _) => (t.monday_obj_badge_banner.to_owned(), if carried { t.monday_obj_badge_bring } else { t.monday_obj_badge }.to_owned()),
+        ("meeting", _) => (t.monday_obj_meeting_banner.to_owned(), pct(t.monday_obj_meeting)),
+        ("gas", _) => (t.monday_obj_gas_banner.to_owned(), t.monday_obj_gas.to_owned()),
+        ("racks", _) => {
+            let left = o.spots.iter().filter(|s| s[2] < 100.0).count();
+            (t.monday_obj_racks_banner.to_owned(), t.monday_obj_racks.replace("{n}", &left.to_string()))
+        }
+        ("file", _) => (t.monday_obj_file_banner.to_owned(), if carried { t.monday_obj_file_bring } else { t.monday_obj_file }.to_owned()),
+        ("ceo", _) => (t.monday_obj_ceo_banner.to_owned(), pct(t.monday_obj_ceo)),
+        ("flare", _) => (t.monday_obj_flare_banner.to_owned(), t.monday_obj_flare.to_owned()),
+        ("lift", "call") => (t.monday_lift_banner.to_owned(), t.monday_obj_lift_call.to_owned()),
+        ("lift", "coming") => (t.monday_lift_label.to_owned(), secs(t.monday_obj_lift_coming)),
+        ("lift", _) => (t.monday_lift_open.to_owned(), t.monday_obj_lift_board.to_owned()),
+        ("stairs", _) => (t.monday_obj_stairs_banner.to_owned(), t.monday_obj_stairs.to_owned()),
+        ("collapse", _) => (t.monday_obj_collapse_banner.to_owned(), secs(t.monday_obj_collapse)),
+        _ => (String::new(), String::new()),
     }
 }
 
@@ -2104,61 +2128,128 @@ fn paint_dark(painter: &egui::Painter, field: Rect, lights: &[(Pos2, f32)], scal
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// An objective on the floor: the spot (a beating ring, filled as it's done), the lift's cabin (its
-/// doors, open or not); off screen, an arrow toward it on the edge.
+/// An objective on the floor: its spots (beating rings, filled as they're done), the thing to fetch
+/// and where to bring it, the room to hold or the stairs (an outline, a bar), the lift's cabin, the
+/// floor cracking; off screen, an arrow on the edge toward where to go.
 fn paint_objective(painter: &egui::Painter, o: &crate::zombie::Objective, at: &dyn Fn(f32, f32) -> Pos2, scale: f32, field: Rect, now: f64, t: &Strings) {
-    use crate::zombie::ObjectiveKind;
     let gold = Color32::from_rgb(255, 200, 60);
+    let green = Color32::from_rgb(110, 220, 120);
     let beat = (0.65 + 0.35 * (now * 4.0).sin().abs()) as f32;
-    // The lift's cabin: its floor, its doors (shut while it comes, open once there).
-    if let (ObjectiveKind::Lift, Some([x, y, w, h])) = (o.kind, o.cabin) {
-        let r = Rect::from_min_max(at(x, y), at(x + w, y + h));
-        let open = o.stage == 2;
-        painter.rect_filled(r, 4.0 * scale, if open { Color32::from_rgb(70, 74, 82) } else { Color32::from_rgb(46, 48, 54) });
-        let edge = if open { Color32::from_rgb(110, 220, 120) } else { Color32::from_rgb(170, 176, 190) };
-        painter.rect_stroke(r, 4.0 * scale, Stroke::new(3.0 * scale.max(0.6), edge.gamma_multiply(if open { beat } else { 1.0 })), egui::StrokeKind::Inside);
-        if !open {
-            // The doors, shut: two panels and their seam.
-            painter.vline(r.center().x, r.y_range(), Stroke::new(2.0 * scale, Color32::from_rgb(120, 126, 140)));
-        } else if o.progress > 0.0 {
-            let fill = Rect::from_min_size(r.left_bottom() - Vec2::new(0.0, 6.0 * scale), Vec2::new(r.width() * o.progress, 6.0 * scale));
-            painter.rect_filled(fill, 0.0, edge);
-        }
-        let label = match o.stage {
-            0 => t.monday_lift_label.to_owned(),
-            1 => t.monday_lift_coming.replace("{s}", &format!("{}", o.timer.ceil() as i32)),
-            _ => t.monday_lift_open.to_owned(),
-        };
-        painter.text(r.center_top() - Vec2::new(0.0, 12.0 * scale), Align2::CENTER_BOTTOM, label, FontId::proportional((13.0 * scale).max(11.0)), edge);
-    }
-    // The spot to stay by (the switch, the lift's button while it must be called).
-    let show_spot = o.kind == ObjectiveKind::Switch || o.stage == 0;
-    let c = at(o.x, o.y);
-    if show_spot {
+    let font = |s: f32| FontId::proportional((s * scale).max(11.0));
+    // A ring to stay in, filling up.
+    let ring = |c: Pos2, done: f32, icon: &str, color: Color32| {
         let reach = 70.0 * scale;
-        painter.circle_filled(c, reach, gold.gamma_multiply(0.10 * beat));
-        painter.circle_stroke(c, reach, Stroke::new(2.0 * scale.max(0.7), gold.gamma_multiply(beat)));
-        if o.progress > 0.0 {
-            let n = 48;
-            let points: Vec<Pos2> = (0..=n).map(|k| {
-                let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * o.progress * k as f32 / n as f32;
-                c + Vec2::angled(a) * (reach + 6.0 * scale)
-            }).collect();
-            painter.add(egui::Shape::line(points, Stroke::new(5.0 * scale.max(0.7), gold)));
+        if done >= 1.0 {
+            painter.circle_filled(c, reach * 0.5, green.gamma_multiply(0.25));
+            painter.text(c, Align2::CENTER_CENTER, "✓", font(28.0), green);
+            return;
         }
-        let icon = if o.kind == ObjectiveKind::Lift { "▲▼" } else { "⚡" };
-        painter.text(c, Align2::CENTER_CENTER, icon, FontId::proportional((26.0 * scale).max(14.0)), gold);
+        painter.circle_filled(c, reach, color.gamma_multiply(0.10 * beat));
+        painter.circle_stroke(c, reach, Stroke::new(2.0 * scale.max(0.7), color.gamma_multiply(beat)));
+        if done > 0.0 {
+            let n = 48;
+            let points: Vec<Pos2> = (0..=n).map(|k| c + Vec2::angled(-std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * done * k as f32 / n as f32) * (reach + 6.0 * scale)).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(5.0 * scale.max(0.7), color)));
+        }
+        painter.text(c, Align2::CENTER_CENTER, icon, font(26.0), color);
+    };
+    // An area: its outline, its bar at the top, its word.
+    let area = |[x, y, w, h]: [f32; 4], done: f32, label: &str, color: Color32| {
+        let r = Rect::from_min_max(at(x, y), at(x + w, y + h));
+        painter.rect_filled(r, 4.0 * scale, color.gamma_multiply(0.07 * beat));
+        painter.rect_stroke(r, 4.0 * scale, Stroke::new(3.0 * scale.max(0.6), color.gamma_multiply(beat)), egui::StrokeKind::Inside);
+        if done > 0.0 {
+            painter.rect_filled(Rect::from_min_size(r.left_top(), Vec2::new(r.width() * done.min(1.0), 6.0 * scale)), 0.0, color);
+        }
+        painter.text(r.center_top() + Vec2::new(0.0, 18.0 * scale), Align2::CENTER_TOP, label, font(14.0), color);
+    };
+    match o.k.as_str() {
+        "switch" => {
+            let icon = match o.id.as_str() {
+                "gas" => "🔥",
+                "racks" => "⟳",
+                "flare" => "✸",
+                _ => "⚡",
+            };
+            for [x, y, p] in &o.spots {
+                ring(at(*x, *y), p / 100.0, icon, gold);
+            }
+        }
+        "fetch" => {
+            // Where to bring it, then the thing itself (carried: over its carrier).
+            if let Some([x, y]) = o.to {
+                ring(at(x, y), 0.0, if o.id == "badge" { "▣" } else { "▤" }, if o.by.is_some() { green } else { gold.gamma_multiply(0.5) });
+            }
+            let c = at(o.x, o.y) - Vec2::new(0.0, if o.by.is_some() { 30.0 * scale } else { 0.0 });
+            let card = Rect::from_center_size(c, Vec2::new(26.0, 18.0) * scale.max(0.7));
+            painter.rect_filled(card.expand(3.0), 3.0, gold.gamma_multiply(0.35 * beat));
+            painter.rect_filled(card, 2.0, if o.id == "badge" { Color32::from_rgb(90, 160, 240) } else { Color32::from_rgb(232, 214, 160) });
+            painter.rect_stroke(card, 2.0, Stroke::new(1.5, Color32::BLACK), egui::StrokeKind::Outside);
+        }
+        "hold" => {
+            if let Some(a) = o.area {
+                area(a, o.p / 100.0, &format!("{} %", o.p.round() as i32), gold);
+            }
+        }
+        "stairs" => {
+            if let Some(a) = o.area {
+                area(a, o.p / 100.0, t.monday_stairs_label, green);
+            }
+        }
+        "lift" => {
+            if let Some([x, y, w, h]) = o.area {
+                let r = Rect::from_min_max(at(x, y), at(x + w, y + h));
+                let open = o.stage() == "open";
+                painter.rect_filled(r, 4.0 * scale, if open { Color32::from_rgb(70, 74, 82) } else { Color32::from_rgb(46, 48, 54) });
+                let edge = if open { green } else { Color32::from_rgb(170, 176, 190) };
+                painter.rect_stroke(r, 4.0 * scale, Stroke::new(3.0 * scale.max(0.6), edge.gamma_multiply(if open { beat } else { 1.0 })), egui::StrokeKind::Inside);
+                if !open {
+                    painter.vline(r.center().x, r.y_range(), Stroke::new(2.0 * scale, Color32::from_rgb(120, 126, 140)));
+                } else if o.p > 0.0 {
+                    painter.rect_filled(Rect::from_min_size(r.left_bottom() - Vec2::new(0.0, 6.0 * scale), Vec2::new(r.width() * o.p / 100.0, 6.0 * scale)), 0.0, edge);
+                }
+                let label = match o.stage() {
+                    "call" => t.monday_lift_label.to_owned(),
+                    "coming" => t.monday_lift_coming.replace("{s}", &format!("{}", o.tm.ceil() as i32)),
+                    _ => t.monday_lift_open.to_owned(),
+                };
+                painter.text(r.center_top() - Vec2::new(0.0, 12.0 * scale), Align2::CENTER_BOTTOM, label, font(13.0), edge);
+            }
+            if o.stage() == "call" {
+                ring(at(o.x, o.y), o.p / 100.0, "▲▼", gold);
+            }
+        }
+        "collapse" => {
+            // Cracks from the middle of the floor, longer as it gives way.
+            let c = at(o.x, o.y);
+            let k = o.p / 100.0;
+            for i in 0..14 {
+                let a = i as f32 * 0.45 + (i * 7 % 5) as f32 * 0.3;
+                let len = (300.0 + (i * 53 % 7) as f32 * 120.0) * k * scale;
+                let mut p = c;
+                let mut points = vec![p];
+                for j in 1..6 {
+                    let wob = ((i * 31 + j * 17) % 9) as f32 / 9.0 - 0.5;
+                    p += Vec2::angled(a + wob * 0.6) * len / 5.0;
+                    points.push(p);
+                }
+                painter.add(egui::Shape::line(points, Stroke::new((3.5 * k + 1.0) * scale.max(0.6), Color32::from_black_alpha(200))));
+            }
+            return;
+        }
+        _ => {}
     }
-    // Out of sight: an arrow on the edge, toward it.
-    let target = if show_spot { c } else { o.cabin.map_or(c, |[x, y, w, h]| at(x + w / 2.0, y + h / 2.0)) };
-    let inner = field.shrink(30.0);
+    // Out of sight: an arrow on the edge, toward where to go.
+    let (tx, ty) = o.target();
+    let target = at(tx, ty);
+    // Clear of the top (the wave's panel, the order, the tickets and the minimap).
+    let inner = Rect::from_min_max(field.min + Vec2::new(30.0, 210.0), field.max - Vec2::new(30.0, 30.0));
     if !inner.contains(target) {
         let from = field.center();
         let dir = (target - from).normalized();
-        // Where the line from the center leaves the inner box.
-        let tx = if dir.x.abs() > 1e-3 { ((if dir.x > 0.0 { inner.max.x } else { inner.min.x }) - from.x) / dir.x } else { f32::INFINITY };
-        let ty = if dir.y.abs() > 1e-3 { ((if dir.y > 0.0 { inner.max.y } else { inner.min.y }) - from.y) / dir.y } else { f32::INFINITY };
-        let tip = from + dir * tx.min(ty);
+        let lx = if dir.x.abs() > 1e-3 { ((if dir.x > 0.0 { inner.max.x } else { inner.min.x }) - from.x) / dir.x } else { f32::INFINITY };
+        let ly = if dir.y.abs() > 1e-3 { ((if dir.y > 0.0 { inner.max.y } else { inner.min.y }) - from.y) / dir.y } else { f32::INFINITY };
+        let tip = from + dir * lx.min(ly);
         let side = Vec2::new(-dir.y, dir.x);
         let points = vec![tip + dir * 14.0, tip - dir * 10.0 + side * 11.0, tip - dir * 10.0 - side * 11.0];
         painter.add(egui::Shape::convex_polygon(points, gold.gamma_multiply(beat), Stroke::new(2.0, Color32::BLACK)));
@@ -2189,17 +2280,16 @@ fn paint_minimap(painter: &egui::Painter, field: Rect, map: &crate::zombie::Map,
         let color = colors.iter().find(|c| c.0 == p.id).map_or(Color32::WHITE, |c| c.2);
         painter.circle_filled(to(p.x, p.y), 3.0, if p.state == State::Up { color } else { color.gamma_multiply(0.4) });
     }
-    // Where to go: the objective (gold), the lift's cabin once it's there.
-    if let Some(o) = frame.objective {
+    // Where to go (gold), the room or the stairs or the lift's cabin around it.
+    if let Some(o) = &frame.objective {
         let gold = Color32::from_rgb(255, 200, 60);
-        match (o.kind, o.stage, o.cabin) {
-            (crate::zombie::ObjectiveKind::Lift, 1 | 2, Some([x, y, w, h])) => {
-                painter.rect_stroke(Rect::from_min_max(to(x, y), to(x + w, y + h)), 1.0, Stroke::new(1.5, gold), egui::StrokeKind::Outside);
-            }
-            _ => {
-                painter.circle_filled(to(o.x, o.y), 3.5, gold);
-                painter.circle_stroke(to(o.x, o.y), 7.0, Stroke::new(1.2, gold));
-            }
+        if let Some([x, y, w, h]) = o.area {
+            painter.rect_stroke(Rect::from_min_max(to(x, y), to(x + w, y + h)), 1.0, Stroke::new(1.5, gold), egui::StrokeKind::Outside);
+        }
+        if o.k != "collapse" {
+            let (tx, ty) = o.target();
+            painter.circle_filled(to(tx, ty), 3.5, gold);
+            painter.circle_stroke(to(tx, ty), 7.0, Stroke::new(1.2, gold));
         }
     }
     let view = Rect::from_center_size(to(cam.x, cam.y), seen * k);

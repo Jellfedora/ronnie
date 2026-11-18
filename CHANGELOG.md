@@ -21,6 +21,19 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Lundi matin, un hall plus grand que l'écran** : le hall s'étend avec un couloir, un local technique et le palier de l'ascenseur. La caméra suit le joueur, et une mini-carte (en haut à droite) montre l'étage, les joueurs, les zombies et l'objectif.
 - **Lundi matin, des objectifs** : à la vague 3, le courant saute. L'étage est plongé dans le noir, chacun n'y voit que dans le cône de sa lampe, et il faut rallumer au tableau électrique du local technique. Tant que ce n'est pas fait, la vague ne finit pas et des zombies continuent d'arriver. Une consigne en haut de l'écran et une flèche au bord indiquent où aller.
 - **Lundi matin, on quitte le hall par l'ascenseur** : après la dernière vague, il faut l'appeler, tenir pendant qu'il arrive, puis monter tous dedans pour gagner l'étage suivant.
+- **Lundi matin, tous les étages plus grands**, chacun avec sa disposition :
+  - **Open space** : une aile avec un couloir, le bureau du manager et la salle de réunion.
+  - **Cantine** : une aile en dessous, avec la cuisine, un couloir et la réserve.
+  - **Serveurs** : deux salles de baies côte à côte.
+  - **Direction** : un étage en L, avec le bureau du DG.
+  - **Toit** : une grande terrasse ouverte.
+- **Lundi matin, des objectifs à vagues fixes** : à la vague 7, le badge du manager à rapporter au lecteur ; à la 9, la salle de réunion à tenir pendant que des zombies entrent aussi par sa fenêtre ; à la 12, le gaz à couper en cuisine ; à la 18, trois baies à redémarrer ; à la 22, le dossier du DG à poser sur la table du conseil ; à la 24, son bureau à tenir ; à la 27, la fusée de détresse.
+- **Lundi matin, des sorties d'étage jouées** :
+  - de l'open space et de la direction, par l'escalier ;
+  - de la cantine, quand le sol cède et qu'on tombe au sous-sol des serveurs ;
+  - des serveurs, par le monte-charge.
+- **Lundi matin, des armes rééquilibrées** : l'extincteur, les confettis, le tampon, le scotch, la plante et le vidéoprojecteur ont chacun un vrai rôle face à l'agrafeuse et au lance-post-it.
+- **Lundi matin, le bon boss annoncé** : une vague de boss dit lequel arrive (avant, elle annonçait toujours le DRH).
 - **Lundi matin, une arme ramassée** est à soi sans passer en main : le message donne sa touche pour la prendre.
 - **Lundi matin, la machine à café à côté du jeu** : pendant la pause, la machine à café s'affiche dans une colonne à gauche du terrain au lieu de le recouvrir. Le terrain est décalé d'autant toute la partie, pour ne pas bouger à chaque pause.
 - **Lundi matin, prêt pour la vague** : pendant la pause café, un encart en bas du terrain rappelle qu'Espace te met prêt pour la vague suivante, avec combien sont prêts et dans combien de temps elle part.

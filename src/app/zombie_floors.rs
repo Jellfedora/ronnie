@@ -170,8 +170,10 @@ fn ground_carpet(painter: &egui::Painter, map: &Map, to: To, s: f32) {
         }
     }
     // The worn way down the middle aisle.
-    gradient(painter, Rect::from_min_max(to(60.0, 560.0), to(map.w - 60.0, 600.0)), Color32::TRANSPARENT, Color32::from_white_alpha(8), true);
-    gradient(painter, Rect::from_min_max(to(60.0, 600.0), to(map.w - 60.0, 640.0)), Color32::from_white_alpha(8), Color32::TRANSPARENT, true);
+    // (In the room from before: the floor's wing has its own walls.)
+    let right = map.w.min(1600.0) - 60.0;
+    gradient(painter, Rect::from_min_max(to(60.0, 560.0), to(right, 600.0)), Color32::TRANSPARENT, Color32::from_white_alpha(8), true);
+    gradient(painter, Rect::from_min_max(to(60.0, 600.0), to(right, 640.0)), Color32::from_white_alpha(8), Color32::TRANSPARENT, true);
 }
 
 /// The canteen: a linoleum checkerboard, cream and green, its trodden way to the self-service.
@@ -308,6 +310,12 @@ fn inner_walls(painter: &egui::Painter, map: &Map, to: To, s: f32) {
     let (wall, top) = wall_colors(&map.id);
     for d in &map.walls {
         let r = Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h));
+        // No floor there (an L-shaped floor): the dark outside, a wall on its edge.
+        if d.k == "void" {
+            painter.rect_filled(r, 0.0, rgb(14, 15, 20));
+            painter.rect_stroke(r, 0.0, Stroke::new(map.wall * s, wall), egui::StrokeKind::Inside);
+            continue;
+        }
         // Their shadow on the ground, below and to the right.
         painter.rect_filled(r.translate(Vec2::new(4.0 * s, 6.0 * s)), 0.0, Color32::from_black_alpha(70));
         painter.rect_filled(r, 0.0, wall);

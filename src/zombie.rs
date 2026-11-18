@@ -341,40 +341,57 @@ pub struct Frame {
     pub at: Instant,
 }
 
-/// What to do away from the room: the wave's objective, or the floor's way out.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What to do away from the room: the wave's objective, or the floor's way out (floor's
+/// objectives.view).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Objective {
-    pub kind: ObjectiveKind,
-    /// Which one (OBJECTIVE_IDS: 0 the power).
-    pub id: usize,
+    /// switch, fetch, hold, lift, stairs, collapse.
+    pub k: String,
+    /// Which one: power, badge, meeting, gas, racks, file, ceo, flare; the way out's kind.
+    pub id: String,
+    /// Where it is (a switch: the next spot; something to fetch: where it is, carried or not).
     pub x: f32,
     pub y: f32,
-    /// Done, 0 to 1.
-    pub progress: f32,
-    /// The lift: 0 to call, 1 coming, 2 open.
-    pub stage: u8,
-    /// The lift coming: seconds left.
-    pub timer: f32,
-    /// The lift's cabin: x, y, w, h.
-    pub cabin: Option<[f32; 4]>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ObjectiveKind {
-    /// Stay by a spot a while (a switch…).
-    Switch,
-    Lift,
+    /// Done, in %.
+    #[serde(default)]
+    pub p: f32,
+    /// Switches: each spot (x, y, % done).
+    #[serde(default)]
+    pub spots: Vec<[f32; 3]>,
+    /// Something to fetch: where to bring it, who carries it.
+    #[serde(default)]
+    pub to: Option<[f32; 2]>,
+    #[serde(default)]
+    pub by: Option<u32>,
+    /// A room to hold, the stairs, the lift's cabin: x, y, w, h.
+    #[serde(default, rename = "box")]
+    pub area: Option<[f32; 4]>,
+    /// The lift: call, coming, open.
+    #[serde(default)]
+    pub st: Option<String>,
+    /// Seconds left (the lift coming, the floor giving way).
+    #[serde(default)]
+    pub tm: f32,
 }
 
 impl Objective {
-    /// floor's `ob`: kind, id, x, y, progress %, stage, seconds, then the cabin.
-    fn read(ob: &[f32]) -> Option<Objective> {
-        if ob.len() < 7 {
-            return None;
+    pub fn stage(&self) -> &str {
+        self.st.as_deref().unwrap_or("")
+    }
+
+    /// Where to go now: the spot; the thing to fetch, or where to bring it once carried; the room,
+    /// the stairs; the lift's button, then its cabin.
+    pub fn target(&self) -> (f32, f32) {
+        let mid = |[x, y, w, h]: [f32; 4]| (x + w / 2.0, y + h / 2.0);
+        match self.k.as_str() {
+            "fetch" => match (self.by, self.to) {
+                (Some(_), Some([x, y])) => (x, y),
+                _ => (self.x, self.y),
+            },
+            "hold" | "stairs" => self.area.map_or((self.x, self.y), mid),
+            "lift" if self.stage() != "call" => self.area.map_or((self.x, self.y), mid),
+            _ => (self.x, self.y),
         }
-        let kind = if ob[0] as u8 == 2 { ObjectiveKind::Lift } else { ObjectiveKind::Switch };
-        let cabin = (ob.len() >= 11).then(|| [ob[7], ob[8], ob[9], ob[10]]);
-        Some(Objective { kind, id: ob[1] as usize, x: ob[2], y: ob[3], progress: ob[4] / 100.0, stage: ob[5] as u8, timer: ob[6], cabin })
     }
 }
 
@@ -579,7 +596,8 @@ pub struct Over {
 /// What happened once, for the app (sounds, toasts, little texts on the field).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Happened {
-    Wave { wave: u32, boss: bool },
+    /// A wave started: a boss's (which one, floor drawing them by lot each game).
+    Wave { wave: u32, boss: bool, kind: Option<Kind> },
     Cleared(u32),
     Boss,
     /// The executive committee comes in.
@@ -724,7 +742,7 @@ enum Wire {
         #[serde(default)]
         hz: Vec<f32>,
         #[serde(default)]
-        ob: Vec<f32>,
+        ob: Option<Objective>,
         #[serde(default)]
         dk: u8,
         #[serde(default)]
@@ -1154,7 +1172,7 @@ impl Online {
                 let grades = gr.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 let memos = mm.iter().map(|&id| id as u32).collect();
                 self.before = self.frame.take();
-                let objective = Objective::read(&ob);
+                let objective = ob;
                 self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
@@ -1187,7 +1205,7 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
     let u = |k: &str| n(k) as u32;
     Some(match v.get("t")?.as_str()? {
-        "wave" => Happened::Wave { wave: u("wave"), boss: v.get("boss").and_then(serde_json::Value::as_bool).unwrap_or(false) },
+        "wave" => Happened::Wave { wave: u("wave"), boss: v.get("boss").and_then(serde_json::Value::as_bool).unwrap_or(false), kind: v.get("kind").and_then(serde_json::Value::as_str).map(Kind::of) },
         "cleared" => Happened::Cleared(u("wave")),
         "boss" if v.get("final").and_then(serde_json::Value::as_bool) == Some(true) => Happened::FinalBoss,
         "boss" => match v.get("kind").and_then(serde_json::Value::as_str) {
@@ -1449,7 +1467,7 @@ mod tests {
         let z = f.zombies[0];
         assert_eq!((z.kind, z.charging, z.winding), (Kind::Sales, true, true));
         let news = take(&mut online, r#"{"t":"news","l":[{"t":"wave","wave":3,"boss":false},{"t":"kill","kind":"drh","x":1,"y":2,"by":7},{"t":"nope"}]}"#);
-        assert_eq!(news.happened, vec![Happened::Wave { wave: 3, boss: false }, Happened::Kill { kind: Kind::Hr, x: 1.0, y: 2.0, by: 7 }]);
+        assert_eq!(news.happened, vec![Happened::Wave { wave: 3, boss: false, kind: None }, Happened::Kill { kind: Kind::Hr, x: 1.0, y: 2.0, by: 7 }]);
         let news = take(&mut online, r#"{"t":"over","wave":4,"kills":12,"revives":1,"tickets":300,"seconds":200,"record":true,"xp":500,"milestones":[{"kind":"grade","value":"CDD","stars":0},{"kind":"horde"},{"kind":"mastery","weapon":"staple","level":1}]}"#);
         let over = news.over.unwrap();
         assert_eq!((over.wave, over.record, over.xp), (4, true, 500));
