@@ -122,6 +122,7 @@ impl Modules {
         if self.job(&module.id).is_some() {
             return;
         }
+        crate::telemetry::count("modules.install");
         let progress = Arc::new(Mutex::new((0, 0)));
         let result = Arc::new(Mutex::new(None));
         let (p, r, m, ctx) = (progress.clone(), result.clone(), module.clone(), ctx.clone());

@@ -303,6 +303,7 @@ impl App {
         if self.projects.busy(id) || self.read_only {
             return;
         }
+        crate::telemetry::count("projects.start");
         let t = self.t();
         let Some(project) = self.project(id).cloned() else { return };
         let Some(php) = project.php_version() else {

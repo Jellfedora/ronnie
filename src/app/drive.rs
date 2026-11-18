@@ -218,6 +218,9 @@ impl App {
     }
 
     fn do_ask(&mut self, ctx: &egui::Context, asked: &Asked) -> Result<String, String> {
+        if let Some(name) = serde_json::to_value(&asked.ask).ok().and_then(|v| v.get("do").and_then(|d| d.as_str()).map(str::to_owned)) {
+            crate::telemetry::count(&format!("drive.{name}"));
+        }
         let me = self.pane_by_token(&asked.pane);
         let t = self.t();
         match &asked.ask {

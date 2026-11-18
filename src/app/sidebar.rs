@@ -446,6 +446,7 @@ impl App {
                 if active && !elsewhere {
                     self.config.settings.sidebar_folded = true;
                 } else {
+                    crate::telemetry::count(&format!("category.{}", format!("{category:?}").to_lowercase()));
                     self.config.settings.sidebar_category = category;
                     if elsewhere {
                         self.show_category(category);
@@ -611,6 +612,7 @@ impl App {
     /// Opens `game` on this window's home page.
     pub(super) fn open_home_game(&mut self, game: super::four::HomeGame) {
         use super::four::HomeGame;
+        crate::telemetry::count(&format!("game.{}", format!("{game:?}").to_lowercase()));
         match game {
             HomeGame::SpeedMetal => self.open_game(),
             HomeGame::Four => self.open_four(),

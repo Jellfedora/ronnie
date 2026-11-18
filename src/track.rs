@@ -415,6 +415,7 @@ impl Client {
     }
 
     pub fn create(&self, name: &str, client: Option<&str>, color: Option<&str>) -> Answer<Project> {
+        crate::telemetry::count("track.project");
         self.project_of("POST", "/projects", Some(serde_json::json!({ "name": name, "client": client, "color": color })))
     }
 
@@ -452,6 +453,7 @@ impl Client {
     }
 
     pub fn add_quote(&self, id: &str, number: Option<&str>, label: &str, minutes: Option<u64>, day: &str) -> Answer<Project> {
+        crate::telemetry::count("track.quote");
         self.project_of("POST", &format!("/projects/{id}/quotes"), Some(serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day })))
     }
 
@@ -464,6 +466,7 @@ impl Client {
     }
 
     pub fn add_task(&self, id: &str, task: &TaskInput) -> Answer<Project> {
+        crate::telemetry::count("track.task");
         self.project_of("POST", &format!("/projects/{id}/tasks"), Some(serde_json::to_value(task).map_err(|e| e.to_string())?))
     }
 

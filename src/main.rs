@@ -42,6 +42,7 @@ mod sysmon;
 mod emoji;
 mod gif;
 mod talk;
+mod telemetry;
 mod pane;
 mod putty;
 mod procs;
