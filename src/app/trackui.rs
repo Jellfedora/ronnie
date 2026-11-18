@@ -157,11 +157,14 @@ fn chip(ui: &mut Ui, text: &str, color: Color32) -> egui::Response {
     Frame::NONE.fill(color.gamma_multiply(0.16)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(color)).truncate())).response
 }
 
+/// The height of the time spent's fields and of the segmented controls beside them, to line them up.
+const FIELD_HEIGHT: f32 = 28.0;
+
 /// A segmented control: the choices side by side in one framed bar, thin lines between them, the
 /// chosen one filled (instead of a row of separate pills). Gives the one clicked.
 pub(super) fn segmented(ui: &mut Ui, theme: &Theme, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
     let font = egui::FontId::proportional(12.0);
-    let height = ui.spacing().interact_size.y.max(24.0);
+    let height = FIELD_HEIGHT;
     let galleys: Vec<_> = labels.iter().map(|l| ui.painter().layout_no_wrap((*l).to_owned(), font.clone(), theme.text)).collect();
     let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + 20.0).collect();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.iter().sum(), height), egui::Sense::hover());
@@ -1473,7 +1476,7 @@ impl App {
                     ui.vertical(|ui| {
                         field(ui, t.track_day);
                         ui.horizontal(|ui| {
-                            let day_field = ui.add(egui::TextEdit::singleline(&mut f.day).desired_width(100.0).hint_text("18/11"));
+                            let day_field = ui.add(egui::TextEdit::singleline(&mut f.day).desired_width(100.0).min_size(Vec2::new(0.0, FIELD_HEIGHT)).vertical_align(egui::Align::Center).hint_text("18/11"));
                             day_picker(ui, &day_field, &mut f.day, t, &theme);
                             let days = [track::today(), track::parse_day("hier").unwrap_or_default()];
                             let typed_day = track::parse_day(&f.day);
@@ -1486,7 +1489,7 @@ impl App {
                     ui.vertical(|ui| {
                         field(ui, t.track_duration);
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut f.duration).desired_width(70.0).hint_text("1h30"));
+                            ui.add(egui::TextEdit::singleline(&mut f.duration).desired_width(70.0).min_size(Vec2::new(0.0, FIELD_HEIGHT)).vertical_align(egui::Align::Center).hint_text("1h30"));
                             let presets = [15u32, 30, 60, 120, 240, 420];
                             let names: Vec<String> = presets.iter().map(|m| hm(*m as i64)).collect();
                             let names: Vec<&str> = names.iter().map(String::as_str).collect();
