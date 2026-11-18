@@ -1437,7 +1437,8 @@ impl App {
                     ui.vertical(|ui| {
                         field(ui, t.track_day);
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut f.day).desired_width(100.0).hint_text("18/11"));
+                            let day_field = ui.add(egui::TextEdit::singleline(&mut f.day).desired_width(100.0).hint_text("18/11"));
+                            day_picker(ui, &day_field, &mut f.day, t, &theme);
                             for (label, value) in [(t.track_today_word, track::today()), (t.track_yesterday, track::parse_day("hier").unwrap_or_default())] {
                                 if ui.add(egui::Button::new(egui::RichText::new(label).size(11.5)).corner_radius(10.0).selected(track::parse_day(&f.day).as_deref() == Some(value.as_str()))).clicked() {
                                     f.day = show_day(&value);
@@ -1756,4 +1757,73 @@ fn long_day(day: &str, t: &Strings) -> String {
         String::new()
     };
     format!("{prefix}{weekday} {} {month} {}", d.day(), d.year())
+}
+
+/// A small calendar under a day's field, opened by clicking it (like a browser's date picker): the
+/// month shown starts at the typed day, ‹ › change it, a click on a day writes it and closes.
+fn day_picker(ui: &mut Ui, field: &egui::Response, day: &mut String, t: &Strings, theme: &Theme) {
+    use chrono::{Datelike as _, NaiveDate};
+    let today = chrono::Local::now().date_naive();
+    let picked = track::parse_day(day).and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+    let month_id = field.id.with("calendar-month");
+    if field.clicked() {
+        let at = picked.unwrap_or(today);
+        ui.data_mut(|d| d.insert_temp(month_id, at.with_day(1).unwrap_or(at)));
+    }
+    let open = field.clicked().then_some(egui::SetOpenCommand::Bool(true));
+    egui::Popup::from_response(field).open_memory(open).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        let mut first: NaiveDate = ui.data(|d| d.get_temp(month_id)).unwrap_or_else(|| today.with_day(1).unwrap_or(today));
+        let months: Vec<&str> = t.track_months.split('|').collect();
+        let cell = Vec2::new(30.0, 26.0);
+        ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new("‹").frame(false).min_size(cell)).clicked() {
+                first = first.checked_sub_months(chrono::Months::new(1)).unwrap_or(first);
+            }
+            let name = months.get(first.month0() as usize).copied().unwrap_or("");
+            let mut chars = name.chars();
+            let name: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+            let title = egui::RichText::new(format!("{name} {}", first.year())).size(13.0).strong().color(theme.text);
+            ui.add_sized(Vec2::new(cell.x * 5.0 + 8.0, cell.y), egui::Label::new(title));
+            if ui.add(egui::Button::new("›").frame(false).min_size(cell)).clicked() {
+                first = first.checked_add_months(chrono::Months::new(1)).unwrap_or(first);
+            }
+        });
+        ui.horizontal(|ui| {
+            for w in t.track_weekdays.split('|') {
+                let letter: String = w.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+                ui.add_sized(cell, egui::Label::new(egui::RichText::new(letter).size(11.0).color(theme.text_muted)));
+            }
+        });
+        let skip = first.weekday().num_days_from_monday() as usize;
+        let length = first.checked_add_months(chrono::Months::new(1)).map_or(31, |next| (next - first).num_days() as usize);
+        let mut chosen = None;
+        for week in 0..(skip + length).div_ceil(7) {
+            ui.horizontal(|ui| {
+                for col in 0..7 {
+                    let n = week * 7 + col;
+                    if n < skip || n >= skip + length {
+                        ui.allocate_space(cell);
+                        continue;
+                    }
+                    let date = first + chrono::Duration::days((n - skip) as i64);
+                    let on = picked == Some(date);
+                    let text = egui::RichText::new(date.day().to_string()).size(12.0).color(if on { theme.bg } else if col >= 5 { theme.text_muted } else { theme.text });
+                    let mut b = egui::Button::new(text).min_size(cell).corner_radius(6.0);
+                    b = if on { b.fill(theme.accent) } else { b.frame(false) };
+                    if date == today && !on {
+                        b = b.frame(true).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0, theme.accent));
+                    }
+                    if ui.add(b).clicked() {
+                        chosen = Some(date);
+                    }
+                }
+            });
+        }
+        ui.data_mut(|d| d.insert_temp(month_id, first));
+        if let Some(date) = chosen {
+            *day = show_day(&date.format("%Y-%m-%d").to_string());
+            ui.close();
+        }
+    });
 }
