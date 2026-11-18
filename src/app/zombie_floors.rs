@@ -653,7 +653,7 @@ fn island_colors(d: &Desk) -> (Color32, Color32) {
 }
 
 /// The open space: light carpet tiles (their weave turning a quarter from one to the next), a colored
-/// rug under each island, the light oak floor of the middle aisle.
+/// rug under each island.
 fn ground_office(painter: &egui::Painter, map: &Map, to: To, s: f32) {
     let tile = 60.0;
     for i in 0..(map.w / tile).ceil() as i32 {
@@ -673,27 +673,6 @@ fn ground_office(painter: &egui::Painter, map: &Map, to: To, s: f32) {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_black_alpha(18)), egui::StrokeKind::Inside);
         }
     }
-    // The aisle across the room: light oak boards.
-    let right = map.w.min(1600.0) - map.wall;
-    let aisle = Rect::from_min_max(to(map.wall, 560.0), to(right, 640.0));
-    painter.rect_filled(aisle, 0.0, rgb(196, 160, 112));
-    let mut x = map.wall;
-    let mut k = 0;
-    while x < right {
-        let len = 90.0 + hash(k, 7) * 80.0;
-        for (row, y) in [(0, 560.0), (1, 600.0)] {
-            let off = if row == 1 { 50.0 } else { 0.0 };
-            let a = (x + off).min(right);
-            let b = (x + off + len).min(right);
-            let plank = Rect::from_min_max(to(a, y), to(b, y + 40.0));
-            painter.rect_filled(plank, 0.0, rgb(200, 164, 116).lerp_to_gamma(rgb(214, 180, 130), hash(k, row)));
-            painter.rect_stroke(plank, 0.0, Stroke::new(1.0, Color32::from_black_alpha(30)), egui::StrokeKind::Inside);
-        }
-        x += len;
-        k += 1;
-    }
-    painter.hline(aisle.x_range(), aisle.min.y, Stroke::new(2.0 * s, rgb(120, 96, 66)));
-    painter.hline(aisle.x_range(), aisle.max.y, Stroke::new(2.0 * s, rgb(120, 96, 66)));
     // The islands' rugs.
     for d in map.desks.iter().filter(|d| d.k == "desk" && d.x < 1600.0) {
         let rug = Rect::from_min_max(to(d.x - 40.0, d.y - 50.0), to(d.x + d.w + 40.0, d.y + d.h + 50.0));
