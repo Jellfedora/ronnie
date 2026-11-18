@@ -10,6 +10,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 - **Suivi, un calendrier pour la date** : un clic sur le champ date d'un temps passé ouvre un petit calendrier, comme sur une page web (‹ › pour changer de mois, aujourd'hui entouré).
 - **Suivi, des choix plus sobres** : les petites pastilles (Aujourd'hui / Hier, 15 min … 7 h) laissent la place à une barre segmentée, un seul cadre aux choix séparés par un trait fin. Les clients proposés sont maintenant de simples liens séparés par des points.
+- **La barre segmentée partout** : les onglets d'un mail et des journaux d'un projet, les filtres des tickets et des pull requests, « 1:1 / Ajuster » des images, le moteur d'une base (MySQL / SQL Server), Valeur / NULL / Défaut à l'insertion d'une ligne, et les choix de la recherche dans l'historique et des commandes enregistrées.
 
 ### Corrections
 

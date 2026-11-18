@@ -2583,11 +2583,15 @@ impl DbView {
                                     ui.label(egui::RichText::new(&f.kind).size(11.0).color(theme.text_muted));
                                 });
                                 ui.horizontal(|ui| {
-                                    ui.selectable_value(&mut f.mode, FieldMode::Value, egui::RichText::new(t.db_value).size(12.0));
+                                    let mut modes = vec![(FieldMode::Value, t.db_value)];
                                     if f.nullable {
-                                        ui.selectable_value(&mut f.mode, FieldMode::Null, egui::RichText::new("NULL").size(12.0));
+                                        modes.push((FieldMode::Null, "NULL"));
                                     }
-                                    ui.selectable_value(&mut f.mode, FieldMode::Default, egui::RichText::new(t.db_default_value).size(12.0));
+                                    modes.push((FieldMode::Default, t.db_default_value));
+                                    let labels: Vec<&str> = modes.iter().map(|m| m.1).collect();
+                                    if let Some(i) = super::segmented::segmented(ui, theme, super::segmented::HEIGHT, &labels, modes.iter().position(|m| m.0 == f.mode)) {
+                                        f.mode = modes[i].0;
+                                    }
                                 });
                                 let edit = ui.add_enabled(f.mode == FieldMode::Value, egui::TextEdit::singleline(&mut f.text).id(egui::Id::new(("db-insert-field", i))).desired_width(260.0).font(FontId::monospace(12.5)).margin(Vec2::new(6.0, 4.0)));
                                 // Typing in a field means giving a value.

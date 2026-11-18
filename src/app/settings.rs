@@ -172,9 +172,12 @@ impl App {
             egui::Grid::new("db-editor-grid").num_columns(2).spacing([16.0, 12.0]).min_col_width(130.0).show(ui, |ui| {
                 ui.label(egui::RichText::new(t.db_engine).color(theme.text_muted));
                 ui.horizontal(|ui| {
-                    for engine in [config::Engine::Mysql, config::Engine::Sqlserver] {
+                    let engines = [config::Engine::Mysql, config::Engine::Sqlserver];
+                    let labels = engines.map(|e| e.label());
+                    if let Some(engine) = super::segmented::segmented(ui, &theme, super::segmented::HEIGHT, &labels, engines.iter().position(|e| *e == d.engine)).map(|i| engines[i]).filter(|e| *e != d.engine) {
                         let before = d.engine;
-                        if ui.selectable_value(&mut d.engine, engine, engine.label()).changed() {
+                        d.engine = engine;
+                        {
                             // The other server's usual port follows.
                             if editor.port.trim().is_empty() || editor.port.trim() == before.default_port().to_string() {
                                 editor.port = engine.default_port().to_string();

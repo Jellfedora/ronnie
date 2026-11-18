@@ -619,16 +619,20 @@ impl App {
         field(ui, t.mail_date, &opened.date);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            for (tab, label, on) in [
+            let tabs: Vec<(ViewTab, &str)> = [
                 (ViewTab::Preview, t.mail_tab_preview, true),
                 (ViewTab::Text, t.mail_tab_text, opened.text.is_some()),
                 (ViewTab::Html, t.mail_tab_html, opened.html.is_some()),
                 (ViewTab::Headers, t.mail_tab_headers, true),
                 (ViewTab::Source, t.mail_tab_source, true),
-            ] {
-                if on && ui.selectable_label(self.mail.tab == tab, label).clicked() {
-                    self.mail.tab = tab;
-                }
+            ]
+            .into_iter()
+            .filter(|x| x.2)
+            .map(|(tab, label, _)| (tab, label))
+            .collect();
+            let labels: Vec<&str> = tabs.iter().map(|x| x.1).collect();
+            if let Some(i) = super::segmented::segmented(ui, theme, super::segmented::HEIGHT, &labels, tabs.iter().position(|x| x.0 == self.mail.tab)) {
+                self.mail.tab = tabs[i].0;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(egui::Button::new(egui::RichText::new(t.delete).size(12.0).color(theme.ansi[1])).frame_when_inactive(false)).clicked() {

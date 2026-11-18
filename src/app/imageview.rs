@@ -238,12 +238,12 @@ impl ImageView {
                     }
                 }
                 ui.add_space(6.0);
-                if ui.add_enabled(shown, egui::Button::new(egui::RichText::new("1:1").size(12.5)).selected(self.zoom == Some(1.0))).on_hover_text(t.image_actual).clicked() {
-                    self.zoom = Some(1.0);
-                    self.offset = Vec2::ZERO;
-                }
-                if ui.add_enabled(shown, egui::Button::new(egui::RichText::new(t.image_fit).size(12.5)).selected(self.zoom.is_none())).clicked() {
-                    self.zoom = None;
+                let chosen = if self.zoom == Some(1.0) { Some(0) } else if self.zoom.is_none() { Some(1) } else { None };
+                let bar = ui.add_enabled_ui(shown, |ui| super::segmented::segmented(ui, theme, super::segmented::HEIGHT, &["1:1", t.image_fit], chosen));
+                let picked = bar.inner;
+                bar.response.on_hover_text(t.image_actual);
+                if let Some(i) = picked {
+                    self.zoom = if i == 0 { Some(1.0) } else { None };
                     self.offset = Vec2::ZERO;
                 }
             });

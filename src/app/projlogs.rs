@@ -115,12 +115,11 @@ impl App {
             ui.horizontal(|ui| {
                 let php = project.php_version().map(|v| t.projects_logs_php.replace("{version}", &v));
                 let tabs = [(Which::Site, Some(t.projects_logs_site.to_owned())), (Which::Php, php), (Which::Requests, Some(t.projects_logs_requests.to_owned()))];
-                for (which, label) in tabs {
-                    let Some(label) = label else { continue };
-                    if ui.selectable_label(view.which == which, label).clicked() && view.which != which {
-                        view.which = which;
-                        view.read = None;
-                    }
+                let tabs: Vec<(Which, String)> = tabs.into_iter().filter_map(|(w, l)| Some((w, l?))).collect();
+                let labels: Vec<&str> = tabs.iter().map(|(_, l)| l.as_str()).collect();
+                if let Some(i) = super::segmented::segmented(ui, &theme, super::segmented::HEIGHT, &labels, tabs.iter().position(|(w, _)| *w == view.which)).filter(|i| tabs[*i].0 != view.which) {
+                    view.which = tabs[i].0;
+                    view.read = None;
                 }
             });
             if view.which == Which::Php {

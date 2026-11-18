@@ -789,11 +789,10 @@ impl Pulls {
         let mut panel = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(6.0, 0.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let filters = [(Filter::Open, t.issues_open), (Filter::Merged, t.pulls_merged), (Filter::Closed, t.issues_closed), (Filter::All, t.issues_all)];
         let mut refresh = false;
-        panel.horizontal_wrapped(|ui| {
-            for (filter, label) in filters {
-                if ui.selectable_label(self.filter == filter, egui::RichText::new(label).size(12.0)).clicked() {
-                    self.filter = filter;
-                }
+        panel.horizontal(|ui| {
+            let labels: Vec<&str> = filters.iter().map(|x| x.1).collect();
+            if let Some(i) = super::segmented::segmented(ui, theme, super::segmented::HEIGHT, &labels, filters.iter().position(|x| x.0 == self.filter)) {
+                self.filter = filters[i].0;
             }
         });
         panel.add_space(2.0);

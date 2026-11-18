@@ -540,10 +540,9 @@ impl Issues {
             });
         };
         panel.horizontal(|ui| {
-            for (filter, label) in filters {
-                if ui.selectable_label(self.filter == filter, egui::RichText::new(label).size(12.0)).clicked() {
-                    self.filter = filter;
-                }
+            let labels: Vec<&str> = filters.iter().map(|x| x.1).collect();
+            if let Some(i) = super::segmented::segmented(ui, theme, super::segmented::HEIGHT, &labels, filters.iter().position(|x| x.0 == self.filter)) {
+                self.filter = filters[i].0;
             }
             if !narrow {
                 tools(ui, &mut new, &mut refresh);

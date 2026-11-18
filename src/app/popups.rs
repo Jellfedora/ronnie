@@ -131,8 +131,9 @@ impl App {
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.horizontal(|ui| {
                     if let Some((_, name)) = &tab_scope {
-                        ui.selectable_value(&mut menu.for_tab, true, egui::RichText::new(name).size(12.5));
-                        ui.selectable_value(&mut menu.for_tab, false, egui::RichText::new(t.commands_general).size(12.5));
+                        if let Some(i) = super::segmented::segmented(ui, &theme, super::segmented::HEIGHT, &[name.as_str(), t.commands_general], Some(if menu.for_tab { 0 } else { 1 })) {
+                            menu.for_tab = i == 0;
+                        }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let button = egui::Button::new(egui::RichText::new(t.commands_add).size(12.5).color(theme.bg)).fill(theme.accent).corner_radius(5.0);
@@ -268,15 +269,12 @@ impl App {
             Frame::popup(ui.style()).fill(theme.chrome_bg).stroke(Stroke::new(1.0, theme.accent.gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
                 ui.set_width(width - 20.0);
                 ui.horizontal(|ui| {
-                    let text_label = format!("{}  {}", t.search_text, shortcuts.find_text.label());
-                    if ui.selectable_label(search.text, egui::RichText::new(text_label).size(12.5)).clicked() {
-                        search.text = true;
-                    }
+                    let mut labels = vec![format!("{}  {}", t.search_text, shortcuts.find_text.label())];
                     if search.local {
-                        let commands_label = format!("{}  {}", t.search_commands, shortcuts.find_commands.label());
-                        if ui.selectable_label(!search.text, egui::RichText::new(commands_label).size(12.5)).clicked() {
-                            search.text = false;
-                        }
+                        labels.push(format!("{}  {}", t.search_commands, shortcuts.find_commands.label()));
+                    }
+                    if let Some(i) = super::segmented::segmented(ui, &theme, super::segmented::HEIGHT, &labels, Some(if search.text { 0 } else { 1 })) {
+                        search.text = i == 0;
                     }
                 });
                 if search.text != was_text {

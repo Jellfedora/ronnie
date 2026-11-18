@@ -75,6 +75,7 @@ mod music;
 mod notes;
 mod perms;
 mod pulls;
+mod segmented;
 mod sql;
 mod upload;
 mod dev;
