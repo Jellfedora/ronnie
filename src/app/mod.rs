@@ -396,6 +396,8 @@ pub struct App {
     error: Option<String>,
     /// The error shown, and since when (it goes away by itself after a while).
     error_shown: Option<(String, f64)>,
+    /// `error` holding this text is news, not a failure (see `inform`): green, not logged.
+    info_text: Option<String>,
     /// The terminals' area this frame (the five-legged sheep walks along its foot).
     terminals_rect: Option<Rect>,
     window_title: String,
@@ -1321,6 +1323,7 @@ impl App {
             last_scrollback_save: 0.0,
             error: None,
             error_shown: None,
+            info_text: None,
             terminals_rect: None,
             window_title: String::new(),
             next_pane: 1,
@@ -2491,6 +2494,48 @@ impl App {
 
     /// The notices in the bottom right corner: a few seconds each (longer under the pointer); a button
     /// (or a click on them) goes to their tab, another closes them.
+    /// Shows `text` in the floating card of the messages, green: news, not a failure (« copied »...).
+    pub(super) fn inform(&mut self, text: String) {
+        self.info_text = Some(text.clone());
+        self.error = Some(text);
+    }
+
+    /// The card of the last error or news, at the top of `area`, `age` seconds old: whether its ✕ was
+    /// clicked. In the toasts' look: a strip and a mark of red (or the accent for news), the time left.
+    fn message_card(&self, ctx: &egui::Context, area: Rect, text: &str, ok: bool, age: f32) -> bool {
+        let life = ERROR_SHOWN_SECS as f32;
+        let mark = if ok { self.theme.accent } else { self.theme.ansi[1] };
+        let alpha = (age / 0.2).min(1.0).min(((life - age) / 0.6).clamp(0.0, 1.0));
+        let width = (area.width() - 48.0).clamp(240.0, 520.0);
+        let mut close = false;
+        egui::Area::new(egui::Id::new("message-card")).order(egui::Order::Foreground).pivot(Align2::CENTER_TOP).fixed_pos(Pos2::new(area.center().x, area.min.y + 14.0)).show(ctx, |ui| {
+            ui.set_opacity(alpha);
+            let frame = Frame::popup(ui.style()).fill(self.theme.chrome_bg).stroke(Stroke::new(1.0, mark.gamma_multiply(0.45))).corner_radius(12.0).inner_margin(egui::Margin { left: 18, right: 10, top: 10, bottom: 12 });
+            let shown = frame.show(ui, |ui| {
+                ui.set_width(width - 28.0);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+                    ui.painter().circle_filled(r.center(), 11.0, mark.gamma_multiply(0.18));
+                    ui.painter().circle_stroke(r.center(), 11.0, Stroke::new(1.0, mark.gamma_multiply(0.5)));
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, if ok { "✓" } else { "✗" }, FontId::proportional(12.5), mark);
+                    ui.add_space(4.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let x = egui::Button::new(egui::RichText::new("✕").size(12.0).color(self.theme.text_muted)).frame_when_inactive(false).min_size(Vec2::splat(22.0));
+                        close = ui.add(x).on_hover_text(self.t().close).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(egui::RichText::new(text).size(13.0).color(self.theme.text)).wrap());
+                        });
+                    });
+                });
+            });
+            let r = shown.response.rect;
+            ui.painter().rect_filled(Rect::from_min_size(r.min + Vec2::new(6.0, 10.0), Vec2::new(3.0, r.height() - 20.0)), 1.5, mark.gamma_multiply(0.9));
+            let left_time = (1.0 - age / life).clamp(0.0, 1.0);
+            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(r.min.x + 14.0, r.max.y - 5.0), Vec2::new((r.width() - 28.0) * left_time, 2.0)), 1.0, mark.gamma_multiply(0.6));
+        });
+        close
+    }
+
     fn toasts_ui(&mut self, ctx: &egui::Context) {
         const LIFE: f32 = 7.0;
         self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < LIFE);
@@ -4720,25 +4765,22 @@ impl App {
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(self.theme.bg))
             .show(ui, |ui| {
-                // The last error: closed with its ✕, or gone by itself after a while.
+                // The last error (or news, see `inform`): a card floating at the top, closed with its ✕
+                // or gone by itself after a while.
                 if let Some(err) = self.error.clone() {
                     let now = ui.input(|i| i.time);
                     if self.error_shown.as_ref().is_none_or(|(shown, _)| *shown != err) {
                         self.error_shown = Some((err.clone(), now));
                     }
                     let since = self.error_shown.as_ref().map_or(now, |(_, at)| *at);
-                    let mut close = now - since > ERROR_SHOWN_SECS;
-                    ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("✕").color(Color32::from_rgb(0xf7, 0x76, 0x8e))).frame(false)).on_hover_text(self.t().close).clicked() {
-                            close = true;
-                        }
-                        ui.add(egui::Label::new(egui::RichText::new(&err).color(Color32::from_rgb(0xf7, 0x76, 0x8e))).wrap());
-                    });
+                    let ok = self.info_text.as_ref() == Some(&err);
+                    let close = self.message_card(ui.ctx(), ui.max_rect(), &err, ok, (now - since) as f32) || now - since > ERROR_SHOWN_SECS;
                     if close {
                         self.error = None;
                         self.error_shown = None;
+                        self.info_text = None;
                     } else {
-                        ui.ctx().request_repaint_after(Duration::from_secs_f64((ERROR_SHOWN_SECS - (now - since)).max(0.5)));
+                        ui.ctx().request_repaint_after(Duration::from_millis(50));
                     }
                 }
                 let mut rect = ui.available_rect_before_wrap();
@@ -5993,7 +6035,7 @@ impl eframe::App for App {
 
         // Errors shown to the user also go to ronnie.log, to diagnose them later.
         if self.error != self.logged_error {
-            if let Some(e) = &self.error {
+            if let Some(e) = self.error.as_ref().filter(|e| self.info_text.as_ref() != Some(*e)) {
                 crate::log::error(e);
             }
             self.logged_error = self.error.clone();

@@ -144,7 +144,7 @@ enum Act {
     SetRole(String, Role),
     Unshare(String),
     Tab(Tab),
-    CopyCsv,
+    ExportCsv,
 }
 
 /// A card: the chrome's color, a thin edge, round corners.
@@ -705,8 +705,8 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(t.track_filter_total.replace("{n}", &shown.len().to_string()).replace("{h}", &hm(sum))).size(12.5).color(theme.text_muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !shown.is_empty() && ui.add(link_button(&format!("⧉  {}", t.track_copy_csv), theme.accent)).on_hover_text(t.track_copy_csv_hint).clicked() {
-                    acts.push(Act::CopyCsv);
+                if !shown.is_empty() && ui.add(quiet(&format!("⤓  {}", t.track_copy_csv))).on_hover_text(t.track_copy_csv_hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    acts.push(Act::ExportCsv);
                 }
             });
         });
@@ -1364,11 +1364,17 @@ impl App {
                     Err(e) => Done::Gone(Err(e)),
                 });
             }
-            Act::CopyCsv => {
+            Act::ExportCsv => {
                 if let Some(p) = p {
-                    let csv = self.track_csv(p);
-                    self.ctx.copy_text(csv);
-                    self.error = Some(self.t().track_csv_copied.to_owned());
+                    // A BOM, so that Excel reads the accents right.
+                    let csv = format!("\u{feff}{}\r\n", self.track_csv(p).replace('\n', "\r\n"));
+                    let name = format!("{} - {} {}.csv", p.name, self.t().track_csv_file, track::today()).replace(['/', '\\', ':'], "-");
+                    if let Some(path) = rfd::FileDialog::new().set_file_name(name).add_filter("CSV", &["csv"]).save_file() {
+                        match std::fs::write(&path, csv) {
+                            Ok(()) => self.inform(self.t().track_csv_copied.replace("{file}", &path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+                            Err(e) => self.error = Some(format!("{} : {e}", path.display())),
+                        }
+                    }
                 }
             }
         }
