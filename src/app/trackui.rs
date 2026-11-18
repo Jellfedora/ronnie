@@ -1396,6 +1396,7 @@ impl App {
         if let Some(demo) = self.track.page.demo.take() {
             match demo.as_str() {
                 "entry" => self.track_entry_open(&p, None, p.items.first().map(|i| i.id.clone())),
+                "settings" => self.track_edit_open(),
                 "item" => self.track_page_act(Act::EditItem(p.items.first().map(|i| i.id.clone()).unwrap_or_default()), Some(&p)),
                 _ => self.track_page_act(Act::EditQuote(p.quotes.first().map(|q| q.id.clone()).unwrap_or_default()), Some(&p)),
             }

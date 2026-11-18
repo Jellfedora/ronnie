@@ -410,7 +410,7 @@ impl App {
             "quotes" => Tab::Quotes,
             "access" | "team" => Tab::Team,
             "claude" => Tab::Claude,
-            "entry" | "item" | "quote-edit" => {
+            "entry" | "item" | "quote-edit" | "settings" => {
                 self.track.page.demo = Some(tab.to_owned());
                 Tab::Overview
             }
@@ -860,6 +860,13 @@ impl App {
                     ui.label(egui::RichText::new(t.track_project_name).size(12.0).color(theme.text_muted));
                     ui.add(egui::TextEdit::singleline(&mut e.name).desired_width(f32::INFINITY));
                     ui.add_space(8.0);
+                }
+                // The terminal profile: its tab opened from the project, Claude working in its folder.
+                ui.label(egui::RichText::new(t.track_profile).size(12.0).color(theme.text_muted));
+                profile_combo(ui, "track-edit-profile", &mut e.profile);
+                ui.label(egui::RichText::new(t.track_profile_hint).size(11.0).color(theme.text_muted.gamma_multiply(0.8)));
+                ui.add_space(8.0);
+                if role.manages() {
                     ui.label(egui::RichText::new(t.track_note).size(12.0).color(theme.text_muted));
                     super::mdedit::md_editor(ui, egui::Id::new(("project-note", &e.id)), &mut e.note, 560.0, 5, t.track_note_hint, &theme, t);
                     ui.add_space(8.0);
@@ -869,10 +876,7 @@ impl App {
                     ui.checkbox(&mut e.archived, egui::RichText::new(t.track_archive).size(13.0).color(theme.text));
                     ui.add_space(8.0);
                 }
-                ui.label(egui::RichText::new(t.track_profile).size(12.0).color(theme.text_muted));
-                profile_combo(ui, "track-edit-profile", &mut e.profile);
-                ui.label(egui::RichText::new(t.track_profile_hint).size(11.0).color(theme.text_muted.gamma_multiply(0.8)));
-                ui.add_space(14.0);
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.add(button(t.track_save, Some(theme.accent))).clicked() {
                         done = Some(if role.manages() {
