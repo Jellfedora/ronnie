@@ -916,6 +916,16 @@ impl Online {
         self.send(json!({ "t": "ready", "on": on }));
     }
 
+    /// To try things (a floor of development only; the game no longer counts): invincible.
+    pub fn god(&self, on: bool) {
+        self.send(json!({ "t": "cheat", "god": on }));
+    }
+
+    /// To try things: the wave ("wave") or the floor ("floor") passed.
+    pub fn skip(&self, what: &str) {
+        self.send(json!({ "t": "cheat", "skip": what }));
+    }
+
     /// The player's id in the game under way.
     pub fn me(&self, name: &str) -> Option<u32> {
         self.room.as_ref().filter(|r| r.started).and_then(|r| r.players.iter().find(|(_, n, _)| n == name)).map(|(id, _, _)| *id)

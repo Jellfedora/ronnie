@@ -23,6 +23,8 @@ const SHOP_W: f32 = 250.0;
 #[derive(Default)]
 pub(super) struct Monday {
     pub(super) online: Online,
+    /// Debug builds: invincible (floor of development only).
+    god: bool,
     pub(super) floor: Option<crate::floor::GameFloor>,
     /// The game just over, shown until dismissed.
     over: Option<Over>,
@@ -1389,6 +1391,28 @@ impl App {
         let panel = |r: Rect| hud.rect_filled(r, 10.0, Color32::from_rgba_unmultiplied(18, 20, 26, 210));
         let top = Rect::from_min_size(field.min + Vec2::new(12.0, 12.0), Vec2::new(300.0, 58.0));
         panel(top);
+        // Debug builds, playing: what to try the levels with (a floor of development only accepts it).
+        if cfg!(debug_assertions) && mine.is_some() && !watching {
+            let bar = Rect::from_min_size(top.left_bottom() + Vec2::new(0.0, 8.0), Vec2::new(300.0, 26.0));
+            let mut x = bar.min.x;
+            let mut button = |label: &str, on: bool| {
+                let w = 12.0 + label.chars().count() as f32 * 7.0;
+                let r = Rect::from_min_size(Pos2::new(x, bar.min.y), Vec2::new(w, bar.height()));
+                x += w + 6.0;
+                let b = egui::Button::new(egui::RichText::new(label).size(11.5).color(if on { Color32::BLACK } else { Color32::WHITE })).corner_radius(6.0);
+                ui.put(r, if on { b.fill(Color32::from_rgb(255, 196, 70)) } else { b.fill(Color32::from_black_alpha(170)) }).clicked()
+            };
+            if button("DEV · invincible", self.monday.god) {
+                self.monday.god = !self.monday.god;
+                self.monday.online.god(self.monday.god);
+            }
+            if button("vague suivante", false) {
+                self.monday.online.skip("wave");
+            }
+            if button("étage suivant", false) {
+                self.monday.online.skip("floor");
+            }
+        }
         let wave = if frame.wave_on { format!("{} / {}", t.monday_wave.replace("{n}", &frame.wave.to_string()), crate::zombie::LAST_WAVE) } else { t.monday_break_title.to_owned() };
         let floors: Vec<&str> = t.monday_floor_short.split('|').collect();
         hud.text(top.right_top() + Vec2::new(-12.0, 14.0), Align2::RIGHT_CENTER, floors.get(frame.floor).copied().unwrap_or_default().to_uppercase(), FontId::monospace(10.5), theme.text_muted);
