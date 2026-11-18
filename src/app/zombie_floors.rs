@@ -124,6 +124,7 @@ fn windows(map: &Map) -> Vec<f32> {
 
 /// Light coming in by the windows: a slanted shaft from each (`down`: from the top wall), `long`
 /// across the floor, `color` (added), shimmering a little.
+#[allow(clippy::too_many_arguments)]
 fn shafts(painter: &egui::Painter, map: &Map, to: To, now: f64, down: bool, long: f32, slant: f32, color: (f32, f32, f32)) {
     let (y0, dir) = if down { (map.wall, 1.0) } else { (map.h - map.wall, -1.0) };
     for (k, x) in windows(map).into_iter().enumerate() {
