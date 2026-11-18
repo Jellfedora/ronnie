@@ -1,5 +1,5 @@
-//! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the wand, the lightsaber
-//! or the sword at the pointer, the sheep, the droid, Gérard and the house-elf walking along the foot of the screen,
+//! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the pointer chosen (the
+//! wand, the lightsaber, the sword, Ronnie Métal's arrow, the stapler), the sheep, the droid, Gérard and the house-elf walking along the foot of the screen,
 //! the unicorn galloping by.
 //!
 //! They live in a process of their own (`ronnie desktop-fx`), started by Ronnie while one of them is
@@ -9,7 +9,7 @@
 //! standard input, one JSON line at each change, and the input closing (Ronnie gone) ends it. The
 //! pointer is read about 60 times a second; the window is only drawn again when something moves.
 //!
-//! With the wand or the lightsaber, the system's pointer is hidden everywhere on macOS (it comes back by
+//! With a pointer of Ronnie's, the system's pointer is hidden everywhere on macOS (it comes back by
 //! itself when the process ends, even crashing); on Windows it stays, the wand drawn at its tip. macOS
 //! and Windows; Linux through X11 (XWayland under Wayland), with a compositor.
 
@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+
+use crate::config::Pointer;
 
 use super::*;
 
@@ -49,20 +51,11 @@ pub(crate) struct Fx {
     /// The trail in bank notes (Ronnie Corp's).
     #[serde(default)]
     bills: bool,
-    /// The walkers (and the horde) that go along the other screens too, not only the pointer's.
-    #[serde(default)]
-    everywhere: crate::config::Everywhere,
     pointer: Option<Pointer>,
     /// The theme whose colors the trail takes.
     theme: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-enum Pointer {
-    Wand,
-    Saber,
-    Sword,
-}
 
 impl Fx {
     fn any(&self) -> bool {
@@ -111,24 +104,18 @@ impl Desktop {
 }
 
 impl App {
-    /// What the settings ask to show over the screen (each reward still to be won, left out).
+    /// What the settings ask to show over the screen (each reward still to be won, left out; nothing
+    /// unless switched on outside Ronnie).
     fn desktop_wanted(&self) -> Fx {
         let s = &self.config.settings;
         let d = s.desktop_fx;
+        if !d.on {
+            return Fx::default();
+        }
         let official = crate::config::OFFICIAL;
-        let star_wars = !official || s.hyperspace_unlocked;
-        let pointer = if d.wand && (!official || s.wizard_unlocked) {
-            Some(Pointer::Wand)
-        } else if d.saber && star_wars {
-            Some(Pointer::Saber)
-        } else if d.sword && (!official || crate::coffee::thrones_won(&s.coffee_bests)) {
-            Some(Pointer::Sword)
-        } else {
-            None
-        };
-        let bills = wallstreet::bills_on(s);
-        let trail = d.trail && (bills || (s.cursor_trail && trail::unlocked(s.runner_best)));
-        Fx { trail, sheep: d.sheep && s.sheep && office::sheep_unlocked(s), droid: d.droid && star_wars, horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), bills: trail && bills, everywhere: d.everywhere, pointer, theme: s.theme.clone() }
+        let worn = trail::worn(s);
+        let pointer = Some(trail::pointer(s)).filter(|p| *p != Pointer::System);
+        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep && office::sheep_unlocked(s), droid: d.droid && (!official || s.hyperspace_unlocked), horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -672,35 +659,28 @@ fn walk_screen(lap: f64, salt: u64, n: usize) -> usize {
 }
 
 /// The sheep's, the droid's, Gérard's, the house-elf's and the unicorn's walks under way, and the screen
-/// each goes along: any of the `n` for those going everywhere, else the pointer's (`home`).
-fn walks(fx: &Fx, now: f64, home: usize, n: usize) -> [(bool, usize); 5] {
+/// each goes along (any of the `n`).
+fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 5] {
     let gerard = gerard_every();
-    let every = &fx.everywhere;
-    let at = |all: bool, lap: f64, salt: u64| if all { walk_screen(lap, salt, n) } else { home };
+    let at = |lap: f64, salt: u64| walk_screen(lap, salt, n);
     [
-        (fx.sheep && (now + 20.0) % office::SHEEP_EVERY <= 16.0, at(every.sheep, ((now + 20.0) / office::SHEEP_EVERY).floor(), 1)),
-        (fx.droid && (now + 55.0) % DROID_EVERY <= DROID_ROLL, at(every.droid, ((now + 55.0) / DROID_EVERY).floor(), 2)),
-        (fx.gerard && gerard_at(now).is_ok(), at(every.gerard, ((now + 95.0) / gerard).floor(), 3)),
-        (fx.elf && elf_at(now).is_ok(), at(every.elf, ((now + 75.0) / ELF_EVERY).floor(), 4)),
-        (fx.unicorn && wallstreet::unicorn_at(now).is_ok(), at(every.unicorn, wallstreet::unicorn_lap(now), 5)),
+        (fx.sheep && (now + 20.0) % office::SHEEP_EVERY <= 16.0, at(((now + 20.0) / office::SHEEP_EVERY).floor(), 1)),
+        (fx.droid && (now + 55.0) % DROID_EVERY <= DROID_ROLL, at(((now + 55.0) / DROID_EVERY).floor(), 2)),
+        (fx.gerard && gerard_at(now).is_ok(), at(((now + 95.0) / gerard).floor(), 3)),
+        (fx.elf && elf_at(now).is_ok(), at(((now + 75.0) / ELF_EVERY).floor(), 4)),
+        (fx.unicorn && wallstreet::unicorn_at(now).is_ok(), at(wallstreet::unicorn_lap(now), 5)),
     ]
 }
 
-/// The horde runs across screen `here` (all of them, or only the pointer's: `home`).
-fn horde_on(fx: &Fx, here: usize, home: usize) -> bool {
-    fx.horde && (fx.everywhere.horde || here == home)
+/// Something to show on screen `here` now: a walker going along it, the horde (on every screen).
+fn walkers_on(fx: &Fx, now: f64, here: usize, n: usize) -> bool {
+    (fx.horde && horde_since(fx.horde_demo).is_ok()) || walks(fx, now, n).iter().any(|&(on, at)| on && at == here)
 }
 
-/// Something to show on screen `here` now: a walker going along it, the horde.
-fn walkers_on(fx: &Fx, now: f64, here: usize, home: usize, n: usize) -> bool {
-    (horde_on(fx, here, home) && horde_since(fx.horde_demo).is_ok()) || walks(fx, now, home, n).iter().any(|&(on, at)| on && at == here)
-}
-
-/// On screen `here` (of `n`, the pointer's `home`): the walkers going along it (`strip`, its foot) and
+/// On screen `here` (of `n`): the walkers going along it (`strip`, its foot) and
 /// the horde (`whole`). Something shown, and when to look again.
-#[allow(clippy::too_many_arguments)]
-fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, home: usize, n: usize, fx: &Fx) -> (bool, f32) {
-    let [sheep, droid, gerard, elf, unicorn] = walks(fx, now, home, n);
+fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, n: usize, fx: &Fx) -> (bool, f32) {
+    let [sheep, droid, gerard, elf, unicorn] = walks(fx, now, n);
     let (mut busy, mut next) = (false, 1.0f32);
     if fx.sheep && sheep.1 == here {
         let (shown, again) = office::sheep(painter, strip, now);
@@ -727,7 +707,7 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
         busy |= shown;
         next = next.min(again);
     }
-    if horde_on(fx, here, home) {
+    if fx.horde {
         let (shown, again) = horde_run(painter, whole, fx.horde_demo, &fx.horde_kinds);
         busy |= shown;
         next = next.min(again);
@@ -887,7 +867,7 @@ impl eframe::App for Overlay {
         // all of them at once. This window covers the pointer's; the others get one each while needed.
         let n = screens.len().max(1);
         let here = screens.iter().position(|(s, _)| (s.min - self.screen.min).length() < 1.0).unwrap_or(0);
-        let (shown, again) = paint_walkers(&painter, strip, self.screen.translate(-origin.to_vec2()), now, here, here, n, &self.shown);
+        let (shown, again) = paint_walkers(&painter, strip, self.screen.translate(-origin.to_vec2()), now, here, n, &self.shown);
         busy |= shown || plant_busy;
         next = next.min(again);
         // Mathéo on the screen he's on (this window's, or another's).
@@ -898,9 +878,8 @@ impl eframe::App for Overlay {
         }
         // A window over another screen is made hidden, shown once drawn (else, on Windows, a white
         // square first), hidden again when nothing goes along it, closed a while after.
-        let home = here;
         for (i, (screen, work)) in screens.iter().enumerate() {
-            let walking = walkers_on(&self.shown, now, i, home, n);
+            let walking = walkers_on(&self.shown, now, i, n);
             let needed = walking || plant_on == Some(i);
             if i == here || covered(&self.full.0, *screen) {
                 self.others.remove(&i);
@@ -951,7 +930,7 @@ impl eframe::App for Overlay {
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("desktop-fx")));
                 let foot = work.translate(-origin.to_vec2());
                 let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
-                paint_walkers(&painter, strip, screen.translate(-origin.to_vec2()), now, i, home, n, &fx);
+                paint_walkers(&painter, strip, screen.translate(-origin.to_vec2()), now, i, n, &fx);
                 if let (Some((at, held)), true) = (plant, plant_on == Some(i)) {
                     paint_matheo(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
                 }
@@ -988,7 +967,7 @@ impl eframe::App for Overlay {
             }
             Some(Pointer::Saber) => {
                 if let Some(at) = local {
-                    hyperspace::pointer_saber(&painter, at, self.theme.accent);
+                    hyperspace::pointer_saber(&painter, at, crate::theme::Preset::find(crate::theme::HYPERSPACE_THEME).theme().accent);
                 }
             }
             Some(Pointer::Sword) => {
@@ -996,7 +975,17 @@ impl eframe::App for Overlay {
                     thrones::pointer_sword(&painter, at);
                 }
             }
-            None => {}
+            Some(Pointer::Metal) => {
+                if let Some(at) = local {
+                    super::metal_arrow(&painter, at, &crate::theme::Preset::find(crate::theme::METAL_THEME).theme());
+                }
+            }
+            Some(Pointer::Stapler) => {
+                if let Some(at) = local {
+                    monday_theme::pointer_stapler(&painter, at);
+                }
+            }
+            Some(Pointer::System) | None => {}
         }
         if busy {
             ctx.request_repaint();
@@ -1631,22 +1620,8 @@ mod tests {
         let seen: std::collections::HashSet<usize> = (0..60).map(|lap| walk_screen(f64::from(lap), 2, 3)).collect();
         assert_eq!(seen.len(), 3);
         let fx = Fx { sheep: true, ..Default::default() };
-        let at = walks(&fx, 282.0, 0, 3)[0];
-        assert!(at.0 && (0..30).all(|k| walks(&fx, 282.0 + f64::from(k) * 0.4, 0, 3)[0] == at));
-    }
-
-    #[test]
-    fn a_walker_kept_home_stays_on_the_pointers_screen() {
-        // The sheep only on the pointer's screen (2 of 4): never elsewhere, the droid still anywhere.
-        let mut fx = Fx { sheep: true, droid: true, horde: true, ..Default::default() };
-        fx.everywhere.sheep = false;
-        fx.everywhere.horde = false;
-        assert!((0..2000).all(|k| walks(&fx, f64::from(k) * 0.5, 2, 4)[0].1 == 2));
-        let droid: std::collections::HashSet<usize> = (0..20000).map(|k| walks(&fx, f64::from(k), 2, 4)[1].1).collect();
-        assert!(droid.len() > 1);
-        assert!(horde_on(&fx, 2, 2) && !horde_on(&fx, 0, 2));
-        fx.everywhere.horde = true;
-        assert!(horde_on(&fx, 0, 2));
+        let at = walks(&fx, 282.0, 3)[0];
+        assert!(at.0 && (0..30).all(|k| walks(&fx, 282.0 + f64::from(k) * 0.4, 3)[0] == at));
     }
 
     #[test]
@@ -1661,7 +1636,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, bills: true, everywhere: Default::default(), pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

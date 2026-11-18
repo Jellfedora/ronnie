@@ -454,6 +454,7 @@ impl Config {
             set_aside::<Profile>(map, "profiles");
             set_aside::<crate::ssh::SshHost>(map, "ssh");
             set_aside::<Group>(map, "groups");
+            take_up_looks(map);
         }
         serde_json::from_value(value)
     }
@@ -713,18 +714,15 @@ pub struct Settings {
     /// Show the animated "Ronnie" logo when the app starts.
     #[serde(default = "default_true")]
     pub splash: bool,
-    /// The pointer's trail of sparks, once unlocked at Ronnie Run.
-    #[serde(default = "default_true")]
-    pub cursor_trail: bool,
-    /// The pointer's trail of bank notes, once Ronnie Corp is a small business (over the sparks).
-    #[serde(default = "default_true")]
-    pub money_trail: bool,
-    /// The rewards shown over the whole screen too, outside Ronnie (`app::desktop`).
+    /// The pointer's trail, one at a time (None: never chosen, the last won).
+    #[serde(default)]
+    pub trail: Option<Trail>,
+    /// The pointer, one at a time (None: never chosen, the worn theme's own).
+    #[serde(default)]
+    pub pointer: Option<Pointer>,
+    /// The companions, and whether the trail, the pointer and they go outside Ronnie (`app::desktop`).
     #[serde(default)]
     pub desktop_fx: DesktopFx,
-    /// The themes' own pointers, in Ronnie (each can be switched off).
-    #[serde(default)]
-    pub theme_pointers: ThemePointers,
     /// The five-legged sheep grazing at the foot of the sidebar, once caught at the fishing.
     #[serde(default = "default_true")]
     pub sheep: bool,
@@ -989,80 +987,131 @@ fn default_projects_port() -> u16 {
     crate::projects::DEFAULT_PORT
 }
 
-/// The rewards shown over the whole screen, outside Ronnie too (each its own choice, off at first;
-/// the 10 o'clock horde and Gérard on, surprises).
+/// The companions won in the games (each its own choice: the 10 o'clock horde, Gérard and Mathéo on
+/// at first, surprises), and whether they, the trail and the pointer go over every screen, outside
+/// Ronnie too (`on`).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct DesktopFx {
-    /// The pointer's trail of sparks.
-    pub trail: bool,
-    /// The five-legged sheep walking along the foot of the screen.
-    pub sheep: bool,
-    /// The pointer as a lightsaber (Star Wars).
-    pub saber: bool,
+    /// The trail, the pointer and the companions over every screen, outside Ronnie too.
+    pub on: bool,
     /// The droid rolling along the foot of the screen (Star Wars).
     pub droid: bool,
-    /// The pointer as a wand (Gryffindor).
-    pub wand: bool,
     /// The house-elf walking along the foot of the screen, waving his sock (Gryffindor).
     pub elf: bool,
     /// The unicorn galloping along the foot of the screen, a rainbow behind it (Ronnie Corp).
     pub unicorn: bool,
-    /// The pointer as a sword (Game of Thrones).
-    pub sword: bool,
     /// Lundi matin's zombies running across the screen at 10, shouting for the break.
     pub horde: bool,
     /// Gérard, Lundi matin's kind zombie, strolling along the foot of the screen.
     pub gerard: bool,
     /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
     pub matheo: bool,
-    /// Which of the walkers (and the horde) go along the other screens too, not only the pointer's.
-    pub everywhere: Everywhere,
 }
 
 impl Default for DesktopFx {
     fn default() -> Self {
-        Self { trail: false, sheep: false, saber: false, droid: false, wand: false, elf: false, unicorn: false, sword: false, horde: true, gerard: true, matheo: true, everywhere: Everywhere::default() }
+        Self { on: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true, matheo: true }
     }
 }
 
-/// The walkers that go along every screen (on, at first), else only along the pointer's.
+/// The pointer's trail.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(default)]
-pub struct Everywhere {
-    pub sheep: bool,
-    pub droid: bool,
-    pub elf: bool,
-    pub unicorn: bool,
-    pub horde: bool,
-    pub gerard: bool,
+#[serde(rename_all = "lowercase")]
+pub enum Trail {
+    Off,
+    /// Sparks (Ronnie Run).
+    Sparks,
+    /// Bank notes (Ronnie Corp).
+    Bills,
 }
 
-impl Default for Everywhere {
-    fn default() -> Self {
-        Self { sheep: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true }
-    }
-}
-
-/// The themes' own pointers in Ronnie, each on unless switched off.
+/// The pointer, drawn in place of the system's plain arrow (each a theme's, won with it).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(default)]
-pub struct ThemePointers {
+#[serde(rename_all = "lowercase")]
+pub enum Pointer {
+    /// The system's own.
+    System,
     /// Ronnie Métal's red and gold arrow.
-    pub metal: bool,
+    Metal,
     /// Star Wars' lightsaber.
-    pub saber: bool,
+    Saber,
     /// Gryffindor's wand.
-    pub wand: bool,
+    Wand,
     /// Game of Thrones' sword.
-    pub sword: bool,
+    Sword,
     /// Lundi matin's stapler.
-    pub stapler: bool,
+    Stapler,
 }
 
-impl Default for ThemePointers {
-    fn default() -> Self {
-        ThemePointers { metal: true, saber: true, wand: true, sword: true, stapler: true }
+impl Pointer {
+    pub const ALL: [Pointer; 6] = [Pointer::System, Pointer::Metal, Pointer::Saber, Pointer::Wand, Pointer::Sword, Pointer::Stapler];
+
+    /// The theme it comes with (won with it).
+    pub fn theme(self) -> Option<&'static str> {
+        match self {
+            Pointer::System => None,
+            Pointer::Metal => Some(crate::theme::METAL_THEME),
+            Pointer::Saber => Some(crate::theme::HYPERSPACE_THEME),
+            Pointer::Wand => Some(crate::theme::WIZARD_THEME),
+            Pointer::Sword => Some(crate::theme::THRONES_THEME),
+            Pointer::Stapler => Some(crate::theme::MONDAY_THEME),
+        }
+    }
+}
+
+/// Settings written before the trail and the pointer were one choice each, and the companions shown
+/// outside Ronnie by one switch: taken up as they were.
+fn take_up_looks(map: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::Value;
+    let flag = |v: Option<&Value>, key: &str, default: bool| v.and_then(|v| v.get(key)).and_then(Value::as_bool).unwrap_or(default);
+    if !map.contains_key("trail") && (map.contains_key("cursor_trail") || map.contains_key("money_trail")) {
+        let old = |key: &str| map.get(key).and_then(Value::as_bool).unwrap_or(true);
+        let (sparks, bills) = (old("cursor_trail"), old("money_trail"));
+        let trail = match (sparks, bills) {
+            (true, true) => None,
+            (_, true) => Some("bills"),
+            (true, false) => Some("sparks"),
+            (false, false) => Some("off"),
+        };
+        if let Some(trail) = trail {
+            map.insert("trail".into(), Value::from(trail));
+        }
+    }
+    let fx = map.get("desktop_fx").cloned();
+    if !map.contains_key("pointer") && (fx.is_some() || map.contains_key("theme_pointers")) {
+        // The pointer over the screen first (it was over Ronnie too), else the worn theme's, unless off.
+        let screen = ["wand", "saber", "sword"].into_iter().find(|k| flag(fx.as_ref(), k, false));
+        let theme = map.get("theme").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let own = Pointer::ALL.into_iter().find(|p| p.theme() == Some(theme.as_str()));
+        let pointer = match (screen, own) {
+            (Some(p), _) => Some(p.to_owned()),
+            (None, Some(p)) => {
+                let key = match p {
+                    Pointer::Metal => "metal",
+                    Pointer::Saber => "saber",
+                    Pointer::Wand => "wand",
+                    Pointer::Sword => "sword",
+                    _ => "stapler",
+                };
+                (!flag(map.get("theme_pointers"), key, true)).then(|| "system".to_owned())
+            }
+            (None, None) => None,
+        };
+        if let Some(pointer) = pointer {
+            map.insert("pointer".into(), Value::from(pointer));
+        }
+    }
+    if let Some(Value::Object(fx)) = map.get_mut("desktop_fx")
+        && !fx.contains_key("on")
+    {
+        // Shown outside Ronnie if anything was; the companions only there were each switched apart.
+        let was = |k: &str, default: bool| fx.get(k).and_then(Value::as_bool).unwrap_or(default);
+        let on = ["trail", "sheep", "saber", "wand", "sword", "droid", "elf", "unicorn"].iter().any(|k| was(k, false)) || ["horde", "gerard", "matheo"].iter().any(|k| was(k, true));
+        fx.insert("on".into(), Value::from(on));
+    }
+    for key in ["cursor_trail", "money_trail", "theme_pointers"] {
+        map.remove(key);
     }
 }
 
@@ -1623,7 +1672,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, cursor_trail: true, money_trail: true, desktop_fx: DesktopFx::default(), theme_pointers: ThemePointers::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_seen: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, monday_gerard: false, monday_wins: 0, monday_dailies: 0, riff_games: 0, monday_agnes_card: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, tycoon: None, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_seen: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, monday_gerard: false, monday_wins: 0, monday_dailies: 0, riff_games: 0, monday_agnes_card: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, tycoon: None, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
     }
 }
 
@@ -1932,6 +1981,22 @@ mod tests {
         assert_eq!(config.settings.language, Lang::default());
         assert_eq!(config.profiles.len(), 1);
         assert!(config.to_json().contains("\"unreadable_profiles\""), "the bad entry is kept");
+    }
+
+    #[test]
+    fn takes_up_the_old_trails_pointers_and_screens() {
+        // The wand over the screen, the bills switched on, the sparks off.
+        let json = r#"{"theme":"ronnie-metal","cursor_trail":false,"money_trail":true,"desktop_fx":{"wand":true,"horde":false,"gerard":false,"matheo":false}}"#;
+        let s = Config::from_json(json).unwrap().settings;
+        assert_eq!((s.trail, s.pointer, s.desktop_fx.on), (Some(Trail::Bills), Some(Pointer::Wand), true));
+        // Métal's arrow switched off, nothing outside Ronnie, both trails on (the last won).
+        let json = r#"{"theme":"ronnie-metal","theme_pointers":{"metal":false},"desktop_fx":{"horde":false,"gerard":false,"matheo":false}}"#;
+        let config = Config::from_json(json).unwrap();
+        assert_eq!((config.settings.trail, config.settings.pointer, config.settings.desktop_fx.on), (None, Some(Pointer::System), false));
+        assert!(!config.to_json().contains("theme_pointers"));
+        // Never set: the theme's own pointer, outside Ronnie.
+        let s = Config::from_json(r#"{"theme":"gryffondor"}"#).unwrap().settings;
+        assert_eq!((s.trail, s.pointer, s.desktop_fx.on), (None, None, true));
     }
 
     #[test]

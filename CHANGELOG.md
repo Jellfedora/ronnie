@@ -8,6 +8,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 - **Lundi matin, la pause à plusieurs** : Échap met la partie en pause pour toute la salle, et seul celui qui l'a mise la lève. Au bout d'une minute, les collègues peuvent l'exclure (sa partie compte jusque-là) et la partie reprend sans lui. Demande floor 0.17.1.
 - **Lundi matin, le tchat** : dans la salle d'attente, et en partie avec les collègues (Entrée pour écrire, les messages s'effacent après quelques secondes ; toujours ouvert pour qui regarde).
+- **Curseur, traînée et compagnons, dans Apparence** : un seul curseur à la fois (celui du système, la flèche Métal, le sabre laser, la baguette, l'épée ou l'agrafeuse), quel que soit le thème porté, et une seule traînée (aucune, étincelles ou billets). Chaque compagnon gagné s'y allume ou s'éteint, et un seul interrupteur, « Sur tous les écrans », les montre en dehors de Ronnie avec le curseur et la traînée. La page Récompenses ne fait plus que les lister, avec un lien vers Apparence.
 - **Lundi matin, prêt pour la vague** : pendant la pause café, un encart en bas du terrain rappelle qu'Espace te met prêt pour la vague suivante, avec combien sont prêts et dans combien de temps elle part.
 
 ### Corrections

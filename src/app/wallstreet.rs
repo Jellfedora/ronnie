@@ -26,11 +26,6 @@ pub(super) fn bills_unlocked(s: &crate::config::Settings) -> bool {
     won(s, BILLS_STAGE)
 }
 
-/// The bank notes follow the pointer (unlocked, not switched off).
-pub(super) fn bills_on(s: &crate::config::Settings) -> bool {
-    s.money_trail && bills_unlocked(s)
-}
-
 pub(super) fn theme_unlocked(s: &crate::config::Settings) -> bool {
     won(s, WALL_STREET_STAGE)
 }

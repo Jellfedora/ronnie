@@ -1,6 +1,6 @@
 //! The pointer's trail, unlocked at Ronnie Run (a run of `TRAIL_METERS`, all of it in development):
-//! sparks left behind where the pointer goes, in the theme's colors, drifting down and fading. Switched
-//! off in the settings. Once Ronnie Corp is a small business, bank notes fluttering down in place of
+//! sparks left behind where the pointer goes, in the theme's colors, drifting down and fading. Chosen
+//! in Settings › Appearance. Once Ronnie Corp is a small business, bank notes fluttering down in place of
 //! the sparks.
 
 use super::*;
@@ -38,6 +38,46 @@ pub(super) struct Trail {
 /// Whether it is unlocked.
 pub(super) fn unlocked(runner_best: u32) -> bool {
     !crate::config::OFFICIAL || runner_best >= TRAIL_METERS
+}
+
+/// Whether this trail is won (none always is).
+pub(super) fn trail_won(s: &crate::config::Settings, trail: crate::config::Trail) -> bool {
+    match trail {
+        crate::config::Trail::Off => true,
+        crate::config::Trail::Sparks => unlocked(s.runner_best),
+        crate::config::Trail::Bills => super::wallstreet::bills_unlocked(s),
+    }
+}
+
+/// The trail behind the pointer: the one chosen if won, else (never chosen) the last won.
+pub(super) fn worn(s: &crate::config::Settings) -> crate::config::Trail {
+    use crate::config::Trail;
+    match s.trail {
+        Some(t) if trail_won(s, t) => t,
+        Some(_) => Trail::Off,
+        None => [Trail::Bills, Trail::Sparks].into_iter().find(|t| trail_won(s, *t)).unwrap_or(Trail::Off),
+    }
+}
+
+/// Whether a theme is won (the usual ones always are).
+pub(super) fn theme_won(s: &crate::config::Settings, id: &str) -> bool {
+    let best = s.typing_scores.first().map_or(0, |x| x.letters);
+    !crate::theme::Preset::find(id).locked(best, s.jurassic_unlocked, s.hyperspace_unlocked, crate::theme::office_unlocked(&s.riff_bests), s.wizard_unlocked, crate::coffee::thrones_won(&s.coffee_bests), s.monday_wins > 0, super::wallstreet::theme_unlocked(s))
+}
+
+/// Whether this pointer is won (with its theme).
+pub(super) fn pointer_won(s: &crate::config::Settings, pointer: crate::config::Pointer) -> bool {
+    pointer.theme().is_none_or(|id| theme_won(s, id))
+}
+
+/// The pointer: the one chosen if won, else (never chosen) the worn theme's own.
+pub(super) fn pointer(s: &crate::config::Settings) -> crate::config::Pointer {
+    use crate::config::Pointer;
+    match s.pointer {
+        Some(p) if pointer_won(s, p) => p,
+        Some(_) => Pointer::System,
+        None => Pointer::ALL.into_iter().find(|p| p.theme() == Some(s.theme.as_str())).unwrap_or(Pointer::System),
+    }
 }
 
 impl Trail {

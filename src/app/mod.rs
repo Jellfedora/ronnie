@@ -5691,27 +5691,21 @@ impl App {
         }
         // Drawn over the whole screen instead (`desktop`): not twice.
         let (screen_trail, screen_pointer, _) = self.desktop_draws();
-        let bills = wallstreet::bills_on(&self.config.settings);
-        if (bills || (self.config.settings.cursor_trail && trail::unlocked(self.config.settings.runner_best))) && !screen_trail {
-            self.trail.bills = bills;
+        let worn = trail::worn(&self.config.settings);
+        if worn != config::Trail::Off && !screen_trail {
+            self.trail.bills = worn == config::Trail::Bills;
             self.trail.frame(ui.ctx(), &self.theme);
         }
-        // The theme's own pointer, unless switched off.
-        let pointers = self.config.settings.theme_pointers;
-        if self.theme.metal && pointers.metal {
-            paint_metal_pointer(ui.ctx(), &self.theme);
-        }
-        if self.theme.hyperspace && pointers.saber && !screen_pointer {
-            hyperspace::pointer(ui.ctx(), &self.theme);
-        }
-        if self.theme.wizard && pointers.wand && !screen_pointer {
-            self.wand.frame(ui.ctx());
-        }
-        if self.theme.thrones && pointers.sword && !screen_pointer {
-            thrones::pointer(ui.ctx());
-        }
-        if self.theme.monday && pointers.stapler && !screen_pointer {
-            monday_theme::pointer(ui.ctx());
+        // The pointer chosen, in its theme's colors whatever the theme worn.
+        if !screen_pointer {
+            match trail::pointer(&self.config.settings) {
+                config::Pointer::System => {}
+                config::Pointer::Metal => paint_metal_pointer(ui.ctx(), &crate::theme::Preset::find(crate::theme::METAL_THEME).theme()),
+                config::Pointer::Saber => hyperspace::pointer(ui.ctx(), &crate::theme::Preset::find(crate::theme::HYPERSPACE_THEME).theme()),
+                config::Pointer::Wand => self.wand.frame(ui.ctx()),
+                config::Pointer::Sword => thrones::pointer(ui.ctx()),
+                config::Pointer::Stapler => monday_theme::pointer(ui.ctx()),
+            }
         }
         // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
         let today = chrono::Local::now().date_naive();
@@ -5774,7 +5768,12 @@ fn paint_metal_pointer(ctx: &egui::Context, theme: &Theme) {
         }
         return;
     }
-    // The arrow, in two convex parts (the head and the tail), its tip on the pointer.
+    metal_arrow(&painter, at, theme);
+}
+
+/// Ronnie Métal's arrow, in two convex parts (the head and the tail), its tip at `at`.
+pub(super) fn metal_arrow(painter: &egui::Painter, at: Pos2, theme: &Theme) {
+    let gold = theme.cursor;
     let p = |x: f32, y: f32| at + Vec2::new(x, y);
     let head = vec![p(0.0, 0.0), p(0.0, 17.0), p(12.5, 12.2)];
     let tail = vec![p(4.2, 13.2), p(7.0, 19.5), p(9.6, 18.4), p(6.9, 12.2)];
