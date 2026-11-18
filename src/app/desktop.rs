@@ -44,6 +44,12 @@ pub(crate) struct Fx {
     /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
     #[serde(default)]
     matheo: bool,
+    /// His advice in a bubble now and then (water, stretches, steps).
+    #[serde(default)]
+    matheo_tips: bool,
+    /// The language his advice is in.
+    #[serde(default)]
+    lang: crate::i18n::Lang,
     #[serde(default)]
     elf: bool,
     #[serde(default)]
@@ -117,7 +123,7 @@ impl App {
         let official = crate::config::OFFICIAL;
         let worn = trail::worn(s);
         let pointer = Some(trail::pointer(s)).filter(|p| *p != Pointer::System);
-        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep && office::sheep_unlocked(s), droid: d.droid && (!official || s.hyperspace_unlocked), horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), wolf: d.wolf && (!official || crate::coffee::thrones_won(&s.coffee_bests)), bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
+        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep && office::sheep_unlocked(s), droid: d.droid && (!official || s.hyperspace_unlocked), horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), matheo_tips: d.matheo_tips, lang: s.language, elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), wolf: d.wolf && (!official || crate::coffee::thrones_won(&s.coffee_bests)), bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -237,12 +243,373 @@ struct Plant {
     grab: Option<Vec2>,
     /// The window lets the mouse through (not over him).
     pass: bool,
+    /// Where the press that grabbed him was: let go without moving, a click (his advice).
+    press: Option<Pos2>,
+    /// Thrown: his speed across (points a second), his tilt (radians) and how fast it turns.
+    vx: f32,
+    tilt: f32,
+    spin: f32,
+    /// Held: where he was the last frames (time, place), for his swing and his speed when let go.
+    track: std::collections::VecDeque<(f64, Pos2)>,
+    /// Held: when he was last swung back the other way, and which way he went (shaken: quiet).
+    flips: Vec<f64>,
+    way: f32,
+    /// Quiet until then (Unix seconds): shaken, he keeps his advice to himself for 6 hours.
+    quiet: Option<u64>,
+    /// His head spinning until then (shaken, or banged against a wall).
+    dizzy: Option<Instant>,
+    /// When he last hit a wall, the ceiling or the floor hard (squashed a moment).
+    bonk: Option<Instant>,
+    /// What his bubble says and since when.
+    tip: Option<(Said, Instant)>,
+    /// The watering can beside him (with each reminder to drink): since when, and since when it pours.
+    can: Option<(Instant, Option<Instant>)>,
+    /// Watered: glad until then.
+    glad: Option<Instant>,
+    /// Reminders to drink left without watering him (he wilts), up to `THIRST_MAX`.
+    thirst: u32,
+    /// Late in the evening, as last looked at (each minute).
+    tired: (bool, Option<Instant>),
+    /// When the next one is due, and the number of the next.
+    next_tip: Instant,
+    told: usize,
+    /// The pointer's last place and when it last moved: nobody there, no advice.
+    moved: (Option<Pos2>, Instant),
+    /// His bubble on the screens (points), as last drawn: a click there closes it.
+    bubble: Option<Rect>,
 }
 
 impl Default for Plant {
     fn default() -> Self {
-        Self { at: matheo_load(), vy: 0.0, grab: None, pass: true }
+        // Not the same advice first at each start (water first all the same).
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 60) as usize;
+        let quiet = matheo_quiet_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok());
+        Self { at: matheo_load(), vy: 0.0, grab: None, pass: true, press: None, vx: 0.0, tilt: 0.0, spin: 0.0, track: Default::default(), flips: Vec::new(), way: 0.0, quiet, dizzy: None, bonk: None, tip: None, can: None, glad: None, thirst: matheo_thirst_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| t.trim().parse().ok()).unwrap_or(0), tired: (false, None), next_tip: Instant::now() + TIP_FIRST, told: seed % 60 * 2, moved: (None, Instant::now()), bubble: None }
     }
+}
+
+impl Plant {
+    /// His next advice in his bubble; with a reminder to drink, the watering can beside him.
+    /// Late in the evening, off to bed instead (no can then); thirsty, he says so.
+    fn advise(&mut self) {
+        let k = self.told;
+        self.told += 1;
+        self.next_tip = Instant::now() + TIP_EVERY;
+        if late() {
+            self.tip = Some((Said::Bed(k / 2), Instant::now()));
+            return;
+        }
+        let water = k.is_multiple_of(2);
+        self.tip = Some((if water && self.thirst >= 2 { Said::Thirsty } else { Said::Tip(k) }, Instant::now()));
+        if water && self.can.is_none_or(|(_, pour)| pour.is_none()) {
+            self.can = Some((Instant::now(), None));
+        }
+    }
+
+    /// Thirstier (a can left unused) or watered (0): kept beside the settings.
+    fn set_thirst(&mut self, thirst: u32) {
+        self.thirst = thirst.min(THIRST_MAX);
+        if let Some(f) = matheo_thirst_file() {
+            let _ = std::fs::write(f, self.thirst.to_string());
+        }
+    }
+
+    /// How wilted he looks (0 to 1).
+    fn wilt(&self) -> f32 {
+        self.thirst as f32 / THIRST_MAX as f32
+    }
+}
+
+/// Reminders to drink left without watering him, at most: then fully wilted.
+const THIRST_MAX: u32 = 3;
+
+fn matheo_thirst_file() -> Option<std::path::PathBuf> {
+    crate::config::config_dir().map(|d| d.join("matheo-thirst.json"))
+}
+
+/// Late in the evening (from 9 pm to 5 am): he's tired, and sends you to bed.
+fn late() -> bool {
+    use chrono::Timelike;
+    let h = chrono::Local::now().hour();
+    !(5..21).contains(&h)
+}
+
+impl Plant {
+    /// His look's own part: held, tilted, dizzy, squashed, glad, tired, wilted.
+    fn look(&self, tired: bool) -> Look {
+        Look {
+            held: self.grab.is_some(),
+            tilt: self.tilt,
+            dizzy: self.dizzy.is_some_and(|d| Instant::now() < d),
+            squash: self.bonk.map_or(0.0, |b| (1.0 - b.elapsed().as_secs_f32() / 0.25).max(0.0) * 0.3),
+            glad: self.glad.is_some_and(|g| Instant::now() < g) || self.can.and_then(|c| c.1).is_some_and(|p| p.elapsed().as_secs_f32() > POUR_FROM + 0.3),
+            tired,
+            wilt: self.wilt(),
+        }
+    }
+}
+
+/// Mathéo's first advice after the start, then one every half hour (water and moving in turns).
+const TIP_FIRST: Duration = Duration::from_secs(20 * 60);
+const TIP_EVERY: Duration = Duration::from_secs(30 * 60);
+/// How long his bubble stays.
+const TIP_SHOWN: Duration = Duration::from_secs(45);
+/// The pointer still that long: nobody at the screen, the advice waits.
+const TIP_IDLE: Duration = Duration::from_secs(3 * 60);
+/// Away that long (a break, a meeting): back, a quarter of an hour before the next.
+const TIP_AWAY: Duration = Duration::from_secs(10 * 60);
+
+/// Shaken that long, he's quiet.
+const QUIET_SECS: u64 = 6 * 3600;
+/// Swung back the other way that many times within `SHAKE_WITHIN` seconds: shaken.
+const SHAKE_FLIPS: usize = 6;
+const SHAKE_WITHIN: f64 = 1.6;
+
+/// What Mathéo's bubble says.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Said {
+    /// His advice number `k` (see `matheo_tip`).
+    Tip(usize),
+    /// Being shaken.
+    Shaking,
+    /// Shaken enough: quiet for 6 hours.
+    Quiet,
+    /// Banged against the edge of the screen.
+    Ouch,
+    /// Watered.
+    Thanks,
+    /// Late in the evening, his advice number `k`: off to bed.
+    Bed(usize),
+    /// Not watered for a while: thirsty, both of you.
+    Thirsty,
+}
+
+impl Said {
+    /// How long the bubble stays.
+    fn lasts(self) -> Duration {
+        match self {
+            Said::Tip(_) => TIP_SHOWN,
+            Said::Shaking => Duration::from_millis(700),
+            Said::Quiet => Duration::from_secs(7),
+            Said::Ouch => Duration::from_millis(1200),
+            Said::Thanks => Duration::from_millis(3500),
+            Said::Bed(_) | Said::Thirsty => TIP_SHOWN,
+        }
+    }
+
+    fn text(self, lang: crate::i18n::Lang) -> &'static str {
+        let t = lang.strings();
+        match self {
+            Said::Tip(k) => matheo_tip(lang, k),
+            Said::Shaking => t.matheo_shaking,
+            Said::Quiet => t.matheo_quiet,
+            Said::Ouch => t.matheo_ouch,
+            Said::Thanks => t.matheo_thanks,
+            Said::Bed(k) => t.matheo_bed.get(k % t.matheo_bed.len().max(1)).copied().unwrap_or_default(),
+            Said::Thirsty => t.matheo_thirsty,
+        }
+    }
+}
+
+/// Mathéo's advice number `k`: water for the even ones, moving for the odd ones, each list in turn.
+fn matheo_tip(lang: crate::i18n::Lang, k: usize) -> &'static str {
+    let t = lang.strings();
+    let list = if k.is_multiple_of(2) { t.matheo_water } else { t.matheo_moves };
+    list.get(k / 2 % list.len().max(1)).copied().unwrap_or_default()
+}
+
+/// The watering can waits that long to be used, then goes.
+const CAN_WAITS: Duration = Duration::from_secs(3 * 60);
+/// Its watering, from the click (seconds): up over his leaves, pouring, back down, gone.
+const POUR_UP: f32 = 0.5;
+const POUR_FROM: f32 = 0.6;
+const POUR_TO: f32 = 2.25;
+const POUR_END: f32 = 2.9;
+
+/// The side of Mathéo where the can stands (1 his right; his left near the screen's right edge).
+fn can_side(foot: Pos2, works: &[Rect]) -> f32 {
+    let right = works.iter().find(|w| (w.min.x..w.max.x).contains(&foot.x)).map_or(f32::INFINITY, |w| w.max.x);
+    if foot.x + 90.0 > right { -1.0 } else { 1.0 }
+}
+
+/// Where the can stands beside him, to be clicked (screen points).
+fn can_rect(foot: Pos2, side: f32) -> Rect {
+    Rect::from_center_size(foot + Vec2::new(side * 48.0, -17.0), Vec2::new(50.0, 40.0))
+}
+
+/// The watering can as it shows: its bottom's middle, its turn, which way its spout points, how
+/// opaque, and how long it has been pouring (seconds since the click).
+#[derive(Clone, Copy)]
+struct CanView {
+    origin: Pos2,
+    angle: f32,
+    facing: f32,
+    alpha: f32,
+    pour: Option<f32>,
+    /// Mathéo's foot, for the drops to land on his soil.
+    foot: Pos2,
+}
+
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+fn can_view(foot: Pos2, side: f32, since: Instant, pour: Option<Instant>) -> CanView {
+    let rest = foot + Vec2::new(side * 48.0, 0.0);
+    let above = foot + Vec2::new(side * 50.0, -99.0);
+    let facing = -side;
+    match pour.map(|p| p.elapsed().as_secs_f32()) {
+        None => {
+            // It hops in, then wiggles every few seconds to be noticed.
+            let t = since.elapsed().as_secs_f32();
+            let hop = (smooth(t / 0.35) * std::f32::consts::PI).sin() * 14.0;
+            let k = t % 3.0;
+            let wiggle = if t > 0.4 && k < 0.6 { (k * 28.0).sin() * 0.12 * (1.0 - k / 0.6) } else { 0.0 };
+            CanView { origin: rest - Vec2::new(0.0, hop), angle: wiggle, facing, alpha: smooth(t / 0.2), pour: None, foot }
+        }
+        Some(t) => {
+            let e = smooth(t / POUR_UP) * (1.0 - smooth((t - POUR_TO) / (POUR_END - POUR_TO - 0.15)));
+            let arc = (e * std::f32::consts::PI).sin() * 16.0;
+            let tilt = 1.15 * smooth((t - 0.2) / 0.4) * (1.0 - smooth((t - 2.2) / 0.4)) + if (POUR_FROM..POUR_TO).contains(&t) { (t * 9.0).sin() * 0.04 } else { 0.0 };
+            CanView { origin: rest.lerp(above, e) + Vec2::new(side * arc, 0.0), angle: tilt * facing, facing, alpha: 1.0 - smooth((t - (POUR_END - 0.3)) / 0.3), pour: Some(t), foot }
+        }
+    }
+}
+
+/// The watering can: green enamel, a little daisy on its side, its arched handle at the back, a long
+/// spout ending in a brass rose; pouring, drops raining from the rose onto Mathéo's soil.
+fn paint_can(painter: &egui::Painter, v: CanView, shift: Vec2) {
+    let o = v.origin - shift;
+    let (sin, cos) = v.angle.sin_cos();
+    let turn = |x: f32, y: f32| {
+        let p = Vec2::new(x * v.facing, y);
+        Vec2::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos)
+    };
+    let at = |x: f32, y: f32| o + turn(x, y);
+    let c = |r: u8, g: u8, b: u8| Color32::from_rgb(r, g, b).gamma_multiply(v.alpha);
+    let (body, dark, light, rim) = (c(52, 146, 98), c(33, 101, 68), c(140, 214, 170), c(28, 82, 55));
+    let (brass, brass_dark) = (c(218, 176, 78), c(150, 110, 42));
+    let poly = |pts: &[(f32, f32)], fill: Color32, stroke: Stroke| {
+        painter.add(egui::Shape::convex_polygon(pts.iter().map(|&(x, y)| at(x, y)).collect(), fill, stroke));
+    };
+    let curve = |pts: Vec<Pos2>, stroke: Stroke| {
+        painter.add(egui::Shape::line(pts, stroke));
+    };
+    // Its shadow on the floor, standing.
+    if v.pour.is_none() {
+        painter.add(egui::Shape::ellipse_filled(o, Vec2::new(16.0, 3.0), Color32::from_black_alpha((50.0 * v.alpha) as u8)));
+    }
+    // The handle, arched from the top's back down to the back of the body.
+    let bezier = |p0: (f32, f32), p1: (f32, f32), p2: (f32, f32)| -> Vec<Pos2> {
+        (0..=14)
+            .map(|i| {
+                let t = i as f32 / 14.0;
+                let m = 1.0 - t;
+                at(m * m * p0.0 + 2.0 * m * t * p1.0 + t * t * p2.0, m * m * p0.1 + 2.0 * m * t * p1.1 + t * t * p2.1)
+            })
+            .collect()
+    };
+    curve(bezier((-4.0, -27.0), (-27.0, -44.0), (-12.0, -9.0)), Stroke::new(3.6, rim));
+    curve(bezier((-4.0, -27.5), (-26.0, -43.0), (-12.5, -9.5)), Stroke::new(1.2, body));
+    // The spout, from the body's front low down, up to the rose.
+    let (from, to) = ((8.0f32, -9.0f32), (32.0f32, -28.5f32));
+    poly(&[(8.0, -5.0), (8.0, -13.0), (31.0, -30.0), (33.0, -27.0)], body, Stroke::new(1.0, rim));
+    curve(vec![at(9.0, -11.0), at(31.0, -29.2)], Stroke::new(0.8, light));
+    // The rose: a brass neck, then its round face full of holes, across the spout.
+    let len = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
+    let d = ((to.0 - from.0) / len, (to.1 - from.1) / len);
+    let n = (-d.1, d.0);
+    let neck = (to.0 + d.0 * 2.0, to.1 + d.1 * 2.0);
+    poly(&[(to.0 - n.0 * 1.6, to.1 - n.1 * 1.6), (to.0 + n.0 * 1.6, to.1 + n.1 * 1.6), (neck.0 + n.0 * 3.2, neck.1 + n.1 * 3.2), (neck.0 - n.0 * 3.2, neck.1 - n.1 * 3.2)], brass_dark, Stroke::NONE);
+    let face = (neck.0 + d.0 * 1.2, neck.1 + d.1 * 1.2);
+    let disc: Vec<Pos2> = (0..20).map(|i| {
+        let s = i as f32 / 20.0 * std::f32::consts::TAU;
+        at(face.0 + n.0 * 5.0 * s.cos() + d.0 * 1.7 * s.sin(), face.1 + n.1 * 5.0 * s.cos() + d.1 * 1.7 * s.sin())
+    }).collect();
+    painter.add(egui::Shape::convex_polygon(disc, brass, Stroke::new(0.8, brass_dark)));
+    for k in [-2.6f32, -0.9, 0.9, 2.6] {
+        painter.circle_filled(at(face.0 + n.0 * k + d.0 * 0.9, face.1 + n.1 * k + d.1 * 0.9), 0.55, brass_dark);
+    }
+    // The body, a little narrower at the top: shaded on its far side, a highlight on the near one.
+    poly(&[(-13.0, 0.0), (13.0, 0.0), (11.0, -27.0), (-11.0, -27.0)], body, Stroke::NONE);
+    poly(&[(7.5, 0.0), (13.0, 0.0), (11.0, -27.0), (6.5, -27.0)], dark, Stroke::NONE);
+    poly(&[(-8.5, -2.5), (-6.3, -2.5), (-5.6, -24.5), (-7.6, -24.5)], light.gamma_multiply(0.7), Stroke::NONE);
+    poly(&[(-13.4, 0.0), (13.4, 0.0), (13.1, -3.2), (-13.1, -3.2)], rim, Stroke::NONE);
+    // A little daisy painted on its side.
+    let daisy = (-1.0f32, -14.0f32);
+    for k in 0..6 {
+        let a = k as f32 * std::f32::consts::TAU / 6.0;
+        painter.circle_filled(at(daisy.0 + a.cos() * 2.6, daisy.1 + a.sin() * 2.6), 1.7, c(250, 250, 244));
+    }
+    painter.circle_filled(at(daisy.0, daisy.1), 1.5, c(250, 200, 60));
+    // Its open top: the rim, the dark inside.
+    let ring = |rx: f32, ry: f32| -> Vec<Pos2> { (0..24).map(|i| { let s = i as f32 / 24.0 * std::f32::consts::TAU; at(rx * s.cos(), -27.0 + ry * s.sin()) }).collect() };
+    painter.add(egui::Shape::convex_polygon(ring(11.6, 2.8), rim, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(ring(9.6, 1.9), c(18, 48, 33), Stroke::NONE));
+    // Pouring: drops from the rose, falling onto his soil, a little splash where they land.
+    let Some(t) = v.pour else {
+        return;
+    };
+    let rose = at(face.0 + d.0 * 1.8, face.1 + d.1 * 1.8);
+    let dir = turn(d.0, d.1);
+    let side = turn(n.0, n.1);
+    let soil = v.foot.y - shift.y - 31.0;
+    let water = Color32::from_rgba_unmultiplied(110, 182, 255, (230.0 * v.alpha) as u8);
+    let mut i = 0u32;
+    loop {
+        let born = POUR_FROM + i as f32 * 0.04;
+        if born > t.min(POUR_TO) {
+            break;
+        }
+        let age = t - born;
+        let j = ((i.wrapping_mul(2654435761) >> 16) % 1000) as f32 / 500.0 - 1.0;
+        let v0 = dir * (70.0 + j.abs() * 30.0) + side * j * 2.2 * 12.0;
+        let pos = rose + side * j * 3.5 + v0 * age + Vec2::new(0.0, 550.0 * age * age);
+        if pos.y < soil {
+            let vel = (v0 + Vec2::new(0.0, 1100.0 * age)).normalized();
+            painter.line_segment([pos, pos - vel * 4.0], Stroke::new(1.3, water));
+            painter.circle_filled(pos, 1.7, water);
+        } else {
+            // Landed: a ring spreading out for a moment.
+            let hit = ((pos.y - soil) / 1100.0f32.max(1.0)).sqrt();
+            let k = (hit * 6.0).min(1.0);
+            if k < 1.0 {
+                painter.add(egui::Shape::ellipse_stroke(Pos2::new(pos.x, soil), Vec2::new(2.0 + k * 4.0, 0.8 + k * 1.2), Stroke::new(1.0, water.gamma_multiply(1.0 - k))));
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Until when Mathéo keeps quiet, kept beside the settings (a restart doesn't wake him).
+fn matheo_quiet_file() -> Option<std::path::PathBuf> {
+    crate::config::config_dir().map(|d| d.join("matheo-quiet.json"))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Mathéo's speech bubble above his leaves (his pot's foot at `foot`), kept within `bounds`: where it is.
+fn paint_matheo_tip(painter: &egui::Painter, foot: Pos2, text: &str, bounds: Rect) -> Rect {
+    let ink = Color32::from_rgb(46, 64, 36);
+    let fill = Color32::from_rgb(250, 248, 234);
+    let edge = Stroke::new(1.5, Color32::from_rgb(104, 156, 84));
+    let galley = painter.layout(text.to_owned(), FontId::proportional(14.0), ink, 230.0);
+    let size = galley.size() + Vec2::new(26.0, 18.0);
+    let bottom = foot.y - MATHEO_H * 1.2;
+    let x = foot.x.clamp(bounds.min.x + size.x / 2.0 + 6.0, (bounds.max.x - size.x / 2.0 - 6.0).max(bounds.min.x + size.x / 2.0 + 6.0));
+    let top = (bottom - size.y).max(bounds.min.y + 6.0);
+    let r = Rect::from_min_size(Pos2::new(x - size.x / 2.0, top), size);
+    // Its tail towards his leaves: outlined, then the bubble over it, then filled again to join them.
+    let tail_x = foot.x.clamp(r.min.x + 16.0, r.max.x - 16.0);
+    let point = Pos2::new(foot.x, r.max.y + 12.0);
+    painter.add(egui::Shape::convex_polygon(vec![Pos2::new(tail_x - 8.0, r.max.y - 1.0), Pos2::new(tail_x + 8.0, r.max.y - 1.0), point], fill, edge));
+    painter.rect(r, 10.0, fill, edge, egui::StrokeKind::Inside);
+    painter.add(egui::Shape::convex_polygon(vec![Pos2::new(tail_x - 6.5, r.max.y - 3.0), Pos2::new(tail_x + 6.5, r.max.y - 3.0), Pos2::new(point.x + (tail_x - point.x) * 0.15, point.y - 2.5)], fill, Stroke::NONE));
+    painter.galley(r.min + Vec2::new(13.0, 9.0), galley, ink);
+    r
 }
 
 /// Where a window of ours really is, its content's top left on the screens (points); before it is
@@ -284,43 +651,113 @@ fn matheo_floor(at: Pos2, works: &[Rect]) -> (f32, f32) {
 /// Mathéo, Riff Hero's green plant, his pot's foot at `foot`, `size` tall: a terracotta pot with a
 /// face, his big leaves swaying; held, his eyes wide and his leaves flapping.
 pub(super) fn paint_matheo(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, held: bool) {
+    paint_matheo_as(painter, foot, size, now, Look { held, ..Look::default() });
+}
+
+/// How Mathéo looks: held, tipped over (radians, turning around his middle), his head spinning,
+/// squashed (0 to 1) against a wall.
+#[derive(Clone, Copy, Default)]
+struct Look {
+    held: bool,
+    tilt: f32,
+    dizzy: bool,
+    squash: f32,
+    /// Watered: his eyes closed with pleasure, drops shining on his leaves.
+    glad: bool,
+    /// Late in the evening: heavy eyelids, yawns, leaves hanging a little, z's floating up.
+    tired: bool,
+    /// Not watered (0 to 1): his leaves hang and yellow, he sulks.
+    wilt: f32,
+}
+
+fn paint_matheo_as(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, look: Look) {
+    let held = look.held;
     let u = size / 70.0;
-    let at = |x: f32, y: f32| foot + Vec2::new(x, y) * u;
-    // The shadow, the pot (wider at the top), its rim.
-    painter.add(egui::Shape::ellipse_filled(at(0.0, 0.0), Vec2::new(20.0, 4.0) * u, Color32::from_black_alpha(60)));
+    let pivot = foot - Vec2::new(0.0, 20.0 * u);
+    let (sin, cos) = look.tilt.sin_cos();
+    let at = |x: f32, y: f32| {
+        let v = Vec2::new(x * (1.0 + look.squash * 0.6), (y + 20.0) * (1.0 - look.squash)) * u;
+        pivot + Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos)
+    };
+    let quad = |(x0, y0): (f32, f32), (x1, y1): (f32, f32)| vec![at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)];
+    let ink = Color32::from_rgb(60, 36, 24);
+    // The shadow (upright only), the pot (wider at the top), its rim, the soil.
+    if look.tilt.abs() < 0.3 {
+        painter.add(egui::Shape::ellipse_filled(foot, Vec2::new(20.0, 4.0) * u, Color32::from_black_alpha(60)));
+    }
     painter.add(egui::Shape::convex_polygon(vec![at(-14.0, 0.0), at(14.0, 0.0), at(18.0, -26.0), at(-18.0, -26.0)], Color32::from_rgb(196, 104, 62), Stroke::NONE));
-    painter.rect_filled(Rect::from_min_max(at(-21.0, -32.0), at(21.0, -24.0)), 2.0 * u, Color32::from_rgb(214, 122, 76));
-    painter.rect_filled(Rect::from_min_max(at(-19.0, -33.0), at(19.0, -31.0)), 1.0, Color32::from_rgb(92, 62, 40));
-    // His face on the pot.
+    painter.add(egui::Shape::convex_polygon(quad((-21.0, -32.0), (21.0, -24.0)), Color32::from_rgb(214, 122, 76), Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(quad((-19.0, -33.0), (19.0, -31.0)), Color32::from_rgb(92, 62, 40), Stroke::NONE));
+    // His face on the pot: his eyes in crosses when dizzy, wide when held.
     let blink = (now % 4.0) < 0.12 && !held;
     for s in [-1.0, 1.0] {
-        let eye = at(s * 6.0, -15.0);
-        if held {
-            painter.circle_filled(eye, 3.2 * u, Color32::WHITE);
-            painter.circle_filled(eye, 1.8 * u, Color32::from_rgb(40, 30, 24));
+        let (x, y) = (s * 6.0, -15.0);
+        if look.dizzy {
+            let line = Stroke::new(1.6 * u, ink);
+            painter.line_segment([at(x - 2.3, y - 2.3), at(x + 2.3, y + 2.3)], line);
+            painter.line_segment([at(x - 2.3, y + 2.3), at(x + 2.3, y - 2.3)], line);
+        } else if look.glad {
+            let arch: Vec<Pos2> = (0..=6).map(|k| { let a = k as f32 / 6.0 * std::f32::consts::PI; at(x - 2.4 * a.cos(), y - 1.6 * a.sin()) }).collect();
+            painter.add(egui::Shape::line(arch, Stroke::new(1.5 * u, ink)));
+        } else if held {
+            painter.circle_filled(at(x, y), 3.2 * u, Color32::WHITE);
+            painter.circle_filled(at(x, y), 1.8 * u, Color32::from_rgb(40, 30, 24));
+        } else if look.tired {
+            // Heavy eyelids: a line, half an eye under it.
+            painter.line_segment([at(x - 2.6, y), at(x + 2.6, y)], Stroke::new(1.5 * u, ink));
+            let half: Vec<Pos2> = (0..=6).map(|k| { let a = k as f32 / 6.0 * std::f32::consts::PI; at(x + 2.0 * a.cos(), y + 1.8 * a.sin()) }).collect();
+            painter.add(egui::Shape::convex_polygon(half, ink, Stroke::NONE));
         } else if blink {
-            painter.line_segment([eye - Vec2::new(2.0, 0.0) * u, eye + Vec2::new(2.0, 0.0) * u], Stroke::new(1.5 * u, Color32::from_rgb(60, 36, 24)));
+            painter.line_segment([at(x - 2.0, y), at(x + 2.0, y)], Stroke::new(1.5 * u, ink));
         } else {
-            painter.circle_filled(eye, 2.0 * u, Color32::from_rgb(60, 36, 24));
+            painter.circle_filled(at(x, y), 2.0 * u, ink);
         }
     }
-    if held {
-        painter.circle_stroke(at(0.0, -8.0), 2.5 * u, Stroke::new(1.5 * u, Color32::from_rgb(60, 36, 24)));
+    if look.dizzy {
+        let wave: Vec<Pos2> = (0..=8).map(|k| at(-5.0 + k as f32 * 10.0 / 8.0, -8.0 + (k as f32 * 1.6 + now as f32 * 8.0).sin() * 1.2)).collect();
+        painter.add(egui::Shape::line(wave, Stroke::new(1.5 * u, ink)));
+    } else if held {
+        painter.circle_stroke(at(0.0, -8.0), 2.5 * u, Stroke::new(1.5 * u, ink));
+    } else if look.glad {
+        let grin: Vec<Pos2> = (0..=8).map(|k| { let a = k as f32 / 8.0 * std::f32::consts::PI; at(-4.5 * a.cos(), -9.5 + 3.2 * a.sin()) }).collect();
+        painter.add(egui::Shape::convex_polygon(grin, Color32::from_rgb(120, 50, 40), Stroke::new(1.2 * u, ink)));
+    } else if look.tired {
+        // A big yawn every few seconds, else a flat mouth.
+        let k = (now % 7.0) as f32;
+        let open = if k < 1.6 { (k / 1.6 * std::f32::consts::PI).sin() } else { 0.0 };
+        if open > 0.1 {
+            let mouth: Vec<Pos2> = (0..16).map(|i| { let a = i as f32 / 16.0 * std::f32::consts::TAU; at(2.4 * open * a.cos(), -8.0 + 3.4 * open * a.sin()) }).collect();
+            painter.add(egui::Shape::convex_polygon(mouth, Color32::from_rgb(110, 46, 36), Stroke::new(1.2 * u, ink)));
+        } else {
+            painter.line_segment([at(-3.0, -8.0), at(3.0, -8.0)], Stroke::new(1.5 * u, ink));
+        }
+    } else if look.wilt > 0.4 {
+        let frown: Vec<Pos2> = (0..=6).map(|k| at(-4.0 + k as f32 * 8.0 / 6.0, -7.0 - (1.0 - ((k as f32 - 3.0) / 3.0).powi(2)) * 2.0)).collect();
+        painter.add(egui::Shape::line(frown, Stroke::new(1.5 * u, ink)));
     } else {
         let smile: Vec<Pos2> = (0..=6).map(|k| at(-4.0 + k as f32 * 8.0 / 6.0, -9.0 + ((k as f32 - 3.0) / 3.0).powi(2) * -2.0 + 2.0)).collect();
-        painter.add(egui::Shape::line(smile, Stroke::new(1.5 * u, Color32::from_rgb(60, 36, 24))));
+        painter.add(egui::Shape::line(smile, Stroke::new(1.5 * u, ink)));
     }
     painter.circle_filled(at(-10.0, -11.0), 2.2 * u, Color32::from_rgba_unmultiplied(255, 140, 140, 90));
     painter.circle_filled(at(10.0, -11.0), 2.2 * u, Color32::from_rgba_unmultiplied(255, 140, 140, 90));
     // His leaves: stems from the soil, big leaves swaying (flapping, held).
-    let speed = if held { 9.0 } else { 1.3 };
+    // Hanging when thirsty (and yellowing), a little when tired.
+    let speed = if held { 9.0 } else if look.tired { 0.6 } else { 1.3 };
+    let droop = look.wilt.max(if look.tired { 0.3 } else { 0.0 });
+    let fade = |c: Color32, to: (u8, u8, u8)| {
+        let w = look.wilt.clamp(0.0, 1.0) * 0.8;
+        let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * w) as u8;
+        Color32::from_rgb(m(c.r(), to.0), m(c.g(), to.1), m(c.b(), to.2))
+    };
     for (k, (angle, len)) in [(-1.0f32, 30.0f32), (-0.45, 38.0), (0.1, 42.0), (0.6, 36.0), (1.1, 28.0)].into_iter().enumerate() {
         let sway = (now * speed + k as f64 * 0.9).sin() as f32 * if held { 0.25 } else { 0.08 };
-        let a = -std::f32::consts::FRAC_PI_2 + angle * 0.8 + sway;
+        let len = len * (1.0 - 0.15 * look.wilt);
+        let bend = if angle.abs() < 0.3 { droop * 0.6 } else { 0.0 };
+        let a = -std::f32::consts::FRAC_PI_2 + angle * 0.8 * (1.0 + droop * 0.9) + bend + sway + look.tilt;
         let base = at((k as f32 - 2.0) * 3.0, -32.0);
         let tip = base + Vec2::angled(a) * len * u;
         let mid = base.lerp(tip, 0.55);
-        painter.line_segment([base, mid], Stroke::new(2.0 * u, Color32::from_rgb(60, 120, 50)));
+        painter.line_segment([base, mid], Stroke::new(2.0 * u, fade(Color32::from_rgb(60, 120, 50), (120, 100, 50))));
         let dir = Vec2::angled(a);
         let side = Vec2::new(-dir.y, dir.x);
         let leaf: Vec<Pos2> = (0..=12)
@@ -335,8 +772,33 @@ pub(super) fn paint_matheo(painter: &egui::Painter, foot: Pos2, size: f32, now: 
                 mid + dir * f * (len * 0.6) * u - side * w
             }))
             .collect();
-        painter.add(egui::Shape::convex_polygon(leaf, [Color32::from_rgb(72, 160, 70), Color32::from_rgb(90, 180, 80)][k % 2], Stroke::new(1.0, Color32::from_rgb(40, 100, 40))));
-        painter.line_segment([mid, mid + dir * len * 0.55 * u], Stroke::new(1.0, Color32::from_rgb(140, 210, 120)));
+        painter.add(egui::Shape::convex_polygon(leaf, fade([Color32::from_rgb(72, 160, 70), Color32::from_rgb(90, 180, 80)][k % 2], (186, 160, 72)), Stroke::new(1.0, fade(Color32::from_rgb(40, 100, 40), (120, 96, 44)))));
+        painter.line_segment([mid, mid + dir * len * 0.55 * u], Stroke::new(1.0, fade(Color32::from_rgb(140, 210, 120), (214, 196, 120))));
+        if look.glad {
+            // Drops shining on his leaves.
+            let drop = mid + dir * len * (0.25 + k as f32 * 0.06) * u + side * 3.0 * u;
+            painter.circle_filled(drop, 1.9 * u, Color32::from_rgba_unmultiplied(150, 205, 255, 220));
+            painter.circle_filled(drop - Vec2::new(0.6, 0.6) * u, 0.7 * u, Color32::WHITE);
+        }
+    }
+    // Tired: z's floating up from his leaves.
+    if look.tired && !look.dizzy && !held {
+        for k in 0..3 {
+            let f = ((now as f32 / 2.4) + k as f32 / 3.0).fract();
+            let p = at(14.0 + f * 16.0 + (f * 9.0).sin() * 2.0, -60.0 - f * 34.0);
+            let alpha = (f * std::f32::consts::PI).sin();
+            painter.text(p, egui::Align2::CENTER_CENTER, "z", FontId::proportional((8.0 + f * 8.0) * u), Color32::from_rgba_unmultiplied(90, 110, 170, (230.0 * alpha) as u8));
+        }
+    }
+    // Stars turning over his leaves.
+    if look.dizzy {
+        for k in 0..3 {
+            let turn = now as f32 * 5.0 + k as f32 * std::f32::consts::TAU / 3.0;
+            let c = at(0.0, -82.0) + Vec2::new(turn.cos() * 17.0, turn.sin() * 5.0) * u;
+            let star: Vec<Pos2> = (0..10).map(|i| c + Vec2::angled(i as f32 * std::f32::consts::PI / 5.0 - std::f32::consts::FRAC_PI_2) * if i % 2 == 0 { 4.5 } else { 2.0 } * u).collect();
+            painter.add(egui::Shape::Path(egui::epaint::PathShape::closed_line(star.clone(), Stroke::new(1.0 * u, Color32::from_rgb(200, 150, 20)))));
+            painter.circle_filled(c, 2.0 * u, Color32::from_rgb(255, 214, 60));
+        }
     }
 }
 
@@ -868,33 +1330,188 @@ impl eframe::App for Overlay {
             let plant = &mut self.matheo;
             let at = *plant.at.get_or_insert_with(|| Pos2::new(self.work.max.x - 160.0, self.work.max.y));
             let body = Rect::from_center_size(at - Vec2::new(0.0, MATHEO_H * 0.5), Vec2::new(MATHEO_H * 0.7, MATHEO_H));
-            let over = mouse.at.is_some_and(|p| body.contains(p));
-            if click && over {
+            let on_bubble = plant.tip.is_some() && mouse.at.zip(plant.bubble).is_some_and(|(p, r)| r.contains(p));
+            let side = can_side(at, &works);
+            let on_can = plant.can.is_some_and(|(_, pour)| pour.is_none()) && plant.grab.is_none() && mouse.at.is_some_and(|p| can_rect(at, side).contains(p));
+            let over = mouse.at.is_some_and(|p| body.contains(p)) || on_bubble || on_can;
+            if plant.quiet.is_some_and(|until| unix_now() >= until) {
+                plant.quiet = None;
+            }
+            if click && on_can {
+                // Watered: the can lifts over his leaves and pours.
+                if let Some(can) = &mut plant.can {
+                    can.1 = Some(Instant::now());
+                }
+                if matches!(plant.tip, Some((Said::Tip(_), _))) {
+                    plant.tip = None;
+                }
+            } else if click && on_bubble {
+                plant.tip = None;
+            } else if click && over {
+                // Caught, even in the air.
                 plant.grab = mouse.at.map(|p| at - p);
+                plant.press = mouse.at;
+                plant.track.clear();
+                plant.flips.clear();
+                (plant.vx, plant.vy, plant.spin) = (0.0, 0.0, 0.0);
             }
             match (plant.grab, mouse.at) {
                 (Some(grab), Some(p)) if mouse.pressed => {
-                    plant.at = Some(p + grab);
-                    plant.vy = 0.0;
+                    let to = p + grab;
+                    // Swung back the other way, fast: a shake.
+                    if let Some(&(then, from)) = plant.track.back()
+                        && now > then
+                    {
+                        let speed = (to.x - from.x) / (now - then) as f32;
+                        if speed.abs() > 700.0 {
+                            if plant.way != 0.0 && speed.signum() != plant.way {
+                                plant.flips.push(now);
+                            }
+                            plant.way = speed.signum();
+                        }
+                    }
+                    plant.track.push_back((now, to));
+                    while plant.track.len() > 8 {
+                        plant.track.pop_front();
+                    }
+                    plant.flips.retain(|t| now - t < SHAKE_WITHIN);
+                    // He leans with the swing.
+                    let swing = plant.track.front().filter(|(then, _)| now > *then).map_or(0.0, |(then, from)| (to.x - from.x) / (now - then) as f32);
+                    plant.tilt += ((swing / 2500.0).clamp(-0.7, 0.7) - plant.tilt) * (1.0 - (-14.0 * dt).exp());
+                    if plant.flips.len() >= SHAKE_FLIPS {
+                        plant.flips.clear();
+                        plant.press = None;
+                        let until = unix_now() + QUIET_SECS;
+                        plant.quiet = Some(until);
+                        if let Some(f) = matheo_quiet_file() {
+                            let _ = std::fs::write(f, until.to_string());
+                        }
+                        plant.dizzy = Some(Instant::now() + Duration::from_secs(5));
+                        plant.tip = Some((Said::Quiet, Instant::now()));
+                    } else if plant.flips.len() >= 2 && !matches!(plant.tip, Some((Said::Quiet, _))) {
+                        plant.tip = Some((Said::Shaking, Instant::now()));
+                    }
+                    plant.at = Some(to);
                     plant_busy = true;
                 }
-                (Some(_), _) => plant.grab = None,
-                _ => {
-                    let (x, floor) = matheo_floor(at, &works);
-                    if at.y < floor - 0.5 || plant.vy != 0.0 || x != at.x {
-                        plant.vy += 2600.0 * dt;
-                        let mut y = at.y + plant.vy * dt;
-                        if y >= floor {
-                            y = floor;
-                            plant.vy = if plant.vy > 500.0 { -plant.vy * 0.3 } else { 0.0 };
-                            if plant.vy == 0.0 {
-                                matheo_save(Pos2::new(x, y));
+                (Some(_), _) => {
+                    plant.grab = None;
+                    if plant.press.take().zip(mouse.at).is_some_and(|(a, b)| a.distance(b) < 4.0) {
+                        // Let go where he was taken: a click, his advice at once (or none, if one
+                        // shows); he speaks again if he was quiet.
+                        if self.shown.matheo_tips {
+                            if matches!(plant.tip, Some((Said::Tip(_), _))) {
+                                plant.tip = None;
+                            } else {
+                                plant.quiet = None;
+                                if let Some(f) = matheo_quiet_file() {
+                                    let _ = std::fs::remove_file(f);
+                                }
+                                plant.advise();
                             }
                         }
-                        plant.at = Some(Pos2::new(x, y));
+                    } else if let (Some(&(t0, p0)), Some(&(t1, p1))) = (plant.track.front(), plant.track.back())
+                        && t1 > t0
+                    {
+                        // Let go moving: thrown, turning on himself.
+                        let v = (p1 - p0) / (t1 - t0) as f32;
+                        let v = if v.length() > 4500.0 { v.normalized() * 4500.0 } else { v };
+                        (plant.vx, plant.vy, plant.spin) = (v.x, v.y, v.x * 0.004);
+                    }
+                    plant.track.clear();
+                    plant_busy = true;
+                }
+                _ => {
+                    // Falling, flying, bouncing off the screens' edges, standing up again on the floor.
+                    let half = MATHEO_H * 0.4;
+                    let left = works.iter().map(|w| w.min.x).fold(f32::INFINITY, f32::min) + half;
+                    let right = works.iter().map(|w| w.max.x).fold(f32::NEG_INFINITY, f32::max) - half;
+                    let top = works.iter().map(|w| w.min.y).fold(f32::INFINITY, f32::min) + MATHEO_H;
+                    let (rest_x, floor) = matheo_floor(at, &works);
+                    let upright = plant.tilt.abs() < 0.005;
+                    if at.y < floor - 0.5 || plant.vy != 0.0 || plant.vx != 0.0 || !upright || rest_x != at.x {
+                        let mut p = at;
+                        let mut bonk = false;
+                        plant.vy += 2600.0 * dt;
+                        p += Vec2::new(plant.vx, plant.vy) * dt;
+                        if p.x < left || p.x > right {
+                            p.x = p.x.clamp(left, right.max(left));
+                            bonk = plant.vx.abs() > 300.0;
+                            plant.vx = -plant.vx * 0.55;
+                            plant.spin = -plant.spin * 0.7;
+                        }
+                        if p.y < top && plant.vy < 0.0 {
+                            p.y = top;
+                            bonk = plant.vy < -300.0;
+                            plant.vy = -plant.vy * 0.4;
+                        }
+                        let (_, floor) = matheo_floor(p, &works);
+                        let grounded = p.y >= floor;
+                        if grounded {
+                            p.y = floor;
+                            if plant.vy > 1400.0 {
+                                plant.bonk = Some(Instant::now());
+                            }
+                            plant.vy = if plant.vy > 500.0 { -plant.vy * 0.35 } else { 0.0 };
+                            plant.vx *= (-6.0 * dt).exp();
+                            if plant.vx.abs() < 20.0 {
+                                plant.vx = 0.0;
+                            }
+                            plant.spin *= (-10.0 * dt).exp();
+                            // Back on his foot, the nearest way up.
+                            let upright = (plant.tilt / std::f32::consts::TAU).round() * std::f32::consts::TAU;
+                            plant.tilt += (upright - plant.tilt) * (1.0 - (-10.0 * dt).exp());
+                            if (upright - plant.tilt).abs() < 0.005 && plant.vx == 0.0 {
+                                plant.tilt = 0.0;
+                            }
+                        } else {
+                            plant.tilt += plant.spin * dt;
+                        }
+                        if bonk {
+                            plant.bonk = Some(Instant::now());
+                            plant.dizzy = Some(plant.dizzy.map_or(Instant::now(), |d| d.max(Instant::now())) + Duration::from_millis(1500));
+                            if !matches!(plant.tip, Some((Said::Quiet, _))) {
+                                plant.tip = Some((Said::Ouch, Instant::now()));
+                            }
+                        }
+                        if grounded && plant.vx == 0.0 && plant.vy == 0.0 {
+                            p.x = matheo_floor(p, &works).0;
+                            if plant.tilt == 0.0 {
+                                matheo_save(p);
+                            }
+                        }
+                        plant.at = Some(p);
                         plant_busy = true;
                     }
                 }
+            }
+            // His advice, every half hour while someone is at the screen (back from a break, a while
+            // first); shown a little while.
+            let moment = Instant::now();
+            if mouse.at != plant.moved.0 {
+                if plant.moved.1.elapsed() >= TIP_AWAY {
+                    plant.next_tip = plant.next_tip.max(moment + TIP_EVERY / 2);
+                }
+                plant.moved = (mouse.at, moment);
+            }
+            if plant.tip.is_some_and(|(said, since)| since.elapsed() >= said.lasts() || (!self.shown.matheo_tips && matches!(said, Said::Tip(_)))) {
+                plant.tip = None;
+            } else if self.shown.matheo_tips && plant.quiet.is_none() && plant.tip.is_none() && moment >= plant.next_tip && plant.moved.1.elapsed() < TIP_IDLE && plant.grab.is_none() {
+                plant.advise();
+            }
+            match plant.can {
+                Some((since, None)) if since.elapsed() >= CAN_WAITS => {
+                    plant.can = None;
+                    plant.set_thirst(plant.thirst + 1);
+                }
+                Some((_, Some(pour))) if pour.elapsed().as_secs_f32() >= POUR_END => {
+                    plant.can = None;
+                    plant.set_thirst(0);
+                    plant.glad = Some(Instant::now() + Duration::from_secs(4));
+                    plant.tip = Some((Said::Thanks, Instant::now()));
+                }
+                Some(_) => plant_busy = true,
+                None => {}
             }
             let pass = !(over || plant.grab.is_some());
             if pass != plant.pass {
@@ -905,7 +1522,14 @@ impl eframe::App for Overlay {
             self.matheo.pass = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
         }
-        let plant = self.matheo.at.filter(|_| self.shown.matheo).map(|at| (at, self.matheo.grab.is_some()));
+        if self.matheo.tired.1.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+            self.matheo.tired = (late(), Some(Instant::now()));
+        }
+        let m = &self.matheo;
+        let look = m.look(m.tired.0);
+        let can = m.at.zip(m.can).map(|(at, (since, pour))| can_view(at, can_side(at, &works), since, pour));
+        let plant = m.at.filter(|_| self.shown.matheo).map(|at| (at, look));
+        let tip = m.tip.filter(|_| self.shown.matheo).map(|(said, _)| said.text(self.shown.lang));
 
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("desktop-fx")));
         let mut busy = false;
@@ -923,7 +1547,14 @@ impl eframe::App for Overlay {
         // Mathéo on the screen he's on (this window's, or another's).
         let plant_on = plant.map(|(at, _)| screens.iter().position(|(s, _)| s.contains(at - Vec2::new(0.0, 1.0))).unwrap_or(here));
         if let (Some((at, held)), true) = (plant, plant_on == Some(here)) {
-            paint_matheo(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
+            paint_matheo_as(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
+            if let Some(can) = can {
+                paint_can(&painter, can, origin.to_vec2());
+            }
+            if let Some(text) = tip {
+                let bounds = self.screen.translate(-origin.to_vec2());
+                self.matheo.bubble = Some(paint_matheo_tip(&painter, at - origin.to_vec2(), text, bounds).translate(origin.to_vec2()));
+            }
             next = next.min(0.1);
         }
         // A window over another screen is made hidden, shown once drawn (else, on Windows, a white
@@ -962,7 +1593,7 @@ impl eframe::App for Overlay {
                 .with_resizable(false)
                 .with_position(screen.min)
                 .with_inner_size(screen.size());
-            ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("fx-screen", i)), builder, |ctx, _| {
+            let bubble = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("fx-screen", i)), builder, |ctx, _| {
                 // Windows places a new window with the scale of the screen it was made on: put back
                 // over its screen, with that screen's own scale (as the main window is when it moves).
                 if cfg!(windows)
@@ -973,7 +1604,7 @@ impl eframe::App for Overlay {
                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(screen.size()));
                 }
                 if !needed {
-                    return;
+                    return None;
                 }
                 // Drawn from where the window really is (macOS slides a new one under the menu bar).
                 let origin = window_origin(ctx, screen.min);
@@ -981,10 +1612,18 @@ impl eframe::App for Overlay {
                 let foot = work.translate(-origin.to_vec2());
                 let strip = Rect::from_min_max(Pos2::new(foot.min.x + 6.0, foot.max.y - 34.0), Pos2::new(foot.max.x - 6.0, foot.max.y));
                 paint_walkers(&painter, strip, screen.translate(-origin.to_vec2()), now, i, n, &fx);
-                if let (Some((at, held)), true) = (plant, plant_on == Some(i)) {
-                    paint_matheo(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
+                let (Some((at, held)), true) = (plant, plant_on == Some(i)) else {
+                    return None;
+                };
+                paint_matheo_as(&painter, at - origin.to_vec2(), MATHEO_H, now, held);
+                if let Some(can) = can {
+                    paint_can(&painter, can, origin.to_vec2());
                 }
+                tip.map(|text| paint_matheo_tip(&painter, at - origin.to_vec2(), text, screen.translate(-origin.to_vec2())).translate(origin.to_vec2()))
             });
+            if bubble.is_some() {
+                self.matheo.bubble = bubble;
+            }
             os::tune_all();
             if walking {
                 busy = true;
@@ -1744,10 +2383,49 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, elf: true, unicorn: true, wolf: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, matheo_tips: true, lang: crate::i18n::Lang::En, elf: true, unicorn: true, wolf: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());
         assert!(!Fx::default().any());
+    }
+
+    #[test]
+    fn mathéo_says_water_and_moving_in_turns() {
+        for lang in crate::i18n::Lang::ALL {
+            let t = lang.strings();
+            assert!(t.matheo_water.contains(&matheo_tip(lang, 0)));
+            assert!(t.matheo_moves.contains(&matheo_tip(lang, 1)));
+            for said in [Said::Tip(7), Said::Shaking, Said::Quiet, Said::Ouch, Said::Thanks, Said::Bed(12), Said::Thirsty] {
+                assert!(!said.text(lang).is_empty(), "{said:?}");
+            }
+        }
+        // Every one of each list comes, in turn.
+        let lang = crate::i18n::Lang::Fr;
+        let waters: std::collections::HashSet<_> = (0..40).step_by(2).map(|k| matheo_tip(lang, k)).collect();
+        assert_eq!(waters.len(), lang.strings().matheo_water.len());
+    }
+
+    #[test]
+    fn the_can_stands_on_the_free_side_and_comes_back_down() {
+        let screen = [Rect::from_min_max(Pos2::ZERO, Pos2::new(1000.0, 800.0))];
+        assert_eq!(can_side(Pos2::new(500.0, 800.0), &screen), 1.0);
+        assert_eq!(can_side(Pos2::new(950.0, 800.0), &screen), -1.0);
+        let foot = Pos2::new(500.0, 800.0);
+        let rest = can_view(foot, 1.0, Instant::now() - Duration::from_secs(5), None);
+        assert!((rest.origin - (foot + Vec2::new(48.0, 0.0))).length() < 0.5);
+        // Up over his leaves, tipped towards him, while pouring.
+        let pouring = can_view(foot, 1.0, Instant::now(), Some(Instant::now() - Duration::from_secs(1)));
+        assert!(pouring.origin.y < foot.y - 80.0 && pouring.angle < -1.0, "{:?} {}", pouring.origin, pouring.angle);
+        assert!(can_rect(foot, 1.0).contains(rest.origin - Vec2::new(0.0, 10.0)));
+    }
+
+    #[test]
+    fn mathéo_wilts_with_thirst() {
+        let mut plant = Plant { thirst: 0, ..Plant::default() };
+        assert_eq!(plant.wilt(), 0.0);
+        plant.thirst = THIRST_MAX + 4;
+        plant.thirst = plant.thirst.min(THIRST_MAX);
+        assert_eq!(plant.wilt(), 1.0);
     }
 }

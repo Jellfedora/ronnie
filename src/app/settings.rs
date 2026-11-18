@@ -2462,6 +2462,15 @@ impl App {
                     });
                 });
             }
+            // Mathéo's advice, beside him.
+            if walkers[2] && fx.matheo {
+                gap(ui);
+                ui.add_enabled_ui(on, |ui| {
+                    setting_row(ui, theme, t.desktop_matheo_tips, Some(t.desktop_matheo_tips_desc), |ui| {
+                        toggle(ui, theme, &mut fx.matheo_tips);
+                    });
+                });
+            }
             gap(ui);
             setting_row(ui, theme, t.looks_screens, Some(t.looks_screens_desc), |ui| {
                 toggle(ui, theme, &mut fx.on);
