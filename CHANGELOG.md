@@ -23,6 +23,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ### Corrections
 
+- Linux : l'icône de Ronnie ne clignote plus quand on réduit la fenêtre alors que tout a été lu. Ronnie ne demande plus l'attention quand sa fenêtre est au premier plan, et il la retire dès qu'on y revient.
 - Lundi matin : si le serveur redémarre pendant une partie, Ronnie ne reste plus figé sur « Connexion perdue » : il revient à l'accueil et dit que la partie a été perdue.
 
 ## [1.3.0] - 2026-11-17

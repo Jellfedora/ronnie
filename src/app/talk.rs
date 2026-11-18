@@ -677,7 +677,7 @@ impl App {
             crate::notify::send(&title, &body);
         }
         if !focused {
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            self.ask_attention(ctx);
         }
         if style.in_app() {
             self.push_toast(Toast { ok: true, title, body, tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: Some(drive::Lead::Talk(room)) });

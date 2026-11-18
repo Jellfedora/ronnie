@@ -542,6 +542,9 @@ pub struct App {
     talk_page: bool,
     /// The project tracking ("Suivi"): shown instead of the tabs.
     track_page: bool,
+    /// The window asked for the user's attention (its icon blinks): withdrawn once it is focused (on
+    /// Linux, nothing else takes it back: it would blink at every minimizing).
+    attention: bool,
     /// The project tracking: its projects, kept on floor.
     track: track::Track,
     /// The chat: the connection to floor and the conversations (for all windows).
@@ -1397,6 +1400,7 @@ impl App {
             modules_page: false,
             talk_page: false,
             track_page: false,
+            attention: false,
             track: track::Track::default(),
             talk: crate::talk::Talk::default(),
             talk_ui: talk::TalkUi::default(),
@@ -2328,11 +2332,21 @@ impl App {
         self.claude_asks(ctx);
         self.sweep_notices(ctx);
         if notified {
-            ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            self.ask_attention(ctx);
         }
         if let Some(tab) = self.tabs.get_mut(self.active).filter(|t| !t.covered()) {
             tab.done = None;
         }
+    }
+
+    /// The user's attention asked (the icon blinks, the Dock bounces), only while the window isn't
+    /// focused: asked while it is, Linux keeps it on and it blinks at the next minimizing.
+    pub(super) fn ask_attention(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
+            return;
+        }
+        self.attention = true;
+        ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
     }
 
     /// Watches the health of the servers with a connected SSH pane (in any window), and tells when one
@@ -5831,6 +5845,11 @@ impl eframe::App for App {
     // Claude done are worth telling.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finished_commands(ctx);
+        // Focused again: the attention asked withdrawn (the icon stops blinking).
+        if self.attention && ctx.input(|i| i.viewport().focused.unwrap_or(false)) {
+            self.attention = false;
+            ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Reset));
+        }
         self.dev_poll();
         self.envs_poll();
         self.wamp_import_poll();

@@ -271,7 +271,7 @@ impl App {
             if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
                 let (game, text) = invite_texts(t, invite.game.as_deref());
                 crate::notify::send(game, &text.replace("{n}", invite.from.as_deref().unwrap_or(t.game_anonymous)));
-                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+                self.ask_attention(ctx);
             }
         }
         // A match started (an invitation accepted, a rematch): to its page.
