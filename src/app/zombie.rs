@@ -1469,7 +1469,7 @@ impl App {
             self.monday.objective_seen = seen;
         }
         if let Some(o) = &frame.objective {
-            paint_objective(&painter, &o, &at, scale, field, now, t);
+            paint_objective(&painter, o, &at, scale, field, now, t);
         }
         let top = Rect::from_min_size(field.min + Vec2::new(12.0, 12.0), Vec2::new(300.0, 58.0));
         panel(top);
@@ -1602,7 +1602,7 @@ impl App {
         }
         // The objective's order, under the top, as long as it isn't done.
         if let Some(o) = &frame.objective {
-            paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 84.0), &objective_said(&o, t).1, Color32::from_rgb(255, 200, 60), &theme);
+            paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 84.0), &objective_said(o, t).1, Color32::from_rgb(255, 200, 60), &theme);
         }
         if let Some((text, color, since)) = &self.monday.banner {
             let k = now - since;

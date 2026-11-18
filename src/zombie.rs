@@ -742,7 +742,7 @@ enum Wire {
         #[serde(default)]
         hz: Vec<f32>,
         #[serde(default)]
-        ob: Option<Objective>,
+        ob: Option<Box<Objective>>,
         #[serde(default)]
         dk: u8,
         #[serde(default)]
@@ -1172,7 +1172,7 @@ impl Online {
                 let grades = gr.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 let memos = mm.iter().map(|&id| id as u32).collect();
                 self.before = self.frame.take();
-                let objective = ob;
+                let objective = ob.map(|o| *o);
                 self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
