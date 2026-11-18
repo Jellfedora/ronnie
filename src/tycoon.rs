@@ -581,6 +581,7 @@ pub enum NewsKind {
     Challenge,
     Pivot,
     Life,
+    Season,
 }
 
 /// A line of the company's news.
@@ -634,7 +635,17 @@ impl Legacy {
     pub fn talent(&self, id: &str) -> u32 {
         self.talents.get(id).copied().unwrap_or(0)
     }
+
+    /// The stars sent to floor: floor's golden ticker frame comes with one (« a company sold »), so a
+    /// player with sales behind them but no star left (a new season) sends one.
+    pub fn floor_stars(&self) -> u32 {
+        self.stars.max(self.sales.min(1))
+    }
 }
+
+/// The game's season: a company from an older one starts again from scratch, its stars too, its
+/// records kept (`Corp::new_season`). Season 1: the longer game and the private life.
+pub const SEASON: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Corp {
@@ -713,6 +724,9 @@ pub struct Corp {
     /// The founder's private life (kept when the company is sold).
     #[serde(default)]
     pub life: Life,
+    /// The season it was started in (`SEASON`).
+    #[serde(default)]
+    pub season: u32,
 }
 
 fn first_rival() -> f64 {
@@ -805,6 +819,7 @@ impl Corp {
             challenge: None,
             run_time: 0.0,
             life: Life::default(),
+            season: SEASON,
         };
         let founder = Employee { id: c.id(), name: String::new(), job: "founder".into(), level: 1, xp: 0.0, morale: 70.0, salary: 0.0, skills: JOBS[0].skills, trait_id: None, task: Task::Contracts, star: None };
         c.staff.push(founder);
@@ -1300,6 +1315,27 @@ impl Corp {
     #[cfg(test)]
     pub fn sell(&mut self, now: i64) -> u32 {
         self.sell_with(now, None)
+    }
+
+    /// A company from an older season (`SEASON`), started again: back in the garage, no stars nor
+    /// talents; the records kept (the best valuation, the stage it reached, the sales and the best
+    /// one, the challenges won), and the tutorial as it was.
+    pub fn new_season(&self, now: i64) -> Corp {
+        let old = &self.legacy;
+        let legacy = Legacy {
+            stars: 0,
+            sales: old.sales,
+            best: old.best.max(self.valuation()),
+            best_sale: old.best_sale,
+            talents: Default::default(),
+            challenges: old.challenges.clone(),
+        };
+        let mut c = Corp::new(now, self.rng ^ 0x5EA5_0001, legacy);
+        // One more action: on a sync, the new season wins over the old company.
+        c.actions = self.actions + 1;
+        c.tutorial = self.tutorial;
+        c.say(NewsKind::Season, "", 0.0, 0.0);
+        c
     }
 
     /// The founder's share of a sale, onto the personal account.
@@ -2108,6 +2144,7 @@ pub fn news_text(n: &News, fr: bool) -> String {
         }
         NewsKind::Pivot => if fr { format!("Pivot : {} devient {}.", product(n.n), product(n.m)) } else { format!("Pivot: {} becomes {}.", product(n.n), product(n.m)) },
         NewsKind::Life => life_news(n.n, n.m, &n.who, fr),
+        NewsKind::Season => tx(("Nouvelle saison : tout repart du garage, étoiles comprises. Tes records sont gardés.", "New season: everything starts again from the garage, stars included. Your records are kept."), fr).to_owned(),
     }
 }
 
@@ -3451,6 +3488,36 @@ mod tests {
         assert_eq!(c.staff.len(), 1);
         assert!(c.cash > 1_500.0);
         assert!(c.mods().prod > 1.0);
+    }
+
+    #[test]
+    fn an_older_season_starts_again_with_its_records() {
+        let mut c = corp();
+        c.stage = 5;
+        c.cash = 3e9;
+        c.legacy = Legacy { stars: 12, sales: 2, best: 4e9, best_sale: 9e8, ..Default::default() };
+        c.legacy.talents.insert("seed".into(), 3);
+        c.tutorial = TUTORIAL_DONE;
+        c.actions = 500;
+        // Saved before the seasons: no « season » in it.
+        let mut value = serde_json::to_value(&c).unwrap();
+        value.as_object_mut().unwrap().remove("season");
+        let old: Corp = serde_json::from_value(value).unwrap();
+        assert_eq!(old.season, 0);
+        let n = old.new_season(2_000_000);
+        assert_eq!(n.season, SEASON);
+        assert_eq!((n.stage, n.office, n.staff.len()), (0, 0, 1), "back in the garage, alone");
+        assert_eq!(n.legacy.stars, 0);
+        assert!(n.legacy.talents.is_empty());
+        assert!(n.cash < 2_000.0, "no star's head start");
+        assert_eq!(n.legacy.sales, 2);
+        assert!(n.legacy.best >= 4e9);
+        assert_eq!(n.legacy.best_sale, 9e8);
+        assert_eq!(n.legacy.floor_stars(), 1, "a company sold: floor's golden ticker frame kept");
+        assert_eq!(n.best_stage(), 5, "the furthest stage kept (the rewards)");
+        assert_eq!(n.tutorial, TUTORIAL_DONE);
+        assert!(n.actions > old.actions, "wins a sync over the old company");
+        assert!(n.news.iter().any(|x| x.kind == NewsKind::Season));
     }
 
     #[test]

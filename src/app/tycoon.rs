@@ -161,6 +161,8 @@ struct Outcome {
     title: String,
     text: String,
     changes: Vec<(String, f64, bool)>,
+    /// A notice (a new season), not an event's outcome: titled by itself, no list of what moved.
+    notice: bool,
 }
 
 impl Default for Tycoon {
@@ -177,7 +179,7 @@ fn corp_round(c: &Corp, with_now: bool) -> Option<crate::floor::GameRound> {
         return None;
     }
     // floor knows the stages up to the listing: the ones past it go as it.
-    let mut details = serde_json::json!({ "valuation": best, "stage": c.best_stage().min(corp::FLOOR_STAGE), "stars": c.legacy.stars.min(1_000_000) });
+    let mut details = serde_json::json!({ "valuation": best, "stage": c.best_stage().min(corp::FLOOR_STAGE), "stars": c.legacy.floor_stars().min(1_000_000) });
     if with_now {
         details["now"] = serde_json::json!({
             "valuation": (c.valuation() / 1_000.0).clamp(0.0, u32::MAX as f64) as u64,
@@ -420,6 +422,20 @@ impl App {
         let first = !self.tycoon.started;
         self.tycoon.started = true;
         let Some(c) = self.tycoon.live.as_mut() else { return };
+        // A company from an older season: started again, its records kept (put in the settings below:
+        // one more action), and said.
+        if c.season < corp::SEASON {
+            *c = c.new_season(now);
+            let fr = self.config.settings.language == Lang::Fr;
+            self.tycoon.away = None;
+            self.tycoon.outcome = Some(Outcome {
+                title: tx(("Ronnie Corp, saison 2", "Ronnie Corp, season 2"), fr).to_owned(),
+                text: tx(("Le jeu a beaucoup grandi : un conseil d'administration après la bourse, deux étapes de plus, des concurrents à racheter, des bureaux à l'étranger, des employés stars, ta vie privée… Toutes les boîtes repartent du garage, étoiles comprises, pour que tout le monde reparte à égalité. Tes records sont gardés : ta meilleure valorisation (le classement), l'étape la plus loin, tes reventes, et les récompenses déjà gagnées.", "The game has grown a lot: a board of directors after the listing, two more stages, rivals to buy, offices abroad, star employees, your private life… Every company starts again from the garage, stars included, so everyone starts level. Your records are kept: your best valuation (the ranking), the furthest stage, your sales, and the rewards already won."), fr).to_owned(),
+                changes: Vec::new(),
+                notice: true,
+            });
+            return;
+        }
         if now > c.at {
             let sum = if first { c.catch_up(now) } else { c.run(now) };
             if sum.secs >= 600.0 {
@@ -440,7 +456,7 @@ impl App {
     fn tycoon_write(&mut self, ctx: &egui::Context, time: f64) {
         let Some(c) = self.tycoon.live.clone() else { return };
         let best = (c.legacy.best / 1_000.0).min(u32::MAX as f64) as u32;
-        let (stage, stars) = (c.best_stage(), c.legacy.stars);
+        let (stage, stars) = (c.best_stage(), c.legacy.floor_stars());
         // A reward just won: said.
         if let Some(w) = &self.tycoon.written {
             let t = self.t();
@@ -1562,7 +1578,7 @@ impl App {
                 if after.8 > before.8 {
                     changes.push((tx(("Un effet pour un moment (voir le Bureau)", "An effect for a while (see the Office)"), fr).to_owned(), 0.0, true));
                 }
-                self.tycoon.outcome = Some(Outcome { title: format!("{} — {label}", tx(def.title, fr)), text, changes });
+                self.tycoon.outcome = Some(Outcome { title: format!("{} — {label}", tx(def.title, fr)), text, changes, notice: false });
             }
         }
     }
@@ -1688,13 +1704,16 @@ impl App {
     fn tycoon_outcome(&mut self, ctx: &egui::Context, fr: bool, theme: &Theme) {
         let Some(o) = &self.tycoon.outcome else { return };
         let mut close = false;
-        egui::Window::new(tx(("Ce que ton choix a donné", "What your choice did"), fr)).id(egui::Id::new("tycoon-outcome")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent)).corner_radius(12.0).inner_margin(18.0)).show(ctx, |ui| {
+        let window = if o.notice { o.title.clone() } else { tx(("Ce que ton choix a donné", "What your choice did"), fr).to_owned() };
+        egui::Window::new(window).id(egui::Id::new("tycoon-outcome")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent)).corner_radius(12.0).inner_margin(18.0)).show(ctx, |ui| {
             ui.set_max_width(440.0);
-            muted(ui, &o.title, theme);
+            if !o.notice {
+                muted(ui, &o.title, theme);
+            }
             ui.add_space(6.0);
             ui.label(egui::RichText::new(&o.text).size(14.0).color(theme.text));
             ui.add_space(10.0);
-            if o.changes.is_empty() {
+            if o.changes.is_empty() && !o.notice {
                 muted(ui, tx(("Rien d'autre n'a bougé.", "Nothing else moved."), fr), theme);
             }
             for (name, d, good) in &o.changes {
