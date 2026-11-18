@@ -2657,6 +2657,8 @@ fn parse_changelog(text: &'static str) -> Vec<Release> {
             }
         }
     }
+    // A section with nothing in it (« Unreleased » right after a release): not shown.
+    releases.retain(|r| r.lines.iter().any(|l| matches!(l, ChangeLine::Item(..))));
     releases
 }
 
@@ -2848,7 +2850,7 @@ mod tests {
         assert!(crate::update::VERSION >= all[0].version || all[0].version.contains("Unreleased"));
         assert!(all.iter().all(|r| r.lines.iter().any(|l| matches!(l, ChangeLine::Item(..)))));
         assert!(all.iter().flat_map(|r| &r.lines).any(|l| matches!(l, ChangeLine::Item(1, _))));
-        let parsed = parse_changelog("## [1.0.0] - 2026-01-02\n\n### New\n\n- **A** thing\n  going on\n  - deeper\n");
+        let parsed = parse_changelog("## [Unreleased]\n\n## [1.0.0] - 2026-01-02\n\n### New\n\n- **A** thing\n  going on\n  - deeper\n");
         assert_eq!((parsed[0].version, parsed[0].date), ("1.0.0", "2026-01-02"));
         assert!(matches!(&parsed[0].lines[1], ChangeLine::Item(0, t) if t == "**A** thing going on"));
         assert!(matches!(&parsed[0].lines[2], ChangeLine::Item(1, t) if t == "deeper"));

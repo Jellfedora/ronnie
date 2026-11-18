@@ -4,12 +4,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
-### Corrections
-
-- Tchat : le surnom donné à un collègue reste affiché après un redémarrage de Ronnie ou une reconnexion (son pseudo revenait à la place).
-- Barre latérale : dans une fenêtre basse, la liste (serveurs SSH, profils…) ne passe plus sous le décor du thème en transparence. Le décor n'apparaît que s'il reste de la place au-dessus pour la liste.
-
-## [1.4.0] - 2026-11-18
+## [1.4.1] - 2026-11-18
 
 ### Nouveautés
 
@@ -77,6 +72,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ### Corrections
 
+- Tchat : le surnom donné à un collègue reste affiché après un redémarrage de Ronnie ou une reconnexion (son pseudo revenait à la place).
+- Barre latérale : dans une fenêtre basse, la liste (serveurs SSH, profils…) ne passe plus sous le décor du thème en transparence. Le décor n'apparaît que s'il reste de la place au-dessus pour la liste.
 - Linux : l'icône de Ronnie ne clignote plus quand on réduit la fenêtre alors que tout a été lu. Ronnie ne demande plus l'attention quand sa fenêtre est au premier plan, et il la retire dès qu'on y revient.
 - Lundi matin : si le serveur redémarre pendant une partie, Ronnie ne reste plus figé sur « Connexion perdue » : il revient à l'accueil et dit que la partie a été perdue.
 
