@@ -163,6 +163,9 @@ impl App {
                 } else if theme.thrones {
                     // Game of Thrones: a sword over the active tab.
                     super::thrones::sword_along(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 5.0)), 1.0);
+                } else if theme.shire {
+                    // La Comté: a branch over the active tab.
+                    super::shire::vine_along(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 5.0)), 1.0);
                 } else if theme.wizard {
                     super::wizard::gold_line(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
                 } else if theme.wallstreet {

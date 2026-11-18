@@ -56,6 +56,7 @@ mod history;
 mod issues;
 mod jurassic;
 mod hyperspace;
+mod shire;
 mod thrones;
 mod wallstreet;
 mod wizard;
@@ -3444,6 +3445,9 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     if theme.thrones {
         return thrones::logo(painter, rect);
     }
+    if theme.shire {
+        return shire::logo(painter, rect);
+    }
     if theme.monday {
         let now = painter.ctx().input(|i| i.time);
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(80));
@@ -3957,6 +3961,13 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
         let lit = ui.ctx().animate_bool_with_time(egui::Id::new(("sword", id)), focused, 0.35);
         if lit > 0.0 {
             thrones::sword_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), lit);
+        }
+    }
+    if theme.shire {
+        // La Comté: a twig growing under the bar when the pane takes the focus.
+        let lit = ui.ctx().animate_bool_with_time(egui::Id::new(("twig", id)), focused, 0.5);
+        if lit > 0.0 {
+            shire::vine_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), lit);
         }
     }
     if theme.hyperspace {
@@ -5387,8 +5398,12 @@ impl App {
                         monday_theme::frame(ui.painter(), r, ui.input(|i| i.time));
                     } else if split && self.theme.wizard {
                         wizard::frame(ui.painter(), r);
-                    } else if split {
+                    } else if split && !self.theme.shire {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    }
+                    // La Comté: branches around every pane, fuller around the one in focus.
+                    if self.theme.shire {
+                        shire::frame(ui.painter(), r, if !split || id == tab.focused { 1.0 } else { 0.45 });
                     }
                     // Wall Street: the opening bell over the pane, 2.5 s after a long command ended in it.
                     if self.theme.wallstreet
@@ -5797,6 +5812,13 @@ impl App {
             && let Some(rect) = ui.ctx().memory(|m| m.area_rect(layer.id))
         {
             thrones::corners(&ui.ctx().layer_painter(layer), rect.shrink(5.0));
+        }
+        // La Comté: flourishes on the corners of whichever dialog is open.
+        if self.theme.shire
+            && let Some(layer) = ui.ctx().memory(|m| m.top_modal_layer())
+            && let Some(rect) = ui.ctx().memory(|m| m.area_rect(layer.id))
+        {
+            shire::corners(&ui.ctx().layer_painter(layer), rect.shrink(5.0));
         }
         // Lundi matin: bloody hands on the corners of whichever dialog is open.
         if self.theme.monday

@@ -981,6 +981,10 @@ impl App {
                     // Game of Thrones: a rivet and a line of steel after the page's title.
                     super::thrones::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x, title_galley.min.y), Pos2::new(head.max.x - 36.0, title_galley.max.y)), title_galley.max.x);
                 }
+                if theme.shire {
+                    // La Comté: a leaf and a branch after the page's title.
+                    super::shire::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x, title_galley.min.y), Pos2::new(head.max.x - 36.0, title_galley.max.y)), title_galley.max.x);
+                }
                 if theme.wizard {
                     // Gryffindor: an ornament after the page's title.
                     super::wizard::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x + 6.0, title_galley.min.y), Pos2::new(head.max.x - 10.0, title_galley.max.y)), title_galley.max.x + 10.0);
@@ -2497,6 +2501,9 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
     if selected && theme.thrones {
         super::thrones::active_mark(ui.painter(), rect);
     }
+    if selected && theme.shire {
+        super::shire::active_mark(ui.painter(), rect);
+    }
     if selected {
         ui.painter().rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)), 2.0, theme.accent);
     }
@@ -2535,6 +2542,14 @@ fn section_title(ui: &mut Ui, theme: &Theme, title: &str) {
         let resp = ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
         let r = resp.rect;
         super::thrones::title_marks(ui.painter(), Rect::from_min_max(r.min, Pos2::new(ui.max_rect().max.x, r.max.y)), r.max.x);
+        ui.add_space(8.0);
+        return;
+    }
+    if theme.shire {
+        // La Comté: a leaf and a branch after it.
+        let resp = ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
+        let r = resp.rect;
+        super::shire::title_marks(ui.painter(), Rect::from_min_max(r.min, Pos2::new(ui.max_rect().max.x, r.max.y)), r.max.x);
         ui.add_space(8.0);
         return;
     }

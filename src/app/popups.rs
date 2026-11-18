@@ -627,6 +627,12 @@ impl App {
                 super::thrones::sword_along(ui.painter(), band, 1.0);
                 ui.add_space(10.0);
             }
+            // La Comté: a branch on top, the alert.
+            if self.theme.shire {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
+                super::shire::vine_along(ui.painter(), band, 1.0);
+                ui.add_space(10.0);
+            }
             // Lundi matin: blood on top, the alert.
             if self.theme.monday {
                 let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -645,6 +651,8 @@ impl App {
                 super::hyperspace::ALERT
             } else if self.theme.thrones {
                 super::thrones::ALERT
+            } else if self.theme.shire {
+                super::shire::ALERT
             } else if self.theme.monday {
                 super::monday_theme::ALERT
             } else if self.theme.wizard {
@@ -665,6 +673,10 @@ impl App {
                     // Game of Thrones: the Iron Throne.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
                     super::thrones::throne(ui.painter(), r.center() + Vec2::new(0.0, 4.0), 15.0, 1.0);
+                } else if self.theme.shire {
+                    // La Comté: the One Ring.
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                    super::shire::ring(ui.painter(), r.center(), 12.0);
                 } else if self.theme.wizard {
                     // Gryffindor: a lightning bolt.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());

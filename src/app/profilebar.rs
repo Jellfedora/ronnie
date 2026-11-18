@@ -57,6 +57,8 @@ impl App {
             super::wizard::diamonds_along(&painter, rect.x_range(), rect.max.y - 1.5, 160.0);
         } else if theme.thrones {
             super::thrones::sword_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), 1.0);
+        } else if theme.shire {
+            super::shire::vine_along(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 5.0), rect.max), 1.0);
         } else if theme.hyperspace {
             super::hyperspace::beam(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max), theme.accent);
         } else {
@@ -541,6 +543,9 @@ impl App {
         }
         if active && theme.thrones {
             super::thrones::active_mark(painter, r);
+        }
+        if active && theme.shire {
+            super::shire::active_mark(painter, r);
         }
         // Open: ✕ on hover (or shown); a long command ended in it meanwhile: a green or red dot there.
         if let Some(i) = index {
