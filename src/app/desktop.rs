@@ -781,8 +781,9 @@ impl eframe::App for Overlay {
             let all = os::screens();
             let screens: Vec<Rect> = if all.is_empty() { vec![self.screen] } else { all.into_iter().map(|s| s.0).collect() };
             self.full = (screens.into_iter().filter(|s| os::full_screen(*s)).collect(), Some(Instant::now()));
-            // Linux: the window manager told about our windows once it lists them.
-            #[cfg(all(unix, not(target_os = "macos")))]
+            // Linux: the window manager told about our windows once it lists them (Windows: their
+            // frame taken off again, should one have slipped through).
+            #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
             os::tune_all();
         }
         let covered = |full: &[Rect], screen: Rect| full.iter().any(|f| (f.min - screen.min).length() < 1.0 && (f.max - screen.max).length() < 1.0);
@@ -1401,7 +1402,9 @@ mod os {
         None
     }
 
-    pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
+    pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {
+        tune_all();
+    }
 
     /// Every screen and its work area (points: each monitor's pixels over its own scale, as
     /// `screen_at` gives them), left to right.
@@ -1421,7 +1424,53 @@ mod os {
         list
     }
 
-    pub(super) fn tune_all() {}
+    /// Windows 11 draws a frame (a thin line, rounded corners) around every window, ours too though
+    /// they have no decorations: over a transparent window as big as the screen, only that frame
+    /// showed. Taken off each of this process's windows, once (a window is made hidden, so before
+    /// it shows).
+    pub(super) fn tune_all() {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Graphics::Dwm::{DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId};
+
+        /// No colour for the frame (`DWMWA_COLOR_NONE`).
+        const COLOR_NONE: u32 = 0xFFFF_FFFE;
+        static DONE: Mutex<Option<HashSet<usize>>> = Mutex::new(None);
+
+        unsafe extern "system" fn each(w: HWND, list: LPARAM) -> BOOL {
+            // SAFETY: `list` is the Vec handed to EnumWindows below, alive during the call.
+            let list = unsafe { &mut *(list as *mut Vec<HWND>) };
+            let mut pid = 0u32;
+            // SAFETY: a plain Win32 call on a window handed by EnumWindows.
+            unsafe { GetWindowThreadProcessId(w, &mut pid) };
+            if pid == std::process::id() {
+                list.push(w);
+            }
+            1
+        }
+        let mut ours: Vec<HWND> = Vec::new();
+        // SAFETY: the callback only pushes into `ours`, which outlives the call.
+        unsafe { EnumWindows(Some(each), &raw mut ours as LPARAM) };
+        let Ok(mut done) = DONE.lock() else { return };
+        let done = done.get_or_insert_with(HashSet::new);
+        // Windows gone: their handles may come back for new ones.
+        done.retain(|h| ours.iter().any(|w| *w as usize == *h));
+        for w in ours {
+            if !done.insert(w as usize) {
+                continue;
+            }
+            let set = |attr: i32, value: u32| {
+                // SAFETY: a plain Win32 call, `value` living through it (refused before Windows 11: nothing then).
+                unsafe { DwmSetWindowAttribute(w, attr as u32, (&raw const value).cast(), std::mem::size_of::<u32>() as u32) };
+            };
+            set(DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED as u32);
+            set(DWMWA_BORDER_COLOR, COLOR_NONE);
+            set(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND as u32);
+        }
+    }
 }
 
 /// Linux: over X11 (under Wayland, through XWayland: a Wayland window can neither place itself nor stay
