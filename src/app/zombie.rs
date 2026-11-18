@@ -40,6 +40,9 @@ pub(super) struct Monday {
     floats: Vec<(String, f32, f32, Color32, f64)>,
     /// Memos sent: where, when (a ring spreads, the megaphone's reach).
     memo_rings: Vec<(f32, f32, f64)>,
+    /// What objectives done brought, shown on the field: which (`reward`'s id, or `rescue`), where,
+    /// how far (the gas's blast), since when.
+    rewards: Vec<(String, f32, f32, f32, f64)>,
     /// A line across the top: text, color, since.
     banner: Option<(String, Color32, f64)>,
     /// Each zombie's life last seen, and until when it flashes (hit).
@@ -240,6 +243,10 @@ impl App {
                 Some(f) if asked == Some((f.wave, f.wave_on)) => 3,
                 // 0: up to the floor's way out (the lift).
                 Some(f) if (wave == 0 && f.exiting) || (wave > 0 && f.wave_on && f.wave >= wave) => {
+                    // (RONNIE_MONDAY_OBJECTIVE: its objective done at once, to see what it brings.)
+                    if std::env::var("RONNIE_MONDAY_OBJECTIVE").is_ok() {
+                        online.skip("objective");
+                    }
                     self.monday.demo = None;
                     return;
                 }
@@ -439,6 +446,24 @@ impl App {
                     self.monday_sound(&[(880.0, 880.0, 0.06, 0.15), (1320.0, 1320.0, 0.1, 0.15)]);
                 }
                 Happened::Collapse => self.monday.fade = Some((now, true)),
+                Happened::Reward { id, x, y, r } => {
+                    if let Some(text) = reward_said(&id, t) {
+                        self.monday.banner = Some((text.to_owned(), Color32::from_rgb(255, 214, 90), now));
+                    }
+                    match id.as_str() {
+                        "gas" => self.monday_sound(&[(80.0, 40.0, 0.8, 0.4), (160.0, 60.0, 0.5, 0.3)]),
+                        "flare" => self.monday_sound(&[(300.0, 1400.0, 1.2, 0.18), (1200.0, 600.0, 0.4, 0.15)]),
+                        _ => self.monday_sound(&[(523.0, 523.0, 0.1, 0.22), (784.0, 784.0, 0.1, 0.22), (1046.0, 1046.0, 0.3, 0.22)]),
+                    }
+                    self.monday.rewards.push((id, x, y, r, now));
+                }
+                Happened::Rescue { x, y } => {
+                    if let Some(text) = reward_said("rescue", t) {
+                        self.monday.banner = Some((text.to_owned(), Color32::from_rgb(255, 214, 90), now));
+                    }
+                    self.monday_sound(&[(392.0, 392.0, 0.1, 0.2), (523.0, 523.0, 0.1, 0.2), (659.0, 659.0, 0.3, 0.2)]);
+                    self.monday.rewards.push(("rescue".to_owned(), x, y, 0.0, now));
+                }
                 Happened::Armor { player, x, y } => {
                     self.monday.floats.push((format!("+{} ◆", ARMOR_PICK as i32), x, y - 30.0, SHIELD, now));
                     if Some(player) == me {
@@ -1284,7 +1309,16 @@ impl App {
         let field = Rect::from_center_size(rect.center() + Vec2::new(side / 2.0, -strip / 2.0), size);
         let shop_col = Rect::from_min_max(Pos2::new((field.min.x - side).max(rect.min.x + 8.0), field.min.y), Pos2::new(field.min.x - 16.0, field.max.y));
         let followed = me.and_then(|id| frame.players.iter().find(|p| p.id == id)).or_else(|| frame.players.iter().find(|p| p.state == State::Up)).or(frame.players.first());
-        let cam = camera(followed.map(|p| Pos2::from(mix.player(p.id, p.x, p.y))), Vec2::new(map.w, map.h), size / scale);
+        let mut on = followed.map(|p| Pos2::from(mix.player(p.id, p.x, p.y)));
+        // Debug builds: the camera put somewhere (RONNIE_MONDAY_CAM=x,y), for screenshots.
+        if cfg!(debug_assertions)
+            && let Ok(v) = std::env::var("RONNIE_MONDAY_CAM")
+            && let Some((x, y)) = v.split_once(',')
+            && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
+        {
+            on = Some(Pos2::new(x, y));
+        }
+        let cam = camera(on, Vec2::new(map.w, map.h), size / scale);
         let mut origin = field.center() - cam.to_vec2() * scale;
         // Hurt (one's life and shield dropping): a red veil and a shake, a moment.
         if let Some(p) = me.and_then(|id| frame.players.iter().find(|p| p.id == id)) {
@@ -1480,7 +1514,12 @@ impl App {
             let label = if p.offline { format!("{name} ({})", t.monday_offline) } else { name.to_owned() };
             painter.text(c - Vec2::new(0.0, 34.0 * scale), Align2::CENTER_CENTER, label, FontId::proportional(13.0 * scale.max(0.7)), if p.offline { theme.text_muted } else { Color32::WHITE });
         }
+        self.monday.rewards.retain(|r| now - r.4 < RESCUE_AT + 3.0);
+        super::zombie_rewards::paint_rewards(&painter, &self.monday.rewards, &at, scale, now, field);
         super::zombie_floors::paint_shade(&painter, field, map.id == "roof");
+        if map.id == "roof" {
+            super::zombie_floors::paint_storm(&painter, &map, &at, scale, now, field);
+        }
         // The memos' blasts, spreading to the megaphone's reach.
         self.monday.memo_rings.retain(|r| now - r.2 < 0.6);
         for &(x, y, since) in &self.monday.memo_rings {
@@ -1613,6 +1652,9 @@ impl App {
             }
             if button("étage suivant", false) {
                 self.monday.online.skip("floor");
+            }
+            if frame.objective.is_some() && !frame.exiting && button("objectif rempli", false) {
+                self.monday.online.skip("objective");
             }
         }
         let wave = if frame.exiting {
@@ -2309,9 +2351,18 @@ const COMBO_GAP: f64 = 1.6;
 /// A room's name (on the floor), from floor's id.
 fn room_name(t: &Strings, id: &str) -> &'static str {
     let names: Vec<&'static str> = t.monday_room_names.split('|').collect();
-    let k = ["closet", "corridor", "landing", "manager", "meeting", "kitchen", "storage", "racks", "freight", "ceo", "terrace"].iter().position(|r| *r == id);
+    let k = ["closet", "corridor", "landing", "manager", "meeting", "kitchen", "storage", "racks", "freight", "ceo", "terrace", "machines"].iter().position(|r| *r == id);
     k.and_then(|k| names.get(k).copied()).unwrap_or("")
 }
+
+/// What an objective done brought (`id`: the objective's, or `rescue`), said in the banner.
+fn reward_said(id: &str, t: &Strings) -> Option<&'static str> {
+    let k = ["power", "badge", "meeting", "gas", "racks", "file", "ceo", "flare", "rescue"].iter().position(|r| *r == id)?;
+    t.monday_obj_rewards.split('|').nth(k)
+}
+
+/// When the rescue helicopter passes over the flare, after it's lit (floor's RESCUE_DELAY).
+pub(super) const RESCUE_AT: f64 = 6.0;
 
 /// What waits at the next wave, said in the break.
 fn upcoming_said(id: &str, t: &Strings) -> String {
@@ -2414,6 +2465,28 @@ fn paint_dark(painter: &egui::Painter, field: Rect, lights: &[(Pos2, f32)], scal
 /// An objective on the floor: its spots (beating rings, filled as they're done), the thing to fetch
 /// and where to bring it, the room to hold or the stairs (an outline, a bar), the lift's cabin, the
 /// floor cracking; off screen, an arrow on the edge toward where to go.
+/// The distress flare on its tripod, pointing at the sky: its fuse lit and sparking more as it's
+/// readied (`ready`: 0 to 1).
+fn paint_flare_launcher(painter: &egui::Painter, c: Pos2, s: f32, ready: f32, now: f64) {
+    for k in 0..3 {
+        let a = k as f32 / 3.0 * std::f32::consts::TAU + 0.5;
+        painter.line_segment([c, c + Vec2::angled(a) * 26.0 * s], Stroke::new(3.0 * s, Color32::from_rgb(70, 72, 80)));
+    }
+    painter.circle_filled(c + Vec2::new(3.0, 5.0) * s, 13.0 * s, Color32::from_black_alpha(80));
+    painter.circle_filled(c, 12.0 * s, Color32::from_rgb(200, 40, 34));
+    painter.circle_stroke(c, 12.0 * s, Stroke::new(2.0 * s, Color32::from_rgb(250, 240, 230)));
+    painter.circle_filled(c, 5.0 * s, Color32::from_rgb(60, 20, 18));
+    if ready > 0.0 {
+        let n = (4.0 + 20.0 * ready) as i32;
+        for k in 0..n {
+            let f = ((now * 3.0 + k as f64 * 0.37) % 1.0) as f32;
+            let a = k as f32 * 2.4 + now as f32 * 2.0;
+            painter.circle_filled(c + Vec2::angled(a) * (6.0 + 30.0 * f * ready) * s, 2.0 * s * (1.0 - f), Color32::from_rgb(255, 210, 120));
+        }
+        painter.circle_filled(c, 26.0 * s * ready, Color32::from_rgba_premultiplied((120.0 * ready) as u8, (30.0 * ready) as u8, (20.0 * ready) as u8, 0));
+    }
+}
+
 fn paint_objective(painter: &egui::Painter, o: &crate::zombie::Objective, at: &dyn Fn(f32, f32) -> Pos2, scale: f32, field: Rect, now: f64, t: &Strings) {
     let gold = Color32::from_rgb(255, 200, 60);
     let green = Color32::from_rgb(110, 220, 120);
@@ -2455,7 +2528,12 @@ fn paint_objective(painter: &egui::Painter, o: &crate::zombie::Objective, at: &d
                 _ => "⚡",
             };
             for [x, y, p] in &o.spots {
-                ring(at(*x, *y), p / 100.0, icon, gold);
+                if o.id == "flare" {
+                    paint_flare_launcher(painter, at(*x, *y), scale, p / 100.0, now);
+                    ring(at(*x, *y), p / 100.0, "", Color32::from_rgb(255, 90, 70));
+                } else {
+                    ring(at(*x, *y), p / 100.0, icon, gold);
+                }
             }
         }
         "fetch" => {

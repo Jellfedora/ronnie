@@ -26,8 +26,19 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
   - **Cantine** : une aile en dessous, avec la cuisine, un couloir et la réserve.
   - **Serveurs** : deux salles de baies côte à côte.
   - **Direction** : un étage en L, avec le bureau du DG.
-  - **Toit** : une grande terrasse ouverte.
+  - **Toit** : deux tours séparées par le vide, reliées par deux passerelles étroites. À gauche l'héliport et la machinerie de l'ascenseur, à droite la terrasse et sa verrière. Les zombies montent par l'échelle de secours de la terrasse et doivent passer les passerelles. On tire par-dessus le vide.
 - **Lundi matin, des objectifs à vagues fixes** : à la vague 7, le badge du manager à rapporter au lecteur ; à la 9, la salle de réunion à tenir pendant que des zombies entrent aussi par sa fenêtre ; à la 12, le gaz à couper en cuisine ; à la 18, trois baies à redémarrer ; à la 22, le dossier du DG à poser sur la table du conseil ; à la 24, son bureau à tenir ; à la 27, la fusée de détresse.
+- **Lundi matin, des objectifs qui servent à quelque chose** : la consigne dit pourquoi, et chaque objectif rempli rapporte, annoncé en grand :
+  - **Badge** : il ouvre l'armoire du manager, avec une arme et un gilet.
+  - **Réunion tenue** : tout le monde est soigné.
+  - **Gaz** : la cuisine saute et souffle les zombies autour.
+  - **Baies redémarrées** : la sécurité pose une tourelle à chacune.
+  - **Dossier du DG** : 100 tickets chacun.
+  - **Bureau du DG tenu** : boucliers pleins et une arme.
+  - **Fusée de détresse** : on la voit partir et éclater, et sa lumière rouge baigne la terrasse. L'hélico des secours passe ensuite et largue trousses, gilets et une arme en parachute.
+
+  Demande floor 0.22.0.
+- **Lundi matin, le toit sous l'orage** : nuit, pluie battante, éclairs qui frappent le paratonnerre, deux projecteurs qui balaient la terrasse, une enseigne néon « LUNDI MATIN » géante, des balises rouges, les feux de l'héliport qui tournent, et la ville tout en bas dans le vide.
 - **Lundi matin, des sorties d'étage jouées** :
   - de l'open space et de la direction, par l'escalier ;
   - de la cantine, quand le sol cède et qu'on tombe au sous-sol des serveurs ;

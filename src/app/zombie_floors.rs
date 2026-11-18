@@ -90,10 +90,195 @@ pub(super) fn paint_floor(painter: &egui::Painter, map: &Map, to: To, s: f32, no
     rooms(painter, map, to, s);
     decals(painter, map, to, s);
     walls(painter, map, to, s, field);
-    inner_walls(painter, map, to, s);
+    inner_walls(painter, map, to, s, now);
     doors(painter, map, to, s, now);
     for d in &map.desks {
         furniture(painter, d, to, s, now, boss);
+    }
+    if map.id == "roof" {
+        roof_night(painter, map, to, s, now);
+    }
+}
+
+/// Additive light (added to what's under it, never darkening).
+fn glow(r: u8, g: u8, b: u8) -> Color32 {
+    Color32::from_rgba_premultiplied(r, g, b, 0)
+}
+
+/// The storm's lightning at `now`: how bright its flash (0 to 1), how long since it struck (s), which
+/// one it is. One every EVERY seconds, at a moment of its own in them.
+pub(super) fn lightning(now: f64) -> (f32, f32, i32) {
+    const EVERY: f64 = 9.0;
+    let k = (now / EVERY).floor();
+    let at = k * EVERY + hash(k as i32, 77) as f64 * 5.0;
+    let dt = (now - at) as f32;
+    let flash = match dt {
+        d if d < 0.0 => 0.0,
+        d if d < 0.07 => 1.0,
+        d if d < 0.14 => 0.25,
+        d if d < 0.22 => 0.85,
+        d => (1.0 - (d - 0.22) / 0.5).max(0.0) * 0.6,
+    };
+    (flash, dt, k as i32)
+}
+
+/// The roof at night, under everyone: the dark blue over the concrete, the city's orange glow rising
+/// from below the parapet, two searchlights sweeping the terrace from their corners, the giant neon
+/// sign along the bottom edge (a letter flickering), the red beacons on the corners.
+fn roof_night(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
+    let all = Rect::from_min_max(to(0.0, 0.0), to(map.w, map.h));
+    painter.rect_filled(all, 0.0, Color32::from_rgba_unmultiplied(6, 10, 34, 120));
+    // The city below: its glow over the edges.
+    let edge = 240.0;
+    gradient(painter, Rect::from_min_max(to(0.0, map.h - edge), to(map.w, map.h)), Color32::TRANSPARENT, glow(70, 30, 8), true);
+    gradient(painter, Rect::from_min_max(to(0.0, 0.0), to(map.w, edge * 0.6)), glow(30, 14, 40), Color32::TRANSPARENT, true);
+    gradient(painter, Rect::from_min_max(to(map.w - edge, 0.0), to(map.w, map.h)), Color32::TRANSPARENT, glow(50, 24, 10), false);
+
+    // The searchlights: a beam on the ground, its spot at the end, the lamp in its corner.
+    let t = now as f32;
+    for (x, y, base, sweep, speed) in [(map.wall + 24.0, map.h - map.wall - 24.0, -0.62, 0.5, 0.33), (map.w - map.wall - 24.0, map.wall + 24.0, 2.55, 0.45, 0.27)] {
+        let o = to(x, y);
+        let aim = base + sweep * (t * speed + x * 0.01).sin();
+        let len = 1500.0 * s;
+        let half = 0.085;
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(o, glow(84, 80, 60));
+        let n = 12;
+        for k in 0..=n {
+            let a = aim - half + 2.0 * half * k as f32 / n as f32;
+            mesh.colored_vertex(o + Vec2::angled(a) * len, Color32::TRANSPARENT);
+        }
+        for k in 0..n {
+            mesh.add_triangle(0, k + 1, k + 2);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+        let spot = o + Vec2::angled(aim) * len * 0.62;
+        poly(painter, ellipse(spot, 260.0 * s, 150.0 * s, aim), glow(26, 25, 18));
+        radial(painter, spot, 90.0 * s, glow(60, 58, 42), Color32::TRANSPARENT);
+        painter.circle_filled(o + Vec2::new(4.0, 6.0) * s, 22.0 * s, Color32::from_black_alpha(90));
+        painter.circle_filled(o, 22.0 * s, rgb(44, 46, 52));
+        painter.circle_stroke(o, 22.0 * s, Stroke::new(2.0 * s, rgb(90, 94, 102)));
+        let lens = o + Vec2::angled(aim) * 10.0 * s;
+        painter.circle_filled(lens, 11.0 * s, rgb(255, 250, 220));
+        radial(painter, lens, 46.0 * s, glow(120, 116, 90), Color32::TRANSPARENT);
+    }
+
+    // The neon sign, its letters standing along the bottom parapet, their pink on the concrete.
+    let word: Vec<char> = "LUNDI MATIN".chars().collect();
+    let (from, step, y) = (300.0, 94.0, map.h - map.wall - 50.0);
+    let rail = Stroke::new(5.0 * s, rgb(40, 42, 48));
+    painter.line_segment([to(from - 50.0, y + 24.0), to(from + step * (word.len() as f32 - 1.0) + 50.0, y + 24.0)], rail);
+    let window = (now / 3.0).floor();
+    let flickering = (hash(window as i32, 5) * word.len() as f32) as usize;
+    let off = (now % 3.0) < 0.9 && (now * 7.3).fract() < 0.45;
+    for (k, ch) in word.iter().enumerate() {
+        if *ch == ' ' {
+            continue;
+        }
+        let c = to(from + step * k as f32, y);
+        painter.line_segment([c + Vec2::new(-14.0, 24.0) * s, c + Vec2::new(-14.0, 6.0) * s], Stroke::new(3.0 * s, rgb(60, 62, 70)));
+        painter.line_segment([c + Vec2::new(14.0, 24.0) * s, c + Vec2::new(14.0, 6.0) * s], Stroke::new(3.0 * s, rgb(60, 62, 70)));
+        let lit = !(k == flickering && off);
+        let font = FontId::proportional(78.0 * s);
+        if lit {
+            radial(painter, c - Vec2::new(0.0, 20.0 * s), 150.0 * s, glow(70, 10, 40), Color32::TRANSPARENT);
+            radial(painter, c, 70.0 * s, glow(110, 20, 64), Color32::TRANSPARENT);
+            // The tube: thick and pink, its white-hot core.
+            for k in 0..12 {
+                let d = Vec2::angled(k as f32 / 12.0 * std::f32::consts::TAU) * 3.5 * s;
+                painter.text(c + d, Align2::CENTER_CENTER, ch, font.clone(), Color32::from_rgba_unmultiplied(255, 40, 140, 90));
+            }
+            for d in [Vec2::new(-1.2, 0.0), Vec2::new(1.2, 0.0)] {
+                painter.text(c + d * s, Align2::CENTER_CENTER, ch, font.clone(), rgb(255, 120, 190));
+            }
+            painter.text(c, Align2::CENTER_CENTER, ch, font, rgb(255, 228, 244));
+        } else {
+            painter.text(c, Align2::CENTER_CENTER, ch, font, rgb(70, 30, 50));
+        }
+    }
+
+    // The red beacons on the corners, all blinking together.
+    let blink = (now * 1.2).fract() < 0.25;
+    for d in map.desks.iter().filter(|d| d.k == "skylight") {
+        radial(painter, to(d.x + d.w / 2.0, d.y + d.h / 2.0), d.w.max(d.h) * s, glow(80, 56, 24), Color32::TRANSPARENT);
+    }
+    let mut beacons = vec![(map.wall, map.wall), (map.w - map.wall, map.wall), (map.wall, map.h - map.wall), (map.w - map.wall, map.h - map.wall)];
+    for v in map.walls.iter().filter(|w| w.k == "void") {
+        beacons.extend([(v.x, v.y), (v.x + v.w, v.y), (v.x, v.y + v.h), (v.x + v.w, v.y + v.h)]);
+    }
+    for (x, y) in beacons {
+        let c = to(x, y);
+        painter.circle_filled(c, 6.0 * s, if blink { rgb(255, 60, 50) } else { rgb(90, 24, 22) });
+        if blink {
+            radial(painter, c, 60.0 * s, glow(120, 20, 14), Color32::TRANSPARENT);
+        }
+    }
+}
+
+/// The storm over the roof, over everyone: the rain slanting across the screen and splashing, the
+/// leaves blown by, the lightning striking the antenna and its white flash over it all.
+pub(super) fn paint_storm(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64, field: Rect) {
+    let t = now as f32;
+    let wind = Vec2::new(-0.32, 1.0);
+    for k in 0..320 {
+        let speed = 0.9 + hash(k, 2) * 0.6;
+        let f = (hash(k, 3) + t * speed * 0.9).fract();
+        let x = field.min.x + (hash(k, 7) * 1.2 * field.width() - f * 0.32 * field.height()).rem_euclid(field.width());
+        let p = Pos2::new(x, field.min.y + f * field.height());
+        let long = (14.0 + hash(k, 4) * 14.0) * s.max(0.6);
+        painter.line_segment([p, p + wind.normalized() * long], Stroke::new(1.0, Color32::from_rgba_unmultiplied(190, 210, 255, (40.0 + 50.0 * hash(k, 5)) as u8)));
+    }
+    // The splashes on the ground: a ring opening, then gone.
+    for k in 0..70 {
+        let period = 0.5 + hash(k, 11) * 0.4;
+        let f = ((t + hash(k, 12) * 3.0) / period).fract();
+        let round = ((t + hash(k, 12) * 3.0) / period).floor() as i32;
+        let p = Pos2::new(field.min.x + hash(k, round) * field.width(), field.min.y + hash(round, k) * field.height());
+        painter.circle_stroke(p, (2.0 + f * 7.0) * s.max(0.6), Stroke::new(1.0, Color32::from_rgba_unmultiplied(200, 220, 255, (80.0 * (1.0 - f)) as u8)));
+    }
+    // Leaves and a sheet of paper, blown across.
+    for k in 0..9 {
+        let f = (hash(k, 21) + t * (0.05 + hash(k, 22) * 0.05)).fract();
+        let p = Pos2::new(field.max.x + 40.0 - f * (field.width() + 80.0), field.min.y + hash(k, 23) * field.height() + (t * 2.0 + k as f32).sin() * 30.0 * s);
+        let a = t * (2.0 + hash(k, 24) * 3.0);
+        let (u, v) = (Vec2::angled(a), Vec2::angled(a + 1.6));
+        if k == 0 {
+            poly(painter, vec![p - u * 9.0 * s - v * 12.0 * s, p + u * 9.0 * s - v * 12.0 * s, p + u * 9.0 * s + v * 12.0 * s, p - u * 9.0 * s + v * 12.0 * s], Color32::from_white_alpha(150));
+        } else {
+            poly(painter, vec![p + u * 8.0 * s, p + v * 3.0 * s, p - u * 8.0 * s, p - v * 3.0 * s], rgb(120, 100, 50));
+        }
+    }
+
+    // The lightning: a bolt down onto the antenna, its sparks, the flash.
+    let (flash, dt, n) = lightning(now);
+    if let Some(rod) = map.desks.iter().find(|d| d.k == "antenna")
+        && (0.0..0.3).contains(&dt)
+    {
+        let end = to(rod.x + rod.w / 2.0, rod.y + rod.h / 2.0);
+        let start = end + Vec2::new(-260.0 + hash(n, 1) * 520.0, -900.0) * s;
+        let mut pts = vec![start];
+        let steps = 12;
+        for m in 1..steps {
+            let along = start.lerp(end, m as f32 / steps as f32);
+            pts.push(along + Vec2::new((hash(n, m + 2) - 0.5) * 90.0 * s, (hash(m, n) - 0.5) * 30.0 * s));
+        }
+        pts.push(end);
+        let fade = 1.0 - dt / 0.3;
+        let branch: Vec<Pos2> = (0..5).map(|m| pts[5] + Vec2::new((m as f32 * 40.0 + (hash(n, m + 40) - 0.5) * 50.0) * if hash(n, 9) > 0.5 { 1.0 } else { -1.0 }, m as f32 * 45.0) * s).collect();
+        for line in [&pts, &branch] {
+            painter.add(egui::Shape::line(line.to_vec(), Stroke::new(16.0 * s, glow((90.0 * fade) as u8, (100.0 * fade) as u8, (180.0 * fade) as u8))));
+            painter.add(egui::Shape::line(line.to_vec(), Stroke::new(3.5 * s, Color32::from_white_alpha((255.0 * fade) as u8))));
+        }
+        radial(painter, end, 140.0 * s, glow((200.0 * fade) as u8, (200.0 * fade) as u8, (255.0 * fade) as u8), Color32::TRANSPARENT);
+        for m in 0..10 {
+            let a = hash(n, m + 60) * std::f32::consts::TAU;
+            let d = (20.0 + dt * 300.0 * hash(m, n + 3)) * s;
+            painter.circle_filled(end + Vec2::angled(a) * d, 2.5 * s, Color32::from_rgba_unmultiplied(255, 240, 160, (255.0 * fade) as u8));
+        }
+    }
+    if flash > 0.0 {
+        let v = (150.0 * flash) as u8;
+        painter.rect_filled(field, 0.0, glow(v, v, v.saturating_add(20)));
     }
 }
 
@@ -262,7 +447,7 @@ fn ground_roof(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
     for i in 0..(map.w / slab).ceil() as i32 {
         for j in 0..(map.h / slab).ceil() as i32 {
             let r = Rect::from_min_size(to(i as f32 * slab, j as f32 * slab), Vec2::splat(slab * s + 0.5));
-            painter.rect_filled(r, 0.0, rgb(84, 88, 94).lerp_to_gamma(rgb(98, 102, 106), hash(i, j)));
+            painter.rect_filled(r, 0.0, rgb(68, 74, 86).lerp_to_gamma(rgb(84, 90, 102), hash(i, j)));
             painter.rect_stroke(r, 0.0, Stroke::new(1.5 * s, Color32::from_black_alpha(60)), egui::StrokeKind::Inside);
             for k in 0..14 {
                 let p = to(i as f32 * slab + hash(i * 31 + k, j) * slab, j as f32 * slab + hash(j * 17 + k, i) * slab);
@@ -273,8 +458,8 @@ fn ground_roof(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
     // Puddles, the sky in them.
     for (x, y, w, h) in [(560.0, 820.0, 150.0, 50.0), (1460.0, 380.0, 90.0, 140.0), (180.0, 520.0, 70.0, 40.0)] {
         poly(painter, ellipse(to(x, y), w * s, h * s, 0.2), rgb(70, 94, 120).gamma_multiply(0.75));
-        let shine = ((now * 0.6).sin() as f32 * 0.5 + 0.5) * 0.2;
-        poly(painter, ellipse(to(x - w * 0.15, y - h * 0.15), w * 0.5 * s, h * 0.3 * s, 0.2), Color32::from_white_alpha((20.0 + 30.0 * shine) as u8));
+        let shine = ((now * 0.6).sin() as f32 * 0.5 + 0.5) * 0.2 + lightning(now).0 * 3.0;
+        poly(painter, ellipse(to(x - w * 0.15, y - h * 0.15), w * 0.5 * s, h * 0.3 * s, 0.2), Color32::from_white_alpha((20.0 + 30.0 * shine).min(255.0) as u8));
     }
     // The pad: a dark disc, its yellow ring, the H.
     if let Some(heli) = map.desks.iter().find(|d| d.k == "heli") {
@@ -282,9 +467,16 @@ fn ground_roof(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
         let r = 240.0 * s;
         painter.circle_filled(c, r, rgb(46, 50, 56));
         painter.circle_stroke(c, r - 14.0 * s, Stroke::new(8.0 * s, rgb(240, 196, 48)));
+        // Its lights, a chase running round.
+        let head = (now * 14.0) as i32 % 24;
         for k in 0..24 {
             let a = k as f32 / 24.0 * std::f32::consts::TAU;
-            painter.circle_filled(c + Vec2::angled(a) * (r - 2.0 * s), 3.0 * s, if k % 2 == 0 { rgb(255, 240, 200) } else { rgb(255, 90, 60) });
+            let p = c + Vec2::angled(a) * (r - 2.0 * s);
+            let behind = (head - k).rem_euclid(24);
+            if behind < 4 {
+                radial(painter, p, (26.0 - behind as f32 * 5.0) * s, glow(150, 140, 90), Color32::TRANSPARENT);
+            }
+            painter.circle_filled(p, 3.5 * s, if behind < 4 { rgb(255, 250, 220) } else if k % 2 == 0 { rgb(160, 150, 120) } else { rgb(200, 70, 50) });
         }
         let (hw, hh, bar) = (90.0 * s, 150.0 * s, 26.0 * s);
         let white = Color32::from_white_alpha(200);
@@ -369,7 +561,7 @@ fn rooms(painter: &egui::Painter, map: &Map, to: To, s: f32) {
                     let mut p = a;
                     let mut pts = vec![p];
                     for m in 0..5 {
-                        p += Vec2::angled(hash(k, m + seed) * 6.28) * 30.0 * s;
+                        p += Vec2::angled(hash(k, m + seed) * std::f32::consts::TAU) * 30.0 * s;
                         pts.push(p);
                     }
                     clip.add(egui::Shape::line(pts, Stroke::new(1.2 * s, Color32::from_black_alpha(60))));
@@ -390,6 +582,33 @@ fn rooms(painter: &egui::Painter, map: &Map, to: To, s: f32) {
                 for k in 0..n.max(1) {
                     let c = if along_x { to(g.x + (k as f32 + 0.5) * g.w / n.max(1) as f32, g.y + g.h / 2.0) } else { to(g.x + g.w / 2.0, g.y + (k as f32 + 0.5) * g.h / n.max(1) as f32) };
                     radial(&clip, c, 120.0 * s, Color32::from_rgba_unmultiplied(255, 240, 210, 26), Color32::TRANSPARENT);
+                }
+            }
+            "catwalk" => {
+                // A metal grating over the void (the city through it), its railings yellow and black.
+                clip.rect_filled(r, 0.0, rgb(20, 22, 34));
+                let step = 10.0 * s;
+                let mut x = r.min.x;
+                while x < r.max.x {
+                    clip.vline(x, r.y_range(), Stroke::new(2.0 * s, rgb(96, 100, 110)));
+                    x += step;
+                }
+                let mut y = r.min.y;
+                while y < r.max.y {
+                    clip.hline(r.x_range(), y, Stroke::new(1.0 * s, rgb(76, 80, 90)));
+                    y += step * 2.0;
+                }
+                for edge in [r.min.y + 3.0 * s, r.max.y - 3.0 * s] {
+                    clip.hline(r.x_range(), edge, Stroke::new(6.0 * s, rgb(40, 40, 44)));
+                    let mut x = r.min.x;
+                    let mut k = 0;
+                    while x < r.max.x {
+                        if k % 2 == 0 {
+                            clip.line_segment([Pos2::new(x, edge), Pos2::new((x + 14.0 * s).min(r.max.x), edge)], Stroke::new(4.0 * s, rgb(230, 190, 40)));
+                        }
+                        x += 14.0 * s;
+                        k += 1;
+                    }
                 }
             }
             "gravel" => {
@@ -476,12 +695,57 @@ fn wall_colors(id: &str) -> (Color32, Color32) {
     }
 }
 
+/// The void between the roof's two towers: the city far below (its streets, the cars' lights going
+/// along them, the lit windows of lower roofs), a haze rising, the towers' edges lit.
+fn abyss(painter: &egui::Painter, r: Rect, s: f32, now: f64) {
+    let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
+    gradient(&clip, r, rgb(10, 12, 26), rgb(18, 16, 34), false);
+    // Lower buildings' roofs, their windows.
+    let block = 70.0 * s;
+    let seed = (r.min.y / s) as i32;
+    let (nx, ny) = ((r.width() / block).ceil() as i32 + 1, (r.height() / block).ceil() as i32 + 1);
+    for i in 0..nx {
+        for j in 0..ny {
+            let v = hash(i + 3, j + seed);
+            let b = Rect::from_min_size(r.min + Vec2::new(i as f32 * block + 8.0 * s, j as f32 * block + 8.0 * s), Vec2::splat(block - 22.0 * s));
+            clip.rect_filled(b, 2.0, rgb(22, 24, 40).lerp_to_gamma(rgb(34, 34, 54), v));
+            for k in 0..6 {
+                if hash(k + i * 7, j + seed) > 0.55 {
+                    let w = b.min + Vec2::new(hash(k, i + j) * b.width(), hash(i + j, k) * b.height());
+                    clip.rect_filled(Rect::from_min_size(w, Vec2::splat(3.0 * s)), 0.0, if hash(k, i) > 0.7 { rgb(140, 200, 255) } else { rgb(255, 210, 130) });
+                }
+            }
+        }
+    }
+    // The streets between, the cars' lights moving along (white one way, red the other).
+    let t = now as f32;
+    for i in 0..nx {
+        let x = r.min.x + i as f32 * block + 1.0 * s;
+        clip.line_segment([Pos2::new(x, r.min.y), Pos2::new(x, r.max.y)], Stroke::new(5.0 * s, rgb(30, 28, 36)));
+        for k in 0..3 {
+            let f = (hash(i, k + 40) + t * (0.05 + hash(k, i) * 0.05)).fract();
+            let (y, color) = if k % 2 == 0 { (r.min.y + f * r.height(), rgb(255, 240, 200)) } else { (r.max.y - f * r.height(), rgb(255, 60, 50)) };
+            clip.circle_filled(Pos2::new(x + if k % 2 == 0 { -1.2 } else { 1.2 } * s, y), 1.5 * s, color);
+        }
+    }
+    // The haze rising, the city's glow in it; the towers' edges catching it.
+    radial(&clip, r.center(), r.width().max(r.height()) * 0.7, Color32::from_rgba_premultiplied(40, 18, 30, 0), Color32::TRANSPARENT);
+    gradient(&clip, Rect::from_min_size(r.min, Vec2::new(26.0 * s, r.height())), Color32::from_black_alpha(160), Color32::TRANSPARENT, false);
+    gradient(&clip, Rect::from_min_max(Pos2::new(r.max.x - 26.0 * s, r.min.y), r.max), Color32::TRANSPARENT, Color32::from_black_alpha(160), false);
+    painter.vline(r.min.x, r.y_range(), Stroke::new(3.0 * s, rgb(150, 150, 146)));
+    painter.vline(r.max.x, r.y_range(), Stroke::new(3.0 * s, rgb(150, 150, 146)));
+}
+
 /// The walls inside the floor (rooms, corridors): as the outer ones, a shade at their foot.
-fn inner_walls(painter: &egui::Painter, map: &Map, to: To, s: f32) {
+fn inner_walls(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
     let (wall, top) = wall_colors(&map.id);
     for d in &map.walls {
         let r = Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h));
         // No floor there (an L-shaped floor): the dark outside, a wall on its edge.
+        if d.k == "void" && map.id == "roof" {
+            abyss(painter, r, s, now);
+            continue;
+        }
         if d.k == "void" {
             painter.rect_filled(r, 0.0, rgb(14, 15, 20));
             painter.rect_stroke(r, 0.0, Stroke::new(map.wall * s, wall), egui::StrokeKind::Inside);
@@ -915,6 +1179,42 @@ fn furniture(painter: &egui::Painter, d: &Desk, to: To, s: f32, now: f64, boss: 
             }
             painter.circle_filled(c, tr * 0.18, rgb(80, 84, 92));
         }
+        "winch" => {
+            // The lift's winch: its drum, the cables going down, the motor.
+            shadow(5.0 * s);
+            painter.rect_filled(r, 4.0 * s, rgb(70, 74, 82));
+            painter.rect_stroke(r, 4.0 * s, Stroke::new(1.5 * s, rgb(110, 114, 122)), egui::StrokeKind::Inside);
+            let drum = Rect::from_min_max(r.min + Vec2::new(10.0, 14.0) * s, Pos2::new(r.center().x + 10.0 * s, r.max.y - 14.0 * s));
+            gradient(painter, drum, rgb(150, 120, 60), rgb(90, 70, 36), true);
+            let turn = (now * 1.5).fract() as f32;
+            for k in 0..5 {
+                let y = drum.min.y + drum.height() * ((k as f32 + turn) / 5.0);
+                painter.hline(drum.x_range(), y, Stroke::new(1.5 * s, Color32::from_black_alpha(90)));
+            }
+            painter.circle_filled(Pos2::new(r.max.x - 26.0 * s, r.center().y), 18.0 * s, rgb(40, 110, 70));
+            painter.circle_stroke(Pos2::new(r.max.x - 26.0 * s, r.center().y), 18.0 * s, Stroke::new(2.0 * s, rgb(70, 160, 100)));
+        }
+        "skylight" => {
+            // The glass roof over the CEO's office: the light coming up, his rug below, frames.
+            shadow(4.0 * s);
+            gradient(painter, r, rgb(255, 214, 140), rgb(200, 140, 80), true);
+            let rug = Rect::from_center_size(r.center(), r.size() * 0.55);
+            painter.rect_filled(rug, 3.0 * s, rgb(140, 40, 46));
+            painter.rect_stroke(rug.shrink(4.0 * s), 2.0 * s, Stroke::new(1.5 * s, rgb(230, 190, 100)), egui::StrokeKind::Inside);
+            // Something moving down there.
+            let f = (now * 0.3).fract() as f32;
+            painter.circle_filled(Pos2::new(rug.min.x + rug.width() * f, rug.center().y + (now * 2.0).sin() as f32 * 6.0 * s), 9.0 * s, Color32::from_black_alpha(120));
+            for i in 1..4 {
+                let x = r.min.x + r.width() * i as f32 / 4.0;
+                painter.vline(x, r.y_range(), Stroke::new(3.0 * s, rgb(60, 64, 72)));
+            }
+            for j in 1..3 {
+                let y = r.min.y + r.height() * j as f32 / 3.0;
+                painter.hline(r.x_range(), y, Stroke::new(3.0 * s, rgb(60, 64, 72)));
+            }
+            painter.rect_stroke(r, 0.0, Stroke::new(6.0 * s, rgb(80, 84, 92)), egui::StrokeKind::Inside);
+            poly(painter, vec![r.min + Vec2::new(10.0, 10.0) * s, r.min + Vec2::new(60.0, 10.0) * s, r.min + Vec2::new(20.0, 60.0) * s], Color32::from_white_alpha(60));
+        }
         "antenna" => {
             let c = r.center();
             painter.rect_stroke(r, 0.0, Stroke::new(2.0 * s, rgb(170, 170, 176)), egui::StrokeKind::Inside);
@@ -1004,22 +1304,32 @@ mod tests {
 
     #[test]
     fn every_floor_draws() {
+        // In a frame: the neon sign's letters need the fonts.
         let ctx = egui::Context::default();
-        let painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
-        let desk = |k: &str| Desk { x: 600.0, y: 300.0, w: 300.0, h: 140.0, k: k.into() };
-        for id in ["hall", "openspace", "canteen", "servers", "board", "roof", "?"] {
-            let map = Map {
-                id: id.into(),
-                w: 1600.0,
-                h: 1000.0,
-                wall: 20.0,
-                desks: ["desk", "table", "counter", "sofa", "lowtable", "plant", "fountain", "gates", "boardtable", "flipchart", "credenza", "heli", "hvac", "tank", "antenna", "cantable", "buffet", "vending", "rack", "ups", "crate", "?"].iter().map(|k| desk(k)).filter(|d| d.k != "heli" && d.k != "ups").collect(),
-                ..Default::default()
-            };
-            let to = |x: f32, y: f32| Pos2::new(x * 0.5, y * 0.5);
-            // Text needs the fonts: the helicopter's letters and the inverter's screen are left out here.
-            paint_floor(&painter, &map, &to, 0.5, 1.0, false);
-            paint_shade(&painter, Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 500.0)), id == "roof");
-        }
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx();
+            let painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
+            let desk = |k: &str| Desk { x: 600.0, y: 300.0, w: 300.0, h: 140.0, k: k.into() };
+            for id in ["hall", "openspace", "canteen", "servers", "board", "roof", "?"] {
+                let map = Map {
+                    id: id.into(),
+                    w: 1600.0,
+                    h: 1000.0,
+                    wall: 20.0,
+                    desks: ["desk", "table", "counter", "sofa", "lowtable", "plant", "fountain", "gates", "boardtable", "flipchart", "credenza", "heli", "hvac", "tank", "antenna", "cantable", "buffet", "vending", "rack", "ups", "crate", "winch", "skylight", "?"].iter().map(|k| desk(k)).collect(),
+                    walls: vec![Desk { x: 700.0, y: 20.0, w: 200.0, h: 300.0, k: "void".into() }, Desk { x: 300.0, y: 500.0, w: 20.0, h: 300.0, k: "wall".into() }],
+                    rooms: ["parquet", "rug", "concrete", "corridor", "gravel", "catwalk", "?"].iter().map(|k| crate::zombie::Ground { x: 100.0, y: 100.0, w: 400.0, h: 200.0, s: (*k).into() }).collect(),
+                    ..Default::default()
+                };
+                let to = |x: f32, y: f32| Pos2::new(x * 0.5, y * 0.5);
+                let field = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 500.0));
+                for now in [1.0, 4.03, 9.1] {
+                    paint_floor(&painter, &map, &to, 0.5, now, false);
+                    paint_shade(&painter, field, id == "roof");
+                    paint_storm(&painter, &map, &to, 0.5, now, field);
+                }
+            }
+        });
+        out.textures_delta.clear();
     }
 }

@@ -40,6 +40,7 @@ mod president;
 mod bughunt;
 mod zombie;
 mod zombie_floors;
+mod zombie_rewards;
 mod monday_theme;
 mod fishing;
 mod tycoon;

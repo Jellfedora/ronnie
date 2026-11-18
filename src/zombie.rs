@@ -688,6 +688,10 @@ pub enum Happened {
     Mark { player: u32, x: f32, y: f32 },
     /// The floor gave way.
     Collapse,
+    /// An objective done, what it brings (its id; where; the gas's blast: its reach).
+    Reward { id: String, x: f32, y: f32, r: f32 },
+    /// The rescue helicopter (called by the flare) dropped its supplies there.
+    Rescue { x: f32, y: f32 },
     /// A turret crate dropped there; a turret set up on one (by whom, where).
     CrateDrop { x: f32, y: f32 },
     /// A memo sent (by whom, where); a golden parachute opened (whose).
@@ -1314,6 +1318,8 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "enrage" => Happened::Enrage(Kind::of(v.get("kind").and_then(serde_json::Value::as_str).unwrap_or(""))),
         "mark" => Happened::Mark { player: u("player"), x: n("x") as f32, y: n("y") as f32 },
         "collapse" => Happened::Collapse,
+        "reward" => Happened::Reward { id: v.get("id")?.as_str()?.to_owned(), x: n("x") as f32, y: n("y") as f32, r: n("r") as f32 },
+        "rescue" => Happened::Rescue { x: n("x") as f32, y: n("y") as f32 },
         "memo" => Happened::Memo { player: u("player"), x: n("x") as f32, y: n("y") as f32 },
         "parachute" => Happened::Parachute(u("player")),
         "crate-drop" => Happened::CrateDrop { x: n("x") as f32, y: n("y") as f32 },
