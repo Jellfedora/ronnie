@@ -17,6 +17,8 @@ const ZOMBIE: Color32 = Color32::from_rgb(143, 209, 106);
 const INPUT_EVERY: f64 = 0.1;
 /// Seconds a revive takes (floor's REVIVE).
 const REVIVE: f32 = 3.0;
+/// The coffee machine's column, on the left of the field (its panel this wide).
+const SHOP_W: f32 = 250.0;
 
 #[derive(Default)]
 pub(super) struct Monday {
@@ -1146,6 +1148,7 @@ impl App {
     fn monday_game(&mut self, ui: &mut Ui, rect: Rect, now: f64, pseudo: &str) {
         /// The strip under the field for a player's weapons.
         const WEAPON_STRIP: f32 = 104.0;
+
         let t = self.t();
         let theme = self.theme.clone();
         let Some(frame) = self.monday.online.frame.clone() else { return };
@@ -1165,10 +1168,15 @@ impl App {
 
         // A player's weapons go in a strip under the field (not over its bottom left corner).
         let strip = if me.is_some() { WEAPON_STRIP } else { 0.0 };
-        let room = Vec2::new(rect.width() - 24.0, rect.height() - 24.0 - strip);
+        // And the coffee machine in a column on the left of the field (not over it), kept all the game
+        // long so that the field doesn't move at each break.
+        let side = if me.is_some() { SHOP_W + 16.0 } else { 0.0 };
+        let room = Vec2::new(rect.width() - 24.0 - side, rect.height() - 24.0 - strip);
         let scale = (room.x / map.w).min(room.y / map.h).max(0.2);
         let size = Vec2::new(map.w, map.h) * scale;
-        let field = Rect::from_center_size(rect.center() - Vec2::new(0.0, strip / 2.0), size);
+        // Beside the column, the two centered together.
+        let field = Rect::from_center_size(rect.center() + Vec2::new(side / 2.0, -strip / 2.0), size);
+        let shop_col = Rect::from_min_max(Pos2::new((field.min.x - side).max(rect.min.x + 8.0), field.min.y), Pos2::new(field.min.x - 16.0, field.max.y));
         let at = |x: f32, y: f32| field.min + Vec2::new(x, y) * scale;
         let painter = ui.painter_at(field);
 
@@ -1452,7 +1460,7 @@ impl App {
         }
         // The coffee machine, during the break: what the player's tickets buy.
         if let (false, Some(p)) = (frame.wave_on, mine.filter(|p| p.state == State::Up)) {
-            self.monday_shop(ui, field, &frame, p);
+            self.monday_shop(ui, field, shop_col, &frame, p);
         }
         // The perks' keys, and when they're back.
         if let Some(p) = mine {
@@ -1753,9 +1761,9 @@ impl App {
         }
     }
 
-    /// The coffee machine, on the right of the field during the break: what the player's tickets buy
-    /// (what the player's grade opens), at its price.
-    fn monday_shop(&mut self, ui: &mut Ui, field: Rect, frame: &Frame, me: crate::zombie::Player) {
+    /// The coffee machine, in its column on the left of the field during the break: what the player's
+    /// tickets buy (what the player's grade opens), at its price.
+    fn monday_shop(&mut self, ui: &mut Ui, field: Rect, column: Rect, frame: &Frame, me: crate::zombie::Player) {
         let t = self.t();
         let theme = self.theme.clone();
         let names: Vec<&str> = t.monday_shop_items.split('|').collect();
@@ -1763,8 +1771,8 @@ impl App {
         let items = ["extinguisher", "confetti", "turret", "mug", "dmg", "mag", "tape", "stamp", "plant", "projector"];
         let open: Vec<String> = self.monday.online.career.as_ref().map(|c| c.shop.clone()).unwrap_or_else(|| vec!["mug".into(), "dmg".into(), "mag".into()]);
         let row_h = ((field.height() - 120.0 - 40.0) / items.len() as f32).clamp(30.0, 46.0);
-        let panel = Rect::from_min_size(Pos2::new(field.max.x - 262.0, field.min.y + 64.0), Vec2::new(250.0, 40.0 + items.len() as f32 * row_h));
-        let painter = ui.painter_at(field);
+        let panel = Rect::from_min_size(column.min, Vec2::new(column.width().min(SHOP_W), 40.0 + items.len() as f32 * row_h));
+        let painter = ui.painter_at(column.expand(2.0));
         painter.rect_filled(panel, 10.0, Color32::from_rgba_unmultiplied(18, 20, 26, 225));
         painter.rect_stroke(panel, 10.0, Stroke::new(1.0, Color32::from_rgb(255, 181, 71).gamma_multiply(0.6)), egui::StrokeKind::Inside);
         painter.text(panel.min + Vec2::new(14.0, 20.0), Align2::LEFT_CENTER, t.monday_shop, FontId::proportional(14.0), Color32::from_rgb(255, 181, 71));
