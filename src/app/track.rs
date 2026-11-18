@@ -39,12 +39,14 @@ enum Done {
 }
 
 #[derive(Default, PartialEq, Clone, Copy)]
-enum Tab {
+pub(super) enum Tab {
     #[default]
     Tasks,
     Counters,
     Quotes,
     Access,
+    /// The conversation with Claude Code, in the folder of the tied profile.
+    Claude,
 }
 
 /// The task being typed (or changed: `editing`).
@@ -137,6 +139,8 @@ pub(super) struct Track {
     show_archived: bool,
     /// The profiles proposed once already (with no project yet).
     offered: bool,
+    /// The conversations with Claude, by project.
+    pub(super) chat: super::trackchat::ChatUi,
 }
 
 impl Default for Track {
@@ -162,6 +166,7 @@ impl Default for Track {
             filter: None,
             show_archived: false,
             offered: false,
+            chat: Default::default(),
         }
     }
 }
@@ -293,7 +298,7 @@ impl App {
     }
 
     /// The list (and the projects changed since) asked of floor.
-    fn track_refresh(&mut self) {
+    pub(super) fn track_refresh(&mut self) {
         let Some(client) = self.track_client() else {
             return;
         };
@@ -303,7 +308,7 @@ impl App {
         self.track.spawn(&ctx, client, |c| Done::List(c.projects()));
     }
 
-    fn track_fetch(&mut self, id: &str, select: bool) {
+    pub(super) fn track_fetch(&mut self, id: &str, select: bool) {
         let Some(client) = self.track_client() else {
             return;
         };
@@ -322,6 +327,7 @@ impl App {
 
     /// Collects what floor answered; asks again now and then.
     pub(super) fn track_poll(&mut self) {
+        self.track_chat_poll();
         let t = self.t();
         while let Ok(done) = self.track.rx.try_recv() {
             self.track.busy = self.track.busy.saturating_sub(1);
@@ -425,6 +431,7 @@ impl App {
             "counters" => Tab::Counters,
             "quotes" => Tab::Quotes,
             "access" => Tab::Access,
+            "claude" => Tab::Claude,
             "import" => {
                 self.track_import_open();
                 Tab::Tasks
@@ -504,7 +511,7 @@ impl App {
         self.track.import = Some(Import { rows, sections });
     }
 
-    fn track_edit_open(&mut self) {
+    pub(super) fn track_edit_open(&mut self) {
         let Some(p) = self.config.settings.track_selected.as_ref().and_then(|id| self.track.projects.get(id)) else {
             return;
         };
@@ -869,9 +876,16 @@ impl App {
                 (Tab::Counters, t.track_tab_counters, p.counters.len()),
                 (Tab::Quotes, t.track_tab_quotes, p.quotes.len()),
                 (Tab::Access, t.track_tab_access, p.members.len()),
+                (Tab::Claude, "Claude", 0),
             ] {
                 let on = self.track.tab == tab;
-                let text = egui::RichText::new(format!("{name}  {n}")).size(13.0).color(if on { theme.bg } else { theme.text_muted });
+                let label = if tab == Tab::Claude {
+                    // Working: a dot.
+                    if self.track.chat.is_running(&p.id) { "Claude  ●".to_owned() } else { name.to_owned() }
+                } else {
+                    format!("{name}  {n}")
+                };
+                let text = egui::RichText::new(label).size(13.0).color(if on { theme.bg } else { theme.text_muted });
                 let b = egui::Button::new(text).corner_radius(14.0).min_size(Vec2::new(0.0, 26.0));
                 if ui.add(if on { b.fill(theme.accent) } else { b.frame_when_inactive(false) }).clicked() {
                     self.track.tab = tab;
@@ -881,11 +895,16 @@ impl App {
         });
         ui.add_space(10.0);
 
+        // The conversation: its own scrolling, the message typed at the bottom.
+        if self.track.tab == Tab::Claude {
+            self.track_chat_ui(ui, p);
+            return;
+        }
         egui::ScrollArea::vertical().id_salt(("track-project", &p.id)).auto_shrink([false, true]).show(ui, |ui| match self.track.tab {
             Tab::Tasks => self.track_tasks_ui(ui, p, acts),
             Tab::Counters => self.track_counters_ui(ui, p, acts),
             Tab::Quotes => self.track_quotes_ui(ui, p, acts),
-            Tab::Access => self.track_access_ui(ui, p, acts),
+            Tab::Access | Tab::Claude => self.track_access_ui(ui, p, acts),
         });
     }
 

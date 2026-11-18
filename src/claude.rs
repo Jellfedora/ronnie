@@ -139,7 +139,7 @@ fn status_command() -> String {
 }
 
 /// This Ronnie run with `arg`, quoted for the shell Claude Code runs it with.
-fn ronnie_command(arg: &str) -> String {
+pub(crate) fn ronnie_command(arg: &str) -> String {
     let exe = crate::update::appimage().or_else(|| std::env::current_exe().ok()).map(|p| p.display().to_string()).unwrap_or_else(|| "ronnie".into());
     let quoted = if cfg!(windows) {
         format!("\"{exe}\"")

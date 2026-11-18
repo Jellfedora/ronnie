@@ -83,6 +83,7 @@ mod projlogs;
 mod xdebug;
 mod projects;
 mod track;
+mod trackchat;
 mod modules;
 mod arcade;
 mod backstage;

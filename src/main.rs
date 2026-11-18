@@ -58,6 +58,7 @@ mod ssh;
 mod terminal;
 mod theme;
 mod track;
+mod trackchat;
 mod update;
 mod voice;
 mod worklog;
