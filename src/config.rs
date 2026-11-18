@@ -1730,18 +1730,23 @@ pub fn config_dir() -> Option<PathBuf> {
 /// to a sibling "<dir>-backup-<time>" directory, returned, in case the reset was a mistake.
 pub fn erase_all() -> std::io::Result<Option<PathBuf>> {
     let Some(dir) = config_dir() else { return Ok(None) };
+    erase_all_in(&dir).map(Some)
+}
+
+/// `erase_all` in `dir`: everything moved to a backup folder beside it, given.
+fn erase_all_in(dir: &Path) -> std::io::Result<PathBuf> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let name = format!("{}-backup-{stamp}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "ronnie".into()));
     let backup = dir.with_file_name(name);
     create_private_dir(&backup)?;
-    for entry in fs::read_dir(&dir)?.flatten() {
+    for entry in fs::read_dir(dir)?.flatten() {
         // The Node.js versions and the modules installed are tools, not configuration: they stay.
         if entry.file_name() == "instance.lock" || entry.file_name() == "node" || entry.file_name() == "modules" {
             continue;
         }
         fs::rename(entry.path(), backup.join(entry.file_name()))?;
     }
-    Ok(Some(backup))
+    Ok(backup)
 }
 
 /// Copies `from` into `to` (files and subdirectories), skipping the instance lock, the Node.js
@@ -1988,10 +1993,9 @@ mod tests {
         for f in ["config.json", "session.json", "instance.lock", "history/abc"] {
             fs::write(dir.join(f), b"x").unwrap();
         }
-        // SAFETY: no other test reads RONNIE_CONFIG_DIR.
-        unsafe { std::env::set_var("RONNIE_CONFIG_DIR", &dir) };
-        let backup = erase_all().unwrap().unwrap();
-        unsafe { std::env::remove_var("RONNIE_CONFIG_DIR") };
+        // On the folder itself: RONNIE_CONFIG_DIR is set by other tests running alongside, which would
+        // write in it or point this one elsewhere.
+        let backup = erase_all_in(&dir).unwrap();
         let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, ["instance.lock"]);
         assert!(backup.join("config.json").exists() && backup.join("history/abc").exists(), "moved aside, not deleted");
