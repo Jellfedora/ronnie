@@ -542,9 +542,6 @@ impl App {
         if active && theme.thrones {
             super::thrones::active_mark(painter, r);
         }
-        if active && theme.shire {
-            super::shire::active_mark(painter, r);
-        }
         // Open: ✕ on hover (or shown); a long command ended in it meanwhile: a green or red dot there.
         if let Some(i) = index {
             if (hovered || active) && !renamed && area.contains_rect(close_rect) {

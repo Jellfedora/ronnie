@@ -368,9 +368,6 @@ impl App {
                 if self.theme.thrones {
                     super::thrones::active_mark(ui.painter(), slot);
                 }
-                if self.theme.shire {
-                    super::shire::active_mark(ui.painter(), slot);
-                }
                 if self.theme.monday {
                     super::monday_theme::active_mark(ui.painter(), slot);
                 }
@@ -1084,8 +1081,6 @@ impl App {
             super::wizard::crest(ui.painter(), Rect::from_center_size(r_at, Vec2::new(28.0, 34.0)));
         } else if self.theme.thrones {
             super::thrones::throne(ui.painter(), r_at + Vec2::new(0.0, 4.0), 14.0, 1.0);
-        } else if self.theme.shire {
-            super::shire::mark(ui.painter(), r_at);
         } else if self.theme.monday {
             super::monday_theme::mark(ui.painter(), r_at, ui.input(|i| i.time));
         } else {
@@ -1786,9 +1781,6 @@ impl App {
         if self.theme.thrones {
             super::thrones::panel_bg(ui.painter(), bar);
         }
-        if self.theme.shire {
-            super::shire::panel_bg(ui.painter(), bar);
-        }
         if self.theme.monday {
             super::monday_theme::panel_bg(ui.painter(), bar);
         }
@@ -1889,13 +1881,6 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::hyperspace::droid_rect(field), ui.id().with("droid"), Sense::hover()).on_hover_text("Bip-bou-bip ! Bou-diiip !");
         }
-        if self.theme.shire && fits(130.0) {
-            // La Comté: the hills of Hobbiton at dusk, just above the cards.
-            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 130.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
-            scene_top = field.min.y;
-            let again = super::shire::scene(ui.painter(), field, ui.input(|i| i.time));
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
-        }
         if self.theme.thrones && fits(150.0) {
             // Game of Thrones: the Wall, its White Walkers and the snow, just above the cards; now and then
             // the dragon dives down the whole sidebar, above what is in it (and never out of it).
@@ -1977,9 +1962,6 @@ impl App {
             let now = ui.input(|i| i.time);
             super::monday_theme::drips(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)), now, 11, 0.0);
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
-        } else if self.theme.shire {
-            // La Comté: a fine gold line above the settings.
-            super::shire::fine_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x + 12.0, footer_top - 1.0), Pos2::new(bar.max.x - 12.0, footer_top + 1.0)));
         } else if self.theme.thrones {
             // Game of Thrones: a line of steel above the settings.
             super::thrones::iron_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
@@ -2400,10 +2382,6 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
     if theme.thrones {
         // Game of Thrones: a rivet and a line of steel after the title.
         super::thrones::title_marks(painter, rect, rect.min.x + 8.0 + galley.size().x);
-    }
-    if theme.shire {
-        // La Comté: a leaf and a branch fading out after the title.
-        super::shire::title_marks(painter, rect, rect.min.x + 8.0 + galley.size().x);
     }
     if theme.monday {
         // Lundi matin: a drop of blood, a thin line of it.
