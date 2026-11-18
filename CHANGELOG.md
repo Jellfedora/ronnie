@@ -4,6 +4,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-18
+
 ### Nouveautés
 
 - **Mathéo veille sur toi** : toutes les demi-heures, la plante verte te rappelle dans une bulle de boire un verre d’eau ou de bouger un peu (étirements, quelques pas, les yeux au loin, et les autres plantes du bureau à arroser), tour à tour, seulement quand tu es devant l’écran. Avec l’eau arrive un petit arrosoir vert à pomme de laiton : un clic dessus, il se soulève et arrose Mathéo, qui ferme les yeux de plaisir, des gouttes sur les feuilles. Oublie-le plusieurs fois et Mathéo dépérit, feuilles tombantes et jaunies, jusqu’au prochain arrosage. Le soir tard (après 23 h), il bâille, ses paupières tombent, des « z » s’envolent, et il t’envoie te coucher. Le vendredi après-midi, il met ses lunettes noires et te rappelle que le week-end approche. Après 2 h devant l’écran sans pause, il insiste en sautillant. Bien arrosé (3 fois dans la journée), il grandit : une feuille de plus tous les 5 jours, jusqu’à trois, puis une fleur rose au bout de 20. Il salue Gérard d’une feuille quand il passe, et se cache tout tremblant dans son pot quand la horde de 10 h traverse l’écran (« Ils sont partis ? »). Un clic sur lui donne un conseil tout de suite. Paramètres › Apparence › Les conseils de Mathéo pour les couper.
