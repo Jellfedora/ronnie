@@ -79,14 +79,16 @@ pub(super) fn paint_floor(painter: &egui::Painter, map: &Map, to: To, s: f32, no
     }
     // The lights of the ceiling on the ground (the sun, on the roof).
     if map.id != "roof" {
-        for i in 0..4 {
-            for j in 0..2 {
+        // One every 400 × 500 of the floor, whatever its size.
+        for i in 0..(map.w / 400.0).round().max(1.0) as i32 {
+            for j in 0..(map.h / 500.0).round().max(1.0) as i32 {
                 let c = to(200.0 + i as f32 * 400.0, 250.0 + j as f32 * 500.0);
                 radial(painter, c, 230.0 * s, Color32::from_rgba_unmultiplied(255, 244, 214, 26), Color32::TRANSPARENT);
             }
         }
     }
     walls(painter, map, to, s, field);
+    inner_walls(painter, map, to, s);
     doors(painter, map, to, s, now);
     for d in &map.desks {
         furniture(painter, d, to, s, now, boss);
@@ -277,15 +279,32 @@ fn ground_roof(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
 }
 
 /// The walls in the floor's material, their shade on the ground, the windows.
-fn walls(painter: &egui::Painter, map: &Map, to: To, s: f32, field: Rect) {
-    let (wall, top) = match map.id.as_str() {
+/// The colors of a floor's walls: the wall, its top edge.
+fn wall_colors(id: &str) -> (Color32, Color32) {
+    match id {
         "hall" => (rgb(132, 124, 112), rgb(170, 162, 148)),
         "board" => (rgb(66, 42, 30), rgb(96, 64, 44)),
         "roof" => (rgb(150, 150, 146), rgb(186, 186, 182)),
         "canteen" => (rgb(186, 170, 140), rgb(214, 200, 172)),
         "servers" => (rgb(34, 38, 46), rgb(52, 58, 70)),
         _ => (rgb(56, 63, 80), rgb(78, 88, 108)),
-    };
+    }
+}
+
+/// The walls inside the floor (rooms, corridors): as the outer ones, a shade at their foot.
+fn inner_walls(painter: &egui::Painter, map: &Map, to: To, s: f32) {
+    let (wall, top) = wall_colors(&map.id);
+    for d in &map.walls {
+        let r = Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h));
+        // Their shadow on the ground, below and to the right.
+        painter.rect_filled(r.translate(Vec2::new(4.0 * s, 6.0 * s)), 0.0, Color32::from_black_alpha(70));
+        painter.rect_filled(r, 0.0, wall);
+        painter.rect_stroke(r, 0.0, Stroke::new(2.0 * s, top), egui::StrokeKind::Inside);
+    }
+}
+
+fn walls(painter: &egui::Painter, map: &Map, to: To, s: f32, field: Rect) {
+    let (wall, top) = wall_colors(&map.id);
     let w = map.wall * s;
     let inner = field.shrink(w);
     let shade = 26.0 * s;

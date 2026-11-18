@@ -445,6 +445,9 @@ pub struct Map {
     #[serde(default)]
     pub wall: f32,
     pub desks: Vec<Desk>,
+    /// Interior walls: rooms and corridors (nothing goes through, not even shots).
+    #[serde(default)]
+    pub walls: Vec<Desk>,
     pub coffee: Spot,
     pub doors: Vec<Door>,
     /// The reception's door, Agnès' only, and her way to the coffee.
@@ -984,7 +987,8 @@ impl Online {
                     self.frame = None;
                     self.before = None;
                 }
-                self.floors = floors.into_iter().map(|f| Map { w: map.w, h: map.h, wall: map.wall, ..f }).collect();
+                // Each floor its own size (a floor from before sends none: the first floor's).
+                self.floors = floors.into_iter().map(|f| Map { w: if f.w > 0.0 { f.w } else { map.w }, h: if f.h > 0.0 { f.h } else { map.h }, wall: map.wall, ..f }).collect();
                 self.map = Some(map);
                 self.prices = shop;
                 self.status = Status::Ready;

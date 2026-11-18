@@ -1172,12 +1172,17 @@ impl App {
         // long so that the field doesn't move at each break.
         let side = if me.is_some() { SHOP_W + 16.0 } else { 0.0 };
         let room = Vec2::new(rect.width() - 24.0 - side, rect.height() - 24.0 - strip);
-        let scale = (room.x / map.w).min(room.y / map.h).max(0.2);
-        let size = Vec2::new(map.w, map.h) * scale;
+        // The scale a usual floor (1600 × 1000) fits the room at: a bigger floor goes past the room, a
+        // camera following the player (or, watching, the first one standing).
+        let scale = (room.x / VIEW.x).min(room.y / VIEW.y).max(0.2);
+        let size = (Vec2::new(map.w, map.h) * scale).min(room);
         // Beside the column, the two centered together.
         let field = Rect::from_center_size(rect.center() + Vec2::new(side / 2.0, -strip / 2.0), size);
         let shop_col = Rect::from_min_max(Pos2::new((field.min.x - side).max(rect.min.x + 8.0), field.min.y), Pos2::new(field.min.x - 16.0, field.max.y));
-        let at = |x: f32, y: f32| field.min + Vec2::new(x, y) * scale;
+        let followed = me.and_then(|id| frame.players.iter().find(|p| p.id == id)).or_else(|| frame.players.iter().find(|p| p.state == State::Up)).or(frame.players.first());
+        let cam = camera(followed.map(|p| Pos2::from(mix.player(p.id, p.x, p.y))), Vec2::new(map.w, map.h), size / scale);
+        let origin = field.center() - cam.to_vec2() * scale;
+        let at = |x: f32, y: f32| origin + Vec2::new(x, y) * scale;
         let painter = ui.painter_at(field);
 
         // The floor of the tower: its ground, walls, doors and furniture; the reception's door.
@@ -1478,6 +1483,10 @@ impl App {
                     y -= 18.0;
                 }
             }
+        }
+        // A floor bigger than the screen: where everyone is on it, in a corner.
+        if map.w > size.x / scale + 1.0 || map.h > size.y / scale + 1.0 {
+            paint_minimap(&ui.painter_at(field), field, &map, &frame, &colors, cam, size / scale);
         }
         if let Some((text, color, since)) = &self.monday.banner {
             let k = now - since;
@@ -1933,6 +1942,45 @@ impl Mix {
     fn zombie(&self, id: u32, x: f32, y: f32) -> (f32, f32) {
         self.between(&self.zombies, id, x, y)
     }
+}
+
+/// The whole floor small, in the field's bottom right corner: its walls, the coffee machine, the
+/// players (their color), the zombies, and the part of it on screen (`cam`, `seen`).
+fn paint_minimap(painter: &egui::Painter, field: Rect, map: &crate::zombie::Map, frame: &Frame, colors: &[(u32, String, Color32)], cam: Pos2, seen: Vec2) {
+    let k = (190.0 / map.w).min(130.0 / map.h);
+    let size = Vec2::new(map.w, map.h) * k;
+    let r = Rect::from_min_size(field.max - size - Vec2::splat(12.0), size);
+    let to = |x: f32, y: f32| r.min + Vec2::new(x, y) * k;
+    painter.rect_filled(r.expand(4.0), 6.0, Color32::from_black_alpha(170));
+    painter.rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_white_alpha(70)), egui::StrokeKind::Outside);
+    for d in &map.desks {
+        painter.rect_filled(Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h)), 0.0, Color32::from_white_alpha(28));
+    }
+    for d in &map.walls {
+        painter.rect_filled(Rect::from_min_max(to(d.x, d.y), to(d.x + d.w, d.y + d.h)), 0.0, Color32::from_white_alpha(150));
+    }
+    painter.circle_filled(to(map.coffee.x, map.coffee.y), 3.0, Color32::from_rgb(196, 140, 90));
+    for z in &frame.zombies {
+        painter.circle_filled(to(z.x, z.y), 1.6, ZOMBIE);
+    }
+    for p in &frame.players {
+        let color = colors.iter().find(|c| c.0 == p.id).map_or(Color32::WHITE, |c| c.2);
+        painter.circle_filled(to(p.x, p.y), 3.0, if p.state == State::Up { color } else { color.gamma_multiply(0.4) });
+    }
+    let view = Rect::from_center_size(to(cam.x, cam.y), seen * k);
+    painter.rect_stroke(view.intersect(r), 1.0, Stroke::new(1.0, Color32::from_white_alpha(160)), egui::StrokeKind::Inside);
+}
+
+/// The floor shown on screen at a time: a usual floor whole; a bigger one, this much of it.
+const VIEW: Vec2 = Vec2::new(1600.0, 1000.0);
+
+/// Where the camera looks (the floor's point at the center of the screen): on `on` (the player
+/// followed), kept inside the floor (`world`) so that its edges never leave the screen (`seen`: how
+/// much of it shows); a floor smaller than the screen along an axis stays centered.
+fn camera(on: Option<Pos2>, world: Vec2, seen: Vec2) -> Pos2 {
+    let on = on.unwrap_or(Pos2::new(world.x / 2.0, world.y / 2.0));
+    let axis = |at: f32, world: f32, seen: f32| if world <= seen + 0.5 { world / 2.0 } else { at.clamp(seen / 2.0, world - seen / 2.0) };
+    Pos2::new(axis(on.x, world.x, seen.x), axis(on.y, world.y, seen.y))
 }
 
 fn frame_mix(before: Option<&Frame>, frame: &Frame) -> Mix {
