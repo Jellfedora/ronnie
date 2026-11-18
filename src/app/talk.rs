@@ -708,6 +708,7 @@ impl App {
     /// The chat's page, in this window: shown instead of the tabs.
     pub(super) fn open_talk_page(&mut self) {
         self.talk_page = true;
+        self.track_page = false;
         self.modules_page = false;
         self.procs_page = false;
         self.dev_page = false;

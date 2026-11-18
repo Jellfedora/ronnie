@@ -475,6 +475,17 @@ PHP the project needs (composer.json's `require.php`, its framework's version): 
 installed (PHP with its `php` program, for composer), `env available php|nginx|mysql|mariadb` those published; \
 say which you would install and why, and install (`env install php 8.3`, `env install nginx stable`…) only once \
 the user agrees. Then start it and give its address.
+- Project tracking (\"{track}\" in the left column), kept on floor with the user's account and shared with colleagues: \
+per project (a client each) the tasks done with their duration and description, each charged to an hour counter (the \
+hours a client bought; several in turn, a new one opened once one is used up), a quote, offered, or maintenance. Use \
+`{ronnie} track` for it: `track` (the projects, time spent, hours left), `track show <project>`, `track task <project> \
+<duration> <description…> [--day D] [--counter [C] | --quote Q | --free | --maintenance]`, `track new <name> --client \
+C` (a new client is its first project), `track counter <project> <hours> [label]`, `track quote <project> <label> \
+[--number N] [--hours H]`, `track share <project> <pseudo> admin|editor|viewer`. When the user asks to log a task, \
+make a client or a counter, do it. When you have finished a piece of work for a project that is tracked, you may \
+propose once to log it: a short description in the user's language and an estimate of the time it took the user \
+(ask, or let them correct it), charged as they say; never log anything without their agreement. A counter used \
+up (the answer says so): propose a new one to the user.
 - When the user asks to start a project (\"lance le site X\"…): first look at the saved profiles (`panes` lists them \
 with their folders): one matching the project, by its name or its folders, opens with `{ronnie} profile open \
 <name>`, never a second one made for it. Else find its folder and see what it is made of (an API and a front, \
@@ -515,6 +526,7 @@ it on the project's panes.",
         notes = t.notes,
         notes_default = t.notes_default,
         php_projects = t.cat_projects,
+        track = t.cat_track,
         ronnie = ronnie_command("").trim_end(),
     );
     text.push_str("\n\nThis pane and this Ronnie now:");
@@ -537,6 +549,18 @@ it on the project's panes.",
     let running = config.is_some_and(|c| c.settings.mail_running);
     text.push_str(&format!("\n- The mail catcher is {} (port {port}).", if running { "running" } else { "stopped" }));
     if let Some(config) = config {
+        if config.settings.floor.as_ref().is_none_or(|a| a.name.is_none()) {
+            text.push_str("\n- Not signed in to floor: project tracking needs the user to sign in first (Settings > Account).");
+        } else if !config.settings.track_profiles.is_empty() {
+            // Which tracked project a profile is (the projects' ids: `ronnie track show <id>`).
+            let ties: Vec<String> = config.settings.track_profiles.iter().filter_map(|(project, profile)| {
+                let p = config.profiles.iter().find(|p| p.id == *profile)?;
+                Some(format!("profile \"{}\" → project {}", p.name(t.untitled), &project[..8.min(project.len())]))
+            }).collect();
+            if !ties.is_empty() {
+                text.push_str(&format!("\n- Profiles tied to a tracked project: {}.", ties.join(", ")));
+            }
+        }
         if !config.ssh.is_empty() {
             text.push_str("\n- SSH servers saved in Ronnie:");
             for host in &config.ssh {

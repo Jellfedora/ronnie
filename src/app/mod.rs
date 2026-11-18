@@ -82,6 +82,7 @@ mod imports;
 mod projlogs;
 mod xdebug;
 mod projects;
+mod track;
 mod modules;
 mod arcade;
 mod backstage;
@@ -372,6 +373,7 @@ struct WindowSlot {
     procs_page: bool,
     notes_page: bool,
     talk_page: bool,
+    track_page: bool,
 }
 
 pub struct App {
@@ -536,6 +538,10 @@ pub struct App {
     procs_page: bool,
     /// The chat's page (a conversation): shown instead of the tabs.
     talk_page: bool,
+    /// The project tracking ("Suivi"): shown instead of the tabs.
+    track_page: bool,
+    /// The project tracking: its projects, kept on floor.
+    track: track::Track,
     /// The chat: the connection to floor and the conversations (for all windows).
     talk: crate::talk::Talk,
     talk_ui: talk::TalkUi,
@@ -547,7 +553,7 @@ pub struct App {
     notes_page: bool,
     /// What was shown when the sidebar last looked (tab, notes, music, game): when it changes, the
     /// sidebar shows the category of the new one.
-    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool, bool),
+    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool, (bool, bool)),
     /// The notes, the same in every window.
     notes: notes::Notes,
     /// The sidebar's file tree.
@@ -1388,13 +1394,15 @@ impl App {
             dev_page: false,
             modules_page: false,
             talk_page: false,
+            track_page: false,
+            track: track::Track::default(),
             talk: crate::talk::Talk::default(),
             talk_ui: talk::TalkUi::default(),
             avatars: crate::floor::Avatars::default(),
             procs_page: false,
             modules: modules::Modules::default(),
             notes_page: false,
-            sidebar_seen: (None, false, false, false, false, false, false),
+            sidebar_seen: (None, false, false, false, false, false, (false, false)),
             notes: notes::Notes::load(),
             tree: tree::FileTree::default(),
             rail_flyout: None,
@@ -1610,6 +1618,13 @@ impl App {
             if std::env::var("RONNIE_OPEN_BACKSTAGE").is_ok() {
                 app.splash = None;
                 app.open_backstage();
+            }
+            // The project tracking: its page ("tab": a tab of the project shown, tasks counters quotes access).
+            if let Ok(tab) = std::env::var("RONNIE_OPEN_TRACK") {
+                app.splash = None;
+                app.config.settings.sidebar_category = Category::Track;
+                app.open_track_page();
+                app.track_demo_tab(&tab);
             }
             if let Ok(page) = std::env::var("RONNIE_OPEN_SETTINGS") {
                 app.settings_dialog = true;
@@ -2143,6 +2158,7 @@ impl App {
         swap(&mut self.modules_page, &mut slot.modules_page);
         swap(&mut self.procs_page, &mut slot.procs_page);
         swap(&mut self.talk_page, &mut slot.talk_page);
+        swap(&mut self.track_page, &mut slot.track_page);
         swap(&mut self.notes_page, &mut slot.notes_page);
     }
 
@@ -2375,7 +2391,7 @@ impl App {
         }
         let t = self.t();
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page && !app.talk_page;
+        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page && !app.talk_page && !app.track_page;
         let mut notified = false;
         for (event, i) in mine {
             let shown = tab_shown(self, i);
@@ -2772,6 +2788,7 @@ impl App {
             self.dev_page = false;
             self.modules_page = false;
             self.talk_page = false;
+            self.track_page = false;
             self.procs_page = false;
             self.notes_page = false;
             self.focus_terminal = true;
@@ -2796,6 +2813,7 @@ impl App {
         self.dev_page = false;
         self.modules_page = false;
         self.talk_page = false;
+        self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;
         // The keys go to the game, not to a terminal no longer shown.
@@ -2855,6 +2873,7 @@ impl App {
         self.dev_page = false;
         self.modules_page = false;
         self.talk_page = false;
+        self.track_page = false;
         self.procs_page = false;
         self.home_game = false;
     }
@@ -2950,7 +2969,7 @@ impl App {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The Dev, Downloads and processes pages, likewise.
-        if self.dev_page || self.modules_page || self.procs_page || self.talk_page {
+        if self.dev_page || self.modules_page || self.procs_page || self.talk_page || self.track_page {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The music page, likewise; its search takes ⌘ F.
@@ -3025,7 +3044,7 @@ impl App {
             });
         }
         // A file open beside the terminals (VS Code layout), likewise.
-        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !self.talk_page).and_then(|t| t.docs.get_mut(t.doc?)) {
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !self.talk_page && !self.track_page).and_then(|t| t.docs.get_mut(t.doc?)) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
                     if ui.input(|i| i.modifiers.alt) {
@@ -4514,7 +4533,7 @@ impl App {
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
             // Its last tab closed, out of a game, the notes and the music: the window goes too.
-            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.talk_page;
+            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.talk_page || self.track_page;
             let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {
                 while !self.tabs.is_empty() {
@@ -4696,6 +4715,12 @@ impl App {
                     self.game.leave();
                     self.fold_for_game(false);
                     self.talk_page_ui(ui, rect);
+                    return;
+                }
+                if self.track_page {
+                    self.game.leave();
+                    self.fold_for_game(false);
+                    self.track_page_ui(ui, rect);
                     return;
                 }
                 if self.shown_tab().is_none() {
@@ -5571,6 +5596,7 @@ impl App {
             self.riff_frame(ui.ctx());
             self.pseudo_window(ui.ctx());
             self.imports_windows(ui.ctx());
+            self.track_windows(ui.ctx());
         }
         self.poll_uploads();
 
@@ -5811,6 +5837,7 @@ impl eframe::App for App {
         self.projects_restart_poll();
         self.procs.poll();
         self.modules_poll();
+        self.track_poll();
         self.mail_poll(ctx);
         self.watch_servers(ctx);
         self.auto_backup_poll(ctx);

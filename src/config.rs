@@ -971,6 +971,13 @@ pub struct Settings {
     pub projects_sort: crate::projects::Sort,
     #[serde(default)]
     pub projects_grouping: crate::projects::Grouping,
+    /// Project tracking: the profile each project is tied to on this machine (project id → profile),
+    /// to open its tab from the project.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub track_profiles: std::collections::BTreeMap<String, Uuid>,
+    /// Project tracking: the project last shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_selected: Option<String>,
     /// The automatic backup (see app/backup.rs).
     #[serde(default)]
     pub auto_backup: AutoBackup,
@@ -1188,10 +1195,12 @@ pub enum Category {
     Talk,
     /// The user's sites, served locally with nginx and PHP: see `crate::projects`.
     Projects,
+    /// Project tracking: tasks done, hour counters, quotes, kept on floor (see `crate::track`).
+    Track,
 }
 
 impl Category {
-    pub const ALL: [Category; 10] = [Category::Local, Category::Projects, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Talk, Category::Games, Category::Modules];
+    pub const ALL: [Category; 11] = [Category::Local, Category::Projects, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Track, Category::Talk, Category::Games, Category::Modules];
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
     /// their usual place.
@@ -1672,7 +1681,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_seen: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, monday_gerard: false, monday_wins: 0, monday_dailies: 0, riff_games: 0, monday_agnes_card: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, tycoon: None, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default() }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_seen: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, monday_gerard: false, monday_wins: 0, monday_dailies: 0, riff_games: 0, monday_agnes_card: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, tycoon: None, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default(), track_profiles: Default::default(), track_selected: None }
     }
 }
 

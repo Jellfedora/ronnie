@@ -171,6 +171,7 @@ impl App {
         self.dev_page = false;
         self.modules_page = false;
         self.talk_page = false;
+        self.track_page = false;
         self.procs_page = false;
         self.home_which = super::four::HomeGame::SpeedMetal;
         self.music_page = false;
@@ -206,6 +207,8 @@ impl App {
             Category::Modules
         } else if self.talk_page {
             Category::Talk
+        } else if self.track_page {
+            Category::Track
         } else if self.home.is_some() {
             if !self.home_game {
                 return self.category_screen(category);
@@ -223,7 +226,7 @@ impl App {
     fn category_screen(&self, category: Category) -> bool {
         match category {
             Category::Local | Category::Ssh | Category::Db => self.last_tab_of(category).is_some(),
-            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules | Category::Talk | Category::Projects => true,
+            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules | Category::Talk | Category::Projects | Category::Track => true,
             Category::Files => false,
         }
     }
@@ -243,6 +246,7 @@ impl App {
             Category::Modules => self.open_modules_page(),
             Category::Talk => self.open_talk_page(),
             Category::Projects => self.open_projects_page(),
+            Category::Track => self.open_track_page(),
             Category::Files => {}
         }
     }
@@ -296,7 +300,7 @@ impl App {
     /// category; the home page leaves it as it is.
     fn follow_shown(&mut self) {
         let game = self.home.is_some() && self.home_game;
-        let seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, self.talk_page);
+        let seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, (self.talk_page, self.track_page));
         if seen == self.sidebar_seen {
             return;
         }
@@ -311,6 +315,8 @@ impl App {
             Category::Modules
         } else if self.talk_page {
             Category::Talk
+        } else if self.track_page {
+            Category::Track
         } else if game {
             Category::Games
         } else if let Some(i) = seen.0 {
@@ -442,7 +448,7 @@ impl App {
                         self.show_category(category);
                         // Seen: the sidebar stays on the category clicked (the home page belongs to none).
                         let game = self.home.is_some() && self.home_game;
-                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, self.talk_page);
+                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, (self.talk_page, self.track_page));
                     }
                 }
             }
@@ -2029,6 +2035,7 @@ impl App {
             Category::Modules => self.modules_section(ui, left, row_w, y),
             Category::Talk => self.talk_section(ui, left, row_w, y),
             Category::Projects => self.projects_section(ui, left, row_w, y),
+            Category::Track => self.track_section(ui, left, row_w, y),
         }
     }
 
@@ -2392,6 +2399,7 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
         Category::Modules => t.cat_modules,
         Category::Talk => t.cat_talk,
         Category::Projects => t.cat_projects,
+        Category::Track => t.cat_track,
     }
 }
 
@@ -2409,6 +2417,7 @@ pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Ca
         Category::Modules => super::modules::paint_modules_icon(painter, c, color),
         Category::Talk => super::talk::paint_talk_icon(painter, c, color),
         Category::Projects => super::projects::paint_projects_icon(painter, c, color),
+        Category::Track => super::track::paint_track_icon(painter, c, color),
     }
 }
 

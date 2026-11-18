@@ -827,6 +827,7 @@ impl App {
         self.dev_page = false;
         self.modules_page = false;
         self.talk_page = false;
+        self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;
         self.ctx.memory_mut(|m| m.stop_text_input());

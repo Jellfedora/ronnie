@@ -244,7 +244,27 @@ Ronnie, driven from one of its panes (pane numbers: see `ronnie panes`):
   ronnie notes show <id>                a note's Markdown
   ronnie mails [words…] [--limit N]     the mails caught (Dev > test mailbox), newest first
   ronnie mails show <id|last> [--html | --source]
-                                        a mail: headers, text (or its HTML, or as it came)";
+                                        a mail: headers, text (or its HTML, or as it came)
+Project tracking (\"Suivi\", kept on floor with the user's account; <project>: its name, \"client/name\" or id):
+  ronnie track                          the projects: client, name, role, time spent, counter left
+  ronnie track show <project> [--all]   its counters, quotes, members and tasks (the last 30; --all)
+  ronnie track new <name> [--client C] [--color #rrggbb]
+                                        a new project (a new client: its first project)
+  ronnie track task <project> <duration> <description…> [--day D]
+                 [--counter [label|id] | --quote <number|label|id> | --free | --maintenance]
+                                        log a task done: duration 1h30, 1,5, 45m; day 18/11, hier;
+                                        no charge given: the project's current counter
+  ronnie track task rm <project> <task id>
+                                        delete a task
+  ronnie track counter <project> <hours> [label…] [--day D]
+                                        a new hour counter (the client bought hours)
+  ronnie track counter close <project> <label|id>
+                                        close a counter (used up)
+  ronnie track quote <project> <label…> [--number N] [--hours H] [--day D]
+                                        a new quote
+  ronnie track share <project> <pseudo> <admin|editor|viewer>
+                                        give a colleague access (editor: fills in tasks)
+  ronnie track people                   the colleagues one can share with";
 
 /// The commands of this module: None when `ronnie` was started for something else.
 pub fn run_cli() -> Option<Result<(), String>> {
@@ -300,6 +320,7 @@ pub fn run_cli() -> Option<Result<(), String>> {
         "env" => env(&rest),
         "notes" => notes(&rest),
         "mails" => mails(&rest),
+        "track" => crate::track::cli(&rest),
         "ssh" => match rest.as_slice() {
             [] => ask(Ask::Hosts),
             ["add", rest @ ..] => new_host(rest).and_then(|h| ask(Ask::Host(h))),

@@ -185,6 +185,7 @@ impl App {
     pub(super) fn open_modules_page(&mut self) {
         self.modules_page = true;
         self.talk_page = false;
+        self.track_page = false;
         self.procs_page = false;
         self.dev_page = false;
         self.music_page = false;
