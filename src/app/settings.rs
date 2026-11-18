@@ -2470,6 +2470,17 @@ impl App {
                         toggle(ui, theme, &mut fx.matheo_tips);
                     });
                 });
+                // macOS: standing on the Dock needs Ronnie allowed in Accessibility (else above it).
+                if cfg!(target_os = "macos") && !crate::awake::accessibility_allowed() {
+                    gap(ui);
+                    ui.add_enabled_ui(on, |ui| {
+                        setting_row(ui, theme, t.desktop_matheo_dock, Some(t.desktop_matheo_dock_desc), |ui| {
+                            if ui.button(t.keep_open_accessibility).clicked() {
+                                crate::awake::open_accessibility_settings();
+                            }
+                        });
+                    });
+                }
             }
             gap(ui);
             setting_row(ui, theme, t.looks_screens, Some(t.looks_screens_desc), |ui| {

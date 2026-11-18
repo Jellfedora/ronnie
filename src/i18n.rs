@@ -1026,6 +1026,8 @@ pub struct Strings {
     pub desktop_matheo: &'static str,
     pub desktop_matheo_tips: &'static str,
     pub desktop_matheo_tips_desc: &'static str,
+    pub desktop_matheo_dock: &'static str,
+    pub desktop_matheo_dock_desc: &'static str,
     /// Mathéo's reminders to drink, and to move (stretches, steps, eyes), taken in turns.
     pub matheo_water: &'static [&'static str],
     pub matheo_moves: &'static [&'static str],
@@ -3835,6 +3837,8 @@ pub static FR: Strings = Strings {
     unlock_gives_matheo: "Mathéo, une plante verte en pot, s’installe en bas de l’écran, même en dehors de Ronnie, et veille sur toi. Toutes les demi-heures, il te rappelle de boire un verre d’eau ou de bouger un peu (étirements, quelques pas, les yeux au loin). Avec l’eau arrive un petit arrosoir : un clic dessus et il arrose Mathéo, tout content. Oublie trop souvent et il dépérit, comme une plante qu’on n’arrose pas. Le vendredi après-midi, lunettes noires sur le nez, il annonce le week-end. Après 2 h sans pause, il insiste. Bien arrosé, il grandit, jusqu’à fleurir. Il salue Gérard et se cache quand passe la horde. Le soir tard, il bâille et t’envoie te coucher. Attrape-le à la souris pour le poser ailleurs, même sur un autre écran, ou lance-le : il rebondit sur les bords et retombe. Secoue-le vivement de gauche à droite et il se tait pendant 6 h, la tête qui tourne. Il se coupe dans Paramètres › Apparence.",
     desktop_matheo: "Mathéo en bas de l’écran",
     desktop_matheo_tips: "Les conseils de Mathéo",
+    desktop_matheo_dock: "Mathéo sur le Dock",
+    desktop_matheo_dock_desc: "Pour se poser sur le Dock, et tout en bas de l’écran à côté, Mathéo a besoin que Ronnie soit autorisé dans Réglages Système › Confidentialité et sécurité › Accessibilité. Sans ça, il reste juste au-dessus du Dock.",
     desktop_matheo_tips_desc: "Toutes les demi-heures, une bulle te rappelle de boire un verre d’eau ou de bouger un peu (étirements, quelques pas, les yeux au loin), tour à tour ; le soir tard, d’aller te coucher. Avec l’eau, un arrosoir : un clic dessus arrose Mathéo, sinon il dépérit. Rien quand tu n’es pas devant l’écran. Un clic sur Mathéo donne un conseil tout de suite, un clic sur la bulle la ferme ; secoue-le pour qu’il se taise 6 h.",
     matheo_water: &[
         "Une gorgée d’eau ? Moi j’ai été arrosé ce matin, à ton tour.",
@@ -6674,6 +6678,8 @@ pub static EN: Strings = Strings {
     unlock_gives_matheo: "Mathéo, a potted green plant, settles at the foot of the screen, outside Ronnie too, and looks after you. Every half hour, he reminds you to drink a glass of water or to move a little (stretches, a few steps, eyes far away). With the water comes a little watering can: click it and it waters Mathéo, delighted. Forget too often and he wilts, like a plant nobody waters. On Friday afternoon, sunglasses on, he announces the weekend. After two hours without a break, he insists. Well watered, he grows, up to a flower. He waves at Gérard and hides from the horde. Late in the evening, he yawns and sends you to bed. Grab him with the mouse to put him elsewhere, even on another screen, or throw him: he bounces off the edges and falls back down. Shake him hard left and right and he keeps quiet for 6 hours, his head spinning. Switch him off in Settings › Appearance.",
     desktop_matheo: "Mathéo at the foot of the screen",
     desktop_matheo_tips: "Mathéo's advice",
+    desktop_matheo_dock: "Mathéo on the Dock",
+    desktop_matheo_dock_desc: "To stand on the Dock, and at the very foot of the screen beside it, Mathéo needs Ronnie allowed in System Settings › Privacy & Security › Accessibility. Without it, he stays just above the Dock.",
     desktop_matheo_tips_desc: "Every half hour, a bubble reminds you to drink a glass of water or to move a little (stretches, a few steps, eyes far away), in turns; late in the evening, to go to bed. With the water, a watering can: a click on it waters Mathéo, else he wilts. Nothing while you're away from the screen. A click on Mathéo gives advice at once, a click on the bubble closes it; shake him to keep him quiet for 6 hours.",
     matheo_water: &[
         "A sip of water? I got watered this morning, your turn.",

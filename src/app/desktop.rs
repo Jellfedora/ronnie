@@ -786,14 +786,27 @@ fn matheo_save(at: Pos2) {
     }
 }
 
-/// Mathéo's place among the screens' foot: where he lands (the bottom of the screen under him, above
-/// the Dock), back on a screen if left between two.
-fn matheo_floor(at: Pos2, works: &[Rect]) -> (f32, f32) {
-    let Some(work) = works.iter().find(|w| (w.min.x..w.max.x).contains(&at.x)).or_else(|| works.iter().min_by(|a, b| a.center().distance(at).total_cmp(&b.center().distance(at)))) else {
+/// Mathéo's place among the screens' foot (`grounds`): where he lands (the bottom of the screen under
+/// him; on the Dock, `dock`, where it is), back on a screen if left between two.
+fn matheo_floor(at: Pos2, grounds: &[Rect], dock: Option<Rect>) -> (f32, f32) {
+    let Some(ground) = grounds.iter().find(|w| (w.min.x..w.max.x).contains(&at.x)).or_else(|| grounds.iter().min_by(|a, b| a.center().distance(at).total_cmp(&b.center().distance(at)))) else {
         return (at.x, at.y);
     };
     let half = MATHEO_H * 0.4;
-    (at.x.clamp(work.min.x + half, work.max.x - half), work.max.y)
+    let x = at.x.clamp(ground.min.x + half, ground.max.x - half);
+    // Standing on the Dock: his pot's middle over it.
+    let on_dock = dock.filter(|d| ground.contains(d.center()) && (d.min.x..d.max.x).contains(&x));
+    (x, on_dock.map_or(ground.max.y, |d| d.min.y))
+}
+
+/// The screens' foot Mathéo stands on: the Dock known (its frame, from macOS' accessibility), the very
+/// bottom of each screen (on the Dock where it is, beside it at the foot); else above the Dock or the
+/// task bar, all along.
+fn matheo_grounds(screens: &[(Rect, Rect)], works: &[Rect], dock: Option<Rect>) -> Vec<Rect> {
+    match dock {
+        Some(_) if !screens.is_empty() => screens.iter().map(|(s, w)| Rect::from_min_max(w.min, Pos2::new(w.max.x, s.max.y))).collect(),
+        _ => works.to_vec(),
+    }
 }
 
 /// Mathéo, Riff Hero's green plant, his pot's foot at `foot`, `size` tall: a terracotta pot with a
@@ -1532,6 +1545,8 @@ impl eframe::App for Overlay {
         self.pressed = mouse.pressed;
         let screens = os::screens();
         let works: Vec<Rect> = if screens.is_empty() { vec![self.work] } else { screens.iter().map(|s| s.1).collect() };
+        let dock = os::dock();
+        let grounds = matheo_grounds(&screens, &works, dock);
         // Mathéo: grabbed with the mouse (the window takes the click over him only), dragged, dropped:
         // he falls back to the foot of the screen under him.
         let mut plant_busy = false;
@@ -1636,9 +1651,9 @@ impl eframe::App for Overlay {
                     let left = works.iter().map(|w| w.min.x).fold(f32::INFINITY, f32::min) + half;
                     let right = works.iter().map(|w| w.max.x).fold(f32::NEG_INFINITY, f32::max) - half;
                     let top = works.iter().map(|w| w.min.y).fold(f32::INFINITY, f32::min) + MATHEO_H;
-                    let (rest_x, floor) = matheo_floor(at, &works);
+                    let (rest_x, floor) = matheo_floor(at, &grounds, dock);
                     let upright = plant.tilt.abs() < 0.005;
-                    if at.y < floor - 0.5 || plant.vy != 0.0 || plant.vx != 0.0 || !upright || rest_x != at.x {
+                    if at.y < floor - 0.5 || at.y > floor + 0.5 || plant.vy != 0.0 || plant.vx != 0.0 || !upright || rest_x != at.x {
                         let mut p = at;
                         let mut bonk = false;
                         plant.vy += 2600.0 * dt;
@@ -1654,7 +1669,7 @@ impl eframe::App for Overlay {
                             bonk = plant.vy < -300.0;
                             plant.vy = -plant.vy * 0.4;
                         }
-                        let (_, floor) = matheo_floor(p, &works);
+                        let (_, floor) = matheo_floor(p, &grounds, dock);
                         let grounded = p.y >= floor;
                         if grounded {
                             p.y = floor;
@@ -1684,7 +1699,7 @@ impl eframe::App for Overlay {
                             }
                         }
                         if grounded && plant.vx == 0.0 && plant.vy == 0.0 {
-                            p.x = matheo_floor(p, &works).0;
+                            p.x = matheo_floor(p, &grounds, dock).0;
                             if plant.tilt == 0.0 {
                                 matheo_save(p);
                             }
@@ -2190,6 +2205,88 @@ mod os {
         screens.iter().map(|s| (flip(s.frame()), flip(s.visibleFrame()))).find(|(frame, _)| frame.contains(at))
     }
 
+    thread_local! {
+        /// The Dock's frame as last read, and when.
+        static DOCK: std::cell::Cell<(Option<Rect>, Option<std::time::Instant>)> = const { std::cell::Cell::new((None, None)) };
+    }
+
+    /// The Dock's frame (points, top left origin), along the foot of a screen: read through the
+    /// accessibility (allowed to the app), every two seconds. Not allowed, hidden or on a side: none.
+    pub(super) fn dock() -> Option<Rect> {
+        DOCK.with(|cell| {
+            let (known, at) = cell.get();
+            if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                return known;
+            }
+            let dock = dock_now();
+            cell.set((dock, Some(std::time::Instant::now())));
+            dock
+        })
+    }
+
+    fn dock_now() -> Option<Rect> {
+        #[repr(C)]
+        #[derive(Default)]
+        struct CGSize {
+            width: f64,
+            height: f64,
+        }
+        #[link(name = "ApplicationServices", kind = "framework")]
+        unsafe extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+            fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+            fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void, value: *mut *const c_void) -> i32;
+            fn AXValueGetValue(value: *const c_void, kind: u32, out: *mut c_void) -> bool;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFArrayGetCount(array: *const c_void) -> isize;
+            fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        }
+        let bundle = objc2_foundation::NSString::from_str("com.apple.dock");
+        let pid = objc2_app_kit::NSRunningApplication::runningApplicationsWithBundleIdentifier(&bundle).firstObject()?.processIdentifier();
+        // SAFETY: CoreFoundation objects made by the copying calls, each released once; AXValues read
+        // into structs of their own type (1: CGPoint, 2: CGSize).
+        unsafe {
+            if !AXIsProcessTrusted() {
+                return None;
+            }
+            let app = AXUIElementCreateApplication(pid);
+            if app.is_null() {
+                return None;
+            }
+            let copy = |element: *const c_void, name: &str| -> *const c_void {
+                let key = objc2_foundation::NSString::from_str(name);
+                let mut value = std::ptr::null();
+                if AXUIElementCopyAttributeValue(element, objc2::rc::Retained::as_ptr(&key).cast(), &mut value) == 0 { value } else { std::ptr::null() }
+            };
+            let children = copy(app, "AXChildren");
+            let mut found = None;
+            if !children.is_null() {
+                for i in 0..CFArrayGetCount(children) {
+                    let child = CFArrayGetValueAtIndex(children, i);
+                    let (pos, size) = (copy(child, "AXPosition"), copy(child, "AXSize"));
+                    let (mut p, mut s) = (CGPoint { x: 0.0, y: 0.0 }, CGSize::default());
+                    if !pos.is_null() && !size.is_null() && AXValueGetValue(pos, 1, (&raw mut p).cast()) && AXValueGetValue(size, 2, (&raw mut s).cast()) {
+                        found = Some(Rect::from_min_size(Pos2::new(p.x as f32, p.y as f32), Vec2::new(s.width as f32, s.height as f32)));
+                    }
+                    for v in [pos, size] {
+                        if !v.is_null() {
+                            CFRelease(v);
+                        }
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                CFRelease(children);
+            }
+            CFRelease(app);
+            // Along the foot, in sight (not hidden below the screen, not on a side).
+            found.filter(|r| r.width() > r.height() && r.height() > 4.0 && screens().iter().any(|(s, _)| s.contains(r.center()) && r.min.y < s.max.y - 4.0))
+        }
+    }
+
     /// Every screen and its part left by the Dock and the menu bar (points, top left origin), left to
     /// right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
@@ -2349,6 +2446,11 @@ mod os {
         tune_all();
     }
 
+    /// The Dock's frame: macOS only (the task bar spans the whole width).
+    pub(super) fn dock() -> Option<Rect> {
+        None
+    }
+
     /// Every screen and its work area (points: each monitor's pixels over its own scale, as
     /// `screen_at` gives them), left to right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
@@ -2492,6 +2594,11 @@ mod os {
         screens().into_iter().find(|(s, _)| s.contains(at))
     }
 
+    /// The Dock's frame: macOS only (the task bar spans the whole width).
+    pub(super) fn dock() -> Option<Rect> {
+        None
+    }
+
     /// Every monitor and its part left by the panels (the desktop's work area cut to it), left to right.
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
         let Some((conn, root)) = x() else { return Vec::new() };
@@ -2562,6 +2669,11 @@ mod os {
 
     pub(super) fn tune(_cc: &eframe::CreationContext<'_>) {}
 
+    /// The Dock's frame: macOS only (the task bar spans the whole width).
+    pub(super) fn dock() -> Option<Rect> {
+        None
+    }
+
     pub(super) fn screens() -> Vec<(Rect, Rect)> {
         Vec::new()
     }
@@ -2599,10 +2711,24 @@ mod tests {
     fn matheo_lands_at_the_foot_of_his_screen() {
         let works = [Rect::from_min_max(Pos2::new(0.0, 25.0), Pos2::new(1440.0, 860.0)), Rect::from_min_max(Pos2::new(1440.0, 0.0), Pos2::new(3360.0, 1040.0))];
         // On the second screen: its foot. Between two (past the last): back on the nearest one.
-        assert_eq!(matheo_floor(Pos2::new(2000.0, 300.0), &works), (2000.0, 1040.0));
-        assert_eq!(matheo_floor(Pos2::new(700.0, 100.0), &works), (700.0, 860.0));
-        let (x, y) = matheo_floor(Pos2::new(3500.0, 100.0), &works);
+        assert_eq!(matheo_floor(Pos2::new(2000.0, 300.0), &works, None), (2000.0, 1040.0));
+        assert_eq!(matheo_floor(Pos2::new(700.0, 100.0), &works, None), (700.0, 860.0));
+        let (x, y) = matheo_floor(Pos2::new(3500.0, 100.0), &works, None);
         assert!(x < 3360.0 && y == 1040.0);
+    }
+
+    #[test]
+    fn matheo_stands_on_the_dock_and_beside_it_at_the_very_foot() {
+        // A screen of 1710 × 1107, the Dock 762 wide in its middle, 49 high, 55 left by it.
+        let screens = [(Rect::from_min_max(Pos2::ZERO, Pos2::new(1710.0, 1107.0)), Rect::from_min_max(Pos2::new(0.0, 34.0), Pos2::new(1710.0, 1052.0)))];
+        let works = [screens[0].1];
+        let dock = Some(Rect::from_min_size(Pos2::new(474.0, 1048.0), Vec2::new(762.0, 49.0)));
+        let grounds = matheo_grounds(&screens, &works, dock);
+        assert_eq!(matheo_floor(Pos2::new(800.0, 300.0), &grounds, dock), (800.0, 1048.0));
+        assert_eq!(matheo_floor(Pos2::new(1500.0, 300.0), &grounds, dock), (1500.0, 1107.0));
+        assert_eq!(matheo_floor(Pos2::new(200.0, 300.0), &grounds, dock), (200.0, 1107.0));
+        // The Dock unknown: above it, all along.
+        assert_eq!(matheo_floor(Pos2::new(1500.0, 300.0), &matheo_grounds(&screens, &works, None), None), (1500.0, 1052.0));
     }
 
     #[test]
