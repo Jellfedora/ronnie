@@ -1783,7 +1783,7 @@ impl App {
                 let corners = if horizontal { [a, a, b, b] } else { [a, b, b, a] };
                 let k = mesh.vertices.len() as u32;
                 mesh.colored_vertex(r.left_top(), corners[0]);
-                mesh.colored_vertex(r.right_top(), corners[if horizontal { 1 } else { 1 }]);
+                mesh.colored_vertex(r.right_top(), corners[1]);
                 mesh.colored_vertex(r.right_bottom(), corners[2]);
                 mesh.colored_vertex(r.left_bottom(), corners[3]);
                 mesh.add_triangle(k, k + 1, k + 2);
