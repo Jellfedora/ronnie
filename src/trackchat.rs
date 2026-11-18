@@ -32,7 +32,12 @@ pub struct Denial {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Item {
-    User { text: String },
+    User {
+        text: String,
+        /// The files sent with it (copied in `attachments_dir`), by name.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+    },
     Claude { text: String },
     /// A tool Claude used: its name and what on (a file, a command, a search).
     Tool { name: String, detail: String },
@@ -58,6 +63,39 @@ pub struct Chat {
 
 fn dir() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join("track-chats"))
+}
+
+/// Where the files sent to Claude in a project's conversation are kept (images pasted, files dropped
+/// or picked): Claude Code is given the right to read there.
+pub fn attachments_dir(project: &str) -> Option<PathBuf> {
+    let name: String = project.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    (!name.is_empty()).then(|| dir().map(|d| d.join("attachments").join(name))).flatten()
+}
+
+/// `file` copied in `dir` under a name of its own (a number before it when taken): its path.
+pub fn keep_file(dir: &Path, file: &Path) -> std::io::Result<PathBuf> {
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "fichier".into());
+    let out = free_name(dir, &name)?;
+    std::fs::copy(file, &out)?;
+    Ok(out)
+}
+
+/// A PNG kept in `dir` (an image pasted): its path.
+pub fn keep_png(dir: &Path, png: &[u8]) -> std::io::Result<PathBuf> {
+    let out = free_name(dir, &format!("image-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S")))?;
+    std::fs::write(&out, png)?;
+    Ok(out)
+}
+
+fn free_name(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let mut out = dir.join(name);
+    let mut k = 2;
+    while out.exists() {
+        out = dir.join(format!("{k}-{name}"));
+        k += 1;
+    }
+    Ok(out)
 }
 
 /// A project id as a file name (floor's ids are UUIDs: anything else is dropped).
@@ -218,6 +256,8 @@ pub struct Ask {
     pub allowed: Vec<String>,
     /// Told to Claude besides its usual prompt (the project, how to log tasks).
     pub system: String,
+    /// Folders Claude may read besides its own (the files sent).
+    pub add_dirs: Vec<PathBuf>,
 }
 
 /// `claude -p` started for `ask`; its events go to `tx` with the project's id, `wake` called after each.
@@ -232,6 +272,9 @@ pub fn start(ask: Ask, tx: Sender<(String, Event)>, wake: impl Fn() + Send + 'st
     // Always granted: logging time and reading the projects (the user asks it here).
     let mut allowed = vec![format!("Bash({}:*)", crate::claude::ronnie_command("track").trim())];
     allowed.extend(ask.allowed.iter().cloned());
+    if !ask.add_dirs.is_empty() {
+        cmd.arg("--add-dir").args(&ask.add_dirs);
+    }
     // Last: it takes all the words after it.
     cmd.arg("--allowedTools").args(&allowed);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -334,7 +377,7 @@ mod live {
         std::fs::create_dir_all(&dir).unwrap();
         let run = |prompt: &str, session: Option<String>, allowed: Vec<String>| {
             let (tx, rx) = std::sync::mpsc::channel();
-            let ask = Ask { project: "p".into(), cwd: dir.clone(), prompt: prompt.into(), session, accept_edits: false, allowed, system: "Answer in one short sentence.".into() };
+            let ask = Ask { add_dirs: Vec::new(), project: "p".into(), cwd: dir.clone(), prompt: prompt.into(), session, accept_edits: false, allowed, system: "Answer in one short sentence.".into() };
             start(ask, tx, || {}).unwrap();
             let mut events = Vec::new();
             while let Ok((_, e)) = rx.recv_timeout(std::time::Duration::from_secs(180)) {

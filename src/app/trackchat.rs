@@ -21,12 +21,16 @@ pub(super) struct ChatUi {
     input: HashMap<String, String>,
     /// "New conversation" clicked once (a second click forgets it).
     confirm_clear: Option<String>,
+    /// The files to send with the next message (kept in the project's attachments folder), by project.
+    pending: HashMap<String, Vec<PathBuf>>,
+    /// A file that couldn't be kept, said under the field.
+    attach_error: Option<String>,
 }
 
 impl Default for ChatUi {
     fn default() -> Self {
         let (tx, rx) = channel();
-        ChatUi { tx, rx, chats: HashMap::new(), running: HashMap::new(), input: HashMap::new(), confirm_clear: None }
+        ChatUi { tx, rx, chats: HashMap::new(), running: HashMap::new(), input: HashMap::new(), confirm_clear: None, pending: HashMap::new(), attach_error: None }
     }
 }
 
@@ -173,16 +177,26 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
     }
 
     /// A message to Claude about the project (`allowed`: actions the user just allowed).
-    fn track_chat_send(&mut self, p: &Project, prompt: String, allowed: Vec<String>) {
+    fn track_chat_send(&mut self, p: &Project, text: String, files: Vec<PathBuf>, allowed: Vec<String>) {
         let t = self.t();
         let Some(cwd) = self.track_chat_cwd(&p.id) else { return };
         let system = self.track_chat_system(p, &cwd);
         let (tx, ctx) = (self.track.chat.tx.clone(), self.ctx.clone());
         let chat = self.track.chat.chat(&p.id);
         if allowed.is_empty() {
-            chat.items.push(Item::User { text: prompt.clone() });
+            let names = files.iter().map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+            chat.items.push(Item::User { text: text.clone(), files: names });
         }
-        let ask = trackchat::Ask { project: p.id.clone(), cwd, prompt, session: chat.session.clone(), accept_edits: chat.accept_edits, allowed, system };
+        // The files sent: their paths, for Claude to read them (images and PDFs included).
+        let mut prompt = text;
+        if !files.is_empty() {
+            prompt.push_str(&format!("\n\n{}\n", t.track_chat_files_prompt));
+            for f in &files {
+                prompt.push_str(&format!("- {}\n", f.display()));
+            }
+        }
+        let add_dirs = trackchat::attachments_dir(&p.id).filter(|d| d.is_dir()).into_iter().collect();
+        let ask = trackchat::Ask { project: p.id.clone(), cwd, prompt, session: chat.session.clone(), accept_edits: chat.accept_edits, allowed, system, add_dirs };
         match trackchat::start(ask, tx, move || ctx.request_repaint()) {
             Ok(running) => {
                 self.track.chat.running.insert(p.id.clone(), running);
@@ -223,12 +237,19 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
             let bubble_w = (width * 0.78).min(720.0);
             for (k, item) in chat.items.iter().enumerate() {
                 match item {
-                    Item::User { text } => {
+                    Item::User { text, files } => {
                         ui.add_space(8.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                             Frame::NONE.fill(theme.accent.gamma_multiply(0.22)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
                                 ui.set_max_width(bubble_w);
-                                ui.add(egui::Label::new(egui::RichText::new(text).size(13.0).color(theme.text)).wrap());
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                    if !text.is_empty() {
+                                        ui.add(egui::Label::new(egui::RichText::new(text).size(13.0).color(theme.text)).wrap());
+                                    }
+                                    for f in files {
+                                        ui.label(egui::RichText::new(format!("📎 {f}")).size(11.5).color(theme.text_muted));
+                                    }
+                                });
                             });
                         });
                     }
@@ -311,8 +332,59 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
         let mut stop = false;
         let mut clear = false;
         let mut accept = chat.accept_edits;
+        // Files dropped on the tab, an image (or files copied in the Finder) pasted in the field: sent
+        // with the next message.
+        let (hovering, mut dropped) = ui.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
+        if hovering {
+            let r = ui.min_rect().shrink(4.0);
+            ui.painter().rect_stroke(r, 12.0, Stroke::new(1.5, theme.accent.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, t.track_chat_drop, FontId::proportional(14.0), theme.accent);
+        }
+        let mut pasted_png = None;
+        if focused
+            && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)))
+            && let Ok(mut clipboard) = arboard::Clipboard::new()
+        {
+            let files = clipboard.get().file_list().unwrap_or_default();
+            if !files.is_empty() {
+                dropped.extend(files);
+            } else if clipboard.get_text().map_or(true, |s| s.is_empty())
+                && let Ok(image) = clipboard.get_image()
+                && let Some(rgba) = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())
+            {
+                let mut png = std::io::Cursor::new(Vec::new());
+                if rgba.write_to(&mut png, image::ImageFormat::Png).is_ok() {
+                    pasted_png = Some(png.into_inner());
+                }
+            }
+        }
+        let mut pick = false;
+        let mut unpick = None;
+        if let Some(files) = self.track.chat.pending.get(&id).filter(|f| !f.is_empty()) {
+            ui.horizontal_wrapped(|ui| {
+                for (k, f) in files.iter().enumerate() {
+                    let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    Frame::NONE.fill(theme.tab_hover).corner_radius(6.0).inner_margin(egui::Margin { left: 8, right: 2, top: 2, bottom: 2 }).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("📎 {name}")).size(11.5).color(theme.text));
+                            if ui.add(egui::Button::new(egui::RichText::new("✕").size(10.0).color(theme.text_muted)).frame(false)).on_hover_text(t.track_chat_unattach).clicked() {
+                                unpick = Some(k);
+                            }
+                        });
+                    });
+                }
+            });
+            ui.add_space(4.0);
+        }
+        if let Some(e) = &self.track.chat.attach_error {
+            ui.label(egui::RichText::new(e).size(11.5).color(Color32::from_rgb(0xe0, 0x55, 0x55)));
+        }
+        let has_files = self.track.chat.pending.get(&id).is_some_and(|f| !f.is_empty());
         ui.horizontal(|ui| {
             let text = self.track.chat.input.entry(id.clone()).or_default();
+            if ui.add(egui::Button::new(egui::RichText::new("📎").size(15.0)).frame_when_inactive(false).min_size(Vec2::splat(30.0))).on_hover_text(t.track_chat_attach).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                pick = true;
+            }
             let w = ui.available_width() - 110.0;
             Frame::NONE.fill(theme.chrome_bg).stroke(Stroke::new(1.0, if focused { theme.accent } else { theme.tab_hover })).corner_radius(8.0).inner_margin(8.0).show(ui, |ui| {
                 ui.add(egui::TextEdit::multiline(text).id(input_id).frame(egui::Frame::NONE).desired_rows(2).desired_width(w - 16.0).hint_text(t.track_chat_hint));
@@ -323,7 +395,7 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
                         stop = true;
                     }
                 } else {
-                    let ready = !text.trim().is_empty();
+                    let ready = !text.trim().is_empty() || has_files;
                     if (ui.add_enabled(ready, egui::Button::new(egui::RichText::new(t.track_chat_send).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(100.0, 30.0))).clicked() || (enter && ready)) && ready {
                         send = Some(std::mem::take(text).trim().to_owned());
                     }
@@ -350,6 +422,33 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
             });
         });
 
+        if pick && let Some(files) = rfd::FileDialog::new().pick_files() {
+            dropped.extend(files);
+        }
+        if let Some(k) = unpick
+            && let Some(files) = self.track.chat.pending.get_mut(&id)
+            && k < files.len()
+        {
+            let f = files.remove(k);
+            let _ = std::fs::remove_file(f);
+        }
+        if (!dropped.is_empty() || pasted_png.is_some()) && let Some(dir) = trackchat::attachments_dir(&id) {
+            self.track.chat.attach_error = None;
+            let mut kept = Vec::new();
+            for f in dropped.iter().filter(|f| f.is_file()) {
+                match trackchat::keep_file(&dir, f) {
+                    Ok(p) => kept.push(p),
+                    Err(e) => self.track.chat.attach_error = Some(format!("{} : {e}", f.display())),
+                }
+            }
+            if let Some(png) = pasted_png {
+                match trackchat::keep_png(&dir, &png) {
+                    Ok(p) => kept.push(p),
+                    Err(e) => self.track.chat.attach_error = Some(format!("image : {e}")),
+                }
+            }
+            self.track.chat.pending.entry(id.clone()).or_default().extend(kept);
+        }
         if accept != chat.accept_edits {
             let c = self.track.chat.chat(&id);
             c.accept_edits = accept;
@@ -368,7 +467,9 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
         }
         if let Some(text) = send {
             self.track.chat.confirm_clear = None;
-            self.track_chat_send(p, text, Vec::new());
+            self.track.chat.attach_error = None;
+            let files = self.track.chat.pending.remove(&id).unwrap_or_default();
+            self.track_chat_send(p, text, files, Vec::new());
         }
         if let Some(k) = allow {
             let c = self.track.chat.chat(&id);
@@ -376,7 +477,7 @@ Open counters: {counters}. Open quotes: {quotes}. Last tasks: {recent}.",
                 *answered = Some(true);
                 let rules: Vec<String> = denials.iter().map(|d| d.rule.clone()).collect();
                 let prompt = t.track_chat_allowed_prompt.to_owned();
-                self.track_chat_send(p, prompt, rules);
+                self.track_chat_send(p, prompt, Vec::new(), rules);
             }
         }
         if let Some(k) = refuse {
