@@ -545,6 +545,8 @@ pub enum Happened {
     Paused(bool),
     /// A colleague kicked out after a pause too long (their name).
     Kicked(String),
+    /// Back in a game floor took up again after restarting, at the coffee break of that wave.
+    Restored(u32),
     Recruit,
     Kill { kind: Kind, x: f32, y: f32, by: u32 },
     Down(u32),
@@ -733,6 +735,9 @@ pub struct Online {
     pub frame: Option<Frame>,
     /// The frame before (to move things smoothly between the two).
     pub before: Option<Frame>,
+    /// Back after a lost connection from a game: floor says next whether it still has it (the room)
+    /// or not (the lobby).
+    missing: bool,
     pub chat: Vec<crate::blob::Said>,
     /// A room to join as soon as connected (the host's pseudo, after their invitation).
     pub join_host: Option<String>,
@@ -972,10 +977,10 @@ impl Online {
             Wire::Perks { list } => self.perks = list,
             Wire::Welcome { map, floors, shop } => {
                 // Back after a lost connection: floor sends the room again if it still has it (right
-                // after the welcome). Restarted meanwhile, its rooms are gone and it says nothing more:
-                // without this, the game stayed on the screen, frozen.
+                // after the welcome), or took it up again after restarting; else the lobby, and the
+                // game is lost (without this, it stayed on the screen, frozen).
                 if let Some(room) = self.room.take() {
-                    news.lost |= room.started && !room.watching;
+                    self.missing = room.started && !room.watching;
                     self.frame = None;
                     self.before = None;
                 }
@@ -988,9 +993,11 @@ impl Online {
                 }
             }
             Wire::Lobby { rooms } => {
+                news.lost |= std::mem::take(&mut self.missing);
                 self.lobby = rooms.into_iter().map(|(id, host, players, started)| Open { id, host, players, started }).collect();
             }
             Wire::Room { id, host, players, started, watching, sp, titles } => {
+                self.missing = false;
                 let was = self.playing();
                 let titles = titles.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect();
                 self.room = id.map(|id| Room { id, host, players, started, watching, spectators: sp, titles });
@@ -1134,6 +1141,7 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "won" => Happened::Won,
         "paused" => Happened::Paused(v.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false)),
         "kicked" => Happened::Kicked(v.get("name")?.as_str()?.to_owned()),
+        "restored" => Happened::Restored(u("wave")),
         "recruit" => Happened::Recruit,
         "kill" => {
             let kind = Kind::of(v.get("kind")?.as_str()?);
@@ -1253,10 +1261,17 @@ mod tests {
         assert!(online.playing() && online.frame.is_some());
         // Back, and floor no longer has the room: back to the lobby, told so.
         let news = take(&mut online, welcome);
-        assert!(news.lost && !online.playing() && online.frame.is_none());
-        // Back, and floor still has it: it sends it again right after.
+        assert!(!news.lost && !online.playing() && online.frame.is_none(), "not before floor says");
+        let news = take(&mut online, r#"{"t":"lobby","rooms":[]}"#);
+        assert!(news.lost);
+        assert!(!take(&mut online, r#"{"t":"lobby","rooms":[]}"#).lost, "told once");
+        // Back, and floor still has it (or took it up again): it sends it again right after, nothing lost.
         take(&mut online, r#"{"t":"room","id":3,"host":"Dan","players":[[1,"Dan",0],[2,"Jo",1]],"started":true}"#);
-        assert!(online.playing());
+        let news = take(&mut online, welcome);
+        let news2 = take(&mut online, r#"{"t":"room","id":5,"host":"Dan","players":[[1,"Dan",0],[2,"Jo",1]],"started":true}"#);
+        assert!(!news.lost && !news2.lost && online.playing());
+        let news = take(&mut online, r#"{"t":"news","l":[{"t":"restored","wave":6}]}"#);
+        assert_eq!(news.happened, vec![Happened::Restored(6)]);
         online.chat.clear();
         take(&mut online, r#"{"t":"chat","from":"Jo","text":"go"}"#);
         assert_eq!(online.chat[0].text, "go");

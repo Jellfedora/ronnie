@@ -304,6 +304,11 @@ impl App {
                 Happened::Kicked(name) => {
                     self.monday.banner = Some((t.monday_kicked.replace("{n}", &name), theme.ansi[1], now));
                 }
+                Happened::Restored(wave) => {
+                    self.monday.menu = false;
+                    self.monday.ready = false;
+                    self.monday.banner = Some((t.monday_restored.replace("{n}", &wave.to_string()), theme.accent, now));
+                }
                 Happened::Boss | Happened::Recruit => {
                     let text = if h == Happened::Boss { t.monday_boss } else { t.monday_recruit };
                     self.monday.banner = Some((text.to_owned(), theme.ansi[1], now));
@@ -1479,6 +1484,11 @@ impl App {
         }
         if let Status::Reconnecting(_) = self.monday.online.status {
             paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 30.0), t.monday_reconnecting, theme.accent, &theme);
+        }
+        // Paused by nobody, with colleagues: floor took the game up again after restarting and waits
+        // for them all (a minute at most after the first).
+        else if frame.paused && frame.paused_by == 0 && !solo && !watching {
+            paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 30.0), t.monday_waiting_back, theme.accent, &theme);
         }
         if let (false, false, Some(p)) = (frame.wave_on, self.monday.menu, mine.filter(|p| p.state == State::Up)) {
             self.monday_ready_call(ui, field, &frame, p.ready, now);
