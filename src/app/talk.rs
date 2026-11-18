@@ -507,8 +507,9 @@ impl App {
             if first || kept != self.config.settings.talk_nicknames {
                 self.config.settings.talk_nicknames = kept;
                 self.save_config();
-                self.talk.set_nicknames(&self.config.settings.talk_nicknames);
             }
+            // Always: a connection starts from nothing (the names given were lost with what it knew).
+            self.talk.set_nicknames(&self.config.settings.talk_nicknames);
         }
         if news.forgotten {
             if let Some(account) = &mut self.config.settings.floor {
