@@ -4,6 +4,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-18
+
 ### Nouveautés
 
 - **Statistiques d'usage anonymes** : Ronnie compte combien de fois servent ses fonctions (catégories ouvertes, serveurs SSH, bases et requêtes, bouton Claude, notes, suivi, jeux, commandes `ronnie …` de Claude), ses lancements, ses heures d'ouverture, sa version, le système et ses plantages, et les envoie au serveur floor toutes les demi-heures. Anonymes : un identifiant tiré au hasard, sans le compte, ni noms, chemins, serveurs ou contenus (le dossier personnel est retiré des rapports de plantage). Actives par défaut, à couper dans Paramètres › Général › Statistiques d'usage : ce qui n'était pas encore envoyé est alors oublié. Demande floor 0.23.0.
