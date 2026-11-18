@@ -1864,9 +1864,12 @@ impl App {
         let card_top = self.music_card(ui, left, row_w, card_top);
         // The account's card: in the games and the chat (a click: the account window).
         let card_top = if matches!(self.category(), Category::Games | Category::Talk) { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
-        // Where a theme's scene starts, above the cards: the list stops over it (never on it).
+        // Where a theme's scene starts, above the cards: the list stops over it (never on it). A scene
+        // `h` high only when the list keeps its room above it (LIST_MIN): in a short window, no scene
+        // rather than the list going behind it.
         let mut scene_top = card_top;
-        if self.theme.hyperspace {
+        let fits = |h: f32| card_top - h >= logo_rect.max.y + LIST_MIN;
+        if self.theme.hyperspace && fits(116.0) {
             // Star Wars: the starfield, the Death Star, the droid (who beeps when hovered), the chase, just
             // above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 116.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
@@ -1876,7 +1879,7 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::hyperspace::droid_rect(field), ui.id().with("droid"), Sense::hover()).on_hover_text("Bip-bou-bip ! Bou-diiip !");
         }
-        if self.theme.thrones {
+        if self.theme.thrones && fits(150.0) {
             // Game of Thrones: the Wall, its White Walkers and the snow, just above the cards; now and then
             // the dragon dives down the whole sidebar, above what is in it (and never out of it).
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
@@ -1890,7 +1893,7 @@ impl App {
                 super::thrones::flight(&painter, bar, t, now);
             }
         }
-        if self.theme.monday {
+        if self.theme.monday && fits(150.0) {
             // Lundi matin: night over the tower, its zombies shambling by, a hand out of the ground.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
             scene_top = field.min.y;
@@ -1898,7 +1901,7 @@ impl App {
             let again = super::monday_theme::scene(ui.painter(), field, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
         }
-        if self.theme.wizard {
+        if self.theme.wizard && fits(150.0) {
             // Gryffindor: the castle at night, the candles, the Snitch, the owl, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
             scene_top = field.min.y;
@@ -1907,7 +1910,7 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::wizard::castle_rect(field), ui.id().with("castle"), Sense::hover()).on_hover_text(t.wizard_castle);
         }
-        if self.theme.wallstreet {
+        if self.theme.wallstreet && fits(110.0) {
             // Wall Street: the towers at night and the ticker over them, the company's valuation first,
             // just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 110.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
@@ -1918,7 +1921,7 @@ impl App {
             let again = super::wallstreet::scene(ui.painter(), field, &self.theme, valuation.as_deref(), now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
         }
-        if self.theme.office {
+        if self.theme.office && fits(96.0) {
             // Open space: the cork board, the plant, the coffee machine (it speaks when hovered), the water
             // cooler, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 96.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
@@ -2513,6 +2516,9 @@ pub(super) fn download_text((done, total): (u64, u64), t: &Strings) -> String {
 
 /// Tips about Ronnie scrolling from right to left along `rect` (with the shortcuts as set), fading at
 /// both ends; the pointer over them holds them still.
+/// The least room the sidebar's list keeps above a theme's scene (less: the scene isn't shown).
+const LIST_MIN: f32 = 200.0;
+
 pub(super) fn tips_ticker(ui: &mut Ui, rect: Rect, theme: &crate::theme::Theme, t: &Strings, shortcuts: &config::Shortcuts) {
     const SPEED: f32 = 45.0; // points a second
     const GAP: f32 = 56.0;

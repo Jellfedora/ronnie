@@ -4,6 +4,10 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+### Corrections
+
+- Barre latérale : dans une fenêtre basse, la liste (serveurs SSH, profils…) ne passe plus sous le décor du thème en transparence. Le décor n'apparaît que s'il reste de la place au-dessus pour la liste.
+
 ## [1.4.0] - 2026-11-18
 
 ### Nouveautés
