@@ -327,11 +327,11 @@ fn matheo_thirst_file() -> Option<std::path::PathBuf> {
     crate::config::config_dir().map(|d| d.join("matheo-thirst.json"))
 }
 
-/// Late in the evening (from 9 pm to 5 am): he's tired, and sends you to bed.
+/// Late in the evening (from 11 pm to 5 am): he's tired, and sends you to bed.
 fn late() -> bool {
     use chrono::Timelike;
     let h = chrono::Local::now().hour();
-    !(5..21).contains(&h)
+    !(5..23).contains(&h)
 }
 
 impl Plant {
