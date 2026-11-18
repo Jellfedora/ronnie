@@ -10,8 +10,17 @@
 //! with no events nor resignations, and never into the red (the catching up stops before).
 //!
 //! The texts are in both languages, here (`Tx`: French, English).
+//!
+//! Past the listing: `growth` (the optimisations, the board, the rivals, the offices abroad, the star
+//! employees, the products' roadmap, the talents and challenges of a sale) and `life` (the founder's
+//! private life, both ways with the company).
 
 use serde::{Deserialize, Serialize};
+
+mod growth;
+mod life;
+pub use growth::*;
+pub use life::*;
 
 /// A text in French and in English.
 pub type Tx = (&'static str, &'static str);
@@ -264,7 +273,7 @@ pub struct Stage {
     pub valuation: f64,
 }
 
-pub const STAGES: [Stage; 7] = [
+pub const STAGES: [Stage; 9] = [
     Stage { name: ("Garage", "Garage"), valuation: 0.0 },
     Stage { name: ("Start-up", "Start-up"), valuation: 50_000.0 },
     Stage { name: ("PME", "Small business"), valuation: 500_000.0 },
@@ -272,7 +281,12 @@ pub const STAGES: [Stage; 7] = [
     Stage { name: ("Grosse boîte", "Big company"), valuation: 60_000_000.0 },
     Stage { name: ("Licorne", "Unicorn"), valuation: 1_000_000_000.0 },
     Stage { name: ("En bourse", "Listed"), valuation: 15_000_000_000.0 },
+    Stage { name: ("Géant de la tech", "Tech giant"), valuation: 200_000_000_000.0 },
+    Stage { name: ("Empire mondial", "World empire"), valuation: 2_000_000_000_000.0 },
 ];
+
+/// The furthest stage floor knows (the ones past it are sent as it).
+pub const FLOOR_STAGE: u8 = 6;
 
 /// The stage from which the company can be sold.
 pub const SELL_STAGE: u8 = 2;
@@ -346,6 +360,9 @@ pub struct Employee {
     pub trait_id: Option<String>,
     #[serde(default)]
     pub task: Task,
+    /// One of the star employees (`STARS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub star: Option<String>,
 }
 
 impl Employee {
@@ -422,6 +439,12 @@ pub struct Product {
     pub bugs: f64,
     /// Seconds of outage left.
     pub down: f64,
+    /// The roadmap's focus (`FOCUSES`).
+    #[serde(default)]
+    pub focus: u8,
+    /// The price, −2 (free, with ads) to +2 (luxury) (`PRICES`).
+    #[serde(default)]
+    pub price: i8,
 }
 
 impl Product {
@@ -445,7 +468,7 @@ impl Product {
     }
 
     pub fn revenue(&self) -> f64 {
-        if self.version == 0 || self.down > 0.0 { 0.0 } else { self.users * self.kind().price }
+        if self.version == 0 || self.down > 0.0 { 0.0 } else { self.users * self.kind().price * self.price_mult() }
     }
 }
 
@@ -468,11 +491,17 @@ pub struct Policy {
     /// What the other roles do by themselves, when there is one.
     #[serde(default)]
     pub auto: Auto,
+    /// The founder's pay, 0 (none) to 3 (`Corp::founder_pay`).
+    #[serde(default)]
+    pub founder_pay: u8,
+    /// The dividends, 0 (none), 1 (10 % of the profit), 2 (30 %).
+    #[serde(default)]
+    pub dividends: u8,
 }
 
 impl Default for Policy {
     fn default() -> Self {
-        Self { remote: 0, hours: 1, salary: 1, benefits: 0, marketing: 0, training: 0, auto_accept: true, auto: Auto::default() }
+        Self { remote: 0, hours: 1, salary: 1, benefits: 0, marketing: 0, training: 0, auto_accept: true, auto: Auto::default(), founder_pay: 0, dividends: 0 }
     }
 }
 
@@ -543,6 +572,16 @@ pub enum NewsKind {
     Away,
     Sold,
     Unpaid,
+    Upgrade,
+    Branch,
+    Rival,
+    Acquired,
+    Quarter,
+    Ousted,
+    Challenge,
+    Pivot,
+    Life,
+    Season,
 }
 
 /// A line of the company's news.
@@ -569,6 +608,8 @@ pub struct Stats {
     pub earned: f64,
     pub launched: u32,
     pub events: u32,
+    #[serde(default)]
+    pub acquired: u32,
 }
 
 /// What stays when the company is sold.
@@ -582,7 +623,29 @@ pub struct Legacy {
     /// The most a sale brought (the giant cheque's).
     #[serde(default)]
     pub best_sale: f64,
+    /// The talents the stars went into (`TALENTS`: id → level).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub talents: std::collections::BTreeMap<String, u32>,
+    /// The challenges won (`CHALLENGES`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub challenges: Vec<String>,
 }
+
+impl Legacy {
+    pub fn talent(&self, id: &str) -> u32 {
+        self.talents.get(id).copied().unwrap_or(0)
+    }
+
+    /// The stars sent to floor: floor's golden ticker frame comes with one (« a company sold »), so a
+    /// player with sales behind them but no star left (a new season) sends one.
+    pub fn floor_stars(&self) -> u32 {
+        self.stars.max(self.sales.min(1))
+    }
+}
+
+/// The game's season: a company from an older one starts again from scratch, its stars too, its
+/// records kept (`Corp::new_season`). Season 1: the longer game and the private life.
+pub const SEASON: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Corp {
@@ -639,6 +702,48 @@ pub struct Corp {
     /// The roles whose automations are paused (job id → seconds left, `PAUSED_UNTIL_RESUMED` until resumed).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub paused: std::collections::BTreeMap<String, f64>,
+    /// The optimisations' levels (`UPGRADES`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub upgrades: std::collections::BTreeMap<String, u32>,
+    /// Listed: the board of directors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<Board>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rivals: Vec<Rival>,
+    /// A new rival in.
+    #[serde(default = "first_rival")]
+    pub rival_in: f64,
+    /// The offices abroad.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<Branch>,
+    /// The challenge of this run (`CHALLENGES`), and the time played in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge: Option<String>,
+    #[serde(default)]
+    pub run_time: f64,
+    /// The founder's private life (kept when the company is sold).
+    #[serde(default)]
+    pub life: Life,
+    /// The season it was started in (`SEASON`).
+    #[serde(default)]
+    pub season: u32,
+    /// The tour of what season 2 brought, for those who had done the tutorial (`TUTORIAL_DONE`: over).
+    #[serde(default = "tour_done")]
+    pub whats_new: u8,
+    /// The one-off tips seen (bits: `TIP_RIVAL`).
+    #[serde(default)]
+    pub tips: u8,
+}
+
+fn tour_done() -> u8 {
+    TUTORIAL_DONE
+}
+
+/// The tip on the rivals, shown when the first one comes.
+pub const TIP_RIVAL: u8 = 1;
+
+fn first_rival() -> f64 {
+    600.0
 }
 
 /// A role paused until the player resumes it.
@@ -664,6 +769,8 @@ pub struct Mods {
     pub morale: f64,
     pub quits: f64,
     pub candidate_level: u8,
+    /// The products' upkeep.
+    pub upkeep: f64,
 }
 
 /// The result of a step, for the news of a time away.
@@ -717,9 +824,30 @@ impl Corp {
             legacy,
             tutorial: 0,
             paused: Default::default(),
+            upgrades: Default::default(),
+            board: None,
+            rivals: Vec::new(),
+            rival_in: first_rival(),
+            branches: Vec::new(),
+            challenge: None,
+            run_time: 0.0,
+            life: Life::default(),
+            season: SEASON,
+            whats_new: TUTORIAL_DONE,
+            tips: 0,
         };
-        let founder = Employee { id: c.id(), name: String::new(), job: "founder".into(), level: 1, xp: 0.0, morale: 70.0, salary: 0.0, skills: JOBS[0].skills, trait_id: None, task: Task::Contracts };
+        let founder = Employee { id: c.id(), name: String::new(), job: "founder".into(), level: 1, xp: 0.0, morale: 70.0, salary: 0.0, skills: JOBS[0].skills, trait_id: None, task: Task::Contracts, star: None };
         c.staff.push(founder);
+        // What the talents give from the start.
+        c.cash += 20_000.0 * c.legacy.talent("seed") as f64;
+        c.rep += 15.0 * c.legacy.talent("network") as f64;
+        if c.legacy.talent("veille") > 0 {
+            c.techs.push("git".into());
+            c.techs.push("cloud".into());
+        }
+        if c.legacy.talent("coworking") > 0 {
+            c.office = 1;
+        }
         c.refresh_candidates();
         // A first offer at once, small.
         let first = c.make_contract(0);
@@ -798,8 +926,9 @@ impl Corp {
 
     /// The people the office (and the remote work) takes.
     pub fn capacity(&self) -> usize {
-        let base = self.office().capacity as f64;
-        (base * [1.0, 1.25, 1.5][self.policy.remote.min(2) as usize]).floor() as usize
+        let base = (self.office().capacity + self.branch_seats()) as f64;
+        let seats = (base * [1.0, 1.25, 1.5][self.policy.remote.min(2) as usize]).floor() as usize;
+        if self.challenge_is("small") { seats.min(12) } else { seats }
     }
 
     pub fn max_contracts(&self) -> usize {
@@ -849,6 +978,7 @@ impl Corp {
             morale: 0.0,
             quits: 1.0,
             candidate_level: 0,
+            upkeep: 1.0,
         };
         for t in &self.techs {
             match t.as_str() {
@@ -923,6 +1053,7 @@ impl Corp {
         if self.count(Special::Cto) > 0 {
             m.research *= 1.5;
         }
+        self.growth_mods(&mut m);
         for b in &self.boosts {
             match b.kind {
                 BoostKind::Prod => m.prod *= b.mult,
@@ -938,8 +1069,9 @@ impl Corp {
         let p = &self.policy;
         let salaries: f64 = self.staff.iter().map(|e| e.salary).sum();
         let salaries = salaries * [0.8, 1.0, 1.25][p.salary.min(2) as usize] * (1.0 + [0.0, 0.06, 0.15][p.benefits.min(2) as usize] + [0.0, 0.05, 0.12][p.training.min(2) as usize]);
+        let salaries = salaries * (1.0 - 0.04 * self.branch_level("lyon") as f64);
         let upkeep: f64 = self.perks.iter().filter_map(|p| perk(p)).map(|p| p.upkeep).sum();
-        salaries + self.office().rent + upkeep + self.marketing_cost()
+        salaries + self.office().rent + upkeep + self.marketing_cost() + self.branch_rent() + self.founder_pay()
     }
 
     pub fn marketing_cost(&self) -> f64 {
@@ -955,8 +1087,10 @@ impl Corp {
         let team: f64 = self.staff.iter().map(|e| 1_500.0 * e.level_mult()).sum();
         let techs: f64 = self.techs.iter().filter_map(|t| tech(t)).map(|t| t.cost * 2.0).sum();
         let offices: f64 = OFFICES[..=self.office as usize].iter().map(|o| o.price * 0.5).sum();
-        let v = self.cash.max(0.0) + profit * 6_000.0 + self.product_revenue() * 12_000.0 + self.rep * 200.0 + team + techs + offices;
-        if self.has_tech("blockchain") { v * 1.05 } else { v }
+        let branches: f64 = self.branches.iter().filter_map(|b| branch_kind(&b.id).map(|k| k.price * 0.5 * b.level as f64)).sum();
+        let v = self.cash.max(0.0) + profit * 6_000.0 + self.product_revenue() * 12_000.0 + self.rep * 200.0 + team + techs + offices + branches;
+        let v = if self.has_tech("blockchain") { v * 1.05 } else { v };
+        v * (1.0 + 0.03 * self.branch_level("sf") as f64) * self.share_mult()
     }
 
     /// The furthest stage ever reached, sales included (what the rewards go by).
@@ -985,7 +1119,7 @@ impl Corp {
     pub fn hire(&mut self, candidate: usize) -> bool {
         let Some(e) = self.candidates.get(candidate) else { return false };
         let fee = self.hire_fee(e);
-        if self.staff.len() >= self.capacity() || self.cash < fee || (e.job == "cto" && self.count(Special::Cto) > 0) {
+        if self.staff.len() >= self.capacity() || self.cash < fee || (e.job == "cto" && self.count(Special::Cto) > 0) || !self.allowed(e) {
             return false;
         }
         let e = self.candidates.remove(candidate);
@@ -1143,7 +1277,7 @@ impl Corp {
 
     pub fn can_launch(&self, kind: usize) -> bool {
         PRODUCTS.get(kind).is_some_and(|p| {
-            self.has_tech(p.tech) && self.stage >= p.stage && self.cash >= p.cost && self.products.len() < self.max_products() && !self.products.iter().any(|q| q.kind as usize == kind)
+            self.has_tech(p.tech) && self.stage >= p.stage && self.cash >= p.cost && self.products.len() < self.max_products() && !self.products.iter().any(|q| q.kind as usize == kind) && !self.challenge_is("contracts")
         })
     }
 
@@ -1153,7 +1287,7 @@ impl Corp {
         }
         self.cash -= PRODUCTS[kind].cost;
         let id = self.id();
-        self.products.push(Product { id, kind: kind as u8, version: 0, progress: 0.0, users: 0.0, bugs: 0.0, down: 0.0 });
+        self.products.push(Product { id, kind: kind as u8, version: 0, progress: 0.0, users: 0.0, bugs: 0.0, down: 0.0, focus: 0, price: 0 });
         self.acted();
         true
     }
@@ -1176,14 +1310,14 @@ impl Corp {
     /// The choice made for the event waiting: what came of it (its outcome's index).
     pub fn choose(&mut self, choice: usize) -> Option<usize> {
         let id = self.event.take()?;
-        let def = EVENTS.iter().find(|e| e.id == id)?;
+        let def = event(&id)?;
         let c = def.choices.get(choice)?;
         let who = self.staff.iter().find(|e| e.id == self.event_who).map(|e| e.name.clone()).unwrap_or_default();
         let before = self.cash;
         let outcome = (c.apply)(self);
         let delta = self.cash - before;
         self.stats.events += 1;
-        let k = EVENTS.iter().position(|e| e.id == id).unwrap_or(0);
+        let k = (0..event_count()).find(|&k| event_at(k).id == id).unwrap_or(0);
         self.say(NewsKind::Event, &who, k as f64, (choice * 10 + outcome) as f64);
         if let Some(n) = self.news.last_mut() {
             n.cash = delta;
@@ -1193,11 +1327,54 @@ impl Corp {
     }
 
     /// Sold: the stars it brings added, and everything starts again in the garage.
+    #[cfg(test)]
     pub fn sell(&mut self, now: i64) -> u32 {
+        self.sell_with(now, None)
+    }
+
+    /// A company from an older season (`SEASON`), started again: back in the garage, no stars nor
+    /// talents; the records kept (the best valuation, the stage it reached, the sales and the best
+    /// one, the challenges won), and the tutorial as it was.
+    pub fn new_season(&self, now: i64) -> Corp {
+        let old = &self.legacy;
+        let legacy = Legacy {
+            stars: 0,
+            sales: old.sales,
+            best: old.best.max(self.valuation()),
+            best_sale: old.best_sale,
+            talents: Default::default(),
+            challenges: old.challenges.clone(),
+        };
+        let mut c = Corp::new(now, self.rng ^ 0x5EA5_0001, legacy);
+        // One more action: on a sync, the new season wins over the old company.
+        c.actions = self.actions + 1;
+        c.tutorial = self.tutorial;
+        // The tutorial done already: a tour of what's new instead (not done: its new steps will tell).
+        c.whats_new = if self.tutorial == TUTORIAL_DONE { 0 } else { TUTORIAL_DONE };
+        c.say(NewsKind::Season, "", 0.0, 0.0);
+        c
+    }
+
+    /// The founder's share of a sale, onto the personal account.
+    pub fn sale_share(&self) -> f64 {
+        self.valuation() * 0.1 + 10_000.0 * self.legacy.talent("nestegg") as f64
+    }
+
+    /// Sold, and the next run under a challenge (`CHALLENGES`) if one is picked.
+    pub fn sell_with(&mut self, now: i64, challenge: Option<&str>) -> u32 {
         let stars = self.sell_stars();
         if stars == 0 {
             return 0;
         }
+        let value = self.valuation();
+        self.sell_as(now, challenge, stars, self.sale_share());
+        self.say(NewsKind::Sold, "", value, stars as f64);
+        stars
+    }
+
+    /// Everything starts again in the garage: `stars` more, `share` onto the personal account, the
+    /// private life kept.
+    fn sell_as(&mut self, now: i64, challenge: Option<&str>, stars: u32, share: f64) {
         let mut legacy = self.legacy.clone();
         legacy.stars += stars;
         legacy.sales += 1;
@@ -1205,13 +1382,19 @@ impl Corp {
         legacy.best_sale = legacy.best_sale.max(self.valuation());
         let actions = self.actions + 1;
         let tutorial = self.tutorial;
+        let (whats_new, tips) = (self.whats_new, self.tips);
         let seed = self.next();
-        let value = self.valuation();
+        let mut life = std::mem::take(&mut self.life);
+        life.account += share;
+        let founder_pay = self.policy.founder_pay;
         *self = Corp::new(now, seed, legacy);
         self.actions = actions;
         self.tutorial = tutorial;
-        self.say(NewsKind::Sold, "", value, stars as f64);
-        stars
+        self.whats_new = whats_new;
+        self.tips = tips;
+        self.life = life;
+        self.policy.founder_pay = founder_pay;
+        self.challenge = challenge.and_then(growth::challenge).map(|c| c.id.to_owned());
     }
 
     // --- the news
@@ -1237,12 +1420,13 @@ impl Corp {
         let trait_id = self.chance(0.45).then(|| TRAITS[self.pick(TRAITS.len())].id.to_owned());
         let salary = j.salary * 1.15f64.powi(level as i32 - 1) * (0.9 + 0.2 * self.rand());
         let task = if j.special == Special::Qa { Task::Refactor } else { Task::Contracts };
-        Employee { id: self.id(), name: self.make_name(), job: j.id.to_owned(), level, xp: 0.0, morale: 65.0 + 10.0 * self.rand(), salary, skills, trait_id, task }
+        Employee { id: self.id(), name: self.make_name(), job: j.id.to_owned(), level, xp: 0.0, morale: 65.0 + 10.0 * self.rand(), salary, skills, trait_id, task, star: None }
     }
 
     pub fn refresh_candidates(&mut self) {
         let level_bonus = self.mods().candidate_level;
-        let jobs: Vec<&'static str> = JOBS.iter().filter(|j| j.stage <= self.stage).map(|j| j.id).collect();
+        let no_sales = self.challenge_is("no_sales");
+        let jobs: Vec<&'static str> = JOBS.iter().filter(|j| j.stage <= self.stage && !(no_sales && j.special == Special::Sales)).map(|j| j.id).collect();
         let n = 3 + self.count(Special::Hr).min(3);
         let mut list = Vec::new();
         for _ in 0..n {
@@ -1253,6 +1437,7 @@ impl Corp {
         }
         self.candidates = list;
         self.candidates_in = 300.0;
+        self.maybe_star_candidate();
     }
 
     fn make_contract(&mut self, tier: u8) -> Contract {
@@ -1304,6 +1489,7 @@ impl Corp {
             - if unpaid { 40.0 } else { 0.0 }
             - (self.debt / 10.0);
         let k = 1.0 - (-dt / 120.0).exp();
+        let founder_stress = self.life.stress / 4.0;
         for e in &mut self.staff {
             let mut target = base;
             if e.has("grumpy") {
@@ -1320,7 +1506,8 @@ impl Corp {
             }
             target -= crunch;
             if e.founder() {
-                target = target.max(40.0);
+                // The founder's own life weighs on their morale.
+                target = (target - founder_stress).max(25.0);
             }
             e.morale += (target.clamp(0.0, 100.0) - e.morale) * k;
         }
@@ -1335,8 +1522,12 @@ impl Corp {
         let mut debt_up = 0.0;
         let mut debt_down = 0.0;
         let mut research = 0.0;
+        let founder_work = self.life.work_factor();
         for e in &self.staff {
             let mut f = m.prod * (0.5 + e.morale / 100.0) * lead_bonus * debt_drag * e.level_mult();
+            if e.founder() {
+                f *= founder_work;
+            }
             if e.has("fast") {
                 f *= 1.15;
             }
@@ -1423,20 +1614,23 @@ impl Corp {
         if n > 0 {
             let share = pools[1].map(|x| x / n as f64);
             let rolls: Vec<f64> = (0..n).map(|_| self.rand()).collect();
+            let pressure: Vec<f64> = self.products.iter().map(|p| self.rival_pressure(p.kind)).collect();
             let mut said = Vec::new();
-            for (pr, roll) in self.products.iter_mut().zip(rolls) {
+            for ((pr, roll), pressure) in self.products.iter_mut().zip(rolls).zip(pressure) {
                 let kind = pr.kind();
                 let mut points: f64 = (0..5).map(|s| share[s] * kind.weights[s]).sum();
                 if pr.version > 0 {
-                    // Its users' upkeep first.
-                    let upkeep = pr.upkeep() * dt;
+                    // Its users' upkeep first (less on Performance).
+                    let perf = pr.focus == 1;
+                    let upkeep = pr.upkeep() * m.upkeep * if perf { 0.7 } else { 1.0 } * dt;
                     let kept = if upkeep > 0.0 { (points / upkeep).min(1.0) } else { 1.0 };
                     points = (points - upkeep).max(0.0);
                     let worse = (1.0 - kept) * 0.08 * m.bugs;
-                    let better = kept * 0.03;
+                    let better = kept * 0.03 * if perf { 2.0 } else { 1.0 };
                     pr.bugs = (pr.bugs + (worse - better) * dt + self.debt / 100.0 * 0.01 * m.bugs * dt).clamp(0.0, 100.0);
-                    // Toward the market its version reaches, at the marketing's pace.
-                    let target = kind.market * pr.quality() * m.users * (1.0 - pr.bugs / 200.0);
+                    // Toward the market its version reaches, at the marketing's pace (its price, its
+                    // focus, the rivals of its kind).
+                    let target = kind.market * pr.quality() * m.users * (1.0 - pr.bugs / 200.0) * pr.users_mult() * (1.0 - pressure);
                     let rate = if target > pr.users { 0.002 * (1.0 + 0.3 * p.marketing as f64) } else { 0.004 };
                     pr.users += (target - pr.users) * (1.0 - (-rate * dt).exp());
                     pr.users -= pr.users * pr.bugs / 100.0 * 0.0005 * dt;
@@ -1453,7 +1647,7 @@ impl Corp {
                     pr.users = pr.users.max(0.0);
                     revenue += pr.revenue() * dt;
                 }
-                pr.progress += points;
+                pr.progress += points * if pr.version > 0 { pr.build_share() } else { 1.0 };
                 if pr.progress >= pr.next_work() {
                     pr.progress -= pr.next_work();
                     pr.version += 1;
@@ -1481,6 +1675,10 @@ impl Corp {
         let a = 1.0 - (-dt / 300.0).exp();
         self.spend += (costs / dt - self.spend) * a;
         self.income *= 1.0 - a;
+
+        // The founder's pay and dividends, the board, the rivals, the challenge; the private life.
+        self.run_growth(dt, online, sum);
+        self.run_life(dt, online);
 
         // The experience.
         let mentor = if self.staff.iter().any(|e| e.has("mentor")) { 1.2 } else { 1.0 };
@@ -1620,6 +1818,8 @@ impl Corp {
             let next = TECHS.iter().filter(|t| self.can_research(t.id)).min_by(|x, y| x.cost.total_cmp(&y.cost)).map(|t| t.id);
             if let Some(id) = next {
                 self.learn(id);
+            } else if let Some(id) = UPGRADES.iter().filter(|u| self.can_upgrade(u.id)).min_by(|x, y| self.upgrade_cost(x.id).total_cmp(&self.upgrade_cost(y.id))).map(|u| u.id) {
+                self.learn_upgrade(id);
             }
         }
         if self.works(Special::Office) {
@@ -1678,8 +1878,9 @@ impl Corp {
                 let special = e.job().special;
                 let fee = self.hire_fee(e);
                 let affordable = self.cash - fee > reserve && (net > e.salary * 1.2 || self.cash - fee > reserve * 3.0);
-                let fits = special == Special::None || wanted(special).is_some();
-                affordable && fits
+                // The stars: the player's call.
+                let fits = e.star.is_none() && (special == Special::None || wanted(special).is_some());
+                affordable && fits && self.allowed(e)
             })
             .map(|(k, e)| {
                 let worth: f64 = (0..5).map(|s| e.skills[s] * weights[s]).sum::<f64>() * e.level_mult();
@@ -1709,26 +1910,31 @@ impl Corp {
         }
         let idle = self.contracts.is_empty() && self.offers.is_empty();
         let suffering = self.products.iter().any(|p| p.version == 0 || p.bugs > 25.0);
-        if !self.products.is_empty() && (suffering || on(self, Task::Products) == 0) {
+        let makers = self.staff.iter().filter(|e| movable(e)).count();
+        // Work again after a lull: past half the team on the products, the extra ones back at once.
+        let half = (makers / 2).max(1);
+        if !idle && on(self, Task::Products) > half {
+            moves.extend(std::iter::repeat_n((Task::Products, Task::Contracts), on(self, Task::Products) - half));
+        } else if !self.products.is_empty() && (suffering || on(self, Task::Products) == 0) {
             moves.push((Task::Contracts, Task::Products));
-        } else if (self.products.is_empty() && on(self, Task::Products) > 0) || (!suffering && !idle && on(self, Task::Products) > 1 && self.products.iter().all(|p| p.bugs < 5.0)) {
+        } else if (self.products.is_empty() && on(self, Task::Products) > 0) || (!idle && !suffering && on(self, Task::Products) > 1 && self.products.iter().all(|p| p.bugs < 5.0)) {
             moves.push((Task::Products, Task::Contracts));
         }
-        let makers = self.staff.iter().filter(|e| movable(e)).count();
-        let researching = TECHS.iter().any(|t| !self.has_tech(t.id));
-        if !researching {
-            // Everything researched: nobody left on it (to the products when there's nothing to deliver).
-            if on(self, Task::Research) > 0 {
-                let to = if idle && !self.products.is_empty() { Task::Products } else { Task::Contracts };
-                moves.push((Task::Research, to));
-            }
-            if idle && !self.products.is_empty() && on(self, Task::Contracts) > 1 {
+        // Research: a fifth of the team at most (the techs, then the optimisations); nothing to
+        // deliver, the others go to the products (they always take more versions), to research only
+        // with no product. Too many there: all the extra ones back at once.
+        let cap = (makers / 5).max(1);
+        let has_products = !self.products.is_empty();
+        if idle && has_products {
+            if on(self, Task::Contracts) > 1 {
                 moves.push((Task::Contracts, Task::Products));
             }
         } else if idle && on(self, Task::Contracts) > 1 {
             moves.push((Task::Contracts, Task::Research));
-        } else if !idle && on(self, Task::Research) > (makers / 5).max(1) {
-            moves.push((Task::Research, Task::Contracts));
+        }
+        if on(self, Task::Research) > cap && (has_products || !idle) {
+            let back = if idle { Task::Products } else { Task::Contracts };
+            moves.extend(std::iter::repeat_n((Task::Research, back), on(self, Task::Research) - cap));
         } else if !idle && on(self, Task::Research) == 0 && makers >= 4 {
             moves.push((Task::Contracts, Task::Research));
         }
@@ -1744,14 +1950,19 @@ impl Corp {
     }
 
     fn raise_event(&mut self) {
-        let fits: Vec<usize> = (0..EVENTS.len()).filter(|&k| (EVENTS[k].fits)(self)).collect();
+        // The company's and the founder's life's in turn, about.
+        let life = self.chance(0.4);
+        let first_life = EVENTS.len() + GROWTH_EVENTS.len();
+        let fits: Vec<usize> = (0..event_count()).filter(|&k| (k >= first_life) == life && (event_at(k).fits)(self)).collect();
+        let fits = if fits.is_empty() { (0..event_count()).filter(|&k| (event_at(k).fits)(self)).collect() } else { fits };
         if fits.is_empty() {
             return;
         }
         let k = fits[self.pick(fits.len())];
-        let others: Vec<u32> = self.staff.iter().filter(|e| !e.founder()).map(|e| e.id).collect();
+        // A rival after a star: about that star.
+        let others: Vec<u32> = self.staff.iter().filter(|e| !e.founder() && (event_at(k).id != "poach" || e.star.is_some())).map(|e| e.id).collect();
         self.event_who = if others.is_empty() { 0 } else { others[self.pick(others.len())] };
-        self.event = Some(EVENTS[k].id.to_owned());
+        self.event = Some(event_at(k).id.to_owned());
         self.event_age = 0.0;
     }
 
@@ -1904,7 +2115,7 @@ pub fn news_text(n: &News, fr: bool) -> String {
         NewsKind::Moved => if fr { format!("Déménagement : {}.", tx(OFFICES[(n.n as usize).min(OFFICES.len() - 1)].name, fr)) } else { format!("Moved: {}.", tx(OFFICES[(n.n as usize).min(OFFICES.len() - 1)].name, fr)) },
         NewsKind::Perk => if fr { format!("Nouvel aménagement : {}.", tx(PERKS[(n.n as usize).min(PERKS.len() - 1)].name, fr)) } else { format!("New fitting: {}.", tx(PERKS[(n.n as usize).min(PERKS.len() - 1)].name, fr)) },
         NewsKind::Event => {
-            let e = &EVENTS[(n.n as usize).min(EVENTS.len() - 1)];
+            let e = event_at(n.n as usize);
             let (choice, outcome) = ((n.m as usize) / 10, (n.m as usize) % 10);
             let text = e.choices.get(choice).and_then(|c| c.outcomes.get(outcome)).map_or("", |o| tx(*o, fr));
             let cash = if n.cash.abs() >= 1.0 { format!(" ({}{})", if n.cash > 0.0 { "+" } else { "" }, money(n.cash, fr)) } else { String::new() };
@@ -1915,6 +2126,45 @@ pub fn news_text(n: &News, fr: bool) -> String {
             if fr { format!("Pendant ton absence ({}) : {} de solde.", duration(n.n, fr), net) } else { format!("While you were away ({}): {} net.", duration(n.n, fr), net) }
         }
         NewsKind::Sold => if fr { format!("Boîte revendue {} ! +{} étoile(s). Retour au garage, en plus fort.", money(n.n, fr), n.m) } else { format!("Company sold for {}! +{} star(s). Back to the garage, stronger.", money(n.n, fr), n.m) },
+        NewsKind::Upgrade => {
+            let u = tx(UPGRADES[(n.n as usize).min(UPGRADES.len() - 1)].name, fr);
+            if fr { format!("Optimisation : {u}, niveau {}.", n.m) } else { format!("Optimisation: {u}, level {}.", n.m) }
+        }
+        NewsKind::Branch => {
+            let b = tx(BRANCHES[(n.n as usize).min(BRANCHES.len() - 1)].name, fr);
+            if n.m <= 1.0 {
+                if fr { format!("Nouveau bureau à {b} !") } else { format!("New office in {b}!") }
+            } else if fr {
+                format!("Le bureau de {b} s'agrandit (niveau {}).", n.m)
+            } else {
+                format!("The {b} office grows (level {}).", n.m)
+            }
+        }
+        NewsKind::Rival => if fr { format!("Un concurrent arrive : {} (le marché de {}).", n.who, product(n.n)) } else { format!("A rival shows up: {} ({}'s market).", n.who, product(n.n)) },
+        NewsKind::Acquired => if fr { format!("Rachat de {} : ses utilisateurs, {} de ses gens et un peu de sa dette.", n.who, n.m) } else { format!("{} bought: its users, {} of its people and some of its debt.", n.who, n.m) },
+        NewsKind::Quarter => {
+            if n.n > 0.0 {
+                if fr { format!("Trimestre réussi ! Le conseil est content, ton bonus : +{} sur ton compte perso.", money(n.m, fr)) } else { format!("Quarter met! The board is pleased, your bonus: +{} on your personal account.", money(n.m, fr)) }
+            } else if fr {
+                format!("Objectif du trimestre manqué. La confiance du conseil tombe à {:.0}.", n.m)
+            } else {
+                format!("The quarter's goal missed. The board's trust falls to {:.0}.", n.m)
+            }
+        }
+        NewsKind::Ousted => if fr { format!("Le conseil d'administration t'a remercié·e. Ta boîte est revendue {} sans toi : +{} étoile(s).", money(n.n, fr), n.m) } else { format!("The board let you go. Your company is sold for {} without you: +{} star(s).", money(n.n, fr), n.m) },
+        NewsKind::Challenge => {
+            let c = tx(CHALLENGES[(n.n as usize).min(CHALLENGES.len() - 1)].name, fr);
+            if n.m > 0.0 {
+                if fr { format!("Défi « {c} » réussi ! +{} étoile(s).", n.m) } else { format!("Challenge \"{c}\" won! +{} star(s).", n.m) }
+            } else if fr {
+                format!("Défi « {c} » perdu : trop tard.")
+            } else {
+                format!("Challenge \"{c}\" lost: too late.")
+            }
+        }
+        NewsKind::Pivot => if fr { format!("Pivot : {} devient {}.", product(n.n), product(n.m)) } else { format!("Pivot: {} becomes {}.", product(n.n), product(n.m)) },
+        NewsKind::Life => life_news(n.n, n.m, &n.who, fr),
+        NewsKind::Season => tx(("Nouvelle saison : tout repart du garage, étoiles comprises. Tes records sont gardés.", "New season: everything starts again from the garage, stars included. Your records are kept."), fr).to_owned(),
     }
 }
 
@@ -1974,7 +2224,24 @@ impl Corp {
 }
 
 pub fn event(id: &str) -> Option<&'static EventDef> {
-    EVENTS.iter().find(|e| e.id == id)
+    EVENTS.iter().chain(GROWTH_EVENTS.iter()).chain(LIFE_EVENTS.iter()).find(|e| e.id == id)
+}
+
+/// The company's events, then the big company's (`GROWTH_EVENTS`), then the founder's life's: one
+/// list, by index (the news keep it).
+pub fn event_count() -> usize {
+    EVENTS.len() + GROWTH_EVENTS.len() + LIFE_EVENTS.len()
+}
+
+pub fn event_at(k: usize) -> &'static EventDef {
+    let k = k.min(event_count() - 1);
+    if k < EVENTS.len() {
+        &EVENTS[k]
+    } else if k < EVENTS.len() + GROWTH_EVENTS.len() {
+        &GROWTH_EVENTS[k - EVENTS.len()]
+    } else {
+        &LIFE_EVENTS[k - EVENTS.len() - GROWTH_EVENTS.len()]
+    }
 }
 
 pub const EVENTS: [EventDef; 38] = [
@@ -2755,23 +3022,6 @@ mod tests {
     }
 
     #[test]
-    fn nobody_sent_to_research_once_everything_is_researched() {
-        let mut c = corp();
-        c.techs = TECHS.iter().map(|t| t.id.to_owned()).collect();
-        for k in 0..6 {
-            let mut e = c.make_employee("fullstack", 1);
-            e.task = if k < 2 { Task::Research } else { Task::Contracts };
-            c.staff.push(e);
-        }
-        c.contracts.clear();
-        c.offers.clear();
-        for _ in 0..10 {
-            c.auto_tasks();
-        }
-        assert!(c.staff.iter().all(|e| e.task != Task::Research));
-    }
-
-    #[test]
     fn hr_hires_the_roles_only_up_to_what_is_worth_it() {
         let mut c = corp();
         c.office = 4;
@@ -2918,12 +3168,22 @@ mod tests {
 
     #[test]
     fn every_event_choice_applies() {
-        for (k, e) in EVENTS.iter().enumerate() {
+        for k in 0..event_count() {
+            let e = event_at(k);
             for choice in 0..e.choices.len() {
                 let mut c = corp();
                 c.cash = 1e6;
-                let x = c.make_employee("front", 3);
+                let mut x = c.make_employee("front", 3);
+                // A star, a rival, a board, a family: what the events can be about.
+                x.star = Some("hacker".into());
                 c.staff.push(x);
+                c.stage = LISTED_STAGE;
+                c.spawn_rival();
+                c.board = Some(Board { trust: 50.0, share: 100.0, left: QUARTER, goal: 0, target: 1.0, start: 0.0, quarters: 0, met: 0, last: None });
+                c.life.account = 1e6;
+                c.life.car = 2;
+                c.life.partner = Some(Partner { name: "Alex".into(), happiness: 20.0, since: 2_000.0, married: false });
+                c.life.kids.push(Kid { name: "Léo".into(), age: 8.0 * YEAR, private_school: false, grown: false });
                 c.offers.clear();
                 let ct = c.make_contract(0);
                 c.contracts.push(ct);
@@ -2933,7 +3193,7 @@ mod tests {
                 assert!(outcome < e.choices[choice].outcomes.len(), "{} {choice}", e.id);
                 assert!(c.event.is_none());
                 assert!(!news_text(c.news.last().unwrap(), true).is_empty());
-                assert!(c.cash.is_finite());
+                assert!(c.cash.is_finite() && c.life.account.is_finite());
             }
         }
     }
@@ -3002,6 +3262,239 @@ mod tests {
     }
 
     #[test]
+    fn research_never_takes_more_than_a_fifth_of_the_team() {
+        let mut c = corp();
+        c.stage = 3;
+        c.cash = 1e6;
+        for t in TECHS {
+            c.techs.push(t.id.to_owned());
+        }
+        assert!(c.launch(0));
+        let lead = c.make_employee("lead", 1);
+        c.staff.push(lead);
+        for k in 0..30 {
+            let mut e = c.make_employee(if k % 2 == 0 { "front" } else { "back" }, 1);
+            e.task = if k < 25 { Task::Research } else { Task::Contracts };
+            c.staff.push(e);
+        }
+        let on_research = |c: &Corp| c.staff.iter().filter(|e| e.task == Task::Research).count();
+        // Nothing to deliver: the extra ones go to the products, all at once.
+        c.contracts.clear();
+        c.offers.clear();
+        c.auto_tasks();
+        assert!(on_research(&c) <= 6, "a fifth of 30 at most, not {}", on_research(&c));
+        for _ in 0..20 {
+            c.auto_tasks();
+        }
+        assert!(on_research(&c) <= 6);
+        assert!(c.staff.iter().filter(|e| e.task == Task::Products).count() >= 19);
+        // Work again: the products' extra people back to the contracts, research kept to a fifth.
+        let ct = c.make_contract(0);
+        c.contracts.push(ct);
+        for _ in 0..40 {
+            c.auto_tasks();
+        }
+        assert!(on_research(&c) <= 6);
+        assert!(c.staff.iter().filter(|e| e.task == Task::Contracts).count() > 5);
+    }
+
+    #[test]
+    fn the_optimisations_open_once_every_tech_is_found() {
+        let mut c = corp();
+        c.research = 1e9;
+        assert!(!c.learn_upgrade("perf"), "the techs first");
+        for t in TECHS {
+            c.techs.push(t.id.to_owned());
+        }
+        let prod = c.mods().prod;
+        let cost = c.upgrade_cost("perf");
+        assert!(c.learn_upgrade("perf"));
+        assert!(c.upgrade_cost("perf") > cost, "dearer each level");
+        assert!(c.mods().prod > prod);
+    }
+
+    #[test]
+    fn a_rival_takes_users_and_can_be_bought() {
+        let mut c = corp();
+        c.stage = 3;
+        c.cash = 1e12;
+        c.office = 4;
+        c.research = 1e9;
+        c.learn("cloud");
+        assert!(c.launch(0));
+        c.products[0].version = 2;
+        // Only its kind's rivals weigh on it.
+        while c.rivals.iter().all(|r| r.kind != 0) {
+            c.rivals.clear();
+            c.spawn_rival();
+        }
+        c.rivals[0].users = 1e9;
+        assert!(c.rival_pressure(0) > 0.1);
+        assert_eq!(c.rival_pressure(5), 0.0);
+        let id = c.rivals[0].id;
+        let (staff, users) = (c.staff.len(), c.products[0].users);
+        assert!(c.acquire(id));
+        assert!(c.rivals.is_empty());
+        assert!(c.products[0].users > users);
+        assert!(c.staff.len() > staff);
+        assert_eq!(c.stats.acquired, 1);
+    }
+
+    #[test]
+    fn the_board_lets_the_founder_go_when_trust_is_gone() {
+        let mut c = corp();
+        c.stage = LISTED_STAGE;
+        c.cash = 1e9;
+        let mut sum = Summary::default();
+        c.step(1.0, true, &mut sum);
+        assert!(c.board.is_some(), "listed: the board sits");
+        let b = c.board.as_mut().unwrap();
+        b.trust = 5.0;
+        b.target = f64::INFINITY;
+        b.left = 0.5;
+        let account = c.life.account;
+        let stars = c.legacy.stars;
+        c.step(1.0, true, &mut sum);
+        assert_eq!(c.stage, 0, "sold without the founder");
+        assert!(c.board.is_none());
+        assert!(c.legacy.stars > stars);
+        assert!(c.life.account > account, "the founder's share");
+        assert!(c.news.iter().any(|n| n.kind == NewsKind::Ousted));
+    }
+
+    #[test]
+    fn a_challenge_binds_then_pays() {
+        let mut c = corp();
+        c.stage = SELL_STAGE;
+        c.cash = 5e6;
+        let stars = c.sell_with(c.at, Some("no_sales"));
+        assert!(c.challenge_is("no_sales"));
+        let sales = c.make_employee("sales", 1);
+        c.candidates = vec![sales];
+        c.cash = 1e6;
+        c.office = 3;
+        assert!(!c.hire(0), "no salesperson in this challenge");
+        c.stage = 3;
+        let mut sum = Summary::default();
+        c.step(1.0, false, &mut sum);
+        assert!(c.challenge.is_none());
+        assert!(c.legacy.stars >= stars + 3);
+        assert_eq!(c.legacy.challenges, vec!["no_sales".to_owned()]);
+    }
+
+    #[test]
+    fn the_talents_spend_the_stars_and_give_a_head_start() {
+        let mut c = corp();
+        c.legacy.stars = 6;
+        assert!(c.take_talent("veille"));
+        assert!(c.take_talent("seed"));
+        assert!(c.take_talent("seed"));
+        assert_eq!(c.talent_points(), 1);
+        assert!(!c.take_talent("veille"), "one level only");
+        let fresh = Corp::new(0, 3, c.legacy.clone());
+        assert!(fresh.has_tech("git") && fresh.has_tech("cloud"));
+        assert!(fresh.cash >= 40_000.0);
+        c.reset_talents();
+        assert_eq!(c.talent_points(), 6);
+    }
+
+    #[test]
+    fn the_private_life_runs_and_survives_a_sale() {
+        let mut c = corp();
+        c.cash = 1e7;
+        c.stage = SELL_STAGE;
+        c.policy.founder_pay = 2;
+        let mut sum = Summary::default();
+        for _ in 0..60 {
+            c.step(1.0, false, &mut sum);
+        }
+        assert!(c.life.account > 500.0, "paid");
+        c.life.account = 1e6;
+        assert!(c.buy_home(2, true));
+        assert!(c.life.loan > 0.0);
+        assert!(c.buy_car(3));
+        c.life.partner = Some(Partner { name: "Alex".into(), happiness: 80.0, since: 2_000.0, married: false });
+        assert!(c.marry(false));
+        assert!(c.have_kid());
+        assert!(c.go_on_holiday(0));
+        assert_eq!(c.life.work_factor(), 0.0, "away on holiday");
+        assert!(c.place(1, 10_000.0));
+        let account = c.life.account;
+        c.sell(c.at);
+        assert_eq!(c.stage, 0);
+        assert_eq!(c.life.home, 2, "the home kept");
+        assert_eq!(c.life.kids.len(), 1);
+        assert!(c.life.account > account, "the founder's share of the sale");
+    }
+
+    #[test]
+    fn a_burn_out_stops_the_founder() {
+        let mut c = corp();
+        c.life.health = 10.0;
+        let mut sum = Summary::default();
+        c.step(1.0, true, &mut sum);
+        assert!(c.life.burnout > 0.0);
+        assert_eq!(c.life.work_factor(), 0.0);
+    }
+
+    #[test]
+    fn a_crunch_stresses_the_founder() {
+        let mut calm = corp();
+        let mut crunch = corp();
+        crunch.policy.hours = 2;
+        let mut sum = Summary::default();
+        for _ in 0..600 {
+            calm.step(1.0, false, &mut sum);
+            crunch.step(1.0, false, &mut sum);
+        }
+        assert!(crunch.life.stress > calm.life.stress + 10.0);
+    }
+
+    #[test]
+    fn a_product_focus_and_price_change_its_users_and_revenue() {
+        let mut c = corp();
+        c.cash = 1e6;
+        c.research = 1e9;
+        c.learn("cloud");
+        assert!(c.launch(0));
+        let id = c.products[0].id;
+        c.products[0].version = 1;
+        c.products[0].users = 1_000.0;
+        let normal = c.products[0].revenue();
+        c.set_price(id, 2);
+        assert!(c.products[0].revenue() > normal);
+        assert!(c.products[0].users_mult() < 1.0);
+        c.set_focus(id, 2);
+        assert_eq!(c.products[0].build_share(), 0.5);
+        c.stage = 2;
+        assert!(c.pivot(id, 1));
+        assert_eq!(c.products[0].kind, 1);
+        assert!(c.products[0].users < 1_000.0);
+    }
+
+    #[test]
+    fn the_stars_come_now_and_then_and_hr_leaves_them_alone() {
+        let mut c = corp();
+        c.stage = 4;
+        let mut seen = false;
+        for _ in 0..200 {
+            c.refresh_candidates();
+            if c.candidates.iter().any(|e| e.star.is_some()) {
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "a star among the candidates now and then");
+        let k = c.candidates.iter().position(|e| e.star.is_some()).unwrap();
+        c.candidates = vec![c.candidates[k].clone()];
+        c.cash = 1e12;
+        c.income = 1e9;
+        c.office = 4;
+        c.auto_hire(0.0);
+        assert!(c.staff.iter().all(|e| e.star.is_none()), "the player's call");
+    }
+
+    #[test]
     fn selling_keeps_the_stars() {
         let mut c = corp();
         assert_eq!(c.sell(c.at), 0, "not before a small business");
@@ -3015,6 +3508,41 @@ mod tests {
         assert_eq!(c.staff.len(), 1);
         assert!(c.cash > 1_500.0);
         assert!(c.mods().prod > 1.0);
+    }
+
+    #[test]
+    fn an_older_season_starts_again_with_its_records() {
+        let mut c = corp();
+        c.stage = 5;
+        c.cash = 3e9;
+        c.legacy = Legacy { stars: 12, sales: 2, best: 4e9, best_sale: 9e8, ..Default::default() };
+        c.legacy.talents.insert("seed".into(), 3);
+        c.tutorial = TUTORIAL_DONE;
+        c.actions = 500;
+        // Saved before the seasons: no « season » in it.
+        let mut value = serde_json::to_value(&c).unwrap();
+        value.as_object_mut().unwrap().remove("season");
+        let old: Corp = serde_json::from_value(value).unwrap();
+        assert_eq!(old.season, 0);
+        let n = old.new_season(2_000_000);
+        assert_eq!(n.season, SEASON);
+        assert_eq!((n.stage, n.office, n.staff.len()), (0, 0, 1), "back in the garage, alone");
+        assert_eq!(n.legacy.stars, 0);
+        assert!(n.legacy.talents.is_empty());
+        assert!(n.cash < 2_000.0, "no star's head start");
+        assert_eq!(n.legacy.sales, 2);
+        assert!(n.legacy.best >= 4e9);
+        assert_eq!(n.legacy.best_sale, 9e8);
+        assert_eq!(n.legacy.floor_stars(), 1, "a company sold: floor's golden ticker frame kept");
+        assert_eq!(n.best_stage(), 5, "the furthest stage kept (the rewards)");
+        assert_eq!(n.tutorial, TUTORIAL_DONE);
+        assert_eq!(n.whats_new, 0, "the tutorial done: the tour of what's new");
+        assert_eq!(corp().whats_new, TUTORIAL_DONE, "a new player: the tutorial tells");
+        let mut mid = corp();
+        mid.tutorial = 4;
+        assert_eq!(mid.new_season(0).whats_new, TUTORIAL_DONE, "mid-tutorial: its new steps tell");
+        assert!(n.actions > old.actions, "wins a sync over the old company");
+        assert!(n.news.iter().any(|x| x.kind == NewsKind::Season));
     }
 
     #[test]
@@ -3101,7 +3629,8 @@ mod tests {
         assert_eq!(stage_of(499_999.0), 1);
         assert_eq!(stage_of(500_000.0), BILLS_STAGE);
         assert_eq!(stage_of(2e9), UNICORN_STAGE);
-        assert_eq!(stage_of(1e15), LISTED_STAGE);
+        assert_eq!(stage_of(2e10), LISTED_STAGE);
+        assert_eq!(stage_of(1e15), STAGES.len() as u8 - 1);
         // Sold at the small business stage: back in the garage, the stage reached kept.
         let mut c = Corp::new(1_000, 7, Legacy::default());
         c.stage = BILLS_STAGE;
