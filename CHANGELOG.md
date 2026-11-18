@@ -33,6 +33,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
   - de la cantine, quand le sol cède et qu'on tombe au sous-sol des serveurs ;
   - des serveurs, par le monte-charge.
 - **Lundi matin, des armes rééquilibrées** : l'extincteur, les confettis, le tampon, le scotch, la plante et le vidéoprojecteur ont chacun un vrai rôle face à l'agrafeuse et au lance-post-it.
+- **Lundi matin, la progression des succès** : chaque succès pas encore obtenu montre où on en est (« 12/50 relèves », une fine barre).
 - **Lundi matin, le bon boss annoncé** : une vague de boss dit lequel arrive (avant, elle annonçait toujours le DRH).
 - **Lundi matin, une arme ramassée** est à soi sans passer en main : le message donne sa touche pour la prendre.
 - **Lundi matin, la machine à café à côté du jeu** : pendant la pause, la machine à café s'affiche dans une colonne à gauche du terrain au lieu de le recouvrir. Le terrain est décalé d'autant toute la partie, pour ne pas bouger à chaque pause.

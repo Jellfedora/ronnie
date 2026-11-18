@@ -888,6 +888,16 @@ impl App {
             p.text(chip.left_center() + Vec2::new(12.0, 0.0), Align2::CENTER_CENTER, mark, FontId::proportional(13.0), color);
             let name = titles.get(k).copied().unwrap_or_default();
             p.text(chip.left_center() + Vec2::new(24.0, 0.0), Align2::LEFT_CENTER, name, FontId::proportional(12.0), if has { theme.text } else { theme.text_muted.gamma_multiply(0.7) });
+            // Not won yet, read in a counter: how far (x/y, a thin bar at the bottom).
+            if let Some(&(done, need)) = c.progress.get(*id).filter(|_| !has) {
+                p.text(chip.right_center() - Vec2::new(10.0, 1.0), Align2::RIGHT_CENTER, format!("{done}/{need}"), FontId::monospace(10.5), theme.text_muted.gamma_multiply(0.85));
+                let bar = Rect::from_min_size(Pos2::new(chip.min.x + 8.0, chip.max.y - 5.0), Vec2::new(chip.width() - 16.0, 2.5));
+                p.rect_filled(bar, 1.0, theme.tab_hover);
+                let k = if need > 0 { (done as f32 / need as f32).min(1.0) } else { 0.0 };
+                if k > 0.0 {
+                    p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k, bar.height())), 1.0, Color32::from_rgb(222, 180, 80));
+                }
+            }
             let resp = resp.on_hover_text(hows.get(k).copied().unwrap_or_default());
             if has && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 wear = Some(if worn { None } else { Some(*id) });

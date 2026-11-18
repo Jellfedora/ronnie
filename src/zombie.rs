@@ -468,6 +468,9 @@ pub struct Career {
     /// The achievements won (ids), the title worn (one of them).
     #[serde(default)]
     pub achievements: Vec<String>,
+    /// Where each achievement read in a counter stands: done, needed.
+    #[serde(default)]
+    pub progress: std::collections::HashMap<String, (u32, u32)>,
     #[serde(default)]
     pub title: Option<String>,
 }
