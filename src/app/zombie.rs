@@ -1393,7 +1393,20 @@ impl App {
             if flash {
                 painter.circle_filled(at(x, y), 26.0 * scale, Color32::from_white_alpha(70));
             }
+            let walking = Mix::heading(&mix.zombies, z.id, z.x, z.y).filter(|_| !z.frozen && !z.stunned && !z.stuck && !z.striking);
+            paint_feet(&painter, at(x, y), scale, walking, now as f32 * 0.7 + z.id as f32, Color32::from_rgb(40, 44, 36), 18.0);
             paint_zombie(&painter, at(x, y), scale, z.kind, z.heading, z.id, (now * 4.0) as f32 + z.id as f32, z.life, Fx { slowed: z.slowed, charging: z.charging || z.winding, frozen: z.frozen, healing: z.healing, rebooting: z.rebooting, striking: z.striking, rushing: z.rushing, calling: z.calling, boosting: z.boosting, boosted: z.boosted, stunned: z.stunned, stuck: z.stuck });
+            // Their eyes, glowing in the dark (red, enraged).
+            if frame.dark || z.enraged {
+                let dir = Vec2::angled(z.heading);
+                let side = Vec2::new(-dir.y, dir.x);
+                let eye = if z.enraged { Color32::from_rgb(255, 60, 40) } else { Color32::from_rgb(190, 255, 120) };
+                for s in [-1.0f32, 1.0] {
+                    let e = at(x, y) + dir * 9.0 * scale + side * s * 4.5 * scale;
+                    painter.circle_filled(e, 5.0 * scale, eye.gamma_multiply(0.25));
+                    painter.circle_filled(e, 1.8 * scale.max(0.7), eye);
+                }
+            }
         }
         for s in &frame.shots {
             paint_shot(&painter, at(s.x, s.y), scale, s.angle, s.weapon, now);
@@ -1441,6 +1454,8 @@ impl App {
             match p.state {
                 State::Up => {
                     let firing = p.reload <= 0.0 && Some(p.id) != me && (now * 30.0 + p.id as f64).sin() > 0.95;
+                    let walking = Mix::heading(&mix.players, p.id, p.x, p.y);
+                    paint_feet(&painter, c, scale, walking, now as f32 + p.id as f32, Color32::from_rgb(30, 30, 36), 19.0);
                     paint_colleague(&painter, c, scale, color, p.aim, 0.0, p.weapon, now, frame.grade_of(p.id));
                     if firing {
                         painter.circle_filled(c + Vec2::angled(p.aim) * 42.0 * scale, 5.0 * scale, Color32::from_rgb(255, 233, 168));
@@ -2255,6 +2270,26 @@ impl Mix {
 
     fn zombie(&self, id: u32, x: f32, y: f32) -> (f32, f32) {
         self.between(&self.zombies, id, x, y)
+    }
+
+    /// Where it's going since the last frame (None: still).
+    fn heading(list: &[(u32, f32, f32)], id: u32, x: f32, y: f32) -> Option<f32> {
+        let &(_, bx, by) = list.iter().find(|(i, _, _)| *i == id)?;
+        let (dx, dy) = (x - bx, y - by);
+        (dx.hypot(dy) > 0.6 && dx.hypot(dy) < 120.0).then(|| dy.atan2(dx))
+    }
+}
+
+/// Feet under a walker, stepping as it goes (`heading`: where; `phase`: the step), still when it stands.
+fn paint_feet(painter: &egui::Painter, c: Pos2, scale: f32, heading: Option<f32>, phase: f32, shoe: Color32, r: f32) {
+    let Some(h) = heading else { return };
+    let dir = Vec2::angled(h);
+    let side = Vec2::new(-dir.y, dir.x);
+    for s in [-1.0f32, 1.0] {
+        let step = (phase * 9.0 + if s > 0.0 { std::f32::consts::PI } else { 0.0 }).sin() * r * 0.45 * scale;
+        let at = c + side * s * r * 0.36 * scale + dir * step;
+        painter.circle_filled(at + Vec2::new(1.5, 2.0) * scale, r * 0.2 * scale, Color32::from_black_alpha(70));
+        painter.circle_filled(at, r * 0.2 * scale, shoe);
     }
 }
 

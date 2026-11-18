@@ -87,6 +87,8 @@ pub(super) fn paint_floor(painter: &egui::Painter, map: &Map, to: To, s: f32, no
             }
         }
     }
+    rooms(painter, map, to, s);
+    decals(painter, map, to, s);
     walls(painter, map, to, s, field);
     inner_walls(painter, map, to, s);
     doors(painter, map, to, s, now);
@@ -293,6 +295,175 @@ fn ground_roof(painter: &egui::Painter, map: &Map, to: To, s: f32, now: f64) {
 }
 
 /// The walls in the floor's material, their shade on the ground, the windows.
+/// The rooms' grounds over the floor's: parquet, a red carpet, kitchen tiles, concrete, a corridor's
+/// runner, the CEO's parquet and rug, the terrace's gravel.
+fn rooms(painter: &egui::Painter, map: &Map, to: To, s: f32) {
+    for (n, g) in map.rooms.iter().enumerate() {
+        let r = Rect::from_min_max(to(g.x, g.y), to(g.x + g.w, g.y + g.h));
+        let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
+        let seed = n as i32 * 97 + g.x as i32;
+        match g.s.as_str() {
+            "parquet" | "rug" => {
+                // Planks: rows of varying lengths, each its shade.
+                let row = 36.0;
+                for j in 0..(g.h / row).ceil() as i32 {
+                    let mut x = -hash(j, seed) * 160.0;
+                    let mut k = 0;
+                    while x < g.w {
+                        let len = 140.0 + hash(j, k + seed) * 120.0;
+                        let v = hash(k, j + seed);
+                        let plank = Rect::from_min_max(to(g.x + x.max(0.0), g.y + j as f32 * row), to(g.x + (x + len).min(g.w), g.y + (j + 1) as f32 * row));
+                        clip.rect_filled(plank, 0.0, rgb(138, 92, 56).lerp_to_gamma(rgb(170, 118, 72), v));
+                        clip.rect_stroke(plank, 0.0, Stroke::new(1.0, Color32::from_black_alpha(45)), egui::StrokeKind::Inside);
+                        x += len;
+                        k += 1;
+                    }
+                }
+                if g.s == "rug" {
+                    // The CEO's rug: deep red, a gold border, a pattern.
+                    let rug = Rect::from_center_size(r.center(), r.size() * Vec2::new(0.6, 0.62));
+                    clip.rect_filled(rug.translate(Vec2::splat(4.0 * s)), 6.0 * s, Color32::from_black_alpha(60));
+                    clip.rect_filled(rug, 6.0 * s, rgb(118, 22, 34));
+                    clip.rect_stroke(rug.shrink(8.0 * s), 4.0 * s, Stroke::new(3.0 * s, rgb(214, 172, 84)), egui::StrokeKind::Inside);
+                    clip.rect_stroke(rug.shrink(18.0 * s), 3.0 * s, Stroke::new(1.0 * s, rgb(214, 172, 84).gamma_multiply(0.6)), egui::StrokeKind::Inside);
+                    for k in 0..6 {
+                        let c = rug.center() + Vec2::angled(k as f32 * std::f32::consts::FRAC_PI_3) * rug.height() * 0.22;
+                        clip.circle_stroke(c, 18.0 * s, Stroke::new(1.5 * s, rgb(214, 172, 84).gamma_multiply(0.5)));
+                    }
+                    clip.circle_stroke(rug.center(), 40.0 * s, Stroke::new(2.0 * s, rgb(214, 172, 84).gamma_multiply(0.7)));
+                }
+            }
+            "redcarpet" => {
+                clip.rect_filled(r, 0.0, rgb(92, 30, 40));
+                // A woven pattern of small diamonds.
+                let step = 48.0;
+                for i in 0..(g.w / step) as i32 + 1 {
+                    for j in 0..(g.h / step) as i32 + 1 {
+                        let c = to(g.x + (i as f32 + 0.5) * step, g.y + (j as f32 + 0.5) * step);
+                        poly(&clip, vec![c - Vec2::new(0.0, 7.0 * s), c + Vec2::new(7.0 * s, 0.0), c + Vec2::new(0.0, 7.0 * s), c - Vec2::new(7.0 * s, 0.0)], Color32::from_white_alpha(10));
+                    }
+                }
+            }
+            "tiles" => {
+                let tile = 40.0;
+                for i in 0..(g.w / tile).ceil() as i32 {
+                    for j in 0..(g.h / tile).ceil() as i32 {
+                        let t = Rect::from_min_size(to(g.x + i as f32 * tile, g.y + j as f32 * tile), Vec2::splat(tile * s + 0.5));
+                        let white = (i + j) % 2 == 0;
+                        let base = if white { rgb(232, 232, 226) } else { rgb(52, 56, 62) };
+                        clip.rect_filled(t, 0.0, base.lerp_to_gamma(Color32::from_rgb(160, 150, 130), hash(i, j + seed) * 0.08));
+                    }
+                }
+                // A greasy shine near the stoves.
+                radial(&clip, to(g.x + g.w * 0.4, g.y + 120.0), 260.0 * s, Color32::from_rgba_unmultiplied(255, 220, 150, 18), Color32::TRANSPARENT);
+            }
+            "concrete" => {
+                clip.rect_filled(r, 0.0, rgb(112, 114, 116));
+                for k in 0..((g.w * g.h) / 9000.0) as i32 {
+                    let p = to(g.x + hash(k, seed) * g.w, g.y + hash(seed, k) * g.h);
+                    clip.circle_filled(p, (1.0 + hash(k, k + seed) * 2.0) * s, Color32::from_black_alpha(30));
+                }
+                // Cracks, and the seams of the slabs.
+                for k in 0..4 {
+                    let a = to(g.x + hash(k, 7 + seed) * g.w, g.y + hash(7 + seed, k) * g.h);
+                    let mut p = a;
+                    let mut pts = vec![p];
+                    for m in 0..5 {
+                        p += Vec2::angled(hash(k, m + seed) * 6.28) * 30.0 * s;
+                        pts.push(p);
+                    }
+                    clip.add(egui::Shape::line(pts, Stroke::new(1.2 * s, Color32::from_black_alpha(60))));
+                }
+                let slab = 200.0;
+                for i in 1..(g.w / slab) as i32 + 1 {
+                    clip.line_segment([to(g.x + i as f32 * slab, g.y), to(g.x + i as f32 * slab, g.y + g.h)], Stroke::new(1.0, Color32::from_black_alpha(35)));
+                }
+            }
+            "corridor" => {
+                clip.rect_filled(r, 0.0, rgb(58, 56, 66));
+                // The runner along it, the lights over it.
+                let along_x = g.w > g.h;
+                let runner = if along_x { Rect::from_min_max(to(g.x, g.y + g.h * 0.3), to(g.x + g.w, g.y + g.h * 0.7)) } else { Rect::from_min_max(to(g.x + g.w * 0.3, g.y), to(g.x + g.w * 0.7, g.y + g.h)) };
+                clip.rect_filled(runner, 0.0, rgb(44, 64, 92));
+                clip.rect_stroke(runner.shrink(4.0 * s), 0.0, Stroke::new(1.0 * s, rgb(150, 170, 200).gamma_multiply(0.4)), egui::StrokeKind::Inside);
+                let n = ((if along_x { g.w } else { g.h }) / 220.0) as i32;
+                for k in 0..n.max(1) {
+                    let c = if along_x { to(g.x + (k as f32 + 0.5) * g.w / n.max(1) as f32, g.y + g.h / 2.0) } else { to(g.x + g.w / 2.0, g.y + (k as f32 + 0.5) * g.h / n.max(1) as f32) };
+                    radial(&clip, c, 120.0 * s, Color32::from_rgba_unmultiplied(255, 240, 210, 26), Color32::TRANSPARENT);
+                }
+            }
+            "gravel" => {
+                clip.rect_filled(r, 0.0, rgb(150, 146, 136));
+                for k in 0..((g.w * g.h) / 1400.0) as i32 {
+                    let p = to(g.x + hash(k, seed) * g.w, g.y + hash(seed + 3, k) * g.h);
+                    let v = hash(k, k + 11);
+                    clip.circle_filled(p, (1.2 + v * 2.2) * s, rgb(110, 106, 98).lerp_to_gamma(rgb(196, 192, 182), v));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Life on the floor: papers, coffee stains, post-its, cables (always at the same places on a floor);
+/// leaves and puddles on the roof.
+fn decals(painter: &egui::Painter, map: &Map, to: To, s: f32) {
+    let seed = map.id.bytes().fold(7i32, |h, b| h.wrapping_mul(31).wrapping_add(b as i32));
+    let n = (map.w * map.h / 55000.0) as i32;
+    for k in 0..n {
+        let x = map.wall + 30.0 + hash(k, seed) * (map.w - 2.0 * map.wall - 60.0);
+        let y = map.wall + 30.0 + hash(seed, k) * (map.h - 2.0 * map.wall - 60.0);
+        // Not on a wall.
+        if map.walls.iter().any(|d| x > d.x - 20.0 && x < d.x + d.w + 20.0 && y > d.y - 20.0 && y < d.y + d.h + 20.0) {
+            continue;
+        }
+        let c = to(x, y);
+        let a = hash(k, k + seed) * std::f32::consts::TAU;
+        let kind = (hash(k + 5, seed) * 5.0) as i32;
+        if map.id == "roof" {
+            if kind < 3 {
+                // A leaf.
+                poly(painter, vec![c + Vec2::angled(a) * 8.0 * s, c + Vec2::angled(a + 1.6) * 3.0 * s, c - Vec2::angled(a) * 8.0 * s, c + Vec2::angled(a - 1.6) * 3.0 * s], rgb(120, 104, 52).gamma_multiply(0.85));
+            } else {
+                painter.circle_filled(c, (14.0 + hash(k, 3) * 16.0) * s, Color32::from_rgba_unmultiplied(70, 90, 110, 50));
+            }
+            continue;
+        }
+        match kind {
+            0 | 1 => {
+                // A sheet of paper, its lines.
+                let (u, v) = (Vec2::angled(a), Vec2::angled(a + std::f32::consts::FRAC_PI_2));
+                let corner = |cx: f32, cy: f32| c + u * cx * s + v * cy * s;
+                poly(painter, vec![corner(-9.0, -12.0), corner(9.0, -12.0), corner(9.0, 12.0), corner(-9.0, 12.0)], Color32::from_white_alpha(170));
+                for l in 0..4 {
+                    painter.line_segment([corner(-6.0, -7.0 + l as f32 * 5.0), corner(6.0, -7.0 + l as f32 * 5.0)], Stroke::new(0.8 * s, Color32::from_black_alpha(40)));
+                }
+            }
+            2 => {
+                // A coffee stain.
+                painter.circle_stroke(c, 9.0 * s, Stroke::new(2.0 * s, Color32::from_rgba_unmultiplied(92, 56, 30, 70)));
+                painter.circle_filled(c, 8.0 * s, Color32::from_rgba_unmultiplied(92, 56, 30, 25));
+            }
+            3 => {
+                // A post-it.
+                let color = [rgb(255, 230, 90), rgb(255, 150, 190), rgb(140, 220, 255)][(hash(k, 9) * 3.0) as usize % 3];
+                let (u, v) = (Vec2::angled(a), Vec2::angled(a + std::f32::consts::FRAC_PI_2));
+                poly(painter, vec![c - u * 6.0 * s - v * 6.0 * s, c + u * 6.0 * s - v * 6.0 * s, c + u * 6.0 * s + v * 6.0 * s, c - u * 6.0 * s + v * 6.0 * s], color.gamma_multiply(0.9));
+            }
+            _ => {
+                // A cable, loose.
+                let mut p = c;
+                let mut pts = vec![p];
+                for m in 0..6 {
+                    p += Vec2::angled(a + (hash(k, m) - 0.5) * 1.6) * 14.0 * s;
+                    pts.push(p);
+                }
+                painter.add(egui::Shape::line(pts, Stroke::new(2.0 * s, Color32::from_rgb(28, 30, 34))));
+            }
+        }
+    }
+}
+
 /// The colors of a floor's walls: the wall, its top edge.
 fn wall_colors(id: &str) -> (Color32, Color32) {
     match id {

@@ -522,6 +522,9 @@ pub struct Map {
     /// The rooms' names, painted on the floor.
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// The rooms' grounds (parquet, carpet, tiles…).
+    #[serde(default)]
+    pub rooms: Vec<Ground>,
     pub coffee: Spot,
     pub doors: Vec<Door>,
     /// The reception's door, Agnès' only, and her way to the coffee.
@@ -540,6 +543,17 @@ pub struct Desk {
     /// What it is ('desk', 'table', 'sofa', 'plant', 'heli'...), drawn as such.
     #[serde(default)]
     pub k: String,
+}
+
+/// A room's ground: where, which style (parquet, redcarpet, tiles, concrete, corridor, rug, gravel).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Ground {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default)]
+    pub s: String,
 }
 
 /// A room's name on the floor: which (Ronnie has the words), where.

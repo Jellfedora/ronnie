@@ -40,6 +40,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
   - **combat** : les zombies clignotent quand ils sont touchés ; un voile rouge et une secousse quand on est blessé ; un compteur de combo ; « Dernier zombie ! » ;
   - **boss** : une barre de vie à leur nom en haut de l'écran, et ils enragent à mi-vie (plus rapides, en rouge) ;
   - **étages** : un fondu au noir pour changer d'étage (un éclair blanc quand le sol cède), et le nom des pièces peint au sol.
+- **Lundi matin, des décors plus vivants** : chaque pièce a son sol (parquet du manager, moquette de la salle de réunion, carrelage de la cuisine, béton de la réserve, tapis du DG, gravier de la terrasse, couloirs avec leur tapis et leurs lumières), des feuilles, taches de café, post-it et câbles traînent par terre, les personnages marchent, et les yeux des zombies brillent dans le noir (rouges quand un boss enrage).
 - **Lundi matin, à plusieurs** :
   - **repère** : la touche G pose un repère que tout le monde voit (« viens ici ! ») ;
   - **coéquipiers** : ceux hors de l'écran sont indiqués au bord, avec leur nom ;
