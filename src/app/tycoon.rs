@@ -11,6 +11,9 @@ use super::tycoon_scene;
 use super::*;
 use crate::tycoon::{self as corp, money, tx, Corp, Summary};
 
+mod group_tab;
+mod life_tab;
+
 /// The company put in the settings at least this often (seconds).
 const WRITE_EVERY: f64 = 60.0;
 
@@ -24,11 +27,13 @@ enum Tab {
     Research,
     Premises,
     Board,
+    Group,
+    Life,
     Players,
     Rewards,
 }
 
-const TABS: [(Tab, corp::Tx); 9] = [
+const TABS: [(Tab, corp::Tx); 11] = [
     (Tab::Office, ("Bureau", "Office")),
     (Tab::Team, ("Équipe", "Team")),
     (Tab::Contracts, ("Contrats", "Contracts")),
@@ -36,6 +41,8 @@ const TABS: [(Tab, corp::Tx); 9] = [
     (Tab::Research, ("Recherche", "Research")),
     (Tab::Premises, ("Locaux", "Premises")),
     (Tab::Board, ("Direction", "Management")),
+    (Tab::Group, ("Groupe", "Group")),
+    (Tab::Life, ("Vie privée", "Private life")),
     (Tab::Players, ("Joueurs", "Players")),
     (Tab::Rewards, ("Récompenses", "Rewards")),
 ];
@@ -135,7 +142,9 @@ pub(super) struct Tycoon {
     confirm: Option<u32>,
     sell_confirm: bool,
     pub(super) scene: super::tycoon_scene::Scene,
-    tab_rects: [Rect; 9],
+    tab_rects: [Rect; 11],
+    /// The challenge picked for the next run, at a sale.
+    challenge: Option<&'static str>,
     /// The tutorial seen again (from its button): each step goes on with « Next ».
     replay: bool,
     pub(super) floor: crate::floor::GameFloor,
@@ -156,7 +165,7 @@ struct Outcome {
 
 impl Default for Tycoon {
     fn default() -> Self {
-        Self { tab: Tab::Office, live: None, written: None, wrote_at: 0.0, started: false, away: None, confirm: None, sell_confirm: false, scene: Default::default(), tab_rects: [Rect::NOTHING; 9], replay: false, floor: crate::floor::GameFloor::new("ronnie-corp", false).with_limit(50), sent: (0, 0, 0), now_sent: None, outcome: None }
+        Self { tab: Tab::Office, live: None, written: None, wrote_at: 0.0, started: false, away: None, confirm: None, sell_confirm: false, scene: Default::default(), tab_rects: [Rect::NOTHING; 11], challenge: None, replay: false, floor: crate::floor::GameFloor::new("ronnie-corp", false).with_limit(50), sent: (0, 0, 0), now_sent: None, outcome: None }
     }
 }
 
@@ -167,11 +176,12 @@ fn corp_round(c: &Corp, with_now: bool) -> Option<crate::floor::GameRound> {
     if best == 0 {
         return None;
     }
-    let mut details = serde_json::json!({ "valuation": best, "stage": c.best_stage(), "stars": c.legacy.stars });
+    // floor knows the stages up to the listing: the ones past it go as it.
+    let mut details = serde_json::json!({ "valuation": best, "stage": c.best_stage().min(corp::FLOOR_STAGE), "stars": c.legacy.stars.min(1_000_000) });
     if with_now {
         details["now"] = serde_json::json!({
             "valuation": (c.valuation() / 1_000.0).clamp(0.0, u32::MAX as f64) as u64,
-            "stage": c.stage,
+            "stage": c.stage.min(corp::FLOOR_STAGE),
             "staff": c.staff.len().max(1),
             "products": c.products.len().min(100),
             "net": ((c.income - c.spend) * 60.0).clamp(-1e12, 1e12) as i64,
@@ -270,6 +280,13 @@ fn role_use_label(ui: &mut Ui, c: &Corp, special: corp::Special, fr: bool, theme
         (format!("{have}/{useful} {}", tx(("utiles", "worth it"), fr)), theme.ansi[2])
     };
     ui.label(egui::RichText::new(text).size(12.0).color(color)).on_hover_text(tx(about, fr));
+}
+
+/// « ⭐ Star » beside a star employee, what they bring under the pointer.
+fn star_badge(ui: &mut Ui, e: &corp::Employee, fr: bool, theme: &Theme) {
+    if let Some(s) = e.star.as_deref().and_then(corp::star_def) {
+        ui.label(egui::RichText::new(tx(("⭐ Star", "⭐ Star"), fr)).size(12.5).color(theme.ansi[3]).strong()).on_hover_text(tx(s.about, fr));
+    }
 }
 
 /// The roles that do something by themselves (and can be paused).
@@ -534,6 +551,8 @@ impl App {
                 Tab::Research => self.tycoon_research(ui, &mut c, fr, &theme),
                 Tab::Premises => self.tycoon_premises(ui, &mut c, fr, &theme),
                 Tab::Board => self.tycoon_board(ui, &mut c, now, fr, &theme),
+                Tab::Group => self.tycoon_group(ui, &mut c, fr, &theme),
+                Tab::Life => self.tycoon_life(ui, &mut c, fr, &theme),
                 Tab::Players => self.tycoon_players(ui, &c, fr, &theme),
                 Tab::Rewards => self.tycoon_rewards(ui, &c, fr, &theme),
             }
@@ -608,6 +627,25 @@ impl App {
                     });
                 });
             }
+            if let Some(b) = &c.board {
+                egui::Frame::new().fill(theme.chrome_bg).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(tx(("Action", "Share"), fr)).size(11.0).color(theme.text_muted));
+                        ui.label(egui::RichText::new(format!("{:.1}", b.share)).size(15.0).color(if b.share >= 100.0 { theme.ansi[2] } else { theme.ansi[1] }).strong());
+                    });
+                });
+            }
+            // The founder's own account, and how they're doing.
+            let l = &c.life;
+            egui::Frame::new().fill(theme.chrome_bg).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    let mood = if l.burnout > 0.0 { " 🤒" } else if l.holiday > 0.0 { " 🌴" } else if l.stress > 70.0 { " 😰" } else { "" };
+                    ui.label(egui::RichText::new(format!("{}{mood}", tx(("Compte perso", "Personal account"), fr))).size(11.0).color(theme.text_muted));
+                    ui.label(egui::RichText::new(money(l.account, fr)).size(15.0).color(if l.account < 0.0 { theme.ansi[1] } else { theme.text }).strong());
+                });
+            })
+            .response
+            .on_hover_text(format!("{} {:.0} · {} {:.0} · {}", tx(("Santé", "Health"), fr), l.health, tx(("stress", "stress"), fr), l.stress, tx(("onglet Vie privée", "Private life tab"), fr)));
         });
     }
 
@@ -704,7 +742,7 @@ impl App {
                         bar(ui, frac, theme.accent, ui.available_width(), 8.0, theme);
                     }
                     None => {
-                        ui.label(egui::RichText::new(tx(("Tu es en bourse. Il ne reste plus qu'à revendre… ou à continuer.", "You're listed. All that's left is to sell… or keep going."), fr)).size(13.0).color(theme.accent));
+                        ui.label(egui::RichText::new(tx(("Un empire mondial. Il ne reste plus qu'à tenir le conseil, racheter les concurrents… ou revendre.", "A world empire. All that's left is to keep the board happy, buy the rivals… or sell."), fr)).size(13.0).color(theme.accent));
                     }
                 }
                 ui.add_space(10.0);
@@ -787,6 +825,7 @@ impl App {
                     if let Some(tr) = e.trait_id.as_deref().and_then(corp::trait_def) {
                         ui.label(egui::RichText::new(format!("« {} »", tx(tr.name, fr))).size(12.0).color(theme.ansi[5])).on_hover_text(tx(tr.about, fr));
                     }
+                    star_badge(ui, &e, fr, theme);
                     if e.salary > 0.0 {
                         muted(ui, per_min(e.salary, fr), theme);
                     }
@@ -891,11 +930,15 @@ impl App {
                     if let Some(tr) = e.trait_id.as_deref().and_then(corp::trait_def) {
                         ui.label(egui::RichText::new(format!("« {} »", tx(tr.name, fr))).size(12.0).color(theme.ansi[5])).on_hover_text(tx(tr.about, fr));
                     }
+                    star_badge(ui, e, fr, theme);
                 });
                 muted(ui, format!("{} · {} {}", skills_text(&e.skills.map(|x| x * e.level_mult()), fr), tx(("salaire", "salary"), fr), per_min(e.salary, fr)), theme);
                 let fee = c.hire_fee(e);
                 let cto_taken = e.job == "cto" && c.staff.iter().any(|x| x.job == "cto");
-                if button(ui, !full && c.cash >= fee && !cto_taken, format!("{} ({})", tx(("Embaucher", "Hire"), fr), money(fee, fr)), theme) {
+                if !c.allowed(e) {
+                    ui.label(egui::RichText::new(tx(("Interdit par ton défi en cours.", "Ruled out by your current challenge."), fr)).size(12.0).color(theme.ansi[3]));
+                }
+                if button(ui, !full && c.cash >= fee && !cto_taken && c.allowed(e), format!("{} ({})", tx(("Embaucher", "Hire"), fr), money(fee, fr)), theme) {
                     hire = Some(k);
                 }
             });
@@ -1016,6 +1059,7 @@ impl App {
         muted(ui, tx(("Mets des gens sur « Produits » dans l'Équipe : ils construisent la version suivante et maintiennent celle en ligne. Pas assez de maintenance : les bugs montent, les pannes arrivent, les utilisateurs partent.", "Put people on \"Products\" in the Team: they build the next version and maintain the live one. Not enough upkeep: bugs rise, outages come, users leave."), fr), theme);
         ui.add_space(6.0);
         let mut close = None;
+        let (mut focus, mut price, mut pivot) = (None, None, None);
         let pay = c.mods().pay;
         for p in &c.products {
             card(ui, theme, |ui| {
@@ -1045,11 +1089,63 @@ impl App {
                         close = Some(p.id);
                     }
                 });
+                // The roadmap: a focus, a price, a pivot.
+                if p.version > 0 {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(tx(("Cap", "Focus"), fr)).size(12.0).color(theme.text_muted));
+                        for (k, (name, about)) in corp::FOCUSES.iter().enumerate() {
+                            let on = p.focus as usize == k;
+                            let b = egui::Button::new(egui::RichText::new(tx(*name, fr)).size(12.0).color(if on { theme.bg } else { theme.text })).fill(if on { theme.accent } else { theme.tab_hover }).corner_radius(10.0);
+                            if ui.add(b).on_hover_text(tx(*about, fr)).clicked() && !on {
+                                focus = Some((p.id, k as u8));
+                            }
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(tx(("Prix", "Price"), fr)).size(12.0).color(theme.text_muted));
+                        for (k, (name, money_mult, users_mult)) in corp::PRICES.iter().enumerate() {
+                            let level = k as i8 - 2;
+                            let on = p.price == level;
+                            let b = egui::Button::new(egui::RichText::new(tx(*name, fr)).size(12.0).color(if on { theme.bg } else { theme.text })).fill(if on { theme.accent } else { theme.tab_hover }).corner_radius(10.0);
+                            let tip = format!("{} ×{money_mult} · {} ×{users_mult}", tx(("revenu par utilisateur", "revenue per user"), fr), tx(("utilisateurs", "users"), fr));
+                            if ui.add(b).on_hover_text(tip).clicked() && !on {
+                                price = Some((p.id, level));
+                            }
+                        }
+                    });
+                    egui::CollapsingHeader::new(egui::RichText::new(tx(("Pivoter vers un autre produit…", "Pivot to another product…"), fr)).size(12.0)).id_salt(("pivot", p.id)).show(ui, |ui| {
+                        muted(ui, tx(("La moitié du prix de lancement du nouveau produit : il garde la moitié de ses versions et un tiers de ses utilisateurs.", "Half the new product's launch price: it keeps half its versions and a third of its users."), fr), theme);
+                        ui.horizontal_wrapped(|ui| {
+                            for (k, kind) in corp::PRODUCTS.iter().enumerate() {
+                                if k == p.kind as usize || c.products.iter().any(|q| q.kind as usize == k) {
+                                    continue;
+                                }
+                                if ui.add_enabled(c.can_pivot(p.id, k), egui::Button::new(egui::RichText::new(format!("{} ({})", tx(kind.name, fr), money(c.pivot_cost(k), fr))).size(12.0)).corner_radius(6.0)).clicked() {
+                                    pivot = Some((p.id, k));
+                                }
+                            }
+                        });
+                    });
+                    let pressure = c.rival_pressure(p.kind);
+                    if pressure > 0.0 {
+                        ui.label(egui::RichText::new(format!("{} −{:.0} % {}", tx(("Concurrence :", "Competition:"), fr), pressure * 100.0, tx(("d'utilisateurs (onglet Groupe)", "users (Group tab)"), fr))).size(12.0).color(theme.ansi[3]));
+                    }
+                }
             });
             ui.add_space(6.0);
         }
         if let Some(id) = close {
             c.close_product(id);
+        }
+        if let Some((id, f)) = focus {
+            c.set_focus(id, f);
+        }
+        if let Some((id, level)) = price {
+            c.set_price(id, level);
+        }
+        if let Some((id, k)) = pivot {
+            c.pivot(id, k);
         }
         ui.add_space(14.0);
         heading(ui, tx(("Lancer un produit", "Launch a product"), fr), theme);
@@ -1084,6 +1180,9 @@ impl App {
                     }
                     ways.push(tx(("fermer un produit", "close a product"), fr).to_owned());
                     missing.push(format!("{} ({})", tx(("une place de produit", "a product slot"), fr), ways.join(tx((" ou ", " or "), fr))));
+                }
+                if c.challenge_is("contracts") {
+                    missing.push(tx(("pas de produit dans ton défi en cours", "no product in your current challenge"), fr).to_owned());
                 }
                 if !missing.is_empty() {
                     ui.label(egui::RichText::new(format!("{} {}", tx(("Il faut :", "Needs:"), fr), missing.join(", "))).size(12.0).color(theme.ansi[3]));
@@ -1134,6 +1233,43 @@ impl App {
         }
         if let Some(id) = learn {
             c.learn(id);
+        }
+
+        // Past the tree: the optimisations, with no end.
+        ui.add_space(14.0);
+        heading(ui, tx(("Optimisations", "Optimisations"), fr), theme);
+        if !c.techs_done() {
+            muted(ui, tx(("Une fois toutes les technos trouvées, la recherche continue ici : des améliorations sans fin, chaque niveau un peu plus cher. Le ou la CTO les débloque aussi tout·e seul·e.", "Once every tech is found, research goes on here: endless improvements, each level a bit dearer. The CTO unlocks them alone too."), fr), theme);
+            return;
+        }
+        muted(ui, tx(("Sans fin : chaque niveau coûte 45 % de plus que le précédent. Le ou la CTO les débloque tout·e seul·e, le moins cher d'abord.", "Endless: each level costs 45 % more than the one before. The CTO unlocks them alone, the cheapest first."), fr), theme);
+        ui.add_space(6.0);
+        let mut up = None;
+        for u in corp::UPGRADES.iter() {
+            let level = c.upgrade_level(u.id);
+            let cost = c.upgrade_cost(u.id);
+            card(ui, theme, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(tx(u.name, fr)).size(14.0).color(theme.text).strong());
+                    if level > 0 {
+                        ui.label(egui::RichText::new(format!("{} {level}", tx(("niveau", "level"), fr))).size(12.5).color(theme.ansi[2]));
+                    }
+                    muted(ui, tx(u.about, fr), theme);
+                });
+                ui.horizontal(|ui| {
+                    if button(ui, c.can_upgrade(u.id), format!("{} ({:.0} pts)", tx(("Niveau suivant", "Next level"), fr), cost), theme) {
+                        up = Some(u.id);
+                    }
+                    if c.research < cost {
+                        bar(ui, c.research / cost, theme.accent, 120.0, 7.0, theme);
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(id) = up {
+            c.learn_upgrade(id);
         }
         let _ = self;
     }
@@ -1276,16 +1412,37 @@ impl App {
         heading(ui, tx(("Revendre la boîte", "Sell the company"), fr), theme);
         card(ui, theme, |ui| {
             ui.set_width(ui.available_width());
-            muted(ui, tx(("Tu repars du garage, mais chaque étoile donne pour toujours +5 % de productivité, +3 % sur ce que tu encaisses et 1 000 € de plus au départ.", "You start again in the garage, but each star gives forever +5 % productivity, +3 % on what you earn and €1,000 more to start with."), fr), theme);
+            muted(ui, tx(("Tu repars du garage, mais chaque étoile donne pour toujours +5 % de productivité, +3 % sur ce que tu encaisses et 1 000 € de plus au départ, et se place dans un talent (ci-dessous). Tu touches aussi 10 % de la vente sur ton compte perso, et ta vie privée te suit.", "You start again in the garage, but each star gives forever +5 % productivity, +3 % on what you earn and €1,000 more to start with, and goes into a talent (below). You also get 10 % of the sale on your personal account, and your private life comes along."), fr), theme);
             muted(ui, format!("{} ★ {} · {} {} · {} {}", tx(("Étoiles :", "Stars:"), fr), c.legacy.stars, tx(("boîtes revendues :", "companies sold:"), fr), c.legacy.sales, tx(("record :", "record:"), fr), money(c.legacy.best, fr)), theme);
+            if let Some(ch) = c.challenge.as_deref().and_then(corp::challenge) {
+                let left = if ch.id == "speed" { format!(" · {} {}", tx(("reste", "left"), fr), corp::duration(corp::SPEED_LIMIT - c.run_time, fr)) } else { String::new() };
+                ui.label(egui::RichText::new(format!("{} « {} » : {} (+{} ★){left}", tx(("Défi en cours", "Current challenge"), fr), tx(ch.name, fr), tx(ch.about, fr), ch.reward)).size(12.5).color(theme.ansi[5]));
+            }
             let stars = c.sell_stars();
             if stars == 0 {
                 ui.label(egui::RichText::new(format!("{} {}.", tx(("Possible à partir de l'étape", "Possible from the stage"), fr), tx(corp::STAGES[corp::SELL_STAGE as usize].name, fr))).size(12.5).color(theme.ansi[3]));
             } else if self.tycoon.sell_confirm {
                 ui.label(egui::RichText::new(tx(("Sûr ? L'équipe, les locaux, les produits et la trésorerie seront perdus.", "Sure? The team, premises, products and cash will be gone."), fr)).size(12.5).color(theme.ansi[1]));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(tx(("Un défi pour la prochaine boîte ? (des étoiles en plus si tu le réussis)", "A challenge for the next company? (more stars if you win it)"), fr)).size(13.0).color(theme.text).strong());
+                ui.horizontal_wrapped(|ui| {
+                    let none = self.tycoon.challenge.is_none();
+                    if ui.add(egui::Button::new(egui::RichText::new(tx(("Aucun", "None"), fr)).size(12.0).color(if none { theme.bg } else { theme.text })).fill(if none { theme.accent } else { theme.tab_hover }).corner_radius(10.0)).clicked() {
+                        self.tycoon.challenge = None;
+                    }
+                    for ch in corp::CHALLENGES.iter() {
+                        let on = self.tycoon.challenge == Some(ch.id);
+                        let won = c.legacy.challenges.iter().any(|x| x == ch.id);
+                        let label = format!("{}{} (+{} ★)", if won { "✓ " } else { "" }, tx(ch.name, fr), ch.reward);
+                        if ui.add(egui::Button::new(egui::RichText::new(label).size(12.0).color(if on { theme.bg } else { theme.text })).fill(if on { theme.accent } else { theme.tab_hover }).corner_radius(10.0)).on_hover_text(tx(ch.about, fr)).clicked() {
+                            self.tycoon.challenge = Some(ch.id);
+                        }
+                    }
+                });
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if button(ui, true, format!("{} (+{} ★)", tx(("Vendre", "Sell"), fr), stars), theme) {
-                        c.sell(now);
+                    if button(ui, true, format!("{} (+{} ★, +{} {})", tx(("Vendre", "Sell"), fr), stars, money(c.sale_share(), fr), tx(("pour toi", "for you"), fr)), theme) {
+                        c.sell_with(now, self.tycoon.challenge.take());
                         self.tycoon.sell_confirm = false;
                         self.tycoon.tab = Tab::Office;
                     }
@@ -1297,6 +1454,33 @@ impl App {
                 self.tycoon.sell_confirm = true;
             }
         });
+
+        // The talents.
+        ui.add_space(14.0);
+        heading(ui, &format!("{} ({} ★ {})", tx(("Talents", "Talents"), fr), c.talent_points(), tx(("à placer", "to spend"), fr)), theme);
+        muted(ui, tx(("Chaque étoile se place une fois dans un talent, gardé pour toujours (le bonus de chaque étoile reste). Tu peux tout redistribuer quand tu veux.", "Each star goes once into a talent, kept forever (each star's bonus stays). You can share them out again whenever you like."), fr), theme);
+        ui.add_space(6.0);
+        let mut take = None;
+        card(ui, theme, |ui| {
+            ui.set_width(ui.available_width());
+            for t in corp::TALENTS.iter() {
+                let level = c.legacy.talent(t.id);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(tx(t.name, fr)).size(13.5).color(if level > 0 { theme.ansi[2] } else { theme.text }).strong());
+                    ui.label(egui::RichText::new(format!("{level}/{}", t.max)).size(12.5).color(theme.accent));
+                    muted(ui, tx(t.about, fr), theme);
+                    if level < t.max && ui.add_enabled(c.can_take_talent(t.id), egui::Button::new(egui::RichText::new(format!("+1 ({} ★)", t.cost)).size(12.0)).corner_radius(6.0)).clicked() {
+                        take = Some(t.id);
+                    }
+                });
+            }
+            if !c.legacy.talents.is_empty() && small(ui, tx(("Tout redistribuer", "Share them out again"), fr)) {
+                c.reset_talents();
+            }
+        });
+        if let Some(id) = take {
+            c.take_talent(id);
+        }
 
         // The world's board.
         ui.add_space(14.0);
@@ -1347,10 +1531,14 @@ impl App {
             let users = |c: &Corp| c.products.iter().map(|p| p.users).sum::<f64>();
             let work = |c: &Corp| c.contracts.iter().map(|k| k.need.iter().sum::<f64>()).sum::<f64>();
             let pay = |c: &Corp| c.contracts.iter().map(|k| k.pay).sum::<f64>();
+            let couple = |c: &Corp| c.life.partner.as_ref().map_or(0.0, |p| p.happiness);
+            let life = |c: &Corp| (c.life.account + c.life.savings + c.life.crypto, couple(c), c.life.stress, c.life.health);
             let before = (c.cash, c.rep, morale(c), c.staff.len() as f64, users(c), c.debt, work(c), pay(c), c.boosts.len());
+            let life_before = life(c);
             let label = tx(def.choices[k].label, fr).to_owned();
             if let Some(outcome) = c.choose(k) {
                 let after = (c.cash, c.rep, morale(c), c.staff.len() as f64, users(c), c.debt, work(c), pay(c), c.boosts.len());
+                let life_after = life(c);
                 let text = def.choices[k].outcomes.get(outcome).map_or(String::new(), |o| tx(*o, fr).replace("{who}", &who));
                 let mut changes: Vec<(String, f64, bool)> = Vec::new();
                 // (what, by how much, the more the better)
@@ -1367,6 +1555,10 @@ impl App {
                 add(("Dette technique", "Technical debt"), after.5 - before.5, 0.05, false);
                 add(("Travail des contrats", "Contracts' work"), after.6 - before.6, 1.0, false);
                 add(("Prix des contrats", "Contracts' price"), after.7 - before.7, 1.0, true);
+                add(("Compte perso", "Personal account"), life_after.0 - life_before.0, 1.0, true);
+                add(("Bonheur du couple", "The couple's happiness"), life_after.1 - life_before.1, 0.1, true);
+                add(("Ton stress", "Your stress"), life_after.2 - life_before.2, 0.1, false);
+                add(("Ta santé", "Your health"), life_after.3 - life_before.3, 0.1, true);
                 if after.8 > before.8 {
                     changes.push((tx(("Un effet pour un moment (voir le Bureau)", "An effect for a while (see the Office)"), fr).to_owned(), 0.0, true));
                 }
@@ -1489,7 +1681,7 @@ impl App {
         }
         ui.add_space(8.0);
         heading(ui, tx(("Et en revendant la boîte", "And by selling the company"), fr), theme);
-        muted(ui, format!("{} ★ {} · {}", tx(("Étoiles :", "Stars:"), fr), c.legacy.stars, tx(("chacune donne pour toujours +5 % de productivité, +3 % sur ce que tu encaisses et 1 000 € de plus au départ (onglet Direction).", "each one gives forever +5 % productivity, +3 % on what you earn and €1,000 more to start with (Management tab)."), fr)), theme);
+        muted(ui, format!("{} ★ {} · {}", tx(("Étoiles :", "Stars:"), fr), c.legacy.stars, tx(("chacune donne pour toujours +5 % de productivité, +3 % sur ce que tu encaisses et 1 000 € de plus au départ, et se place dans un talent (onglet Direction). Les défis de revente en rapportent d'autres.", "each one gives forever +5 % productivity, +3 % on what you earn and €1,000 more to start with, and goes into a talent (Management tab). The sale challenges bring more."), fr)), theme);
     }
 
     /// What the last event's choice made, until closed.
@@ -1508,7 +1700,7 @@ impl App {
             for (name, d, good) in &o.changes {
                 let (value, ok) = if *d == 0.0 {
                     (String::new(), *good)
-                } else if name == tx(("Trésorerie", "Cash"), fr) || name == tx(("Prix des contrats", "Contracts' price"), fr) {
+                } else if name == tx(("Trésorerie", "Cash"), fr) || name == tx(("Prix des contrats", "Contracts' price"), fr) || name == tx(("Compte perso", "Personal account"), fr) {
                     (format!("{}{}", if *d > 0.0 { "+" } else { "−" }, money(d.abs(), fr)), (*d > 0.0) == *good)
                 } else {
                     let n = if d.abs() >= 10.0 { format!("{:.0}", d.abs()) } else { format!("{:.1}", d.abs()) };
