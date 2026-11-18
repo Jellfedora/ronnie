@@ -42,6 +42,18 @@ pub(super) struct Monday {
     memo_rings: Vec<(f32, f32, f64)>,
     /// A line across the top: text, color, since.
     banner: Option<(String, Color32, f64)>,
+    /// Each zombie's life last seen, and until when it flashes (hit).
+    lives: HashMap<u32, (f32, f64)>,
+    /// One's life and shield last seen, and when last hurt (a red veil, a shake).
+    hurt: (f32, f64),
+    /// A floor changing (since when; the floor giving way: a white flash first).
+    fade: Option<(f64, bool)>,
+    /// One's kills in a row (each within COMBO_GAP of the last), the last one's time.
+    combo: (u32, f64),
+    /// The wave whose last zombie was said.
+    last_said: u32,
+    /// The marks on the floor: who, where, since when.
+    marks: Vec<(u32, f32, f32, f64)>,
     /// The objective last seen (its id, the lift's stage): a banner when it changes.
     objective_seen: Option<(String, String, bool)>,
     /// An error floor sent (a room full...), and since.
@@ -348,6 +360,11 @@ impl App {
                     self.monday_sound(&[(98.0, 70.0, 0.6, 0.32), (130.0, 98.0, 0.6, 0.3)]);
                 }
                 Happened::Floor(k) => {
+                    // A fade to the new floor (the floor giving way: already under way).
+                    if !self.monday.fade.is_some_and(|(at, _)| now - at < 0.5) {
+                        self.monday.fade = Some((now, false));
+                    }
+                    self.monday.marks.clear();
                     let names: Vec<&str> = t.monday_floors.split('|').collect();
                     self.monday.banner = Some((names.get(k).copied().unwrap_or_default().to_owned(), theme.accent, now));
                     self.monday.floats.clear();
@@ -372,6 +389,11 @@ impl App {
                     self.monday_sound(&[(110.0, 80.0, 0.5, 0.3)]);
                 }
                 Happened::Kill { kind, x, y, by } => {
+                    // One's kills in a row.
+                    if Some(by) == me {
+                        let (n, last) = self.monday.combo;
+                        self.monday.combo = (if now - last < COMBO_GAP { n + 1 } else { 1 }, now);
+                    }
                     let points = kind_stats(kind)[3] as u32;
                     let color = if Some(by) == me { theme.accent } else { theme.text_muted };
                     self.monday.floats.push((format!("+{points}"), x, y, color, now));
@@ -406,6 +428,17 @@ impl App {
                     self.monday_sound(&[(400.0, 200.0, 0.4, 0.22)]);
                 }
                 Happened::Call { x, y } => self.monday.floats.push((t.monday_call.to_owned(), x, y - 30.0, Color32::from_rgb(255, 140, 190), now)),
+                Happened::Enrage(kind) => {
+                    let name = BESTIARY.iter().position(|b| b.0 == kind).and_then(|k| t.monday_bestiary.split('|').nth(k)).unwrap_or_default();
+                    self.monday.banner = Some((t.monday_enraged.replace("{n}", name), Color32::from_rgb(235, 60, 50), now));
+                    self.monday_sound(&[(90.0, 60.0, 0.5, 0.3), (70.0, 50.0, 0.5, 0.3)]);
+                }
+                Happened::Mark { player, x, y } => {
+                    self.monday.marks.retain(|m| m.0 != player);
+                    self.monday.marks.push((player, x, y, now));
+                    self.monday_sound(&[(880.0, 880.0, 0.06, 0.15), (1320.0, 1320.0, 0.1, 0.15)]);
+                }
+                Happened::Collapse => self.monday.fade = Some((now, true)),
                 Happened::Armor { player, x, y } => {
                     self.monday.floats.push((format!("+{} ◆", ARMOR_PICK as i32), x, y - 30.0, SHIELD, now));
                     if Some(player) == me {
@@ -1253,6 +1286,19 @@ impl App {
         let followed = me.and_then(|id| frame.players.iter().find(|p| p.id == id)).or_else(|| frame.players.iter().find(|p| p.state == State::Up)).or(frame.players.first());
         let cam = camera(followed.map(|p| Pos2::from(mix.player(p.id, p.x, p.y))), Vec2::new(map.w, map.h), size / scale);
         let mut origin = field.center() - cam.to_vec2() * scale;
+        // Hurt (one's life and shield dropping): a red veil and a shake, a moment.
+        if let Some(p) = me.and_then(|id| frame.players.iter().find(|p| p.id == id)) {
+            let shield = frame.shields.iter().find(|s| s.0 == p.id).map_or(0.0, |s| s.1);
+            let total = p.hp + shield;
+            if total + 0.5 < self.monday.hurt.0 && p.state == State::Up {
+                self.monday.hurt.1 = now;
+            }
+            self.monday.hurt.0 = total;
+        }
+        let hurt = (1.0 - (now - self.monday.hurt.1) / 0.35).clamp(0.0, 1.0) as f32;
+        if hurt > 0.0 {
+            origin += Vec2::new((now * 63.0).sin() as f32, (now * 57.0).cos() as f32) * 4.0 * hurt;
+        }
         // The floor about to give way: the screen shakes, more and more.
         if let Some(o) = frame.objective.as_ref().filter(|o| o.k == "collapse" && o.p > 60.0) {
             let k = (o.p - 60.0) / 40.0;
@@ -1264,6 +1310,14 @@ impl App {
         // The floor of the tower: its ground, walls, doors and furniture; the reception's door.
         let boss = frame.zombies.iter().any(|z| z.kind == Kind::Board);
         super::zombie_floors::paint_floor(&painter, &map, &at, scale, now, boss);
+        // The rooms' names, painted on the floor.
+        for l in &map.labels {
+            let word = room_name(t, &l.id).to_uppercase();
+            let mut job = egui::text::LayoutJob::default();
+            job.append(&word, 0.0, egui::TextFormat { font_id: FontId::monospace((26.0 * scale).max(9.0)), color: Color32::from_white_alpha(34), extra_letter_spacing: 6.0 * scale, ..Default::default() });
+            let galley = painter.layout_job(job);
+            painter.galley(at(l.x, l.y) - galley.size() / 2.0, galley, Color32::WHITE);
+        }
         // The reception's door, Agnès' own (no zombie comes in there); her way to the coffee while she
         // walks it.
         if let Some(door) = &map.reception {
@@ -1319,8 +1373,26 @@ impl App {
                 painter.circle_filled(at(x, y), 90.0 * scale, ZOMBIE.gamma_multiply(0.1));
             }
         }
+        // Hit: a flash; enraged: a red aura (under them).
+        self.monday.lives.retain(|id, _| frame.zombies.iter().any(|z| z.id == *id));
+        for z in &frame.zombies {
+            let entry = self.monday.lives.entry(z.id).or_insert((z.life, 0.0));
+            if z.life < entry.0 - 0.001 {
+                entry.1 = now + 0.09;
+            }
+            entry.0 = z.life;
+            if z.enraged {
+                let (x, y) = mix.zombie(z.id, z.x, z.y);
+                let pulse = (0.5 + 0.5 * (now * 8.0).sin()) as f32;
+                painter.circle_filled(at(x, y), (46.0 + 8.0 * pulse) * scale, Color32::from_rgba_unmultiplied(235, 40, 30, (40.0 + 40.0 * pulse) as u8));
+            }
+        }
         for z in &frame.zombies {
             let (x, y) = mix.zombie(z.id, z.x, z.y);
+            let flash = self.monday.lives.get(&z.id).is_some_and(|e| e.1 > now);
+            if flash {
+                painter.circle_filled(at(x, y), 26.0 * scale, Color32::from_white_alpha(70));
+            }
             paint_zombie(&painter, at(x, y), scale, z.kind, z.heading, z.id, (now * 4.0) as f32 + z.id as f32, z.life, Fx { slowed: z.slowed, charging: z.charging || z.winding, frozen: z.frozen, healing: z.healing, rebooting: z.rebooting, striking: z.striking, rushing: z.rushing, calling: z.calling, boosting: z.boosting, boosted: z.boosted, stunned: z.stunned, stuck: z.stuck });
         }
         for s in &frame.shots {
@@ -1458,6 +1530,15 @@ impl App {
         } else if let Some(p) = mine {
             let (x, y) = mix.player(p.id, p.x, p.y);
             self.monday_controls(ui, now, at(x, y), pointer, field, &frame);
+            // G: a mark where the pointer is (« come here! »).
+            if let Some(ptr) = pointer
+                && !self.monday.chat.typing
+                && ui.memory(|m| m.focused().is_none())
+                && ui.input(|i| i.key_pressed(Key::G))
+            {
+                let world = (ptr - origin) / scale;
+                self.monday.online.mark(world.x, world.y);
+            }
         }
         if let Some(p) = pointer {
             let s = Stroke::new(2.0, Color32::from_white_alpha(210));
@@ -1627,9 +1708,94 @@ impl App {
         if map.w > size.x / scale + 1.0 || map.h > size.y / scale + 1.0 {
             paint_minimap(&ui.painter_at(field), field, &map, &frame, &colors, cam, size / scale);
         }
+        // The marks on the floor (5 s): a ring and « ! » in their color; out of sight, on the edge.
+        self.monday.marks.retain(|m| now - m.3 < 5.0);
+        let inner = Rect::from_min_max(field.min + Vec2::new(30.0, 210.0), field.max - Vec2::new(30.0, 30.0));
+        for &(who, x, y, since) in &self.monday.marks {
+            let color = colors.iter().find(|c| c.0 == who).map_or(Color32::WHITE, |c| c.2);
+            let c = at(x, y);
+            let k = ((now - since) * 2.0).fract() as f32;
+            hud.circle_stroke(c, (14.0 + 30.0 * k) * scale.max(0.6), Stroke::new(2.0, color.gamma_multiply(1.0 - k)));
+            hud.text(c, Align2::CENTER_CENTER, "!", FontId::proportional(22.0), color);
+            if !inner.contains(c) {
+                paint_edge_arrow(&hud, inner, field.center(), c, color, "!");
+            }
+        }
+        // The colleagues out of sight: an arrow on the edge, their name.
+        for p in frame.players.iter().filter(|p| Some(p.id) != me && p.state != State::Dead) {
+            let (x, y) = mix.player(p.id, p.x, p.y);
+            let c = at(x, y);
+            if !inner.contains(c) {
+                let (name, color) = colors.iter().find(|(id, _, _)| *id == p.id).map(|(_, n, c)| (n.as_str(), *c)).unwrap_or(("?", COLORS[0]));
+                paint_edge_arrow(&hud, inner, field.center(), c, if p.state == State::Down { theme.ansi[1] } else { color }, name);
+            }
+        }
+        // A boss on the floor: its name and life at the top (red, enraged).
+        if let Some(z) = frame.zombies.iter().find(|z| BESTIARY.iter().any(|b| b.0 == z.kind && b.2)) {
+            let name = BESTIARY.iter().position(|b| b.0 == z.kind).and_then(|k| t.monday_bestiary.split('|').nth(k)).unwrap_or_default();
+            let bar = Rect::from_center_size(Pos2::new(field.center().x, field.min.y + 124.0), Vec2::new(380.0, 12.0));
+            hud.rect_filled(bar.expand2(Vec2::new(8.0, 20.0)).translate(Vec2::new(0.0, -8.0)), 8.0, Color32::from_rgba_unmultiplied(18, 20, 26, 210));
+            hud.rect_filled(bar, 3.0, Color32::from_rgb(50, 20, 22));
+            let red = if z.enraged { Color32::from_rgb(255, 60, 40) } else { Color32::from_rgb(200, 40, 50) };
+            hud.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * z.life.clamp(0.0, 1.0), bar.height())), 3.0, red);
+            let label = if z.enraged { format!("{}  ·  {}", name.to_uppercase(), t.monday_enraged_tag) } else { name.to_uppercase() };
+            hud.text(bar.center_top() - Vec2::new(0.0, 4.0), Align2::CENTER_BOTTOM, label, FontId::proportional(13.0), if z.enraged { red } else { Color32::WHITE });
+        }
+        // The last zombie of a wave (no objective waiting): said once.
+        if frame.wave_on && !frame.exiting && frame.left == 1 && frame.objective.is_none() && self.monday.last_said != frame.wave {
+            self.monday.last_said = frame.wave;
+            self.monday.banner = Some((t.monday_last_zombie.to_owned(), theme.accent, now));
+        }
+        // One's kills in a row: from 3, a counter on the right.
+        let (combo, last) = self.monday.combo;
+        if combo >= 3 && now - last < COMBO_GAP {
+            let fresh = (1.0 - (now - last) / 0.25).clamp(0.0, 1.0) as f32;
+            let size = 28.0 + 10.0 * fresh + (combo.min(30) as f32);
+            paint_metal(&hud, Pos2::new(field.max.x - 40.0, field.center().y), Align2::RIGHT_CENTER, &format!("COMBO ×{combo}"), size, Color32::from_rgb(255, 200, 60), 1.0);
+        }
+        // Hurt: a red veil on the edges.
+        if hurt > 0.0 {
+            let edge = 90.0;
+            let red = Color32::from_rgba_unmultiplied(200, 20, 20, (110.0 * hurt) as u8);
+            for (r, horizontal, flip) in [
+                (Rect::from_min_size(field.min, Vec2::new(field.width(), edge)), true, false),
+                (Rect::from_min_max(Pos2::new(field.min.x, field.max.y - edge), field.max), true, true),
+                (Rect::from_min_size(field.min, Vec2::new(edge, field.height())), false, false),
+                (Rect::from_min_max(Pos2::new(field.max.x - edge, field.min.y), field.max), false, true),
+            ] {
+                let mut mesh = egui::Mesh::default();
+                let (a, b) = if flip { (Color32::TRANSPARENT, red) } else { (red, Color32::TRANSPARENT) };
+                let corners = if horizontal { [a, a, b, b] } else { [a, b, b, a] };
+                let k = mesh.vertices.len() as u32;
+                mesh.colored_vertex(r.left_top(), corners[0]);
+                mesh.colored_vertex(r.right_top(), corners[if horizontal { 1 } else { 1 }]);
+                mesh.colored_vertex(r.right_bottom(), corners[2]);
+                mesh.colored_vertex(r.left_bottom(), corners[3]);
+                mesh.add_triangle(k, k + 1, k + 2);
+                mesh.add_triangle(k, k + 2, k + 3);
+                hud.add(egui::Shape::mesh(mesh));
+            }
+        }
         // The objective's order, under the top, as long as it isn't done.
         if let Some(o) = &frame.objective {
             paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 84.0), &objective_said(o, t).1, Color32::from_rgb(255, 200, 60), &theme);
+        }
+        // A floor changing: a fade from black (the floor giving way: a white flash, then black).
+        if let Some((since, fall)) = self.monday.fade {
+            let k = (now - since) as f32;
+            if k > 1.6 {
+                self.monday.fade = None;
+            } else {
+                let dark = (1.0 - (k - 0.3).max(0.0) / 1.3).clamp(0.0, 1.0);
+                let color = if fall && k < 0.25 { Color32::from_white_alpha((255.0 * (1.0 - k / 0.25)) as u8) } else { Color32::from_black_alpha((255.0 * dark) as u8) };
+                hud.rect_filled(field, 0.0, color);
+                if dark > 0.3 {
+                    let names: Vec<&str> = t.monday_floors.split('|').collect();
+                    let name = names.get(frame.floor).copied().unwrap_or_default();
+                    paint_metal(&hud, field.center(), Align2::CENTER_CENTER, name, 44.0, theme.accent.gamma_multiply(dark), dark);
+                }
+                ui.ctx().request_repaint();
+            }
         }
         if let Some((text, color, since)) = &self.monday.banner {
             let k = now - since;
@@ -1654,7 +1820,7 @@ impl App {
             self.monday_ready_call(ui, field, &frame, p.ready, now);
         }
         if !self.monday.menu {
-            self.monday_chat_in_game(ui, field, watching);
+            self.monday_chat_in_game(ui, field, watching, !frame.wave_on);
         }
         if self.monday.menu {
             self.monday_menu(ui, field, solo, now);
@@ -1672,7 +1838,8 @@ impl App {
         let up: Vec<&crate::zombie::Player> = frame.players.iter().filter(|p| p.state == State::Up).collect();
         let done = up.iter().filter(|p| p.ready).count();
         let green = theme.ansi[2];
-        let card = Rect::from_center_size(Pos2::new(field.center().x, field.max.y - 52.0), Vec2::new(360.0, 70.0));
+        let next = frame.upcoming.as_deref().map(|id| upcoming_said(id, t));
+        let card = Rect::from_center_size(Pos2::new(field.center().x, field.max.y - if next.is_some() { 62.0 } else { 52.0 }), Vec2::new(360.0, if next.is_some() { 90.0 } else { 70.0 }));
         hud.rect_filled(card, 14.0, Color32::from_rgba_unmultiplied(18, 20, 26, 225));
         let beat = if ready { 1.0 } else { (0.6 + 0.4 * (now * 4.0).sin().abs()) as f32 };
         let edge = if ready { green } else { theme.accent };
@@ -1690,11 +1857,14 @@ impl App {
         hud.text(Pos2::new(x, card.min.y + 25.0), Align2::LEFT_CENTER, title, FontId::proportional(16.0), if ready { green } else { Color32::WHITE });
         let count = t.monday_ready_count.replace("{k}", &done.to_string()).replace("{n}", &up.len().to_string()).replace("{s}", &frame.break_left.to_string());
         hud.text(Pos2::new(x, card.min.y + 48.0), Align2::LEFT_CENTER, count, FontId::proportional(12.5), theme.text_muted);
+        if let Some(next) = next {
+            hud.text(Pos2::new(card.min.x + 16.0, card.min.y + 74.0), Align2::LEFT_CENTER, t.monday_next_up.replace("{o}", &next), FontId::proportional(12.5), Color32::from_rgb(255, 200, 60));
+        }
     }
 
     /// The chat during a game, under the wave's counter: the last messages a moment, the field opened
     /// by Enter (closed once sent, back to the game); always there while watching. With colleagues only.
-    fn monday_chat_in_game(&mut self, ui: &mut Ui, field: Rect, watching: bool) {
+    fn monday_chat_in_game(&mut self, ui: &mut Ui, field: Rect, watching: bool, resting: bool) {
         let together = self.monday.online.room.as_ref().is_some_and(|r| r.players.len() >= 2 || r.spectators > 0);
         if !together && self.monday.online.chat.is_empty() {
             return;
@@ -1707,7 +1877,8 @@ impl App {
         let area = Rect::from_min_size(field.min + Vec2::new(12.0, 82.0), Vec2::new((field.width() * 0.3).clamp(220.0, 320.0), 200.0f32.min(field.height() - 260.0).max(90.0)));
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref());
         let lines: Vec<super::chat::Line> = self.monday.online.chat.iter().map(|s| super::chat::Line { from: &s.from, text: &s.text, mine: pseudo == Some(s.from.as_str()), age: Some(s.at.elapsed().as_secs_f32()) }).collect();
-        if let Some(text) = self.monday.chat.ui(ui, area, &lines, watching, watching, "monday", &theme, t) {
+        // During the break (and while watching): the messages kept on screen.
+        if let Some(text) = self.monday.chat.ui(ui, area, &lines, watching, watching || resting, "monday", &theme, t) {
             self.monday.online.say(&text);
         }
         if !watching && !self.monday.chat.typing {
@@ -2085,6 +2256,46 @@ impl Mix {
     fn zombie(&self, id: u32, x: f32, y: f32) -> (f32, f32) {
         self.between(&self.zombies, id, x, y)
     }
+}
+
+/// Kills this close together make a combo.
+const COMBO_GAP: f64 = 1.6;
+
+/// A room's name (on the floor), from floor's id.
+fn room_name(t: &Strings, id: &str) -> &'static str {
+    let names: Vec<&'static str> = t.monday_room_names.split('|').collect();
+    let k = ["closet", "corridor", "landing", "manager", "meeting", "kitchen", "storage", "racks", "freight", "ceo", "terrace"].iter().position(|r| *r == id);
+    k.and_then(|k| names.get(k).copied()).unwrap_or("")
+}
+
+/// What waits at the next wave, said in the break.
+fn upcoming_said(id: &str, t: &Strings) -> String {
+    match id {
+        "power" => t.monday_obj_power_banner,
+        "badge" => t.monday_obj_badge_banner,
+        "meeting" => t.monday_obj_meeting_banner,
+        "gas" => t.monday_obj_gas_banner,
+        "racks" => t.monday_obj_racks_banner,
+        "file" => t.monday_obj_file_banner,
+        "ceo" => t.monday_obj_ceo_banner,
+        "flare" => t.monday_obj_flare_banner,
+        "lift" => t.monday_lift_banner,
+        "stairs" => t.monday_obj_stairs_banner,
+        "collapse" => t.monday_obj_collapse_banner,
+        _ => "",
+    }
+    .to_owned()
+}
+
+/// An arrow on the edge of `inner`, from `from` toward `target` (out of sight), a word beside it.
+fn paint_edge_arrow(painter: &egui::Painter, inner: Rect, from: Pos2, target: Pos2, color: Color32, word: &str) {
+    let dir = (target - from).normalized();
+    let lx = if dir.x.abs() > 1e-3 { ((if dir.x > 0.0 { inner.max.x } else { inner.min.x }) - from.x) / dir.x } else { f32::INFINITY };
+    let ly = if dir.y.abs() > 1e-3 { ((if dir.y > 0.0 { inner.max.y } else { inner.min.y }) - from.y) / dir.y } else { f32::INFINITY };
+    let tip = from + dir * lx.min(ly);
+    let side = Vec2::new(-dir.y, dir.x);
+    painter.add(egui::Shape::convex_polygon(vec![tip + dir * 10.0, tip - dir * 8.0 + side * 8.0, tip - dir * 8.0 - side * 8.0], color, Stroke::new(1.5, Color32::BLACK)));
+    painter.text(tip - dir * 22.0, Align2::CENTER_CENTER, word, FontId::proportional(11.5), color);
 }
 
 /// An objective said: in a banner (short), and as an order (what to do now).

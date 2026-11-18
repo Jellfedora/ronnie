@@ -274,6 +274,8 @@ pub struct Zombie {
     /// Stunned by the stamp; stuck by the tape.
     pub stunned: bool,
     pub stuck: bool,
+    /// A boss past half its life: enraged.
+    pub enraged: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -334,6 +336,8 @@ pub struct Frame {
     pub objective: Option<Objective>,
     /// The floor in the dark (the power cut, until switched on again).
     pub dark: bool,
+    /// During the break: what waits at the next wave (an objective's id, or the floor's way out).
+    pub upcoming: Option<String>,
     /// The floor of the tower (0 the hall, 1 the open space, 2 the boardroom, 3 the roof).
     pub floor: usize,
     /// Paused (Escape, or the page left alone).
@@ -515,6 +519,9 @@ pub struct Map {
     /// Interior walls: rooms and corridors (nothing goes through, not even shots).
     #[serde(default)]
     pub walls: Vec<Desk>,
+    /// The rooms' names, painted on the floor.
+    #[serde(default)]
+    pub labels: Vec<Label>,
     pub coffee: Spot,
     pub doors: Vec<Door>,
     /// The reception's door, Agnès' only, and her way to the coffee.
@@ -533,6 +540,14 @@ pub struct Desk {
     /// What it is ('desk', 'table', 'sofa', 'plant', 'heli'...), drawn as such.
     #[serde(default)]
     pub k: String,
+}
+
+/// A room's name on the floor: which (Ronnie has the words), where.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Label {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -653,6 +668,12 @@ pub enum Happened {
     Healed { player: u32, x: f32, y: f32 },
     /// A vest picked up (its shield points).
     Armor { player: u32, x: f32, y: f32 },
+    /// A boss past half its life.
+    Enrage(Kind),
+    /// A player's mark on the floor (« come here! »).
+    Mark { player: u32, x: f32, y: f32 },
+    /// The floor gave way.
+    Collapse,
     /// A turret crate dropped there; a turret set up on one (by whom, where).
     CrateDrop { x: f32, y: f32 },
     /// A memo sent (by whom, where); a golden parachute opened (whose).
@@ -758,6 +779,8 @@ enum Wire {
         ob: Option<Box<Objective>>,
         #[serde(default)]
         dk: u8,
+        #[serde(default)]
+        nx: Option<String>,
         #[serde(default)]
         pa: Vec<f64>,
         #[serde(default)]
@@ -994,6 +1017,11 @@ impl Online {
         self.send(json!({ "t": "ready", "on": on }));
     }
 
+    /// A mark on the floor at (x, y), seen by all (« come here! »).
+    pub fn mark(&self, x: f32, y: f32) {
+        self.send(json!({ "t": "mark", "x": x.round(), "y": y.round() }));
+    }
+
     /// To try things (a floor of development only; the game no longer counts): invincible.
     pub fn god(&self, on: bool) {
         self.send(json!({ "t": "cheat", "god": on }));
@@ -1099,7 +1127,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, ar, sh, fz, hz, ob, dk, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, ar, sh, fz, hz, ob, dk, nx, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
                 let mut players: Vec<Player> = p
                     .chunks_exact(22)
                     .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
@@ -1157,6 +1185,7 @@ impl Online {
                             boosted: fx & 1024 != 0,
                             stunned: fx & 2048 != 0,
                             stuck: fx & 4096 != 0,
+                            enraged: fx & 8192 != 0,
                         }
                     })
                     .collect();
@@ -1188,7 +1217,7 @@ impl Online {
                 let memos = mm.iter().map(|&id| id as u32).collect();
                 self.before = self.frame.take();
                 let objective = ob.map(|o| *o);
-                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, armors, shields, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
+                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, upcoming: nx, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, armors, shields, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -1268,6 +1297,9 @@ fn happened(v: &serde_json::Value) -> Option<Happened> {
         "reboot" => Happened::Reboot { x: n("x") as f32, y: n("y") as f32 },
         "heal" => Happened::Healed { player: u("id"), x: n("x") as f32, y: n("y") as f32 },
         "armor" => Happened::Armor { player: u("id"), x: n("x") as f32, y: n("y") as f32 },
+        "enrage" => Happened::Enrage(Kind::of(v.get("kind").and_then(serde_json::Value::as_str).unwrap_or(""))),
+        "mark" => Happened::Mark { player: u("player"), x: n("x") as f32, y: n("y") as f32 },
+        "collapse" => Happened::Collapse,
         "memo" => Happened::Memo { player: u("player"), x: n("x") as f32, y: n("y") as f32 },
         "parachute" => Happened::Parachute(u("player")),
         "crate-drop" => Happened::CrateDrop { x: n("x") as f32, y: n("y") as f32 },

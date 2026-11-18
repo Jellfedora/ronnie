@@ -35,6 +35,17 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Lundi matin, des armes rééquilibrées** : l'extincteur, les confettis, le tampon, le scotch, la plante et le vidéoprojecteur ont chacun un vrai rôle face à l'agrafeuse et au lance-post-it.
 - **Lundi matin, la progression des succès** : chaque succès pas encore obtenu montre où on en est (« 12/50 relèves », une fine barre).
 - **Lundi matin, le bon boss annoncé** : une vague de boss dit lequel arrive (avant, elle annonçait toujours le DRH).
+- **Lundi matin, l'armure** : les zombies laissent parfois un gilet (un boss, toujours) qui recharge une barre de bouclier (50 au plus). Une morsure entame le bouclier avant la vie.
+- **Lundi matin, plus de sensations** :
+  - **combat** : les zombies clignotent quand ils sont touchés ; un voile rouge et une secousse quand on est blessé ; un compteur de combo ; « Dernier zombie ! » ;
+  - **boss** : une barre de vie à leur nom en haut de l'écran, et ils enragent à mi-vie (plus rapides, en rouge) ;
+  - **étages** : un fondu au noir pour changer d'étage (un éclair blanc quand le sol cède), et le nom des pièces peint au sol.
+- **Lundi matin, à plusieurs** :
+  - **repère** : la touche G pose un repère que tout le monde voit (« viens ici ! ») ;
+  - **coéquipiers** : ceux hors de l'écran sont indiqués au bord, avec leur nom ;
+  - **tchat** : il reste affiché pendant la pause ;
+  - **pause** : elle annonce l'objectif de la vague suivante.
+- **Lundi matin, seul** : les objectifs sont plus doux (moins longs à tenir, moins de zombies pendant l'attente).
 - **Lundi matin, une arme ramassée** est à soi sans passer en main : le message donne sa touche pour la prendre.
 - **Lundi matin, la machine à café à côté du jeu** : pendant la pause, la machine à café s'affiche dans une colonne à gauche du terrain au lieu de le recouvrir. Le terrain est décalé d'autant toute la partie, pour ne pas bouger à chaque pause.
 - **Lundi matin, prêt pour la vague** : pendant la pause café, un encart en bas du terrain rappelle qu'Espace te met prêt pour la vague suivante, avec combien sont prêts et dans combien de temps elle part.
