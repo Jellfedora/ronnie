@@ -481,7 +481,10 @@ hours a client bought; several in turn, a new one opened once one is used up), a
 `{ronnie} track` for it: `track` (the projects, time spent, hours left), `track show <project>`, `track task <project> \
 <duration> <description…> [--day D] [--counter [C] | --quote Q | --free | --maintenance]`, `track new <name> --client \
 C` (a new client is its first project), `track counter <project> <hours> [label]`, `track quote <project> <label> \
-[--number N] [--hours H]`, `track share <project> <pseudo> admin|editor|viewer`. When the user asks to log a task, \
+[--number N] [--hours H]`, `track share <project> <pseudo> admin|editor|viewer`; a quote splits into planned tasks and \
+sub-tasks: `track item <project> <title> --quote Q [--parent I] [--hours H] [--body MD]`, `track item status <project> \
+<item> todo|doing|done`, and time logged on one with `track task … --item I`. Descriptions are Markdown (bold, lists, \
+boxes, tables). When the user asks to log a task, \
 make a client or a counter, do it. When you have finished a piece of work for a project that is tracked, you may \
 propose once to log it: a short description in the user's language and an estimate of the time it took the user \
 (ask, or let them correct it), charged as they say; never log anything without their agreement. A counter used \

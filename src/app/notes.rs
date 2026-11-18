@@ -138,7 +138,7 @@ impl Action {
 
 /// A line prefix the toolbar's buttons put or take away.
 #[derive(Clone, Copy, PartialEq)]
-enum Prefix {
+pub(super) enum Prefix {
     Heading,
     Bullet,
     Numbered,
@@ -230,7 +230,7 @@ enum CellMove {
 
 /// What a table's cell menu does.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum TableOp {
+pub(super) enum TableOp {
     RowBelow(usize),
     ColRight(usize),
     DeleteRow(usize),
@@ -1982,7 +1982,7 @@ fn char_range(text: &str, bytes: Range<usize>) -> Range<usize> {
 
 /// Tab in a table (at character `cursor`): the next cell's text, or the one before. Past the last
 /// cell, a row is added.
-fn next_cell(text: &mut String, cursor: usize, back: bool) -> Option<Range<usize>> {
+pub(super) fn next_cell(text: &mut String, cursor: usize, back: bool) -> Option<Range<usize>> {
     let byte = byte_of(text, cursor);
     let rows = table_at(text, byte)?;
     let cells: Vec<(Range<usize>, Range<usize>)> = rows.iter().filter(|l| l.role == Role::Table).flat_map(|l| cells_of(text, l.start..l.end)).collect();
@@ -2002,7 +2002,7 @@ fn next_cell(text: &mut String, cursor: usize, back: bool) -> Option<Range<usize
 
 /// The toolbar's table: a new one with its first heading selected; in a table, a row more under the
 /// cursor's.
-fn table(text: &mut String, cursor: usize, column: &str) -> Range<usize> {
+pub(super) fn table(text: &mut String, cursor: usize, column: &str) -> Range<usize> {
     let byte = byte_of(text, cursor);
     if let Some(rows) = table_at(text, byte) {
         let here = rows.iter().position(|l| l.start <= byte && byte <= l.end).unwrap_or(0);
@@ -2023,7 +2023,7 @@ fn table(text: &mut String, cursor: usize, column: &str) -> Range<usize> {
 /// Puts `block` on lines of its own at the cursor (character `cursor`): on its line when that is
 /// empty, under it otherwise, a line left after it. Returns the characters where it starts and where
 /// the cursor goes (the line after it).
-fn insert_block(text: &mut String, cursor: usize, block: &str) -> (usize, usize) {
+pub(super) fn insert_block(text: &mut String, cursor: usize, block: &str) -> (usize, usize) {
     let byte = byte_of(text, cursor);
     let line = line_at(text, byte);
     let (at, before) = if text[line.clone()].trim().is_empty() {
@@ -2049,7 +2049,7 @@ fn insert_inline(text: &mut String, cursor: usize, md: &str) -> usize {
 }
 
 /// `kind` put on (or taken off) each line of the selection (characters). Returns the selection after.
-fn prefix_lines(text: &mut String, sel: Range<usize>, kind: Prefix) -> Range<usize> {
+pub(super) fn prefix_lines(text: &mut String, sel: Range<usize>, kind: Prefix) -> Range<usize> {
     let (a, b) = (byte_of(text, sel.start), byte_of(text, sel.end));
     let first = line_at(text, a).start;
     let starts: Vec<usize> = std::iter::once(first).chain(text[first..b].match_indices('\n').map(|(i, _)| first + i + 1).filter(|s| *s < b)).collect();
@@ -2069,7 +2069,7 @@ fn prefix_lines(text: &mut String, sel: Range<usize>, kind: Prefix) -> Range<usi
 
 /// Puts `mark` on both sides of the selection (characters), or takes it away when it is there.
 /// Returns the selection after.
-fn wrap(text: &mut String, sel: Range<usize>, mark: &str) -> Range<usize> {
+pub(super) fn wrap(text: &mut String, sel: Range<usize>, mark: &str) -> Range<usize> {
     let (mut a, mut b) = (byte_of(text, sel.start), byte_of(text, sel.end));
     // Not around the spaces selected with the words.
     while a < b && text[a..b].starts_with(char::is_whitespace) {
@@ -2098,7 +2098,7 @@ fn wrap(text: &mut String, sel: Range<usize>, mark: &str) -> Range<usize> {
 
 /// The selection (characters) made a link's label, or a placeholder label; its address selected, to
 /// type. A web address selected becomes the address.
-fn link(text: &mut String, sel: Range<usize>, label: &str) -> Range<usize> {
+pub(super) fn link(text: &mut String, sel: Range<usize>, label: &str) -> Range<usize> {
     let (a, b) = (byte_of(text, sel.start), byte_of(text, sel.end));
     let selected = text[a..b].trim().to_owned();
     if selected.starts_with("http://") || selected.starts_with("https://") {
@@ -2220,7 +2220,7 @@ fn open_target(target: &str) {
 }
 
 /// Reads the images the note shows that aren't loaded yet.
-fn load_images(images: &mut HashMap<String, Img>, ctx: &egui::Context, text: &str) {
+pub(super) fn load_images(images: &mut HashMap<String, Img>, ctx: &egui::Context, text: &str) {
     for line in text.lines() {
         let Some(src) = image_src(line) else { continue };
         if images.contains_key(src) {
@@ -2268,7 +2268,7 @@ enum Deco {
 /// transparent), and what to draw with it.
 #[derive(Clone, Default)]
 pub(super) struct Live {
-    job: LayoutJob,
+    pub(super) job: LayoutJob,
     decos: Vec<Deco>,
     /// The links of the rendered lines: their places (characters) and addresses.
     links: Vec<(Range<usize>, String)>,
@@ -2276,7 +2276,12 @@ pub(super) struct Live {
 
 /// Lays out the note: the lines touched by `active` (bytes), or all of them when `raw`, show their
 /// Markdown, its marks dimmed; the others are rendered, their marks hidden.
-fn live(text: &str, active: Option<Range<usize>>, raw: bool, theme: &Theme, column: f32, image: &dyn Fn(&str) -> Option<Vec2>) -> Live {
+pub(super) fn live(text: &str, active: Option<Range<usize>>, raw: bool, theme: &Theme, column: f32, image: &dyn Fn(&str) -> Option<Vec2>) -> Live {
+    live_with(text, active, raw, theme, column, image, true)
+}
+
+/// As `live`, its first line a title or not (`titled`: a note; not: a description elsewhere).
+pub(super) fn live_with(text: &str, active: Option<Range<usize>>, raw: bool, theme: &Theme, column: f32, image: &dyn Fn(&str) -> Option<Vec2>, titled: bool) -> Live {
     let lines = structure(text);
     let mut starts = Vec::with_capacity(lines.len());
     let (mut count, mut prev) = (0, 0);
@@ -2290,7 +2295,7 @@ fn live(text: &str, active: Option<Range<usize>>, raw: bool, theme: &Theme, colu
     // Tables stay tables: their cells are edited in place.
     let shown: Vec<bool> = lines.iter().map(|l| raw || (!matches!(l.role, Role::Table | Role::Separator) && lines[l.block.clone()].iter().any(touched))).collect();
     let mut tables = 0;
-    let title = lines.iter().position(|l| l.role == Role::Text && !text[l.start..l.end].trim().is_empty());
+    let title = if titled { lines.iter().position(|l| l.role == Role::Text && !text[l.start..l.end].trim().is_empty()) } else { None };
 
     let lh = BODY * 1.5;
     let body = TextFormat { line_height: Some(lh), ..format(note_font(BODY, "note"), theme.text) };
@@ -2421,27 +2426,27 @@ fn live(text: &str, active: Option<Range<usize>>, raw: bool, theme: &Theme, colu
 
 /// What was clicked among the drawings over the note.
 #[derive(Default)]
-struct Hits {
+pub(super) struct Hits {
     /// A task's box: the byte of its mark.
-    toggle: Option<usize>,
+    pub(super) toggle: Option<usize>,
     /// Where the cursor goes (characters).
-    cursor: Option<usize>,
+    pub(super) cursor: Option<usize>,
     /// A link, or an image, to open.
-    open: Option<String>,
+    pub(super) open: Option<String>,
     /// A table's cell clicked: the table, its row and column.
-    cell: Option<(usize, usize, usize)>,
+    pub(super) cell: Option<(usize, usize, usize)>,
     /// Where the cell being edited is.
-    cell_rect: Option<Rect>,
-    table_op: Option<(usize, TableOp)>,
+    pub(super) cell_rect: Option<Rect>,
+    pub(super) table_op: Option<(usize, TableOp)>,
     /// A file to save elsewhere, or to show in its folder.
-    save: Option<String>,
-    reveal: Option<String>,
+    pub(super) save: Option<String>,
+    pub(super) reveal: Option<String>,
 }
 
 /// Draws what the rendered lines show instead of their marks: bullets, boxes, quotes, rules, blocks of
 /// code, images, tables, files; `back` takes what goes under the text. Links get the hand.
 #[allow(clippy::too_many_arguments)]
-fn paint_live(ui: &Ui, live: &Live, galley: &egui::Galley, origin: Pos2, column: f32, back: egui::layers::ShapeIdx, text: &egui::Response, images: &HashMap<String, Img>, theme: &Theme, t: &Strings, editable: bool, editing: Option<(usize, usize, usize)>) -> Hits {
+pub(super) fn paint_live(ui: &Ui, live: &Live, galley: &egui::Galley, origin: Pos2, column: f32, back: egui::layers::ShapeIdx, text: &egui::Response, images: &HashMap<String, Img>, theme: &Theme, t: &Strings, editable: bool, editing: Option<(usize, usize, usize)>) -> Hits {
     let mut hits = Hits::default();
     let painter = ui.painter();
     let row = |c: usize| galley.pos_from_cursor(CCursor::new(c)).translate(origin.to_vec2());
@@ -2625,18 +2630,18 @@ fn paint_live(ui: &Ui, live: &Live, galley: &egui::Galley, origin: Pos2, column:
 }
 
 
-fn set_cursor(ctx: &egui::Context, id: Id, chars: usize) {
+pub(super) fn set_cursor(ctx: &egui::Context, id: Id, chars: usize) {
     select(ctx, id, chars..chars);
 }
 
 /// Selects characters `range` in the TextEdit `id`.
-fn select(ctx: &egui::Context, id: Id, range: Range<usize>) {
+pub(super) fn select(ctx: &egui::Context, id: Id, range: Range<usize>) {
     let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
     state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(range.start), CCursor::new(range.end))));
     state.store(ctx, id);
 }
 
-fn color_key(theme: &Theme) -> u64 {
+pub(super) fn color_key(theme: &Theme) -> u64 {
     let [a, b, c, d] = theme.text.to_array();
     let [e, f, g, h] = theme.accent.to_array();
     u64::from_le_bytes([a, b, c, d, e, f, g, h]) ^ u64::from(u32::from_le_bytes(theme.text_muted.to_array())).rotate_left(17)
@@ -2722,7 +2727,7 @@ fn heading(line: &str) -> Option<usize> {
     ((1..=6).contains(&level) && line.as_bytes().get(level) == Some(&b' ')).then_some(level)
 }
 
-fn byte_of(text: &str, chars: usize) -> usize {
+pub(super) fn byte_of(text: &str, chars: usize) -> usize {
     text.char_indices().nth(chars).map_or(text.len(), |(b, _)| b)
 }
 
@@ -2736,7 +2741,7 @@ fn line_at(text: &str, at: usize) -> Range<usize> {
 /// Return pressed in a list: the next line starts the next item; pressed on an empty item, the list
 /// ends there instead (as in macOS Notes). `cursor` is just after the new line. Returns where the
 /// cursor goes when the text changed.
-fn continue_list(text: &mut String, cursor: usize) -> Option<usize> {
+pub(super) fn continue_list(text: &mut String, cursor: usize) -> Option<usize> {
     let byte = byte_of(text, cursor);
     if byte == 0 || text.as_bytes()[byte - 1] != b'\n' {
         return None;
@@ -2768,7 +2773,7 @@ fn continue_list(text: &mut String, cursor: usize) -> Option<usize> {
 
 /// Puts `kind` at the start of the line of character `cursor`, or takes it away when it is there
 /// (a heading goes #, ##, ###, then plain). Returns where the cursor goes.
-fn toggle_prefix(text: &mut String, cursor: usize, kind: Prefix) -> usize {
+pub(super) fn toggle_prefix(text: &mut String, cursor: usize, kind: Prefix) -> usize {
     let byte = byte_of(text, cursor);
     let line = line_at(text, byte);
     let content = &text[line.clone()];
@@ -3002,10 +3007,10 @@ fn paint_check_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
     painter.add(egui::Shape::line(vec![c + Vec2::new(-3.0, 0.2), c + Vec2::new(-0.8, 2.6), c + Vec2::new(3.2, -2.4)], Stroke::new(1.5, color)));
 }
 
-type Paint = fn(&egui::Painter, Pos2, Color32);
+pub(super) type Paint = fn(&egui::Painter, Pos2, Color32);
 
 /// The toolbar's formatting buttons, None between their groups.
-fn format_buttons(t: &Strings) -> Vec<Option<(Format, String, Paint)>> {
+pub(super) fn format_buttons(t: &Strings) -> Vec<Option<(Format, String, Paint)>> {
     let key = |k: char| if cfg!(target_os = "macos") { format!("⌘ {k}") } else { format!("Ctrl+{k}") };
     vec![
         Some((Format::Heading, t.notes_heading.to_owned(), paint_heading_icon as Paint)),

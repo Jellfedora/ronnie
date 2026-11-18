@@ -127,11 +127,60 @@ pub struct Quote {
     pub id: String,
     pub number: Option<String>,
     pub label: String,
+    /// Its description (Markdown).
+    #[serde(default)]
+    pub note: Option<String>,
     /// The minutes planned, if said.
     pub minutes: Option<u64>,
     pub day: String,
     pub closed: Option<i64>,
     pub used: u64,
+}
+
+/// Where a planned task is.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    #[default]
+    Todo,
+    Doing,
+    Done,
+}
+
+impl Status {
+    pub fn word(self) -> &'static str {
+        match self {
+            Status::Todo => "todo",
+            Status::Doing => "doing",
+            Status::Done => "done",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Status> {
+        match word.to_lowercase().as_str() {
+            "todo" | "à faire" | "a faire" => Some(Status::Todo),
+            "doing" | "en cours" => Some(Status::Doing),
+            "done" | "fait" | "faite" => Some(Status::Done),
+            _ => None,
+        }
+    }
+}
+
+/// A planned task of the project (of a quote, or not), maybe under another one.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Item {
+    pub id: String,
+    pub quote: Option<String>,
+    pub parent: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Its estimate.
+    pub minutes: Option<u64>,
+    pub status: Status,
+    pub position: i64,
+    /// Minutes logged on it (not on its sub-tasks).
+    pub spent: u64,
 }
 
 impl Quote {
@@ -152,6 +201,9 @@ pub struct Task {
     pub billing: Billing,
     pub counter: Option<String>,
     pub quote: Option<String>,
+    /// The planned task it was spent on.
+    #[serde(default)]
+    pub item: Option<String>,
     pub author: Option<String>,
     #[serde(default)]
     pub mine: bool,
@@ -172,9 +224,67 @@ pub struct Project {
     pub counters: Vec<Counter>,
     pub quotes: Vec<Quote>,
     pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub items: Vec<Item>,
+}
+
+/// A planned task with the time of its sub-tasks: estimated (its own, else theirs), spent, done.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Rollup {
+    pub estimate: u64,
+    pub spent: u64,
+    /// Tasks (sub-tasks counted, not those under them) done, of how many.
+    pub done: usize,
+    pub count: usize,
 }
 
 impl Project {
+    /// The planned tasks under `parent` (None: the first level) of `quote` (None: the project's own),
+    /// in their order.
+    pub fn children(&self, quote: Option<&str>, parent: Option<&str>) -> Vec<&Item> {
+        let mut items: Vec<&Item> = self.items.iter().filter(|i| i.quote.as_deref() == quote && i.parent.as_deref() == parent).collect();
+        items.sort_by_key(|i| i.position);
+        items
+    }
+
+    /// A planned task and all under it: the estimate (its own when given, else its sub-tasks'), the
+    /// time spent, how many done.
+    pub fn rollup(&self, item: &Item) -> Rollup {
+        let kids: Vec<Rollup> = self.items.iter().filter(|i| i.parent.as_deref() == Some(item.id.as_str())).map(|i| self.rollup(i)).collect();
+        let below: u64 = kids.iter().map(|r| r.estimate).sum();
+        Rollup {
+            estimate: item.minutes.unwrap_or(below),
+            spent: item.spent + kids.iter().map(|r| r.spent).sum::<u64>(),
+            done: usize::from(item.status == Status::Done) + kids.iter().map(|r| r.done).sum::<usize>(),
+            count: 1 + kids.iter().map(|r| r.count).sum::<usize>(),
+        }
+    }
+
+    /// A quote's planned tasks together (the quote's own hours when given).
+    pub fn quote_rollup(&self, quote: &Quote) -> Rollup {
+        let tops: Vec<Rollup> = self.children(Some(&quote.id), None).iter().map(|i| self.rollup(i)).collect();
+        Rollup {
+            estimate: quote.minutes.unwrap_or_else(|| tops.iter().map(|r| r.estimate).sum()),
+            spent: quote.used,
+            done: tops.iter().map(|r| r.done).sum(),
+            count: tops.iter().map(|r| r.count).sum(),
+        }
+    }
+
+    /// The path of a planned task: its parents' titles, then its own.
+    pub fn item_path(&self, id: &str) -> String {
+        let mut names = Vec::new();
+        let mut at = self.items.iter().find(|i| i.id == id);
+        while let Some(i) = at {
+            names.insert(0, i.title.clone());
+            if names.len() > 4 {
+                break;
+            }
+            at = i.parent.as_ref().and_then(|p| self.items.iter().find(|x| &x.id == p));
+        }
+        names.join(" › ")
+    }
+
     pub fn summary(&self) -> Summary {
         Summary {
             id: self.id.clone(),
@@ -218,6 +328,18 @@ pub struct TaskInput {
     pub counter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
+    /// The planned task it was spent on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+}
+
+/// A planned task as written.
+#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+pub struct ItemInput {
+    pub title: String,
+    pub body: Option<String>,
+    pub minutes: Option<u64>,
+    pub status: Status,
 }
 
 /// The calls to floor's tracking, with an account.
@@ -350,11 +472,33 @@ impl Client {
         // Charged elsewhere: the old counter or quote forgotten.
         body["counter"] = input.counter.clone().map_or(Value::Null, Value::String);
         body["quote"] = input.quote.clone().map_or(Value::Null, Value::String);
+        body["item"] = input.item.clone().map_or(Value::Null, Value::String);
         self.project_of("PATCH", &format!("/projects/{id}/tasks/{task}"), Some(body))
     }
 
     pub fn delete_task(&self, id: &str, task: &str) -> Answer<Project> {
         self.project_of("DELETE", &format!("/projects/{id}/tasks/{task}"), None)
+    }
+
+    /// A planned task, of `quote` (None: the project's), under `parent`.
+    pub fn add_item(&self, id: &str, quote: Option<&str>, parent: Option<&str>, item: &ItemInput) -> Answer<Project> {
+        let mut body = serde_json::to_value(item).map_err(|e| e.to_string())?;
+        body["quote"] = quote.map_or(Value::Null, |q| Value::String(q.to_owned()));
+        body["parent"] = parent.map_or(Value::Null, |p| Value::String(p.to_owned()));
+        self.project_of("POST", &format!("/projects/{id}/items"), Some(body))
+    }
+
+    /// A planned task's fields given in `fields` (title, body, minutes, status, parent, position).
+    pub fn update_item(&self, id: &str, item: &str, fields: Value) -> Answer<Project> {
+        self.project_of("PATCH", &format!("/projects/{id}/items/{item}"), Some(fields))
+    }
+
+    pub fn delete_item(&self, id: &str, item: &str) -> Answer<Project> {
+        self.project_of("DELETE", &format!("/projects/{id}/items/{item}"), None)
+    }
+
+    pub fn add_quote_full(&self, id: &str, number: Option<&str>, label: &str, minutes: Option<u64>, day: &str, note: Option<&str>) -> Answer<Project> {
+        self.project_of("POST", &format!("/projects/{id}/quotes"), Some(serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day, "note": note })))
     }
 }
 
@@ -487,6 +631,31 @@ fn find_quote<'a>(project: &'a Project, word: &str) -> Result<&'a Quote, String>
     }
 }
 
+fn find_item<'a>(project: &'a Project, word: &str) -> Result<&'a Item, String> {
+    let w = word.to_lowercase();
+    let found: Vec<&Item> = project.items.iter().filter(|i| i.id == word || (w.len() >= 4 && i.id.starts_with(&w)) || i.title.to_lowercase() == w).collect();
+    match found.as_slice() {
+        [i] => Ok(i),
+        [] => Err(format!("{word}: no such planned task in {} (`ronnie track show`)", project.name)),
+        _ => Err(format!("{word}: several planned tasks: give the id (`ronnie track show`)")),
+    }
+}
+
+/// The planned tasks of a quote (or the project's own), as an indented tree.
+fn items_tree(p: &Project, quote: Option<&str>, parent: Option<&str>, depth: usize, out: &mut Vec<String>) {
+    for i in p.children(quote, parent) {
+        let r = p.rollup(i);
+        let est = if r.estimate > 0 { format_minutes(r.estimate as i64) } else { "not estimated".into() };
+        out.push(format!("{}{}  [{}] {}  ({} of {est})", "    ".repeat(depth + 1), short(&i.id), i.status.word(), i.title, format_minutes(r.spent as i64)));
+        if let Some(body) = i.body.as_deref().filter(|b| !b.trim().is_empty()) {
+            for line in body.lines().take(6) {
+                out.push(format!("{}  | {line}", "    ".repeat(depth + 2)));
+            }
+        }
+        items_tree(p, quote, Some(&i.id), depth + 1, out);
+    }
+}
+
 fn short(id: &str) -> &str {
     &id[..8.min(id.len())]
 }
@@ -577,8 +746,19 @@ fn describe(p: &Project, all: bool) -> String {
     }
     out.push("quotes:".into());
     for q in &p.quotes {
-        let planned = q.minutes.map_or("not said".into(), |m| format_minutes(m as i64));
+        let estimate = p.quote_rollup(q).estimate;
+        let planned = if estimate > 0 { format_minutes(estimate as i64) } else { "not estimated".into() };
         out.push(format!("  {}  {}  {}  planned {planned}, spent {}{}", short(&q.id), q.title(), show_day(&q.day), format_minutes(q.used as i64), if q.closed.is_some() { "  [closed]" } else { "" }));
+        if let Some(note) = q.note.as_deref().filter(|n| !n.trim().is_empty()) {
+            for line in note.lines().take(12) {
+                out.push(format!("      | {line}"));
+            }
+        }
+        items_tree(p, Some(&q.id), None, 0, &mut out);
+    }
+    if p.items.iter().any(|i| i.quote.is_none()) {
+        out.push("planned tasks outside quotes:".into());
+        items_tree(p, None, None, 0, &mut out);
     }
     if p.quotes.is_empty() {
         out.push("  (none)".into());
@@ -681,6 +861,13 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             }
             let p = open(project)?;
             let mut task = TaskInput { day: day_of(&o)?, label: words.join(" "), minutes, ..TaskInput::default() };
+            // On a planned task: charged to its quote unless said otherwise.
+            let item = match o.get("item").cloned().flatten() {
+                Some(i) => Some(find_item(&p, &i)?.clone()),
+                None => None,
+            };
+            task.item = item.as_ref().map(|i| i.id.clone());
+            let item_quote = item.as_ref().and_then(|i| i.quote.clone());
             if o.contains_key("free") {
                 task.billing = Billing::Free;
             } else if o.contains_key("maintenance") {
@@ -688,6 +875,9 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             } else if let Some(q) = o.get("quote").cloned().flatten() {
                 task.billing = Billing::Quote;
                 task.quote = Some(find_quote(&p, &q)?.id.clone());
+            } else if let (Some(q), false) = (item_quote, o.contains_key("counter")) {
+                task.billing = Billing::Quote;
+                task.quote = Some(q);
             } else {
                 task.billing = Billing::Counter;
                 task.counter = Some(match o.get("counter").cloned().flatten() {
@@ -696,7 +886,7 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
                 });
             }
             let after = client.add_task(&p.id, &task)?;
-            let mut said = format!("Logged in {}: {} ({}, {}).", after.name, task.label, format_minutes(minutes as i64), show_day(&task.day));
+            let mut said = format!("Logged in {}: {} ({}, {}).", after.name, task.label.lines().next().unwrap_or(""), format_minutes(minutes as i64), show_day(&task.day));
             if let Some(c) = task.counter.as_ref().and_then(|id| after.counters.iter().find(|c| &c.id == id)) {
                 said.push_str(&format!(" Counter {}: {} left.", c.label, format_minutes(c.left())));
                 if c.left() <= 0 {
@@ -733,6 +923,49 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             let label = words.join(" ");
             client.add_quote(&p.id, o.get("number").cloned().flatten().as_deref(), &label, minutes, &day_of(&o)?)?;
             Ok(format!("Quote {label} made in {}.", p.name))
+        }
+        ["item", "status", project, item, status] => {
+            let status = Status::parse(status).ok_or("A status: todo, doing or done.")?;
+            let p = open(project)?;
+            let i = find_item(&p, item)?;
+            client.update_item(&p.id, &i.id, serde_json::json!({ "status": status.word() }))?;
+            Ok(format!("{}: {}.", i.title, status.word()))
+        }
+        ["item", "rm", project, item] => {
+            let p = open(project)?;
+            let i = find_item(&p, item)?;
+            client.delete_item(&p.id, &i.id)?;
+            Ok(format!("Planned task {} deleted (its sub-tasks too; the time logged on it stays).", i.title))
+        }
+        ["item", project, rest @ ..] => {
+            let (words, o) = split_options(rest, &[])?;
+            if words.is_empty() {
+                return Err(usage());
+            }
+            let p = open(project)?;
+            let parent = match o.get("parent").cloned().flatten() {
+                Some(w) => Some(find_item(&p, &w)?.clone()),
+                None => None,
+            };
+            // Under a parent: its quote; else the quote said (none: the project's own).
+            let quote = match (&parent, o.get("quote").cloned().flatten()) {
+                (Some(parent), _) => parent.quote.clone(),
+                (None, Some(q)) => Some(find_quote(&p, &q)?.id.clone()),
+                (None, None) => None,
+            };
+            let minutes = match o.get("hours").cloned().flatten() {
+                Some(h) => Some(parse_duration(&h).ok_or_else(|| format!("{h}: hours as 4, 2h30, 45m"))? as u64),
+                None => None,
+            };
+            let status = match o.get("status").cloned().flatten() {
+                Some(s) => Status::parse(&s).ok_or("A status: todo, doing or done.")?,
+                None => Status::Todo,
+            };
+            let title = words.join(" ");
+            let input = ItemInput { title: title.clone(), body: o.get("body").cloned().flatten(), minutes, status };
+            let after = client.add_item(&p.id, quote.as_deref(), parent.as_ref().map(|i| i.id.as_str()), &input)?;
+            let made = after.items.iter().filter(|i| i.title == title).max_by_key(|i| i.position).map_or("?", |i| short(&i.id));
+            Ok(format!("Planned task {title} made ({made}) in {}.", after.name))
         }
         ["share", project, pseudo, role] => {
             let role = Role::parse(role).ok_or("A role: admin, editor (fills in tasks) or viewer.")?;
@@ -785,6 +1018,29 @@ mod tests {
     }
 
     #[test]
+    fn planned_tasks_add_up() {
+        let item = |id: &str, parent: Option<&str>, minutes: Option<u64>, spent: u64, status: Status| Item {
+            id: id.into(), quote: Some("q".into()), parent: parent.map(Into::into), title: id.into(), body: None, minutes, status, position: 0, spent,
+        };
+        let p = Project {
+            id: "p".into(), name: "P".into(), client: None, color: None, note: None, role: Role::Owner, updated: 0, archived: None, members: vec![], counters: vec![], tasks: vec![],
+            quotes: vec![Quote { id: "q".into(), number: None, label: "Q".into(), note: None, minutes: None, day: "2026-01-01".into(), closed: None, used: 330 }],
+            items: vec![
+                item("a", None, None, 0, Status::Todo),
+                item("a1", Some("a"), Some(180), 150, Status::Done),
+                item("a2", Some("a"), Some(120), 60, Status::Doing),
+                item("b", None, Some(600), 120, Status::Todo),
+            ],
+        };
+        let a = p.rollup(&p.items[0]);
+        // No estimate of its own: its sub-tasks'.
+        assert_eq!((a.estimate, a.spent, a.done, a.count), (300, 210, 1, 3));
+        let q = p.quote_rollup(&p.quotes[0]);
+        assert_eq!((q.estimate, q.spent, q.done, q.count), (900, 330, 1, 4));
+        assert_eq!(p.item_path("a2"), "a › a2");
+    }
+
+    #[test]
     fn the_counter_to_use() {
         let counter = |id: &str, minutes, used, closed| Counter { id: id.into(), label: id.into(), minutes, day: "2026-01-01".into(), closed, used };
         let mut p = Project {
@@ -800,6 +1056,7 @@ mod tests {
             counters: vec![counter("a", 600, 600, None), counter("b", 600, 30, None)],
             quotes: vec![],
             tasks: vec![],
+            items: vec![],
         };
         assert_eq!(p.current_counter().map(|c| c.id.as_str()), Some("b"));
         assert!(!p.counters_spent());

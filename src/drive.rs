@@ -251,9 +251,16 @@ Project tracking (\"Suivi\", kept on floor with the user's account; <project>: i
   ronnie track new <name> [--client C] [--color #rrggbb]
                                         a new project (a new client: its first project)
   ronnie track task <project> <duration> <description…> [--day D]
-                 [--counter [label|id] | --quote <number|label|id> | --free | --maintenance]
-                                        log a task done: duration 1h30, 1,5, 45m; day 18/11, hier;
+                 [--counter [label|id] | --quote <number|label|id> | --free | --maintenance] [--item I]
+                                        log time spent: duration 1h30, 1,5, 45m; day 18/11, hier; the
+                                        description in Markdown; --item: on a planned task (its quote);
                                         no charge given: the project's current counter
+  ronnie track item <project> <title…> [--quote Q] [--parent I] [--hours H] [--body MD]
+                 [--status todo|doing|done]
+                                        a planned task of a quote (or of the project), a sub-task with
+                                        --parent (3 levels at most), its estimate, its Markdown details
+  ronnie track item status <project> <item> <todo|doing|done>
+  ronnie track item rm <project> <item>
   ronnie track task rm <project> <task id>
                                         delete a task
   ronnie track counter <project> <hours> [label…] [--day D]

@@ -82,6 +82,7 @@ mod imports;
 mod projlogs;
 mod xdebug;
 mod projects;
+mod mdedit;
 mod track;
 mod trackchat;
 mod modules;
