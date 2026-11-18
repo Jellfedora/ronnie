@@ -387,14 +387,14 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: SHIRE_THEME,
         name: "La Comté",
-        bg: 0x1e1b16,
-        fg: 0xece3c6,
-        cursor: 0xd9b44a,
-        chrome: 0x27231c,
-        surface: 0x3d362b,
-        accent: 0xd9b44a,
+        bg: 0x2b2620,
+        fg: 0xf4ecd4,
+        cursor: 0xe2bd52,
+        chrome: 0x342e26,
+        surface: 0x4d4436,
+        accent: 0xe2bd52,
         ansi: [
-            0x28331f, 0xd65a42, 0x8fbf55, 0xe0b84e, 0x72a0c4, 0xb47ca6, 0x6cb8a0, 0xd8cfb2, //
+            0x3a342b, 0xd65a42, 0x8fbf55, 0xe0b84e, 0x72a0c4, 0xb47ca6, 0x6cb8a0, 0xd8cfb2, //
             0x52604a, 0xef7558, 0xaed874, 0xf2cf6a, 0x94bcda, 0xcc9ac2, 0x8ed2bc, 0xfbf6e4,
         ],
         dark: true,

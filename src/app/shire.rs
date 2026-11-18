@@ -319,7 +319,7 @@ pub(super) fn active_mark(painter: &egui::Painter, r: Rect) {
 /// The sidebar's panel: warm wood going dark towards its foot.
 pub(super) fn panel_bg(painter: &egui::Painter, r: Rect) {
     let mut mesh = egui::Mesh::default();
-    let (top, foot) = (Color32::from_rgb(44, 38, 30), Color32::from_rgb(24, 21, 17));
+    let (top, foot) = (Color32::from_rgb(60, 52, 41), Color32::from_rgb(44, 38, 30));
     mesh.colored_vertex(r.left_top(), top);
     mesh.colored_vertex(r.right_top(), top);
     mesh.colored_vertex(r.left_bottom(), foot);
