@@ -4,6 +4,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-18
+
 ### Nouveautés
 
 - **Suivi de projets** : une nouvelle catégorie « Suivi » dans la colonne de gauche. Pour chaque projet (rangé par client), on note les tâches faites : la date, la durée tapée à la main (1h30, 1,5, 45m), ce qui a été fait, et à quoi c'est imputé. Une tâche peut être décomptée d'un compteur d'heures (le contrat du client), liée à un devis, offerte ou comprise dans la maintenance. Un projet peut avoir plusieurs compteurs d'heures, chacun avec son solde. Quand un compteur est soldé, Ronnie propose d'en ouvrir un nouveau. Les devis montrent le temps passé par rapport aux heures prévues. Tout est gardé sur floor avec le compte, et chaque projet se partage avec un collègue : admin, saisie des tâches ou consultation seule. À la première ouverture, Ronnie propose de reprendre les profils choisis comme projets. Un projet lié à un profil ouvre son onglet. Claude peut aussi saisir les tâches et créer projets, clients, compteurs et devis (`ronnie track`), et il propose de noter le travail qu'il vient de faire, sans jamais rien saisir sans accord. Demande floor 0.22.0.
