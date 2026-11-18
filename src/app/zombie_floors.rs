@@ -124,13 +124,25 @@ fn ground_marble(painter: &egui::Painter, map: &Map, to: To, s: f32) {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_black_alpha(30)), egui::StrokeKind::Inside);
         }
     }
-    // The red carpet, gold edged, from the revolving door to the fountain.
-    let carpet = Rect::from_min_max(to(900.0, 462.0), to(map.w - map.wall, 538.0));
+    // The big hall (its rooms on the right): the server closet's concrete floor, the corridor's
+    // carpet; the red carpet down from the revolving door to the fountain.
+    let big = map.w > 1600.0;
+    if big {
+        let closet = Rect::from_min_max(to(1720.0, map.wall), to(map.w - map.wall, 500.0));
+        painter.rect_filled(closet, 0.0, rgb(118, 120, 122));
+        for k in 0..((map.w - 1720.0) / 120.0) as i32 {
+            let x = 1720.0 + k as f32 * 120.0;
+            painter.line_segment([to(x, map.wall), to(x, 500.0)], Stroke::new(1.0, Color32::from_black_alpha(30)));
+        }
+        let corridor = Rect::from_min_max(to(1720.0, 520.0), to(map.w - map.wall, 900.0));
+        painter.rect_filled(corridor, 0.0, rgb(70, 66, 74));
+    }
+    let carpet = if big { Rect::from_min_max(to(760.0, map.wall), to(840.0, 580.0)) } else { Rect::from_min_max(to(900.0, 462.0), to(map.w - map.wall, 538.0)) };
     painter.rect_filled(carpet.translate(Vec2::new(0.0, 3.0 * s)), 0.0, Color32::from_black_alpha(50));
     painter.rect_filled(carpet, 0.0, rgb(128, 26, 38));
     painter.rect_stroke(carpet.shrink(5.0 * s), 0.0, Stroke::new(2.0 * s, rgb(212, 172, 84)), egui::StrokeKind::Inside);
     // The company's star, inlaid by the entrance.
-    let c = to(1250.0, 860.0);
+    let c = if big { to(1250.0, 1180.0) } else { to(1250.0, 860.0) };
     for k in 0..8 {
         let a = k as f32 * std::f32::consts::FRAC_PI_4;
         let long = if k % 2 == 0 { 70.0 } else { 40.0 } * s;

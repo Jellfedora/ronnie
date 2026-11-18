@@ -20,11 +20,17 @@ const REVIVE: f32 = 3.0;
 /// The coffee machine's column, on the left of the field (its panel this wide).
 const SHOP_W: f32 = 250.0;
 
+/// Debug builds' game to try: the wave aimed at (0: the floor's way out), the step, the frame (its wave,
+/// fought or not) when a wave was last passed.
+pub(super) type Demo = (u32, u8, Option<(u32, bool)>);
+
 #[derive(Default)]
 pub(super) struct Monday {
     pub(super) online: Online,
     /// Debug builds: invincible (floor of development only).
     god: bool,
+    /// Debug builds (`RONNIE_OPEN_MONDAY`): a game alone, started, invincible, at the wave asked.
+    pub(super) demo: Option<Demo>,
     pub(super) floor: Option<crate::floor::GameFloor>,
     /// The game just over, shown until dismissed.
     over: Option<Over>,
@@ -36,6 +42,8 @@ pub(super) struct Monday {
     memo_rings: Vec<(f32, f32, f64)>,
     /// A line across the top: text, color, since.
     banner: Option<(String, Color32, f64)>,
+    /// The objective last seen (its id, the lift's stage): a banner when it changes.
+    objective_seen: Option<(usize, u8)>,
     /// An error floor sent (a room full...), and since.
     error: Option<(String, f64)>,
     sound: Option<super::blob::Sound>,
@@ -193,7 +201,50 @@ impl App {
         }
     }
 
+    /// Debug builds: a game alone, then started, invincible, waves passed up to the one asked (a floor
+    /// of development only accepts that), one step a frame as floor answers.
+    fn monday_demo(&mut self) {
+        let Some((wave, step, asked)) = self.monday.demo else { return };
+        let online = &self.monday.online;
+        if online.status != Status::Ready {
+            return;
+        }
+        let next = match step {
+            0 if online.room.is_none() => {
+                online.host();
+                1
+            }
+            1 if online.room.as_ref().is_some_and(|r| !r.started) => {
+                online.start();
+                2
+            }
+            2 if online.frame.is_some() => {
+                online.god(true);
+                self.monday.god = true;
+                3
+            }
+            3 => match &online.frame {
+                // Still where it was when last passed: floor hasn't answered yet.
+                Some(f) if asked == Some((f.wave, f.wave_on)) => 3,
+                // 0: up to the floor's way out (the lift).
+                Some(f) if (wave == 0 && f.exiting) || (wave > 0 && f.wave_on && f.wave >= wave) => {
+                    self.monday.demo = None;
+                    return;
+                }
+                Some(f) => {
+                    online.skip("wave");
+                    self.monday.demo = Some((wave, 3, Some((f.wave, f.wave_on))));
+                    return;
+                }
+                None => 3,
+            },
+            s => s,
+        };
+        self.monday.demo = Some((wave, next, asked));
+    }
+
     pub(super) fn monday_page(&mut self, ui: &mut Ui, rect: Rect) {
+        self.monday_demo();
         let t = self.t();
         let theme = self.theme.clone();
         let now = ui.input(|i| i.time);
@@ -413,7 +464,7 @@ impl App {
                         let names: Vec<&str> = t.monday_weapons.split('|').collect();
                         let lines: Vec<&str> = t.monday_picked.split('|').collect();
                         let k = ["new", "dmg", "mag", "ammo"].iter().position(|g| *g == gain).unwrap_or(3);
-                        let text = lines.get(k).copied().unwrap_or_default().replace("{w}", names.get(weapon).copied().unwrap_or_default());
+                        let text = lines.get(k).copied().unwrap_or_default().replace("{w}", names.get(weapon).copied().unwrap_or_default()).replace("{k}", &(weapon + 1).to_string());
                         self.monday.banner = Some((text, WEAPON_COLORS[weapon], now));
                         self.monday_sound(&[(600.0, 600.0, 0.06, 0.18), (900.0, 900.0, 0.06, 0.18), (1200.0, 1200.0, 0.15, 0.18)]);
                     }
@@ -1389,6 +1440,28 @@ impl App {
         // The counters: the wave, the player's tickets (watching: the team's), the weapon, the team.
         let hud = ui.painter_at(rect);
         let panel = |r: Rect| hud.rect_filled(r, 10.0, Color32::from_rgba_unmultiplied(18, 20, 26, 210));
+        // The power cut: the floor black but for each player's lamp (a cone ahead, where they aim)
+        // and a glimmer around them.
+        if frame.dark {
+            let lights: Vec<(Pos2, f32)> = frame.players.iter().filter(|p| p.state == State::Up).map(|p| {
+                let (x, y) = mix.player(p.id, p.x, p.y);
+                (at(x, y), p.aim)
+            }).collect();
+            paint_dark(&painter, field, &lights, scale);
+        }
+        // What to do away from the room: its spot (a ring filling up), the lift's cabin; out of
+        // sight, an arrow on the edge of the screen toward it. A new one (or the lift's next stage):
+        // said in a banner.
+        let seen = frame.objective.map(|o| (o.id + if o.kind == crate::zombie::ObjectiveKind::Lift { 100 } else { 0 }, o.stage));
+        if seen != self.monday.objective_seen {
+            self.monday.objective_seen = seen;
+            if let Some(o) = frame.objective {
+                self.monday.banner = Some((objective_said(&o, t).0, Color32::from_rgb(255, 200, 60), now));
+            }
+        }
+        if let Some(o) = frame.objective {
+            paint_objective(&painter, &o, &at, scale, field, now, t);
+        }
         let top = Rect::from_min_size(field.min + Vec2::new(12.0, 12.0), Vec2::new(300.0, 58.0));
         panel(top);
         // Debug builds, playing: what to try the levels with (a floor of development only accepts it).
@@ -1413,7 +1486,13 @@ impl App {
                 self.monday.online.skip("floor");
             }
         }
-        let wave = if frame.wave_on { format!("{} / {}", t.monday_wave.replace("{n}", &frame.wave.to_string()), crate::zombie::LAST_WAVE) } else { t.monday_break_title.to_owned() };
+        let wave = if frame.exiting {
+            t.monday_exit_title.to_owned()
+        } else if frame.wave_on {
+            format!("{} / {}", t.monday_wave.replace("{n}", &frame.wave.to_string()), crate::zombie::LAST_WAVE)
+        } else {
+            t.monday_break_title.to_owned()
+        };
         let floors: Vec<&str> = t.monday_floor_short.split('|').collect();
         hud.text(top.right_top() + Vec2::new(-12.0, 14.0), Align2::RIGHT_CENTER, floors.get(frame.floor).copied().unwrap_or_default().to_uppercase(), FontId::monospace(10.5), theme.text_muted);
         paint_metal(&hud, top.min + Vec2::new(14.0, 20.0), Align2::LEFT_CENTER, &wave, 20.0, theme.accent, 1.0);
@@ -1511,6 +1590,10 @@ impl App {
         // A floor bigger than the screen: where everyone is on it, in a corner.
         if map.w > size.x / scale + 1.0 || map.h > size.y / scale + 1.0 {
             paint_minimap(&ui.painter_at(field), field, &map, &frame, &colors, cam, size / scale);
+        }
+        // The objective's order, under the top, as long as it isn't done.
+        if let Some(o) = frame.objective {
+            paint_pill(&hud, Pos2::new(field.center().x, field.min.y + 84.0), &objective_said(&o, t).1, Color32::from_rgb(255, 200, 60), &theme);
         }
         if let Some((text, color, since)) = &self.monday.banner {
             let k = now - since;
@@ -1968,12 +2051,127 @@ impl Mix {
     }
 }
 
-/// The whole floor small, in the field's bottom right corner: its walls, the coffee machine, the
+/// An objective said: in a banner (short), and as an order (what to do).
+fn objective_said(o: &crate::zombie::Objective, t: &Strings) -> (String, String) {
+    use crate::zombie::ObjectiveKind;
+    match (o.kind, o.stage) {
+        (ObjectiveKind::Switch, _) => (t.monday_obj_power_banner.to_owned(), t.monday_obj_power.to_owned()),
+        (ObjectiveKind::Lift, 0) => (t.monday_lift_banner.to_owned(), t.monday_obj_lift_call.to_owned()),
+        (ObjectiveKind::Lift, 1) => (t.monday_lift_label.to_owned(), t.monday_obj_lift_coming.replace("{s}", &format!("{}", o.timer.ceil() as i32))),
+        (ObjectiveKind::Lift, _) => (t.monday_lift_open.to_owned(), t.monday_obj_lift_board.to_owned()),
+    }
+}
+
+/// Black over `field` but for the lamps (`lights`: where, aiming where): a cone ahead (LAMP_REACH long,
+/// LAMP_HALF wide each side, dimmer far off and on its edges) and a glimmer around (LAMP_GLOW). A grid
+/// whose corners are as dark as they are far from any light.
+fn paint_dark(painter: &egui::Painter, field: Rect, lights: &[(Pos2, f32)], scale: f32) {
+    const LAMP_REACH: f32 = 560.0;
+    const LAMP_HALF: f32 = 0.42;
+    const LAMP_GLOW: f32 = 150.0;
+    let (reach, glow) = (LAMP_REACH * scale, LAMP_GLOW * scale);
+    let (nx, ny) = (80usize, 50usize);
+    let mut mesh = egui::Mesh::default();
+    let lit = |p: Pos2| -> f32 {
+        lights.iter().map(|&(c, aim)| {
+            let v = p - c;
+            let d = v.length();
+            // Around: plain light near, fading toward its edge.
+            let near = ((1.0 - d / glow) * 1.8).clamp(0.0, 1.0);
+            if d < 1.0 {
+                return 1.0;
+            }
+            let off = (v.angle() - aim + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let side = (1.0 - (off.abs() / LAMP_HALF).powi(2)).clamp(0.0, 1.0);
+            let far = (1.0 - (d / reach).powf(1.6)).clamp(0.0, 1.0);
+            near.max(side * far)
+        }).fold(0.0, f32::max)
+    };
+    for j in 0..=ny {
+        for i in 0..=nx {
+            let p = Pos2::new(field.min.x + field.width() * i as f32 / nx as f32, field.min.y + field.height() * j as f32 / ny as f32);
+            mesh.colored_vertex(p, Color32::from_black_alpha((250.0 * (1.0 - lit(p))) as u8));
+        }
+    }
+    let w = (nx + 1) as u32;
+    for j in 0..ny {
+        for i in 0..nx {
+            let k = j as u32 * w + i as u32;
+            mesh.add_triangle(k, k + 1, k + w);
+            mesh.add_triangle(k + 1, k + w + 1, k + w);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// An objective on the floor: the spot (a beating ring, filled as it's done), the lift's cabin (its
+/// doors, open or not); off screen, an arrow toward it on the edge.
+fn paint_objective(painter: &egui::Painter, o: &crate::zombie::Objective, at: &dyn Fn(f32, f32) -> Pos2, scale: f32, field: Rect, now: f64, t: &Strings) {
+    use crate::zombie::ObjectiveKind;
+    let gold = Color32::from_rgb(255, 200, 60);
+    let beat = (0.65 + 0.35 * (now * 4.0).sin().abs()) as f32;
+    // The lift's cabin: its floor, its doors (shut while it comes, open once there).
+    if let (ObjectiveKind::Lift, Some([x, y, w, h])) = (o.kind, o.cabin) {
+        let r = Rect::from_min_max(at(x, y), at(x + w, y + h));
+        let open = o.stage == 2;
+        painter.rect_filled(r, 4.0 * scale, if open { Color32::from_rgb(70, 74, 82) } else { Color32::from_rgb(46, 48, 54) });
+        let edge = if open { Color32::from_rgb(110, 220, 120) } else { Color32::from_rgb(170, 176, 190) };
+        painter.rect_stroke(r, 4.0 * scale, Stroke::new(3.0 * scale.max(0.6), edge.gamma_multiply(if open { beat } else { 1.0 })), egui::StrokeKind::Inside);
+        if !open {
+            // The doors, shut: two panels and their seam.
+            painter.vline(r.center().x, r.y_range(), Stroke::new(2.0 * scale, Color32::from_rgb(120, 126, 140)));
+        } else if o.progress > 0.0 {
+            let fill = Rect::from_min_size(r.left_bottom() - Vec2::new(0.0, 6.0 * scale), Vec2::new(r.width() * o.progress, 6.0 * scale));
+            painter.rect_filled(fill, 0.0, edge);
+        }
+        let label = match o.stage {
+            0 => t.monday_lift_label.to_owned(),
+            1 => t.monday_lift_coming.replace("{s}", &format!("{}", o.timer.ceil() as i32)),
+            _ => t.monday_lift_open.to_owned(),
+        };
+        painter.text(r.center_top() - Vec2::new(0.0, 12.0 * scale), Align2::CENTER_BOTTOM, label, FontId::proportional((13.0 * scale).max(11.0)), edge);
+    }
+    // The spot to stay by (the switch, the lift's button while it must be called).
+    let show_spot = o.kind == ObjectiveKind::Switch || o.stage == 0;
+    let c = at(o.x, o.y);
+    if show_spot {
+        let reach = 70.0 * scale;
+        painter.circle_filled(c, reach, gold.gamma_multiply(0.10 * beat));
+        painter.circle_stroke(c, reach, Stroke::new(2.0 * scale.max(0.7), gold.gamma_multiply(beat)));
+        if o.progress > 0.0 {
+            let n = 48;
+            let points: Vec<Pos2> = (0..=n).map(|k| {
+                let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * o.progress * k as f32 / n as f32;
+                c + Vec2::angled(a) * (reach + 6.0 * scale)
+            }).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(5.0 * scale.max(0.7), gold)));
+        }
+        let icon = if o.kind == ObjectiveKind::Lift { "▲▼" } else { "⚡" };
+        painter.text(c, Align2::CENTER_CENTER, icon, FontId::proportional((26.0 * scale).max(14.0)), gold);
+    }
+    // Out of sight: an arrow on the edge, toward it.
+    let target = if show_spot { c } else { o.cabin.map_or(c, |[x, y, w, h]| at(x + w / 2.0, y + h / 2.0)) };
+    let inner = field.shrink(30.0);
+    if !inner.contains(target) {
+        let from = field.center();
+        let dir = (target - from).normalized();
+        // Where the line from the center leaves the inner box.
+        let tx = if dir.x.abs() > 1e-3 { ((if dir.x > 0.0 { inner.max.x } else { inner.min.x }) - from.x) / dir.x } else { f32::INFINITY };
+        let ty = if dir.y.abs() > 1e-3 { ((if dir.y > 0.0 { inner.max.y } else { inner.min.y }) - from.y) / dir.y } else { f32::INFINITY };
+        let tip = from + dir * tx.min(ty);
+        let side = Vec2::new(-dir.y, dir.x);
+        let points = vec![tip + dir * 14.0, tip - dir * 10.0 + side * 11.0, tip - dir * 10.0 - side * 11.0];
+        painter.add(egui::Shape::convex_polygon(points, gold.gamma_multiply(beat), Stroke::new(2.0, Color32::BLACK)));
+    }
+}
+
+/// The whole floor small, in the field's top right corner (under the tickets): its walls, the coffee machine, the
 /// players (their color), the zombies, and the part of it on screen (`cam`, `seen`).
 fn paint_minimap(painter: &egui::Painter, field: Rect, map: &crate::zombie::Map, frame: &Frame, colors: &[(u32, String, Color32)], cam: Pos2, seen: Vec2) {
     let k = (190.0 / map.w).min(130.0 / map.h);
     let size = Vec2::new(map.w, map.h) * k;
-    let r = Rect::from_min_size(field.max - size - Vec2::splat(12.0), size);
+    // Top right, under the tickets (the players' bars are at the bottom).
+    let r = Rect::from_min_size(Pos2::new(field.max.x - size.x - 12.0, field.min.y + 64.0), size);
     let to = |x: f32, y: f32| r.min + Vec2::new(x, y) * k;
     painter.rect_filled(r.expand(4.0), 6.0, Color32::from_black_alpha(170));
     painter.rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_white_alpha(70)), egui::StrokeKind::Outside);
@@ -1990,6 +2188,19 @@ fn paint_minimap(painter: &egui::Painter, field: Rect, map: &crate::zombie::Map,
     for p in &frame.players {
         let color = colors.iter().find(|c| c.0 == p.id).map_or(Color32::WHITE, |c| c.2);
         painter.circle_filled(to(p.x, p.y), 3.0, if p.state == State::Up { color } else { color.gamma_multiply(0.4) });
+    }
+    // Where to go: the objective (gold), the lift's cabin once it's there.
+    if let Some(o) = frame.objective {
+        let gold = Color32::from_rgb(255, 200, 60);
+        match (o.kind, o.stage, o.cabin) {
+            (crate::zombie::ObjectiveKind::Lift, 1 | 2, Some([x, y, w, h])) => {
+                painter.rect_stroke(Rect::from_min_max(to(x, y), to(x + w, y + h)), 1.0, Stroke::new(1.5, gold), egui::StrokeKind::Outside);
+            }
+            _ => {
+                painter.circle_filled(to(o.x, o.y), 3.5, gold);
+                painter.circle_stroke(to(o.x, o.y), 7.0, Stroke::new(1.2, gold));
+            }
+        }
     }
     let view = Rect::from_center_size(to(cam.x, cam.y), seen * k);
     painter.rect_stroke(view.intersect(r), 1.0, Stroke::new(1.0, Color32::from_white_alpha(160)), egui::StrokeKind::Inside);

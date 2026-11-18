@@ -1617,6 +1617,12 @@ impl App {
                 app.open_riff();
                 app.riff_demo(&riff);
             }
+            // Lundi matin: a game alone started, invincible, up to the wave given (a floor of development).
+            if let Ok(wave) = std::env::var("RONNIE_OPEN_MONDAY") {
+                app.splash = None;
+                app.open_monday();
+                app.monday.demo = Some((if wave == "lift" { 0 } else { wave.parse().unwrap_or(1) }, 0, None));
+            }
             if std::env::var("RONNIE_OPEN_COFFEE").is_ok() {
                 app.splash = None;
                 app.open_coffee();

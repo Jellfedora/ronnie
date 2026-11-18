@@ -324,6 +324,12 @@ pub struct Frame {
     pub audited: Vec<(u32, f32)>,
     /// The green plants' healing zones: x, y, seconds left.
     pub heal_zones: Vec<(f32, f32, f32)>,
+    /// Leaving the floor (the lift…): fought as a wave (`wave_on` too), its way out to take.
+    pub exiting: bool,
+    /// The wave's objective, or the floor's way out, while not done.
+    pub objective: Option<Objective>,
+    /// The floor in the dark (the power cut, until switched on again).
+    pub dark: bool,
     /// The floor of the tower (0 the hall, 1 the open space, 2 the boardroom, 3 the roof).
     pub floor: usize,
     /// Paused (Escape, or the page left alone).
@@ -333,6 +339,43 @@ pub struct Frame {
     pub paused_by: u32,
     pub kick_in: u32,
     pub at: Instant,
+}
+
+/// What to do away from the room: the wave's objective, or the floor's way out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Objective {
+    pub kind: ObjectiveKind,
+    /// Which one (OBJECTIVE_IDS: 0 the power).
+    pub id: usize,
+    pub x: f32,
+    pub y: f32,
+    /// Done, 0 to 1.
+    pub progress: f32,
+    /// The lift: 0 to call, 1 coming, 2 open.
+    pub stage: u8,
+    /// The lift coming: seconds left.
+    pub timer: f32,
+    /// The lift's cabin: x, y, w, h.
+    pub cabin: Option<[f32; 4]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ObjectiveKind {
+    /// Stay by a spot a while (a switch…).
+    Switch,
+    Lift,
+}
+
+impl Objective {
+    /// floor's `ob`: kind, id, x, y, progress %, stage, seconds, then the cabin.
+    fn read(ob: &[f32]) -> Option<Objective> {
+        if ob.len() < 7 {
+            return None;
+        }
+        let kind = if ob[0] as u8 == 2 { ObjectiveKind::Lift } else { ObjectiveKind::Switch };
+        let cabin = (ob.len() >= 11).then(|| [ob[7], ob[8], ob[9], ob[10]]);
+        Some(Objective { kind, id: ob[1] as usize, x: ob[2], y: ob[3], progress: ob[4] / 100.0, stage: ob[5] as u8, timer: ob[6], cabin })
+    }
 }
 
 impl Frame {
@@ -681,6 +724,10 @@ enum Wire {
         #[serde(default)]
         hz: Vec<f32>,
         #[serde(default)]
+        ob: Vec<f32>,
+        #[serde(default)]
+        dk: u8,
+        #[serde(default)]
         pa: Vec<f64>,
         #[serde(default)]
         fl: usize,
@@ -1021,7 +1068,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, fz, hz, ob, dk, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
                 let mut players: Vec<Player> = p
                     .chunks_exact(22)
                     .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
@@ -1107,7 +1154,8 @@ impl Online {
                 let grades = gr.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 let memos = mm.iter().map(|&id| id as u32).collect();
                 self.before = self.frame.take();
-                self.frame = Some(Frame { wave_on: ph == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
+                let objective = Objective::read(&ob);
+                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
