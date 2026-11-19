@@ -523,11 +523,14 @@ pub struct Auto {
     pub products: bool,
     /// Executive assistant: answers the events left waiting.
     pub events: bool,
+    /// Project managers' priority: 0 the contracts (the products kept going), 1 balanced (half
+    /// the team on the products), 2 the products (all but research and one on the contracts).
+    pub focus: u8,
 }
 
 impl Default for Auto {
     fn default() -> Self {
-        Self { hire: true, tasks: true, research: true, fittings: true, moving: true, products: true, events: true }
+        Self { hire: true, tasks: true, research: true, fittings: true, moving: true, products: true, events: true, focus: 0 }
     }
 }
 
@@ -1904,16 +1907,29 @@ impl Corp {
         let on = |c: &Corp, t: Task| c.staff.iter().filter(|e| movable(e) && e.task == t).count();
         let mut moves: Vec<(Task, Task)> = Vec::new();
         if self.debt > 40.0 {
-            moves.push((Task::Contracts, Task::Refactor));
+            // The products first: the contracts keep only one, so from the products.
+            let from = if self.policy.auto.focus >= 2 && !self.products.is_empty() { Task::Products } else { Task::Contracts };
+            moves.push((from, Task::Refactor));
         } else if self.debt < 10.0 && on(self, Task::Refactor) > 0 {
             moves.push((Task::Refactor, Task::Contracts));
         }
         let idle = self.contracts.is_empty() && self.offers.is_empty();
         let suffering = self.products.iter().any(|p| p.version == 0 || p.bugs > 25.0);
         let makers = self.staff.iter().filter(|e| movable(e)).count();
+        let cap = (makers / 5).max(1);
+        let focus = self.policy.auto.focus.min(2);
         // Work again after a lull: past half the team on the products, the extra ones back at once.
         let half = (makers / 2).max(1);
-        if !idle && on(self, Task::Products) > half {
+        if focus > 0 && !self.products.is_empty() {
+            // The products first: as many there as the priority says, all at once.
+            let want = if focus == 1 { half } else { makers.saturating_sub(cap + 1).max(1) };
+            let now = on(self, Task::Products);
+            if now < want {
+                moves.extend(std::iter::repeat_n((Task::Contracts, Task::Products), want - now));
+            } else if now > want && !idle {
+                moves.extend(std::iter::repeat_n((Task::Products, Task::Contracts), now - want));
+            }
+        } else if !idle && on(self, Task::Products) > half {
             moves.extend(std::iter::repeat_n((Task::Products, Task::Contracts), on(self, Task::Products) - half));
         } else if !self.products.is_empty() && (suffering || on(self, Task::Products) == 0) {
             moves.push((Task::Contracts, Task::Products));
@@ -1923,7 +1939,6 @@ impl Corp {
         // Research: a fifth of the team at most (the techs, then the optimisations); nothing to
         // deliver, the others go to the products (they always take more versions), to research only
         // with no product. Too many there: all the extra ones back at once.
-        let cap = (makers / 5).max(1);
         let has_products = !self.products.is_empty();
         if idle && has_products {
             if on(self, Task::Contracts) > 1 {
@@ -3296,6 +3311,51 @@ mod tests {
         }
         assert!(on_research(&c) <= 6);
         assert!(c.staff.iter().filter(|e| e.task == Task::Contracts).count() > 5);
+    }
+
+    #[test]
+    fn the_project_manager_follows_the_priority() {
+        let mut c = corp();
+        c.stage = 3;
+        c.cash = 1e6;
+        for t in TECHS {
+            c.techs.push(t.id.to_owned());
+        }
+        assert!(c.launch(0));
+        for p in c.products.iter_mut() {
+            p.version = 1;
+            p.bugs = 0.0;
+        }
+        let lead = c.make_employee("lead", 1);
+        c.staff.push(lead);
+        for k in 0..10 {
+            let mut e = c.make_employee(if k % 2 == 0 { "front" } else { "back" }, 1);
+            e.task = Task::Contracts;
+            c.staff.push(e);
+        }
+        let ct = c.make_contract(0);
+        c.contracts.push(ct);
+        let on = |c: &Corp, t: Task| c.staff.iter().filter(|e| !e.founder() && e.job != "lead" && e.task == t).count();
+        // The contracts first: one on the products.
+        for _ in 0..10 {
+            c.auto_tasks();
+        }
+        assert_eq!(on(&c, Task::Products), 1);
+        // Balanced: half the team, at once.
+        c.policy.auto.focus = 1;
+        c.auto_tasks();
+        assert_eq!(on(&c, Task::Products), 5);
+        // The products: all but research and one on the contracts.
+        c.policy.auto.focus = 2;
+        for _ in 0..10 {
+            c.auto_tasks();
+        }
+        assert!(on(&c, Task::Products) >= 7, "{}", on(&c, Task::Products));
+        assert!(on(&c, Task::Contracts) >= 1);
+        // Balanced again: the extra ones back to the contracts.
+        c.policy.auto.focus = 1;
+        c.auto_tasks();
+        assert_eq!(on(&c, Task::Products), 5);
     }
 
     #[test]
