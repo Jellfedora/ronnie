@@ -68,6 +68,89 @@ pub(super) struct ItemForm {
     body: String,
     hours: String,
     status: Status,
+    /// Its dates as typed (dd/mm), who asked, how far (%), a comment.
+    requested: String,
+    due: String,
+    finished: String,
+    live: String,
+    requester: String,
+    progress: String,
+    comment: String,
+}
+
+impl ItemForm {
+    /// The window for `i`, changed.
+    fn of(i: &Item) -> ItemForm {
+        let day = |d: &Option<String>| d.as_deref().map(show_day).unwrap_or_default();
+        ItemForm {
+            editing: Some(i.id.clone()),
+            quote: i.quote.clone(),
+            parent: i.parent.clone(),
+            title: i.title.clone(),
+            body: i.body.clone().unwrap_or_default(),
+            hours: i.minutes.map(typed).unwrap_or_default(),
+            status: i.status,
+            pending: Vec::new(),
+            requested: day(&i.requested),
+            due: day(&i.due),
+            finished: day(&i.finished),
+            live: day(&i.live),
+            requester: i.requester.clone().unwrap_or_default(),
+            progress: i.progress.map(|p| p.to_string()).unwrap_or_default(),
+            comment: i.comment.clone().unwrap_or_default(),
+        }
+    }
+}
+
+/// A planned task's state: its color and its name.
+pub(super) fn status_color(status: Status, theme: &Theme) -> Color32 {
+    match status {
+        Status::Todo => theme.text_muted,
+        Status::Waiting => ORANGE,
+        Status::Doing => Color32::from_rgb(0x3d, 0x8b, 0xfd),
+        Status::Done => GREEN,
+        Status::Live => Color32::from_rgb(0x8b, 0x5c, 0xf6),
+        Status::Cancelled => Color32::from_rgb(0x88, 0x88, 0x88),
+    }
+}
+
+pub(super) fn status_name(status: Status, t: &Strings) -> &'static str {
+    match status {
+        Status::Todo => t.track_status_todo,
+        Status::Waiting => t.track_status_waiting,
+        Status::Doing => t.track_status_doing,
+        Status::Done => t.track_status_done,
+        Status::Live => t.track_status_live,
+        Status::Cancelled => t.track_status_cancelled,
+    }
+}
+
+/// A state as a colored pill (filled once started), its name in it.
+pub(super) fn status_pill(ui: &mut Ui, status: Status, t: &Strings, theme: &Theme) -> egui::Response {
+    let color = status_color(status, theme);
+    let filled = status != Status::Todo;
+    let text = egui::RichText::new(status_name(status, t)).size(11.5).color(if filled { Color32::WHITE } else { theme.text });
+    let b = egui::Button::new(text).corner_radius(6.0).min_size(Vec2::new(96.0, 22.0)).stroke(Stroke::new(1.0, color));
+    ui.add(if filled { b.fill(color) } else { b.fill(Color32::TRANSPARENT) }).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The tasks' table: shown instead of the projects' cards, its filters.
+#[derive(Default)]
+pub(super) struct TasksState {
+    pub(super) shown: bool,
+    client: Option<String>,
+    project: Option<String>,
+    status: Option<Status>,
+    /// The ones done with (finished, in production, cancelled) instead of those going on.
+    archives: bool,
+    find: String,
+}
+
+/// What a click in the tasks' table asks: a task opened, its state changed, one added to a project.
+enum TaskAct {
+    Open(String, String),
+    Status(String, String, Status),
+    New(String),
 }
 
 /// What the project's page keeps between frames.
@@ -318,7 +401,14 @@ impl App {
             });
         });
         ui.add_space(2.0);
-        ui.label(egui::RichText::new(t.track_intro).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));
+        ui.horizontal(|ui| {
+            // The projects as cards, or every task as one table.
+            if let Some(i) = super::segmented::segmented(ui, &theme, 28.0, &[t.track_view_projects, t.track_view_tasks], Some(usize::from(self.track.tasks.shown))) {
+                self.track.tasks.shown = i == 1;
+            }
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(t.track_intro).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));
+        });
         ui.add_space(16.0);
 
         match &self.track.list {
@@ -335,6 +425,13 @@ impl App {
                 return;
             }
             Some(Ok(_)) => {}
+        }
+        if self.track.tasks.shown {
+            self.track_tasks(ui);
+            for act in acts {
+                self.track_page_act(act, None);
+            }
+            return;
         }
         let find = self.track.page.find.trim().to_lowercase();
         let shown: Vec<Summary> = self.track.shown().into_iter().filter(|s| find.is_empty() || s.name.to_lowercase().contains(&find) || s.client.as_ref().is_some_and(|c| c.to_lowercase().contains(&find))).collect();
@@ -426,6 +523,200 @@ impl App {
         });
         for act in acts {
             self.track_page_act(act, None);
+        }
+    }
+
+    /// Every task of every project as one table, by client then project: its dates, its time, how far,
+    /// its state (changed with a click), who asked; filtered by client, project, state, words.
+    fn track_tasks(&mut self, ui: &mut Ui) {
+        let t = self.t();
+        let theme = self.theme.clone();
+        let today = track::today();
+        let mut projects: Vec<Project> = self.track.projects.values().filter(|p| self.track.show_archived || p.archived.is_none()).cloned().collect();
+        projects.sort_by_key(|p| (p.client.clone().unwrap_or_default().to_lowercase(), p.name.to_lowercase()));
+        let clients: BTreeSet<String> = projects.iter().filter_map(|p| p.client.clone()).collect();
+        let mut out = Vec::new();
+
+        // The filters, and « + Nouvelle tâche ».
+        let f = &mut self.track.tasks;
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("tasks-client").selected_text(f.client.as_deref().unwrap_or(t.track_all_clients)).show_ui(ui, |ui| {
+                if ui.selectable_label(f.client.is_none(), t.track_all_clients).clicked() {
+                    (f.client, f.project) = (None, None);
+                }
+                for c in &clients {
+                    if ui.selectable_label(f.client.as_deref() == Some(c.as_str()), c).clicked() {
+                        (f.client, f.project) = (Some(c.clone()), None);
+                    }
+                }
+            });
+            let in_client: Vec<&Project> = projects.iter().filter(|p| f.client.is_none() || p.client == f.client).collect();
+            let chosen = f.project.as_ref().and_then(|id| in_client.iter().find(|p| &p.id == id)).map_or(t.track_all_projects.to_owned(), |p| p.name.clone());
+            egui::ComboBox::from_id_salt("tasks-project").selected_text(chosen).show_ui(ui, |ui| {
+                if ui.selectable_label(f.project.is_none(), t.track_all_projects).clicked() {
+                    f.project = None;
+                }
+                for p in &in_client {
+                    if ui.selectable_label(f.project.as_deref() == Some(p.id.as_str()), &p.name).clicked() {
+                        f.project = Some(p.id.clone());
+                    }
+                }
+            });
+            if let Some(i) = super::segmented::segmented(ui, &theme, 26.0, &[t.track_going_on, t.track_archives], Some(usize::from(f.archives))) {
+                (f.archives, f.status) = (i == 1, None);
+            }
+            egui::ComboBox::from_id_salt("tasks-status").selected_text(f.status.map_or(t.track_all_statuses, |s| status_name(s, t))).show_ui(ui, |ui| {
+                if ui.selectable_label(f.status.is_none(), t.track_all_statuses).clicked() {
+                    f.status = None;
+                }
+                for st in Status::ALL.into_iter().filter(|s| s.closed() == f.archives) {
+                    if ui.selectable_label(f.status == Some(st), egui::RichText::new(status_name(st, t)).color(status_color(st, &theme))).clicked() {
+                        f.status = Some(st);
+                    }
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut f.find).hint_text(t.track_find_task).desired_width(200.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let writable: Vec<&Project> = projects.iter().filter(|p| p.role.manages()).collect();
+                if !writable.is_empty() {
+                    ui.menu_button(egui::RichText::new(format!("+  {}", t.track_new_item)).size(13.0).color(theme.accent), |ui| {
+                        ui.label(egui::RichText::new(t.track_new_task_in).size(11.5).color(theme.text_muted));
+                        for p in writable {
+                            let name = p.client.as_ref().map_or(p.name.clone(), |c| format!("{c} · {}", p.name));
+                            if ui.button(name).clicked() {
+                                out.push(TaskAct::New(p.id.clone()));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
+        });
+        ui.add_space(12.0);
+
+        // The rows: each project's tasks in their order (sub-tasks under theirs), those kept by the filters.
+        let f = &self.track.tasks;
+        let words = f.find.trim().to_lowercase();
+        let keep = |p: &Project, i: &Item| {
+            i.status.closed() == f.archives
+                && f.status.is_none_or(|s| s == i.status)
+                && f.client.as_ref().is_none_or(|c| p.client.as_ref() == Some(c))
+                && f.project.as_ref().is_none_or(|id| &p.id == id)
+                && (words.is_empty() || [Some(&i.title), i.requester.as_ref(), i.comment.as_ref(), Some(&p.name)].into_iter().flatten().any(|s| s.to_lowercase().contains(&words)))
+        };
+        let mut groups: Vec<(&Project, Vec<(&Item, usize)>)> = Vec::new();
+        for p in &projects {
+            fn walk<'a>(p: &'a Project, quote: Option<&str>, parent: Option<&str>, depth: usize, out: &mut Vec<(&'a Item, usize)>) {
+                for i in p.children(quote, parent) {
+                    out.push((i, depth));
+                    walk(p, quote, Some(&i.id), depth + 1, out);
+                }
+            }
+            let mut all = Vec::new();
+            walk(p, None, None, 0, &mut all);
+            for q in &p.quotes {
+                walk(p, Some(&q.id), None, 0, &mut all);
+            }
+            let rows: Vec<(&Item, usize)> = all.into_iter().filter(|(i, _)| keep(p, i)).collect();
+            if !rows.is_empty() {
+                groups.push((p, rows));
+            }
+        }
+        if groups.is_empty() {
+            card(ui, &theme, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new(t.track_no_planned).size(12.5).color(theme.text_muted));
+            });
+        }
+        let muted = |s: &str| egui::RichText::new(s).size(12.5).color(theme.text_muted);
+        let day = |d: &Option<String>| d.as_deref().map(show_day);
+        egui::ScrollArea::horizontal().id_salt("tasks-table").show(ui, |ui| {
+            egui::Grid::new("tasks-grid").striped(true).spacing(Vec2::new(16.0, 8.0)).min_col_width(64.0).show(ui, |ui| {
+                for head in [t.track_task_col, t.track_requested, t.track_due, t.track_finished, t.track_live_on, t.track_estimate_short, t.track_spent_short, "%", t.track_status, t.track_requester] {
+                    ui.label(egui::RichText::new(head).size(11.5).strong().color(theme.text_muted));
+                }
+                ui.end_row();
+                for (p, rows) in &groups {
+                    // The project: its client, its name, its time together.
+                    let (est, spent) = rows.iter().filter(|(_, d)| *d == 0).fold((0u64, 0u64), |(e, s), (i, _)| {
+                        let r = p.rollup(i);
+                        (e + r.estimate, s + r.spent)
+                    });
+                    let color = color_of(p.color.as_deref()).unwrap_or(theme.accent);
+                    ui.horizontal(|ui| {
+                        let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 4.5, color);
+                        let head = p.client.as_ref().map_or(p.name.clone(), |c| format!("{c} · {}", p.name));
+                        ui.label(egui::RichText::new(head).size(13.5).strong().color(theme.text));
+                    });
+                    for _ in 0..4 {
+                        ui.label("");
+                    }
+                    ui.label(egui::RichText::new(if est > 0 { hm(est as i64) } else { String::new() }).size(12.5).strong().color(theme.text));
+                    ui.label(egui::RichText::new(if spent > 0 { hm(spent as i64) } else { String::new() }).size(12.5).strong().color(theme.text));
+                    for _ in 0..3 {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                    for (i, depth) in rows {
+                        ui.horizontal(|ui| {
+                            ui.add_space(14.0 + *depth as f32 * 18.0);
+                            ui.vertical(|ui| {
+                                let title = egui::RichText::new(if *depth > 0 { format!("↳ {}", i.title) } else { i.title.clone() }).size(13.0).color(if i.status.closed() { theme.text_muted } else { theme.text });
+                                let resp = ui.add(egui::Label::new(title).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand);
+                                if resp.clicked() {
+                                    out.push(TaskAct::Open(p.id.clone(), i.id.clone()));
+                                }
+                                if let Some(c) = &i.comment {
+                                    ui.label(egui::RichText::new(c).size(11.5).italics().color(theme.text_muted));
+                                }
+                            });
+                        });
+                        ui.label(day(&i.requested).map_or_else(|| muted("—"), |d| muted(&d)));
+                        let late = i.late(&today);
+                        ui.label(day(&i.due).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(if late { RED } else { theme.text_muted }).strong()));
+                        ui.label(day(&i.finished).map_or_else(|| muted("—"), |d| muted(&d)));
+                        ui.label(day(&i.live).map_or_else(|| muted("—"), |d| muted(&d)));
+                        let r = p.rollup(i);
+                        ui.label(if r.estimate > 0 { egui::RichText::new(hm(r.estimate as i64)).size(12.5).color(theme.text) } else { muted("—") });
+                        ui.label(if r.spent > 0 { egui::RichText::new(hm(r.spent as i64)).size(12.5).color(if r.estimate > 0 && r.spent > r.estimate { RED } else { theme.text }) } else { muted("—") });
+                        ui.label(i.progress().map_or_else(|| muted("—"), |v| egui::RichText::new(format!("{v} %")).size(12.5).color(theme.text)));
+                        // The state: a pill; a click, the others.
+                        if p.role.writes() {
+                            let pill = status_pill(ui, i.status, t, &theme);
+                            egui::Popup::menu(&pill).show(|ui| {
+                                for st in Status::ALL {
+                                    if ui.add(egui::Button::new(egui::RichText::new(status_name(st, t)).color(status_color(st, &theme))).selected(st == i.status)).clicked() && st != i.status {
+                                        out.push(TaskAct::Status(p.id.clone(), i.id.clone(), st));
+                                    }
+                                }
+                            });
+                        } else {
+                            status_pill(ui, i.status, t, &theme);
+                        }
+                        ui.label(i.requester.as_deref().map_or_else(|| muted("—"), |w| egui::RichText::new(w).size(12.5).color(theme.text)));
+                        ui.end_row();
+                    }
+                }
+            });
+        });
+
+        for act in out {
+            match act {
+                // Its project opened, its window on it.
+                TaskAct::Open(pid, item) => {
+                    let form = self.track.projects.get(&pid).and_then(|p| p.items.iter().find(|i| i.id == item)).map(ItemForm::of);
+                    self.track_select(Some(pid));
+                    self.track.page.tab = Tab::Quotes;
+                    self.track.page.item = form;
+                }
+                TaskAct::Status(pid, item, status) => self.track_write(move |c| c.update_item(&pid, &item, serde_json::json!({ "status": status.word() }))),
+                TaskAct::New(pid) => {
+                    self.track_select(Some(pid));
+                    self.track.page.tab = Tab::Quotes;
+                    self.track.page.item = Some(ItemForm { requested: show_day(&track::today()), ..ItemForm::default() });
+                }
+            }
         }
     }
 
@@ -1013,33 +1304,36 @@ impl App {
                 // The state: a box (to do / done), a dot when going on.
                 let (b, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.track_status_hint);
-                let color = match item.status {
-                    Status::Done => GREEN,
-                    Status::Doing => ORANGE,
-                    Status::Todo => theme.text_muted,
-                };
+                let color = status_color(item.status, &theme);
                 ui.painter().rect_stroke(b.shrink(2.0), 4.0, Stroke::new(1.5, color), egui::StrokeKind::Inside);
                 match item.status {
-                    Status::Done => {
-                        ui.painter().rect_filled(b.shrink(2.0), 4.0, GREEN);
+                    // Finished: ticked (green, or purple once in production).
+                    Status::Done | Status::Live => {
+                        ui.painter().rect_filled(b.shrink(2.0), 4.0, color);
                         ui.painter().line_segment([b.center() + Vec2::new(-4.0, 0.0), b.center() + Vec2::new(-1.0, 3.0)], Stroke::new(1.8, theme.bg));
                         ui.painter().line_segment([b.center() + Vec2::new(-1.0, 3.0), b.center() + Vec2::new(4.5, -3.5)], Stroke::new(1.8, theme.bg));
                     }
-                    Status::Doing => {
-                        ui.painter().circle_filled(b.center(), 3.5, ORANGE);
+                    Status::Cancelled => {
+                        ui.painter().line_segment([b.center() + Vec2::new(-3.5, -3.5), b.center() + Vec2::new(3.5, 3.5)], Stroke::new(1.6, color));
+                        ui.painter().line_segment([b.center() + Vec2::new(-3.5, 3.5), b.center() + Vec2::new(3.5, -3.5)], Stroke::new(1.6, color));
+                    }
+                    Status::Doing | Status::Waiting => {
+                        ui.painter().circle_filled(b.center(), 3.5, color);
                     }
                     Status::Todo => {}
                 }
+                // A click: on to the next (to do, going on, done); the others from the menu or the window.
                 if resp.clicked() && p.role.writes() {
                     let next = match item.status {
-                        Status::Todo => Status::Doing,
+                        Status::Todo | Status::Waiting => Status::Doing,
                         Status::Doing => Status::Done,
-                        Status::Done => Status::Todo,
+                        Status::Done | Status::Live | Status::Cancelled => Status::Todo,
                     };
                     acts.push(Act::SetStatus(item.id.clone(), next));
                 }
-                let title = egui::RichText::new(&item.title).size(13.5).color(if item.status == Status::Done { theme.text_muted } else { theme.text });
-                let title = if item.status == Status::Done { title.strikethrough() } else { title };
+                let quiet_title = item.status.closed();
+                let title = egui::RichText::new(&item.title).size(13.5).color(if quiet_title { theme.text_muted } else { theme.text });
+                let title = if quiet_title { title.strikethrough() } else { title };
                 let has_body = item.body.as_deref().is_some_and(|b| !b.trim().is_empty());
                 let resp = ui.add(egui::Label::new(if *depth == 0 { title.strong() } else { title }).sense(Sense::click()));
                 if has_body {
@@ -1052,6 +1346,17 @@ impl App {
                         }
                     }
                 }
+                // What tells more: a state beyond « to do / going on », the date due (red once late), who asked.
+                if matches!(item.status, Status::Waiting | Status::Live | Status::Cancelled) {
+                    chip(ui, status_name(item.status, t), status_color(item.status, &theme));
+                }
+                if let Some(due) = item.due.as_deref().filter(|_| !item.status.closed()) {
+                    let late = item.late(&track::today());
+                    chip(ui, &format!("{} {}", t.track_due_short, show_day(due)), if late { RED } else { theme.text_muted });
+                }
+                if let Some(who) = item.requester.as_deref() {
+                    ui.label(egui::RichText::new(who).size(11.5).color(theme.text_muted));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if p.role.manages() {
                         ui.menu_button(egui::RichText::new("⋯").size(15.0), |ui| {
@@ -1059,6 +1364,14 @@ impl App {
                                 acts.push(Act::EditItem(item.id.clone()));
                                 ui.close();
                             }
+                            ui.menu_button(t.track_status, |ui| {
+                                for st in Status::ALL {
+                                    if ui.add(egui::Button::new(egui::RichText::new(status_name(st, t)).color(status_color(st, &theme))).selected(st == item.status)).clicked() {
+                                        acts.push(Act::SetStatus(item.id.clone(), st));
+                                        ui.close();
+                                    }
+                                }
+                            });
                             if *depth < 2 && ui.button(format!("+  {}", t.track_new_subtask)).clicked() {
                                 acts.push(Act::NewItem { quote: quote.map(str::to_owned), parent: Some(item.id.clone()) });
                                 ui.close();
@@ -1410,21 +1723,12 @@ impl App {
             Act::DeleteCounter(counter) => self.track_write(move |c| c.delete_counter(&id, &counter)),
             Act::NewItem { quote, parent } => {
                 self.track.page.form_error = None;
-                self.track.page.item = Some(ItemForm { quote, parent, ..ItemForm::default() });
+                self.track.page.item = Some(ItemForm { quote, parent, requested: show_day(&track::today()), ..ItemForm::default() });
             }
             Act::EditItem(item) => {
                 if let Some(i) = p.and_then(|p| p.items.iter().find(|i| i.id == item)) {
                     self.track.page.form_error = None;
-                    self.track.page.item = Some(ItemForm {
-                        editing: Some(i.id.clone()),
-                        quote: i.quote.clone(),
-                        parent: i.parent.clone(),
-                        title: i.title.clone(),
-                        body: i.body.clone().unwrap_or_default(),
-                        hours: i.minutes.map(typed).unwrap_or_default(),
-                        status: i.status,
-                        pending: Vec::new(),
-                    });
+                    self.track.page.item = Some(ItemForm::of(i));
                 }
             }
             Act::SetStatus(item, status) => self.track_write(move |c| c.update_item(&id, &item, serde_json::json!({ "status": status.word() }))),
@@ -1892,15 +2196,56 @@ impl App {
                     ui.add_space(20.0);
                     ui.vertical(|ui| {
                         field(ui, t.track_status);
-                        ui.horizontal(|ui| {
-                            for (s, label, color) in [(Status::Todo, t.track_status_todo, theme.text_muted), (Status::Doing, t.track_status_doing, ORANGE), (Status::Done, t.track_status_done, GREEN)] {
-                                let on = f.status == s;
-                                let b = egui::Button::new(egui::RichText::new(label).size(12.0).color(if on { theme.bg } else { theme.text })).corner_radius(8.0).min_size(Vec2::new(84.0, 28.0));
-                                if ui.add(if on { b.fill(color) } else { b }).clicked() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.set_max_width(520.0);
+                            for s in Status::ALL {
+                                let (on, color) = (f.status == s, status_color(s, &theme));
+                                let b = egui::Button::new(egui::RichText::new(status_name(s, t)).size(12.0).color(if on { Color32::WHITE } else { theme.text })).corner_radius(8.0).min_size(Vec2::new(84.0, 28.0));
+                                if ui.add(if on { b.fill(color) } else { b }).clicked() && !on {
                                     f.status = s;
+                                    // Finished, in production: their date today, unless already said.
+                                    let today = show_day(&track::today());
+                                    if s.finished() && f.finished.trim().is_empty() {
+                                        f.finished = today.clone();
+                                    }
+                                    if s == Status::Live && f.live.trim().is_empty() {
+                                        f.live = today;
+                                    }
                                 }
                             }
                         });
+                    });
+                });
+                // Its dates, who asked, how far it is.
+                ui.horizontal_top(|ui| {
+                    for (label, value) in [(t.track_requested, &mut f.requested), (t.track_due, &mut f.due), (t.track_finished, &mut f.finished), (t.track_live_on, &mut f.live)] {
+                        ui.vertical(|ui| {
+                            field(ui, label);
+                            ui.horizontal(|ui| {
+                                let day_field = ui.add(egui::TextEdit::singleline(value).desired_width(92.0).min_size(Vec2::new(0.0, FIELD_HEIGHT)).vertical_align(egui::Align::Center).hint_text("jj/mm"));
+                                day_picker(ui, &day_field, value, t, &theme);
+                            });
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        field(ui, t.track_requester);
+                        ui.add(egui::TextEdit::singleline(&mut f.requester).desired_width(200.0).hint_text(t.track_requester_hint));
+                    });
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        field(ui, t.track_progress);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut f.progress).desired_width(48.0).hint_text("auto"));
+                            ui.label(egui::RichText::new("%").size(12.0).color(theme.text_muted));
+                        });
+                    });
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        field(ui, t.track_comment);
+                        ui.add(egui::TextEdit::singleline(&mut f.comment).desired_width(f32::INFINITY).hint_text(t.track_comment_hint));
                     });
                 });
                 field(ui, t.track_description);
@@ -1912,7 +2257,9 @@ impl App {
                 let shown: Vec<&TrackFile> = p.files.iter().filter(|x| on_target.as_deref() == Some(x.on.as_str()) || f.pending.contains(&x.id)).collect();
                 files_ui(ui, &shown, p.role.manages(), true, &theme, t, &mut file_acts);
                 ui.label(egui::RichText::new(t.track_files_hint).size(11.0).color(theme.text_muted));
-                let ready = !f.title.trim().is_empty() && (f.hours.trim().is_empty() || track::parse_duration(&f.hours).is_some());
+                let dates_ok = [&f.requested, &f.due, &f.finished, &f.live].iter().all(|d| d.trim().is_empty() || track::parse_day(d).is_some());
+                let progress_ok = f.progress.trim().is_empty() || f.progress.trim().parse::<u8>().is_ok_and(|p| p <= 100);
+                let ready = !f.title.trim().is_empty() && (f.hours.trim().is_empty() || track::parse_duration(&f.hours).is_some()) && dates_ok && progress_ok;
                 (ok, close) = footer(ui, &error, if f.editing.is_some() { t.track_save } else { t.track_create }, ready);
             });
             // Its files: an image pasted, files picked or dropped on the window (sent to what it is,
@@ -1933,7 +2280,21 @@ impl App {
             }
             if ok {
                 let f = self.track.page.item.take().unwrap();
-                let input = ItemInput { title: f.title.trim().to_owned(), body: Some(f.body.trim().to_owned()).filter(|b| !b.is_empty()), minutes: track::parse_duration(&f.hours).map(u64::from), status: f.status };
+                let day = |d: &str| track::parse_day(d.trim());
+                let text = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+                let input = ItemInput {
+                    title: f.title.trim().to_owned(),
+                    body: Some(f.body.trim().to_owned()).filter(|b| !b.is_empty()),
+                    minutes: track::parse_duration(&f.hours).map(u64::from),
+                    status: f.status,
+                    requested: day(&f.requested),
+                    due: day(&f.due),
+                    finished: day(&f.finished),
+                    live: day(&f.live),
+                    requester: text(&f.requester),
+                    progress: f.progress.trim().parse::<u8>().ok().filter(|p| *p <= 100),
+                    comment: text(&f.comment),
+                };
                 let id = id.clone();
                 // A sub-task's quote unfolded, to see it.
                 if let Some(q) = f.quote.as_ref().filter(|q| p.quotes.iter().any(|x| &x.id == *q && x.closed.is_some())) {
@@ -1941,7 +2302,11 @@ impl App {
                 }
                 let before: Vec<String> = p.items.iter().map(|x| x.id.clone()).collect();
                 self.track_write(move |c| match f.editing {
-                    Some(i) => c.update_item(&id, &i, serde_json::json!({ "title": input.title, "body": input.body, "minutes": input.minutes, "status": input.status.word() })),
+                    Some(i) => c.update_item(&id, &i, serde_json::json!({
+                        "title": input.title, "body": input.body, "minutes": input.minutes, "status": input.status.word(),
+                        "requested": input.requested, "due": input.due, "finished": input.finished, "live": input.live,
+                        "requester": input.requester, "progress": input.progress, "comment": input.comment,
+                    })),
                     None => adopt(c, &id, c.add_item(&id, f.quote.as_deref(), f.parent.as_deref(), &input)?, |p| p.items.iter().map(|x| x.id.clone()).collect(), &before, "item", &f.pending),
                 });
             } else if close || modal.should_close() {

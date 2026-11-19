@@ -137,32 +137,61 @@ pub struct Quote {
     pub used: u64,
 }
 
-/// Where a planned task is.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// Where a planned task is (floor 0.27: six of them; an unknown one, from a later floor, is « to do »).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     #[default]
     Todo,
+    Waiting,
     Doing,
     Done,
+    Live,
+    Cancelled,
+}
+
+impl<'de> Deserialize<'de> for Status {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(d)?;
+        Ok(Status::ALL.into_iter().find(|s| s.word() == word).unwrap_or_default())
+    }
 }
 
 impl Status {
+    /// In their order.
+    pub const ALL: [Status; 6] = [Status::Todo, Status::Waiting, Status::Doing, Status::Done, Status::Live, Status::Cancelled];
+
     pub fn word(self) -> &'static str {
         match self {
             Status::Todo => "todo",
+            Status::Waiting => "waiting",
             Status::Doing => "doing",
             Status::Done => "done",
+            Status::Live => "live",
+            Status::Cancelled => "cancelled",
         }
     }
 
     pub fn parse(word: &str) -> Option<Status> {
         match word.to_lowercase().as_str() {
             "todo" | "à faire" | "a faire" => Some(Status::Todo),
+            "waiting" | "en attente" | "attente" => Some(Status::Waiting),
             "doing" | "en cours" => Some(Status::Doing),
-            "done" | "fait" | "faite" => Some(Status::Done),
+            "done" | "fait" | "faite" | "terminé" | "termine" | "terminée" => Some(Status::Done),
+            "live" | "en production" | "production" | "prod" => Some(Status::Live),
+            "cancelled" | "canceled" | "annulé" | "annule" | "annulée" => Some(Status::Cancelled),
             _ => None,
         }
+    }
+
+    /// Done with: finished, in production or cancelled (out of the tasks going on).
+    pub fn closed(self) -> bool {
+        matches!(self, Status::Done | Status::Live | Status::Cancelled)
+    }
+
+    /// Finished (done or in production).
+    pub fn finished(self) -> bool {
+        matches!(self, Status::Done | Status::Live)
     }
 }
 
@@ -181,6 +210,42 @@ pub struct Item {
     pub position: i64,
     /// Minutes logged on it (not on its sub-tasks).
     pub spent: u64,
+    /// Its dates (AAAA-MM-JJ): asked, due, finished, in production.
+    #[serde(default)]
+    pub requested: Option<String>,
+    #[serde(default)]
+    pub due: Option<String>,
+    #[serde(default)]
+    pub finished: Option<String>,
+    #[serde(default)]
+    pub live: Option<String>,
+    /// Who asked for it.
+    #[serde(default)]
+    pub requester: Option<String>,
+    /// How far it is (%), when said; else from the time spent over the estimate.
+    #[serde(default)]
+    pub progress: Option<u8>,
+    /// A short comment.
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+impl Item {
+    /// How far it is (%): said, else finished = 100, else the time spent over the estimate (99 at most).
+    pub fn progress(&self) -> Option<u8> {
+        if let Some(p) = self.progress {
+            return Some(p);
+        }
+        if self.status.finished() {
+            return Some(100);
+        }
+        self.minutes.filter(|m| *m > 0).map(|m| ((self.spent * 100 / m).min(99)) as u8)
+    }
+
+    /// Late: due before `today`, not done with.
+    pub fn late(&self, today: &str) -> bool {
+        !self.status.closed() && self.due.as_deref().is_some_and(|d| d < today)
+    }
 }
 
 impl Quote {
@@ -312,8 +377,8 @@ impl Project {
         Rollup {
             estimate: item.minutes.unwrap_or(below),
             spent: item.spent + kids.iter().map(|r| r.spent).sum::<u64>(),
-            done: usize::from(item.status == Status::Done) + kids.iter().map(|r| r.done).sum::<usize>(),
-            count: 1 + kids.iter().map(|r| r.count).sum::<usize>(),
+            done: usize::from(item.status.finished()) + kids.iter().map(|r| r.done).sum::<usize>(),
+            count: usize::from(item.status != Status::Cancelled) + kids.iter().map(|r| r.count).sum::<usize>(),
         }
     }
 
@@ -397,6 +462,13 @@ pub struct ItemInput {
     pub body: Option<String>,
     pub minutes: Option<u64>,
     pub status: Status,
+    pub requested: Option<String>,
+    pub due: Option<String>,
+    pub finished: Option<String>,
+    pub live: Option<String>,
+    pub requester: Option<String>,
+    pub progress: Option<u8>,
+    pub comment: Option<String>,
 }
 
 /// The calls to floor's tracking, with an account.
@@ -419,11 +491,11 @@ impl Client {
         let url = format!("{}/v1/track{path}", self.url);
         let auth = format!("Bearer {}", self.token);
         let res = match (method, body) {
-            ("GET", _) => agent.get(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).call(),
-            ("DELETE", _) => agent.delete(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).call(),
-            ("POST", b) => agent.post(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).send_json(b.unwrap_or(Value::Null)),
-            ("PUT", b) => agent.put(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).send_json(b.unwrap_or(Value::Null)),
-            (_, b) => agent.patch(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).send_json(b.unwrap_or(Value::Null)),
+            ("GET", _) => agent.get(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").call(),
+            ("DELETE", _) => agent.delete(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").call(),
+            ("POST", b) => agent.post(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").send_json(b.unwrap_or(Value::Null)),
+            ("PUT", b) => agent.put(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").send_json(b.unwrap_or(Value::Null)),
+            (_, b) => agent.patch(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").send_json(b.unwrap_or(Value::Null)),
         };
         let mut res = res.map_err(|e| e.to_string())?;
         let status = res.status().as_u16();
@@ -1026,7 +1098,7 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             Ok(format!("Quote {label} made in {}.", p.name))
         }
         ["item", "status", project, item, status] => {
-            let status = Status::parse(status).ok_or("A status: todo, doing or done.")?;
+            let status = Status::parse(status).ok_or("A status: todo, waiting, doing, done, live or cancelled.")?;
             let p = open(project)?;
             let i = find_item(&p, item)?;
             client.update_item(&p.id, &i.id, serde_json::json!({ "status": status.word() }))?;
@@ -1059,11 +1131,11 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
                 None => None,
             };
             let status = match o.get("status").cloned().flatten() {
-                Some(s) => Status::parse(&s).ok_or("A status: todo, doing or done.")?,
+                Some(s) => Status::parse(&s).ok_or("A status: todo, waiting, doing, done, live or cancelled.")?,
                 None => Status::Todo,
             };
             let title = words.join(" ");
-            let input = ItemInput { title: title.clone(), body: o.get("body").cloned().flatten(), minutes, status };
+            let input = ItemInput { title: title.clone(), body: o.get("body").cloned().flatten(), minutes, status, requested: Some(today()), ..ItemInput::default() };
             let after = client.add_item(&p.id, quote.as_deref(), parent.as_ref().map(|i| i.id.as_str()), &input)?;
             let made = after.items.iter().filter(|i| i.title == title).max_by_key(|i| i.position).map_or("?", |i| short(&i.id));
             Ok(format!("Planned task {title} made ({made}) in {}.", after.name))
@@ -1087,6 +1159,30 @@ fn urlencode(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn six_states_and_an_unknown_one_read_as_to_do() {
+        let read = |w: &str| serde_json::from_value::<Status>(serde_json::json!(w)).unwrap();
+        assert_eq!(Status::ALL.map(|st| read(st.word())), Status::ALL);
+        assert_eq!(read("archived-someday"), Status::Todo);
+        assert_eq!(Status::parse("En production"), Some(Status::Live));
+        assert_eq!(Status::parse("annulé"), Some(Status::Cancelled));
+        assert!(Status::Cancelled.closed() && !Status::Cancelled.finished() && Status::Live.finished() && !Status::Waiting.closed());
+    }
+
+    #[test]
+    fn a_task_says_how_far_and_whether_late() {
+        let item: Item = serde_json::from_value(serde_json::json!({
+            "id": "i", "quote": null, "parent": null, "title": "T", "minutes": 240, "status": "doing", "position": 0, "spent": 60, "due": "2026-11-10"
+        }))
+        .unwrap();
+        assert_eq!(item.progress(), Some(25));
+        assert!(item.late("2026-11-19") && !item.late("2026-11-10"));
+        let said = Item { progress: Some(80), ..item.clone() };
+        assert_eq!(said.progress(), Some(80));
+        let live = Item { status: Status::Live, ..item };
+        assert_eq!((live.progress(), live.late("2026-12-01")), (Some(100), false));
+    }
+
     #[test]
     fn joined_files_named_typed_and_sized() {
         assert_eq!(super::mime_of("Contrat signé.PDF"), "application/pdf");
@@ -1141,6 +1237,7 @@ mod tests {
     fn planned_tasks_add_up() {
         let item = |id: &str, parent: Option<&str>, minutes: Option<u64>, spent: u64, status: Status| Item {
             id: id.into(), quote: Some("q".into()), parent: parent.map(Into::into), title: id.into(), body: None, minutes, status, position: 0, spent,
+            requested: None, due: None, finished: None, live: None, requester: None, progress: None, comment: None,
         };
         let p = Project {
             id: "p".into(), name: "P".into(), client: None, color: None, note: None, role: Role::Owner, updated: 0, archived: None, members: vec![], counters: vec![], tasks: vec![],

@@ -121,6 +121,8 @@ pub(super) struct Track {
     /// The images the descriptions show, read from floor (or just pasted), and those being read.
     images: super::mdedit::Images,
     asked: std::collections::HashSet<String>,
+    /// The tasks of every project as one table (« Tâches »), and its filters.
+    tasks: page::TasksState,
 }
 
 impl Default for Track {
@@ -145,6 +147,7 @@ impl Default for Track {
             pending_check: None,
             images: HashMap::new(),
             asked: std::collections::HashSet::new(),
+            tasks: page::TasksState::default(),
         }
     }
 }

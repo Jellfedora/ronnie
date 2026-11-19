@@ -4,6 +4,11 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+### Nouveautés
+
+- **Suivi, la vue « Tâches »** : à côté des projets, toutes les tâches de tous les projets dans un seul tableau, par client puis projet : dates de demande, de fin prévue, de fin réelle et de mise en production, temps estimé et passé, avancement, statut, demandeur, et leurs totaux par projet. Filtres par client, projet et statut, recherche, « En cours » ou « Archives ». Le statut se change d’un clic sur sa pastille, une tâche en retard ressort en rouge, un clic sur une tâche l’ouvre, « + Nouvelle tâche » demande le projet.
+- **Suivi, des tâches plus complètes** : six statuts (à faire, en attente, en cours, terminé, en production, annulé), chacun sa couleur ; les dates (demande, fin prévue, fin réelle, mise en production, remplies d’elles-mêmes en passant « terminé » ou « en production »), le demandeur, l’avancement (calculé depuis le temps passé, ou donné) et un commentaire. Dans un projet, chaque tâche montre son échéance et son demandeur ; son menu change son statut. Demande floor 0.27.0.
+
 ## [1.7.0] - 2026-11-19
 
 ### Nouveautés
