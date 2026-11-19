@@ -4,6 +4,10 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+### Nouveautés
+
+- **Ronnie Corp a une fin** : à l'étape « Empire mondial », la partie s'arrête et la boîte ne bouge plus (les chiffres ne s'emballent plus). Une notification le dit où que tu sois dans Ronnie, et un générique de fin raconte la suite : tu as tout revendu et ouvert une boulangerie. Rien ne repart tout seul : « Nouvelle partie » recommence au garage, étoiles, talents et vie privée compris, en gardant les records et les récompenses. « Plus tard » laisse la partie finie, à relancer depuis le Bureau.
+
 ## [1.8.0] - 2026-11-19
 
 ### Nouveautés

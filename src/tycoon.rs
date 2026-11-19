@@ -1096,6 +1096,12 @@ impl Corp {
         v * (1.0 + 0.03 * self.branch_level("sf") as f64) * self.share_mult()
     }
 
+    /// The last stage reached (« Empire mondial »): the game is over, the company stops there, and the
+    /// player is asked to start a new one (`restart`). The numbers never go past it.
+    pub fn over(&self) -> bool {
+        self.stage as usize + 1 >= STAGES.len()
+    }
+
     /// The furthest stage ever reached, sales included (what the rewards go by).
     pub fn best_stage(&self) -> u8 {
         stage_of(self.legacy.best.max(self.valuation())).max(self.stage)
@@ -1339,6 +1345,25 @@ impl Corp {
     /// talents; the records kept (the best valuation, the stage it reached, the sales and the best
     /// one, the challenges won), and the tutorial as it was.
     pub fn new_season(&self, now: i64) -> Corp {
+        let mut c = self.started_again(now, 0x5EA5_0001);
+        // The tutorial done already: a tour of what's new instead (not done: its new steps will tell).
+        c.whats_new = if self.tutorial == TUTORIAL_DONE { 0 } else { TUTORIAL_DONE };
+        c.say(NewsKind::Season, "", 0.0, 0.0);
+        c
+    }
+
+    /// The game over (`over`), a new one: back in the garage, no stars nor talents nor private life;
+    /// the records kept, as for a new season.
+    pub fn restart(&self, now: i64) -> Corp {
+        let mut c = self.started_again(now, 0x0E5D_0002);
+        c.whats_new = self.whats_new;
+        c.tips = self.tips;
+        c
+    }
+
+    /// Back in the garage, the records kept (the best valuation, the stage it reached, the sales and
+    /// the best one, the challenges won), and the tutorial as it was.
+    fn started_again(&self, now: i64, salt: u64) -> Corp {
         let old = &self.legacy;
         let legacy = Legacy {
             stars: 0,
@@ -1348,13 +1373,10 @@ impl Corp {
             talents: Default::default(),
             challenges: old.challenges.clone(),
         };
-        let mut c = Corp::new(now, self.rng ^ 0x5EA5_0001, legacy);
-        // One more action: on a sync, the new season wins over the old company.
+        let mut c = Corp::new(now, self.rng ^ salt, legacy);
+        // One more action: on a sync, the new company wins over the old one.
         c.actions = self.actions + 1;
         c.tutorial = self.tutorial;
-        // The tutorial done already: a tour of what's new instead (not done: its new steps will tell).
-        c.whats_new = if self.tutorial == TUTORIAL_DONE { 0 } else { TUTORIAL_DONE };
-        c.say(NewsKind::Season, "", 0.0, 0.0);
         c
     }
 
@@ -1473,7 +1495,8 @@ impl Corp {
     /// Runs the company `dt` seconds (`online`: Ronnie is open; else being caught up: no events nor
     /// resignations).
     pub fn step(&mut self, dt: f64, online: bool, sum: &mut Summary) {
-        if dt <= 0.0 {
+        // The game over: nothing moves any more.
+        if dt <= 0.0 || self.over() {
             return;
         }
         let m = self.mods();
@@ -3603,6 +3626,35 @@ mod tests {
         assert_eq!(mid.new_season(0).whats_new, TUTORIAL_DONE, "mid-tutorial: its new steps tell");
         assert!(n.actions > old.actions, "wins a sync over the old company");
         assert!(n.news.iter().any(|x| x.kind == NewsKind::Season));
+    }
+
+    #[test]
+    fn the_last_stage_ends_the_game_and_a_new_one_starts_from_scratch() {
+        let mut c = corp();
+        c.stage = STAGES.len() as u8 - 1;
+        c.cash = 3e12;
+        c.legacy = Legacy { stars: 1_900, sales: 3, best: 3e12, best_sale: 2e12, ..Default::default() };
+        c.legacy.talents.insert("seed".into(), 3);
+        c.life.account = 5e9;
+        c.tutorial = TUTORIAL_DONE;
+        assert!(c.over());
+        let before = c.clone();
+        c.step(1.0, true, &mut Summary::default());
+        c.catch_up(c.at + 3_600);
+        assert_eq!((c.cash, c.stats.earned, c.run_time), (before.cash, before.stats.earned, before.run_time), "stopped");
+        let n = c.restart(c.at);
+        assert!(!n.over());
+        assert_eq!(n.season, SEASON);
+        assert_eq!((n.stage, n.office, n.staff.len()), (0, 0, 1), "back in the garage, alone");
+        assert_eq!(n.legacy.stars, 0);
+        assert!(n.legacy.talents.is_empty());
+        assert!(n.cash < 2_000.0, "no star's head start");
+        assert_eq!(n.life.account, Life::default().account, "a new private life");
+        assert_eq!((n.legacy.sales, n.legacy.best_sale), (3, 2e12), "the records kept");
+        assert!(n.legacy.best >= 3e12);
+        assert_eq!(n.best_stage(), STAGES.len() as u8 - 1);
+        assert_eq!((n.tutorial, n.whats_new), (TUTORIAL_DONE, c.whats_new));
+        assert!(n.actions > c.actions, "wins a sync over the old company");
     }
 
     #[test]

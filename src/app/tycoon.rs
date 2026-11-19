@@ -202,6 +202,10 @@ pub(super) struct Tycoon {
     now_sent: Option<f64>,
     /// What the last event's choice made, shown until closed.
     outcome: Option<Outcome>,
+    /// The game over (`Corp::over`), its window put off (« Later »): reopened from the Office.
+    over_later: bool,
+    /// When the ending's credits started rolling (egui's time).
+    credits_at: Option<f64>,
 }
 
 /// What an event's choice made: its text, and what moved.
@@ -215,7 +219,7 @@ struct Outcome {
 
 impl Default for Tycoon {
     fn default() -> Self {
-        Self { tab: Tab::Office, live: None, written: None, wrote_at: 0.0, started: false, away: None, confirm: None, sell_confirm: false, scene: Default::default(), tab_rects: [Rect::NOTHING; 11], challenge: None, replay: false, floor: crate::floor::GameFloor::new("ronnie-corp", false).with_limit(50), sent: (0, 0, 0), now_sent: None, outcome: None }
+        Self { tab: Tab::Office, live: None, written: None, wrote_at: 0.0, started: false, away: None, confirm: None, sell_confirm: false, scene: Default::default(), tab_rects: [Rect::NOTHING; 11], challenge: None, replay: false, floor: crate::floor::GameFloor::new("ronnie-corp", false).with_limit(50), sent: (0, 0, 0), now_sent: None, outcome: None, over_later: false, credits_at: None }
     }
 }
 
@@ -484,11 +488,24 @@ impl App {
             });
             return;
         }
+        let was_over = c.over();
         if now > c.at {
             let sum = if first { c.catch_up(now) } else { c.run(now) };
             if sum.secs >= 600.0 {
                 self.tycoon.away = Some(sum);
             }
+        }
+        // The last stage just reached: the game is over, said wherever the player is in Ronnie.
+        if !was_over && c.over() {
+            let fr = self.config.settings.language == Lang::Fr;
+            self.tycoon.over_later = false;
+            self.tycoon.credits_at = None;
+            let title = format!("Ronnie Corp : {} !", tx(corp::STAGES[corp::STAGES.len() - 1].name, fr));
+            let body = tx(("Tu as fini le jeu. Va voir ce que devient ton fondateur, dans Jeux › Ronnie Corp.", "You've finished the game. Go and see what becomes of your founder, in Games › Ronnie Corp."), fr).to_owned();
+            self.push_toast(super::Toast { ok: true, title, body, tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+            // Written at once: the game over is kept even if Ronnie is closed right after.
+            self.tycoon_write(ctx, time);
+            return;
         }
         let acted = self.tycoon.written.as_ref().map(|w| w.actions) != Some(c.actions);
         if acted || time - self.tycoon.wrote_at >= WRITE_EVERY {
@@ -627,6 +644,7 @@ impl App {
         self.tycoon_event(ui.ctx(), &mut c, fr, &theme);
         self.tycoon_outcome(ui.ctx(), fr, &theme);
         self.tycoon_away(ui.ctx(), fr, &theme);
+        self.tycoon_over(ui.ctx(), &mut c, now, fr, &theme);
         if self.tycoon.live.as_ref() != Some(&c) {
             self.tycoon.live = Some(c);
         }
@@ -790,6 +808,7 @@ impl App {
     /// Beside the scene: the premises, the next stage, the money, the news.
     fn tycoon_office(&mut self, ui: &mut Ui, c: &Corp, now: i64, fr: bool, theme: &Theme) {
         let wide = false;
+        let reopen = std::cell::Cell::new(false);
         let left = |ui: &mut Ui| {
             card(ui, theme, |ui| {
                 ui.set_width(ui.available_width());
@@ -806,7 +825,10 @@ impl App {
                         bar(ui, frac, theme.accent, ui.available_width(), 8.0, theme);
                     }
                     None => {
-                        ui.label(egui::RichText::new(tx(("Un empire mondial. Il ne reste plus qu'à tenir le conseil, racheter les concurrents… ou revendre.", "A world empire. All that's left is to keep the board happy, buy the rivals… or sell."), fr)).size(13.0).color(theme.accent));
+                        ui.label(egui::RichText::new(tx(("Un empire mondial : la partie est terminée, la boîte ne bouge plus.", "A world empire: the game is over, the company doesn't move any more."), fr)).size(13.0).color(theme.accent));
+                        if button(ui, true, tx(("Revoir la fin et relancer une partie…", "See the ending and start a new game…"), fr), theme) {
+                            reopen.set(true);
+                        }
                     }
                 }
                 ui.add_space(10.0);
@@ -846,7 +868,10 @@ impl App {
             ui.add_space(10.0);
             right(ui);
         }
-        let _ = self;
+        if reopen.get() {
+            self.tycoon.over_later = false;
+            self.tycoon.credits_at = None;
+        }
     }
 
     fn tycoon_team(&mut self, ui: &mut Ui, c: &mut Corp, fr: bool, theme: &Theme) {
@@ -1496,7 +1521,9 @@ impl App {
                 ui.label(egui::RichText::new(format!("{} « {} » : {} (+{} ★){left}", tx(("Défi en cours", "Current challenge"), fr), tx(ch.name, fr), tx(ch.about, fr), ch.reward)).size(12.5).color(theme.ansi[5]));
             }
             let stars = c.sell_stars();
-            if stars == 0 {
+            if c.over() {
+                ui.label(egui::RichText::new(tx(("La partie est terminée : relances-en une depuis le Bureau.", "The game is over: start a new one from the Office."), fr)).size(12.5).color(theme.ansi[3]));
+            } else if stars == 0 {
                 ui.label(egui::RichText::new(format!("{} {}.", tx(("Possible à partir de l'étape", "Possible from the stage"), fr), tx(corp::STAGES[corp::SELL_STAGE as usize].name, fr))).size(12.5).color(theme.ansi[3]));
             } else if self.tycoon.sell_confirm {
                 ui.label(egui::RichText::new(tx(("Sûr ? L'équipe, les locaux, les produits et la trésorerie seront perdus.", "Sure? The team, premises, products and cash will be gone."), fr)).size(12.5).color(theme.ansi[1]));
@@ -1928,6 +1955,68 @@ impl App {
         (next, skip)
     }
 
+    /// The last stage reached: the game over, the ending's credits rolling (the founder sold it all and
+    /// opened a bakery), and a new game offered. Nothing starts again by itself.
+    fn tycoon_over(&mut self, ctx: &egui::Context, c: &mut Corp, now: i64, fr: bool, theme: &Theme) {
+        if !c.over() || self.tycoon.over_later || self.tycoon.away.is_some() || self.tycoon.outcome.is_some() {
+            return;
+        }
+        let time = ctx.input(|i| i.time);
+        let started = *self.tycoon.credits_at.get_or_insert(time);
+        let lines = credits(c, fr);
+        const LINE: f32 = 24.0;
+        const HEIGHT: f32 = 300.0;
+        const SPEED: f32 = 26.0;
+        // Rolled up until the last line sits in the middle.
+        let end = HEIGHT / 2.0 + (lines.len() as f32 - 1.0) * LINE;
+        let rolled = ((time - started) as f32 * SPEED).min(end);
+        let done = rolled >= end;
+        let (mut again, mut later, mut skip) = (false, false, false);
+        egui::Window::new(tx(("Fin", "The end"), fr)).id(egui::Id::new("tycoon-over")).title_bar(false).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(egui::Frame::new().fill(theme.chrome_bg).stroke(Stroke::new(1.5, theme.accent)).corner_radius(12.0).inner_margin(18.0)).show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(440.0, HEIGHT), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            for (k, (text, big)) in lines.iter().enumerate() {
+                let y = rect.bottom() + LINE / 2.0 - rolled + k as f32 * LINE;
+                if y < rect.top() - LINE || y > rect.bottom() + LINE {
+                    continue;
+                }
+                // Faded in at the bottom, out at the top.
+                let edge = ((y - rect.top()).min(rect.bottom() - y) / 50.0).clamp(0.0, 1.0);
+                let color = if *big { theme.accent } else { theme.text };
+                let font = egui::FontId::proportional(if *big { 20.0 } else { 14.0 });
+                painter.text(Pos2::new(rect.center().x, y), Align2::CENTER_CENTER, text, font, color.gamma_multiply(edge));
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if done {
+                    again = button(ui, true, tx(("Nouvelle partie", "New game"), fr), theme);
+                    later = small(ui, tx(("Plus tard", "Later"), fr));
+                } else {
+                    skip = small(ui, tx(("Passer", "Skip"), fr));
+                }
+            });
+            if done {
+                ui.add_space(4.0);
+                muted(ui, tx(("Une nouvelle partie repart du garage : étoiles, talents et vie privée compris. Tes records et tes récompenses sont gardés.", "A new game starts again from the garage: stars, talents and private life included. Your records and rewards are kept."), fr), theme);
+            }
+        });
+        if !done {
+            ctx.request_repaint();
+        }
+        if skip {
+            self.tycoon.credits_at = Some(time - (end / SPEED) as f64);
+        } else if again {
+            *c = c.restart(now);
+            self.tycoon.tab = Tab::Office;
+            self.tycoon.sell_confirm = false;
+            self.tycoon.confirm = None;
+            self.tycoon.credits_at = None;
+        } else if later {
+            self.tycoon.over_later = true;
+            self.tycoon.credits_at = None;
+        }
+    }
+
     /// What happened while Ronnie was closed.
     fn tycoon_away(&mut self, ctx: &egui::Context, fr: bool, theme: &Theme) {
         let Some(sum) = self.tycoon.away.clone() else { return };
@@ -1959,4 +2048,53 @@ impl App {
             self.tycoon.away = None;
         }
     }
+}
+
+/// The ending's credits, line by line (`true`: a title).
+fn credits(c: &Corp, fr: bool) -> Vec<(String, bool)> {
+    let t = |p: corp::Tx| (tx(p, fr).to_owned(), false);
+    let big = |p: corp::Tx| (tx(p, fr).to_owned(), true);
+    let blank = || (String::new(), false);
+    vec![
+        big(("Empire mondial", "World empire")),
+        (format!("{} {}.", tx(("Ta boîte vaut", "Your company is worth"), fr), money(c.valuation(), fr)), false),
+        blank(),
+        t(("Le lendemain matin, tu as tout revendu.", "The next morning, you sold it all.")),
+        t(("Les bureaux, les produits, le conseil d'administration,", "The offices, the products, the board,")),
+        t(("les concurrents rachetés, les bureaux à l'étranger,", "the rivals you bought, the offices abroad,")),
+        t(("et même la plante verte de l'accueil.", "and even the pot plant in the lobby.")),
+        blank(),
+        t(("Tu as rendu ton badge, éteint ton dernier écran,", "You handed back your badge, switched off your last screen,")),
+        t(("et tu es parti·e très loin des tableurs.", "and went very far from the spreadsheets.")),
+        blank(),
+        big(("Aujourd'hui, tu es boulanger·ère.", "Today, you're a baker.")),
+        blank(),
+        t(("Une petite boutique au coin d'une petite rue.", "A small shop on the corner of a small street.")),
+        t(("Lever à 4 h, le pétrin, le four à bois.", "Up at 4, the kneading trough, the wood oven.")),
+        t(("Plus de stand-up, plus de sprint, plus de roadmap.", "No more stand-ups, no more sprints, no more roadmap.")),
+        t(("Juste des croissants.", "Just croissants.")),
+        blank(),
+        t(("Ta baguette tradition tient un 4,9 sur Google.", "Your baguette has a 4.9 on Google.")),
+        t(("Tes anciens employés passent le samedi matin.", "Your former staff drop by on Saturday mornings.")),
+        t(("Le CTO prend toujours deux pains au chocolat.", "The CTO always takes two pains au chocolat.")),
+        t(("(Pas « chocolatines ». Le conseil a voté.)", "(Not « chocolatines ». The board voted.)")),
+        blank(),
+        t(("La dette technique ? Une ardoise chez le fromager.", "Technical debt? A tab at the cheese shop.")),
+        t(("Une panne de prod ? Le four qui chauffe mal.", "A production outage? The oven running cold.")),
+        t(("Le seul déploiement : la fournée de 7 h.", "The only deployment: the 7 a.m. batch.")),
+        blank(),
+        t(("Parfois, un client te regarde de travers :", "Now and then, a customer squints at you:")),
+        t(("« Vous n'étiez pas le patron de Ronnie Corp ? »", "« Weren't you the boss of Ronnie Corp? »")),
+        t(("Tu souris, et tu rends la monnaie.", "You smile, and hand back the change.")),
+        blank(),
+        big(("Ronnie Corp", "Ronnie Corp")),
+        (format!("{} : {}", tx(("Contrats livrés", "Contracts delivered"), fr), c.stats.contracts), false),
+        (format!("{} : {}", tx(("Embauches", "Hires"), fr), c.stats.hires), false),
+        (format!("{} : {}", tx(("Produits lancés", "Products launched"), fr), c.stats.launched), false),
+        (format!("{} : {}", tx(("Boîtes revendues", "Companies sold"), fr), c.legacy.sales), false),
+        (format!("{} : {}", tx(("Imprévus traversés", "Events weathered"), fr), c.stats.events), false),
+        blank(),
+        big(("Fin", "The end")),
+        t(("Merci d'avoir joué.", "Thanks for playing.")),
+    ]
 }
