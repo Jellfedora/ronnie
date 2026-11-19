@@ -6,6 +6,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ### Corrections
 
+- Apparence : « Sur tous les écrans » coupé, tous les compagnons restent dans Ronnie (droïde, elfe, licorne, louveteau, Gérard, la horde de 10 h, Mathéo), et plus seulement le mouton ; leurs interrupteurs ne sont plus grisés.
 - Suivi : un temps saisi peut aller jusqu’à 1000 h (pour décompter d’un coup un bloc d’heures déjà faites), au lieu de 24 h. Demande floor 0.25.0.
 - macOS : Mathéo se pose sur le Dock là où il est, et tout en bas de l’écran à côté, au lieu de flotter à la hauteur du Dock sur toute la largeur. Il faut que Ronnie soit autorisé dans Accessibilité (Paramètres › Apparence le propose s’il ne l’est pas).
 

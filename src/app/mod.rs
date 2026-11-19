@@ -5696,6 +5696,7 @@ impl App {
                 }
             });
         self.sheep_walk(ui.ctx());
+        self.companions_walk(ui.ctx());
         if self.theme.wizard
             && let Some(area) = self.terminals_rect
         {

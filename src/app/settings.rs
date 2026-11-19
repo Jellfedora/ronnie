@@ -2452,14 +2452,12 @@ impl App {
                     continue;
                 }
                 gap(ui);
-                // Only outside Ronnie: greyed while it is off there.
-                ui.add_enabled_ui(on, |ui| {
-                    setting_row(ui, theme, label, None, |ui| {
-                        // The horde switched on: it runs across the screen right now, to see it.
-                        if toggle(ui, theme, shown).changed() && *shown && label == t.desktop_horde {
-                            demo = true;
-                        }
-                    });
+                // Over every screen, or in Ronnie's window only (`fx.on` off): each still its own choice.
+                setting_row(ui, theme, label, None, |ui| {
+                    // The horde switched on: it runs across the screen right now, to see it.
+                    if toggle(ui, theme, shown).changed() && *shown && label == t.desktop_horde {
+                        demo = true;
+                    }
                 });
             }
             // Mathéo's advice, beside him.

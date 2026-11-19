@@ -115,11 +115,17 @@ impl App {
     /// What the settings ask to show over the screen (each reward still to be won, left out; nothing
     /// unless switched on outside Ronnie).
     fn desktop_wanted(&self) -> Fx {
-        let s = &self.config.settings;
-        let d = s.desktop_fx;
-        if !d.on {
+        if !self.config.settings.desktop_fx.on {
             return Fx::default();
         }
+        self.companions()
+    }
+
+    /// Every companion, the trail and the pointer as the settings choose them (each won), wherever they
+    /// show: over every screen, or only in Ronnie's window.
+    fn companions(&self) -> Fx {
+        let s = &self.config.settings;
+        let d = s.desktop_fx;
         let official = crate::config::OFFICIAL;
         let worn = trail::worn(s);
         let pointer = Some(trail::pointer(s)).filter(|p| *p != Pointer::System);
@@ -131,6 +137,33 @@ impl App {
     pub(super) fn desktop_draws(&self) -> (bool, bool, bool) {
         let fx = self.desktop.sent.as_ref().filter(|_| self.desktop.child.is_some());
         (fx.is_some_and(|f| f.trail), fx.is_some_and(|f| f.pointer.is_some()), fx.is_some_and(|f| f.sheep))
+    }
+
+    /// Not over every screen (switched off there, or the process not running): the companions walk along
+    /// the foot of the terminals, in Ronnie's window (the sheep, its own way: `office::sheep_walk`), the
+    /// horde runs across them at 10, Mathéo stands at their right.
+    pub(super) fn companions_walk(&mut self, ctx: &egui::Context) {
+        if self.desktop.child.is_some() && self.desktop.sent.as_ref().is_some_and(Fx::any) {
+            return;
+        }
+        let Some(area) = self.terminals_rect else { return };
+        let fx = Fx { sheep: false, trail: false, pointer: None, ..self.companions() };
+        if !(fx.droid || fx.gerard || fx.elf || fx.unicorn || fx.wolf || fx.horde || fx.matheo) {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("companions-in-ronnie")));
+        let strip = Rect::from_min_max(Pos2::new(area.min.x + 6.0, area.max.y - 34.0), Pos2::new(area.max.x - 6.0, area.max.y - 2.0));
+        let (busy, mut next) = paint_walkers(&painter, strip, area, now, 0, 1, &fx);
+        if fx.matheo {
+            paint_matheo(&painter, Pos2::new(area.max.x - 46.0, area.max.y - 4.0), 56.0, now, false);
+            next = next.min(0.1);
+        }
+        if busy {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f32(next.clamp(0.02, 1.0)));
+        }
     }
 
     /// The process started, told what changed, or stopped, as the settings say.
