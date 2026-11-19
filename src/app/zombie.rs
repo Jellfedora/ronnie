@@ -92,6 +92,8 @@ pub(super) struct Monday {
 }
 
 /// The achievements, in floor's order: each gives the title of the same place.
+/// The zombies to take out with each weapon for the « arsenal » achievement (floor's ARSENAL).
+const ARSENAL_KILLS: u32 = 100;
 pub(super) const ACHIEVEMENTS: [&str; 12] = ["newcomer", "rescuer", "centurion", "roof", "ceo", "lonewolf", "untouchable", "hunter", "cupid", "faithful", "arsenal", "zoologist"];
 
 /// The welcome screen's sections, each opened by a click (beside the card to play).
@@ -962,7 +964,23 @@ impl App {
                     p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k, bar.height())), 1.0, Color32::from_rgb(222, 180, 80));
                 }
             }
-            let resp = resp.on_hover_text(hows.get(k).copied().unwrap_or_default());
+            let how = hows.get(k).copied().unwrap_or_default();
+            // The arsenal: which weapons have their hundred zombies already, and how far the others are.
+            let resp = if *id == "arsenal" {
+                let names: Vec<&str> = t.monday_weapons.split('|').collect();
+                let lines: Vec<String> = crate::zombie::WEAPONS
+                    .iter()
+                    .enumerate()
+                    .map(|(w, weapon)| {
+                        let kills = c.mastery.get(*weapon).map_or(0, |m| m.1);
+                        let name = names.get(w).copied().unwrap_or(weapon);
+                        if kills >= ARSENAL_KILLS { format!("✓ {name}") } else { format!("·  {name} : {kills}/{ARSENAL_KILLS}") }
+                    })
+                    .collect();
+                resp.on_hover_text(format!("{how}\n\n{}", lines.join("\n")))
+            } else {
+                resp.on_hover_text(how)
+            };
             if has && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 wear = Some(if worn { None } else { Some(*id) });
             }
