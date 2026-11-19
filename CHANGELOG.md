@@ -4,13 +4,15 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-19
+
 ### Nouveautés
 
 - **Ronnie Corp a une fin** : à l'étape « Empire mondial », la partie s'arrête et la boîte ne bouge plus (les chiffres ne s'emballent plus). Une notification le dit où que tu sois dans Ronnie, et un générique de fin raconte la suite : tu as tout revendu et ouvert une boulangerie. Rien ne repart tout seul : « Nouvelle partie » recommence au garage, étoiles, talents et vie privée compris, en gardant les records et les récompenses. « Plus tard » laisse la partie finie, à relancer depuis le Bureau.
 - **Lundi matin, le succès « 100 zombies avec chaque arme »** : en passant sur lui dans la Carrière, la liste des 8 armes dit lesquelles sont validées (✓) et où en sont les autres (42/100…).
-- **Lundi matin, la tourelle sur soi** : achetée à la machine à café, elle ne se pose plus toute seule. Tu la gardes sur toi (3 au plus) et tu la poses quand tu veux, où tu vises : F enfoncé montre où elle ira et jusqu'où elle tirera, F relâché la pose. Demande floor à jour.
+- **Lundi matin, la tourelle sur soi** : achetée à la machine à café, elle ne se pose plus toute seule. Tu la gardes sur toi (3 au plus) et tu la poses quand tu veux, où tu vises : F enfoncé montre où elle ira et jusqu'où elle tirera, F relâché la pose. Demande floor 0.28.0.
 - **Lundi matin, ton perso se repère mieux** : un anneau à ta couleur au sol sous toi, une flèche au-dessus de ta tête et ton pseudo sur fond sombre ; les pseudos des autres prennent leur couleur.
-- **Lundi matin, des vagues moins chargées après la 15** : 2 zombies de plus par vague au lieu de 4, un quart de moins dans les vagues à objectif (les trois baies de la 18…), et ils arrivent moins vite. Côté floor.
+- **Lundi matin, des vagues moins chargées après la 15** : 2 zombies de plus par vague au lieu de 4, un quart de moins dans les vagues à objectif (les trois baies de la 18…), et ils arrivent moins vite. Demande floor 0.28.0.
 
 ## [1.8.0] - 2026-11-19
 
