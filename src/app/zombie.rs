@@ -1505,6 +1505,13 @@ impl App {
             let (x, y) = mix.player(p.id, p.x, p.y);
             let (name, color) = colors.iter().find(|(id, _, _)| *id == p.id).map(|(_, n, c)| (n.as_str(), *c)).unwrap_or(("?", COLORS[0]));
             let c = at(x, y);
+            let mine = Some(p.id) == me;
+            // One's own, findable in the crowd: a ring on the ground in one's color, breathing a little.
+            if mine && p.state != State::Dead {
+                let pulse = 1.0 + 0.08 * (now * 3.0).sin() as f32;
+                painter.circle_filled(c, 32.0 * scale * pulse, color.gamma_multiply(0.16));
+                painter.circle_stroke(c, 32.0 * scale * pulse, Stroke::new(2.5 * scale.max(0.7), color));
+            }
             match p.state {
                 State::Up => {
                     let firing = p.reload <= 0.0 && Some(p.id) != me && (now * 30.0 + p.id as f64).sin() > 0.95;
@@ -1532,7 +1539,22 @@ impl App {
                 }
             }
             let label = if p.offline { format!("{name} ({})", t.monday_offline) } else { name.to_owned() };
-            painter.text(c - Vec2::new(0.0, 34.0 * scale), Align2::CENTER_CENTER, label, FontId::proportional(13.0 * scale.max(0.7)), if p.offline { theme.text_muted } else { Color32::WHITE });
+            // The names in each one's color (lighter), one's own over a dark plate.
+            let ink = if p.offline { theme.text_muted } else { mix_white(color, 0.45) };
+            let font = FontId::proportional(13.0 * scale.max(0.7));
+            let at_name = c - Vec2::new(0.0, 34.0 * scale);
+            if mine {
+                let galley = painter.layout_no_wrap(label.clone(), font.clone(), ink);
+                painter.rect_filled(Rect::from_center_size(at_name, galley.size() + Vec2::new(10.0, 4.0)), 6.0, Color32::from_black_alpha(170));
+            }
+            painter.text(at_name, Align2::CENTER_CENTER, label, font, ink);
+            // And an arrow over one's head, bobbing.
+            if mine && p.state != State::Dead {
+                let tip = at_name - Vec2::new(0.0, (14.0 + 3.0 * (now * 4.0).sin() as f32) * scale.max(0.7));
+                let k = 9.0 * scale.max(0.7);
+                let arrow = vec![tip, tip + Vec2::new(-k, -k * 1.2), tip + Vec2::new(k, -k * 1.2)];
+                painter.add(egui::Shape::convex_polygon(arrow, color, Stroke::new(1.5, Color32::from_black_alpha(200))));
+            }
         }
         self.monday.rewards.retain(|r| now - r.4 < RESCUE_AT + 3.0);
         super::zombie_rewards::paint_rewards(&painter, &self.monday.rewards, &at, scale, now, field);
@@ -3914,3 +3936,9 @@ const LETTERS_EN: [&str; 12] = [
     "I wrote your name on a post-it and stuck it on my forehead, so I never forget you, even if my head wanders off a little.",
     "Gérard, if you read this, come and find me at the reception desk. I’ll wait with two coffees, and this time you can have the sugar. Your Agnès, forever.",
 ];
+
+/// `c` toward white by `k` (0 to 1).
+fn mix_white(c: Color32, k: f32) -> Color32 {
+    let m = |v: u8| (v as f32 + (255.0 - v as f32) * k).round() as u8;
+    Color32::from_rgb(m(c.r()), m(c.g()), m(c.b()))
+}
