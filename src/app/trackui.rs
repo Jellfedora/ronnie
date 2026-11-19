@@ -130,7 +130,7 @@ pub(super) fn status_pill(ui: &mut Ui, status: Status, t: &Strings, theme: &Them
     let color = status_color(status, theme);
     let filled = status != Status::Todo;
     let text = egui::RichText::new(status_name(status, t)).size(11.5).color(if filled { Color32::WHITE } else { theme.text });
-    let b = egui::Button::new(text).corner_radius(6.0).min_size(Vec2::new(96.0, 22.0)).stroke(Stroke::new(1.0, color));
+    let b = egui::Button::new(text).corner_radius(6.0).min_size(Vec2::new(86.0, 22.0)).stroke(Stroke::new(1.0, color));
     ui.add(if filled { b.fill(color) } else { b.fill(Color32::TRANSPARENT) }).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -403,11 +403,14 @@ impl App {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             // The projects as cards, or every task as one table.
-            if let Some(i) = super::segmented::segmented(ui, &theme, 28.0, &[t.track_view_projects, t.track_view_tasks], Some(usize::from(self.track.tasks.shown))) {
+            let chosen = ui.push_id("track-view", |ui| super::segmented::segmented(ui, &theme, 28.0, &[t.track_view_projects, t.track_view_tasks], Some(usize::from(self.track.tasks.shown)))).inner;
+            if let Some(i) = chosen {
                 self.track.tasks.shown = i == 1;
             }
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new(t.track_intro).size(12.5).color(theme.text_muted.gamma_multiply(0.85)));
+            if !self.track.tasks.shown {
+                ui.add_space(10.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.track_intro).size(12.5).color(theme.text_muted.gamma_multiply(0.85))).truncate());
+            }
         });
         ui.add_space(16.0);
 
@@ -562,7 +565,7 @@ impl App {
                     }
                 }
             });
-            if let Some(i) = super::segmented::segmented(ui, &theme, 26.0, &[t.track_going_on, t.track_archives], Some(usize::from(f.archives))) {
+            if let Some(i) = ui.push_id("tasks-archives", |ui| super::segmented::segmented(ui, &theme, 26.0, &[t.track_going_on, t.track_archives], Some(usize::from(f.archives)))).inner {
                 (f.archives, f.status) = (i == 1, None);
             }
             egui::ComboBox::from_id_salt("tasks-status").selected_text(f.status.map_or(t.track_all_statuses, |s| status_name(s, t))).show_ui(ui, |ui| {
@@ -575,7 +578,7 @@ impl App {
                     }
                 }
             });
-            ui.add(egui::TextEdit::singleline(&mut f.find).hint_text(t.track_find_task).desired_width(200.0));
+            ui.add(egui::TextEdit::singleline(&mut f.find).hint_text(t.track_find_task).desired_width(170.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let writable: Vec<&Project> = projects.iter().filter(|p| p.role.manages()).collect();
                 if !writable.is_empty() {
@@ -629,11 +632,30 @@ impl App {
             });
         }
         let muted = |s: &str| egui::RichText::new(s).size(12.5).color(theme.text_muted);
-        let day = |d: &Option<String>| d.as_deref().map(show_day);
-        egui::ScrollArea::horizontal().id_salt("tasks-table").show(ui, |ui| {
-            egui::Grid::new("tasks-grid").striped(true).spacing(Vec2::new(16.0, 8.0)).min_col_width(64.0).show(ui, |ui| {
-                for head in [t.track_task_col, t.track_requested, t.track_due, t.track_finished, t.track_live_on, t.track_estimate_short, t.track_spent_short, "%", t.track_status, t.track_requester] {
-                    ui.label(egui::RichText::new(head).size(11.5).strong().color(theme.text_muted));
+        // Short: « 17/09 » this year, « 17/09/25 » another.
+        let year = today.get(..4).unwrap_or("").to_owned();
+        let day = |d: &Option<String>| {
+            d.as_deref().map(|d| match (d.get(..4), d.get(2..4), d.get(5..7), d.get(8..10)) {
+                (Some(y), _, Some(m), Some(dd)) if y == year => format!("{dd}/{m}"),
+                (_, Some(yy), Some(m), Some(dd)) => format!("{dd}/{m}/{yy}"),
+                _ => d.to_owned(),
+            })
+        };
+        // The task's column wide enough for a title on a line or two.
+        // The other columns take about this much; the task's takes what is left (220 to 520 points), and
+        // the table scrolls sideways only in a narrow window.
+        const OTHERS_W: f32 = 560.0;
+        let room = ui.available_width();
+        let title_w = (room - OTHERS_W).clamp(190.0, 520.0);
+        let mut table = |ui: &mut Ui| {
+            egui::Grid::new("tasks-grid").striped(true).spacing(Vec2::new(10.0, 8.0)).min_col_width(40.0).show(ui, |ui| {
+                for (k, head) in [t.track_task_col, t.track_status, t.track_requester, t.track_requested, t.track_due, t.track_finished, t.track_live_short, t.track_estimate_short, t.track_spent_short, "%"].into_iter().enumerate() {
+                    let label = egui::Label::new(egui::RichText::new(head).size(11.5).strong().color(theme.text_muted));
+                    if k == 0 {
+                        ui.allocate_ui_with_layout(Vec2::new(title_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(label));
+                    } else {
+                        ui.add(label);
+                    }
                 }
                 ui.end_row();
                 for (p, rows) in &groups {
@@ -644,43 +666,36 @@ impl App {
                     });
                     let color = color_of(p.color.as_deref()).unwrap_or(theme.accent);
                     ui.horizontal(|ui| {
+                        ui.set_width(title_w);
                         let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                         ui.painter().circle_filled(dot.center(), 4.5, color);
                         let head = p.client.as_ref().map_or(p.name.clone(), |c| format!("{c} · {}", p.name));
                         ui.label(egui::RichText::new(head).size(13.5).strong().color(theme.text));
                     });
-                    for _ in 0..4 {
+                    for _ in 0..6 {
                         ui.label("");
                     }
                     ui.label(egui::RichText::new(if est > 0 { hm(est as i64) } else { String::new() }).size(12.5).strong().color(theme.text));
                     ui.label(egui::RichText::new(if spent > 0 { hm(spent as i64) } else { String::new() }).size(12.5).strong().color(theme.text));
-                    for _ in 0..3 {
-                        ui.label("");
-                    }
+                    ui.label("");
                     ui.end_row();
                     for (i, depth) in rows {
                         ui.horizontal(|ui| {
+                            ui.set_width(title_w);
                             ui.add_space(14.0 + *depth as f32 * 18.0);
-                            ui.vertical(|ui| {
-                                let title = egui::RichText::new(if *depth > 0 { format!("↳ {}", i.title) } else { i.title.clone() }).size(13.0).color(if i.status.closed() { theme.text_muted } else { theme.text });
-                                let resp = ui.add(egui::Label::new(title).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand);
-                                if resp.clicked() {
-                                    out.push(TaskAct::Open(p.id.clone(), i.id.clone()));
-                                }
-                                if let Some(c) = &i.comment {
-                                    ui.label(egui::RichText::new(c).size(11.5).italics().color(theme.text_muted));
-                                }
-                            });
+                            // Its title, its comment after it in grey, on one line (whole on hover).
+                            let mut job = egui::text::LayoutJob::default();
+                            let fmt = |size: f32, color: Color32, italics: bool| egui::TextFormat { font_id: egui::FontId::proportional(size), color, italics, ..Default::default() };
+                            job.append(&if *depth > 0 { format!("↳ {}", i.title) } else { i.title.clone() }, 0.0, fmt(13.0, if i.status.closed() { theme.text_muted } else { theme.text }, false));
+                            if let Some(c) = &i.comment {
+                                job.append(&format!("  ·  {c}"), 0.0, fmt(12.0, theme.text_muted, true));
+                            }
+                            let full = format!("{}{}", i.title, i.comment.as_ref().map(|c| format!("\n{c}")).unwrap_or_default());
+                            let resp = ui.add(egui::Label::new(job).truncate().sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(full);
+                            if resp.clicked() {
+                                out.push(TaskAct::Open(p.id.clone(), i.id.clone()));
+                            }
                         });
-                        ui.label(day(&i.requested).map_or_else(|| muted("—"), |d| muted(&d)));
-                        let late = i.late(&today);
-                        ui.label(day(&i.due).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(if late { RED } else { theme.text_muted }).strong()));
-                        ui.label(day(&i.finished).map_or_else(|| muted("—"), |d| muted(&d)));
-                        ui.label(day(&i.live).map_or_else(|| muted("—"), |d| muted(&d)));
-                        let r = p.rollup(i);
-                        ui.label(if r.estimate > 0 { egui::RichText::new(hm(r.estimate as i64)).size(12.5).color(theme.text) } else { muted("—") });
-                        ui.label(if r.spent > 0 { egui::RichText::new(hm(r.spent as i64)).size(12.5).color(if r.estimate > 0 && r.spent > r.estimate { RED } else { theme.text }) } else { muted("—") });
-                        ui.label(i.progress().map_or_else(|| muted("—"), |v| egui::RichText::new(format!("{v} %")).size(12.5).color(theme.text)));
                         // The state: a pill; a click, the others.
                         if p.role.writes() {
                             let pill = status_pill(ui, i.status, t, &theme);
@@ -695,11 +710,29 @@ impl App {
                             status_pill(ui, i.status, t, &theme);
                         }
                         ui.label(i.requester.as_deref().map_or_else(|| muted("—"), |w| egui::RichText::new(w).size(12.5).color(theme.text)));
+                        ui.label(day(&i.requested).map_or_else(|| muted("—"), |d| muted(&d)));
+                        let late = i.late(&today);
+                        ui.label(day(&i.due).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(if late { RED } else { theme.text_muted }).strong()));
+                        ui.label(day(&i.finished).map_or_else(|| muted("—"), |d| muted(&d)));
+                        ui.label(day(&i.live).map_or_else(|| muted("—"), |d| muted(&d)));
+                        let r = p.rollup(i);
+                        ui.label(if r.estimate > 0 { egui::RichText::new(hm(r.estimate as i64)).size(12.5).color(theme.text) } else { muted("—") });
+                        ui.label(if r.spent > 0 { egui::RichText::new(hm(r.spent as i64)).size(12.5).color(if r.estimate > 0 && r.spent > r.estimate { RED } else { theme.text }) } else { muted("—") });
+                        ui.label(i.progress().map_or_else(|| muted("—"), |v| egui::RichText::new(format!("{v} %")).size(12.5).color(theme.text)));
                         ui.end_row();
                     }
                 }
             });
-        });
+        };
+        if title_w + OTHERS_W <= room {
+            table(ui);
+        } else {
+            egui::ScrollArea::horizontal().id_salt("tasks-table").show(ui, |ui| {
+                table(ui);
+                // Room for the scroll bar, under the last row.
+                ui.add_space(14.0);
+            });
+        }
 
         for act in out {
             match act {

@@ -547,6 +547,11 @@ impl App {
                 self.track_import_open();
                 Tab::Overview
             }
+            // Every task as one table (« Tâches »).
+            "table" => {
+                self.track.tasks.shown = true;
+                Tab::Overview
+            }
             _ => Tab::Overview,
         };
     }
