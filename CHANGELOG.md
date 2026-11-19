@@ -4,10 +4,15 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-19
+
 ### Nouveautés
 
-- **Suivi, la vue « Tâches »** : à côté des projets, toutes les tâches de tous les projets dans un seul tableau, par client puis projet : dates de demande, de fin prévue, de fin réelle et de mise en production, temps estimé et passé, avancement, statut, demandeur, et leurs totaux par projet. Filtres par client, projet et statut, recherche, « En cours » ou « Archives ». Le statut se change d’un clic sur sa pastille, une tâche en retard ressort en rouge, un clic sur une tâche l’ouvre, « + Nouvelle tâche » demande le projet.
-- **Suivi, des tâches plus complètes** : six statuts (à faire, en attente, en cours, terminé, en production, annulé), chacun sa couleur ; les dates (demande, fin prévue, fin réelle, mise en production, remplies d’elles-mêmes en passant « terminé » ou « en production »), le demandeur, l’avancement (calculé depuis le temps passé, ou donné) et un commentaire. Dans un projet, chaque tâche montre son échéance et son demandeur ; son menu change son statut. Demande floor 0.27.0.
+- **Suivi, la vue « Tâches »** : à côté des projets, toutes les tâches de tous les projets dans un seul tableau, par client puis projet : demandeur, qui l’a traitée (ceux qui ont saisi du temps dessus), dates de demande, de fin prévue et de fin réelle, environnement, temps estimé et passé, avancement, statut, et les totaux par projet. Un clic sur la ligne d’un projet replie ou déplie ses tâches. Filtres par client, projet et statut, recherche, « En cours » ou « Archives », et des filtres dans les en-têtes (demandeur, traité par, environnement). Le statut se change d’un clic sur sa pastille, une tâche en retard ressort en rouge, un clic sur une tâche l’ouvre.
+- **Suivi, des tâches plus complètes** : six statuts (à faire, en attente, en cours, terminé, en production, annulé), chacun sa couleur ; les dates (demande, fin prévue, fin réelle, mise en production, remplies d’elles-mêmes en passant « terminé » ou « en production »), le demandeur, l’avancement (calculé depuis le temps passé, ou donné), un commentaire, et où en est la tâche : local, dev, test ou prod (prod d’elle-même en passant « en production »). Demande floor 0.27.0.
+- **Suivi, de vrais tableaux** : les tâches d’un devis et celles hors devis, le temps passé (par jour, avec son total) et les saisies d’un compteur s’affichent en tableaux, les mêmes partout : en-têtes, lignes et colonnes séparées, chiffres alignés à droite.
+- **Suivi, la page « Projets »** : une grille de cartes sur toute la largeur, chacune avec son client, son équipe, le temps du mois et en tout, son compteur, ses tâches en cours, à faire, en attente et en retard, sa prochaine échéance et sa dernière modification.
+- **Ronnie Corp** : la priorité du ou de la chef·fe de projet, dans Direction › Automatisations : les contrats d’abord, équilibré (la moitié de l’équipe sur les produits) ou les produits d’abord. Merci Jonathan.
 
 ## [1.7.0] - 2026-11-19
 
