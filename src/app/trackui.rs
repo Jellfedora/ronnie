@@ -698,57 +698,88 @@ impl App {
                 _ => d.to_owned(),
             })
         };
-        // The task's column wide enough for a title on a line or two.
-        // The other columns take about this much; the task's takes what is left (220 to 520 points), and
-        // the table scrolls sideways only in a narrow window.
-        // The columns after the task's, each its width; the task's takes what is left (190 at least), the
-        // table scrolling sideways only in a narrow window.
-        const COLS: [f32; 10] = [90.0, 84.0, 96.0, 50.0, 64.0, 64.0, 52.0, 56.0, 50.0, 40.0];
-        const GAP: f32 = 9.0;
-        const LINE_H: f32 = 30.0;
-        let others: f32 = COLS.iter().sum::<f32>() + GAP * COLS.len() as f32;
+        // A real table: a frame, a heading row, a line under each row, a line between columns. The columns
+        // after the task's are each their width (padding inside); the task's takes what is left (220 at
+        // least), the table scrolling sideways only in a narrow window.
+        const COLS: [f32; 10] = [112.0, 104.0, 112.0, 80.0, 88.0, 86.0, 74.0, 76.0, 76.0, 58.0];
+        // The figures, right aligned.
+        const RIGHT: [bool; 10] = [false, false, false, false, false, false, false, true, true, true];
+        const PAD: f32 = 10.0;
+        const LINE_H: f32 = 38.0;
+        const HEAD_H: f32 = 34.0;
+        let others: f32 = COLS.iter().sum();
         let room = ui.available_width();
-        let title_w = (room - others - 4.0).max(190.0);
+        let title_w = (room - others - 2.0).max(220.0);
         let heads = [t.track_status, t.track_requester, t.track_worked_by, t.track_requested, t.track_due, t.track_finished, t.track_env_short, t.track_estimate_short, t.track_spent_short, "%"];
-        // A cell `w` wide, its content on one line, centered in the row's height.
-        fn cell(ui: &mut Ui, w: f32, add: impl FnOnce(&mut Ui)) {
-            ui.allocate_ui_with_layout(Vec2::new(w, LINE_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        // A cell `w` wide and `h` high, its content on one line, centered in its height, padded.
+        fn cell(ui: &mut Ui, w: f32, h: f32, right: bool, add: impl FnOnce(&mut Ui)) {
+            let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+            ui.allocate_ui_with_layout(Vec2::new(w, h), layout, |ui| {
                 ui.set_width(w);
-                ui.set_height(LINE_H);
-                add(ui);
+                ui.set_height(h);
+                ui.add_space(PAD);
+                ui.allocate_ui_with_layout(Vec2::new(w - 2.0 * PAD, h), layout, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+                    add(ui);
+                });
             });
         }
+        // A small tag, its own height whatever the row's.
+        fn tag(ui: &mut Ui, text: &str, color: Color32) {
+            let galley = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::proportional(11.5), color);
+            let (r, _) = ui.allocate_exact_size(galley.size() + Vec2::new(16.0, 6.0), Sense::hover());
+            ui.painter().rect_filled(r, 9.0, color.gamma_multiply(0.18));
+            ui.painter().galley(r.center() - galley.size() / 2.0, galley, color);
+        }
         let mut table = |ui: &mut Ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(GAP, 0.0);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
             let row_w = title_w + others;
-            ui.horizontal(|ui| {
-                cell(ui, title_w, |ui| {
+            let top = ui.cursor().min;
+            let painter = ui.painter().clone();
+            let line = theme.tab_hover;
+            let thin = Stroke::new(1.0, line.gamma_multiply(0.7));
+            let full = |y: f32, stroke: Stroke| painter.hline(top.x..=top.x + row_w, y, stroke);
+            // Where the columns meet, and the rows they are drawn across (not the projects').
+            let mut edges = vec![top.x + title_w];
+            for w in &COLS[..COLS.len() - 1] {
+                let last = *edges.last().unwrap_or(&top.x);
+                edges.push(last + w);
+            }
+            let mut spans: Vec<(f32, f32)> = Vec::new();
+            let head_bg = painter.add(egui::Shape::Noop);
+            let head = ui.horizontal(|ui| {
+                cell(ui, title_w, HEAD_H, false, |ui| {
                     ui.label(egui::RichText::new(t.track_task_col).size(13.0).strong().color(theme.text_muted));
                 });
-                for (k, head) in heads.iter().enumerate() {
-                    cell(ui, COLS[k], |ui| {
-                        ui.label(egui::RichText::new(*head).size(13.0).strong().color(theme.text_muted));
+                for (k, h) in heads.iter().enumerate() {
+                    cell(ui, COLS[k], HEAD_H, RIGHT[k], |ui| {
+                        ui.label(egui::RichText::new(*h).size(13.0).strong().color(theme.text_muted));
                     });
                 }
             });
+            let hr = Rect::from_min_size(head.response.rect.min, Vec2::new(row_w, head.response.rect.height()));
+            painter.set(head_bg, egui::Shape::rect_filled(hr, egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, line.gamma_multiply(0.55)));
+            spans.push((hr.top(), hr.bottom()));
+            full(hr.bottom(), Stroke::new(1.0, line));
+            let mut bottom = hr.bottom();
             for (p, rows) in &groups {
-                // The project: its client, its name, its time together, on a band.
+                // The project: a row across, tinted its color, its client and name, its time together.
                 let (est, spent) = rows.iter().filter(|(_, d)| *d == 0).fold((0u64, 0u64), |(e, s), (i, _)| {
                     let r = p.rollup(i);
                     (e + r.estimate, s + r.spent)
                 });
                 let color = color_of(p.color.as_deref()).unwrap_or(theme.accent);
-                let band = ui.painter().add(egui::Shape::Noop);
+                let band = painter.add(egui::Shape::Noop);
                 let head = ui.horizontal(|ui| {
-                    cell(ui, title_w, |ui| {
-                        ui.add_space(6.0);
-                        let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                        ui.painter().circle_filled(dot.center(), 4.5, color);
-                        let name = p.client.as_ref().map_or(p.name.clone(), |c| format!("{c} · {}", p.name));
-                        ui.label(egui::RichText::new(name).size(13.5).strong().color(theme.text));
+                    cell(ui, title_w, LINE_H - 4.0, false, |ui| {
+                        if let Some(c) = &p.client {
+                            ui.label(egui::RichText::new(c).size(13.0).color(theme.text_muted));
+                            ui.label(egui::RichText::new("›").size(13.0).color(theme.text_muted));
+                        }
+                        ui.label(egui::RichText::new(&p.name).size(13.5).strong().color(theme.text));
                     });
                     for (k, w) in COLS.iter().enumerate() {
-                        cell(ui, *w, |ui| match k {
+                        cell(ui, *w, LINE_H - 4.0, RIGHT[k], |ui| match k {
                             7 if est > 0 => {
                                 ui.label(egui::RichText::new(hm(est as i64)).size(12.5).strong().color(theme.text));
                             }
@@ -760,12 +791,14 @@ impl App {
                     }
                 });
                 let r = Rect::from_min_size(head.response.rect.min, Vec2::new(row_w, head.response.rect.height()));
-                ui.painter().set(band, egui::Shape::rect_filled(r, 6.0, theme.chrome_bg));
+                painter.set(band, egui::Shape::Vec(vec![egui::Shape::rect_filled(r, 0.0, color.gamma_multiply(0.10)), egui::Shape::rect_filled(Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, color)]));
+                full(r.bottom(), thin);
+                bottom = r.bottom();
                 for (i, depth) in rows {
-                    let back = ui.painter().add(egui::Shape::Noop);
+                    let back = painter.add(egui::Shape::Noop);
                     let row = ui.horizontal(|ui| {
-                        cell(ui, title_w, |ui| {
-                            ui.add_space(18.0 + *depth as f32 * 18.0);
+                        cell(ui, title_w, LINE_H, false, |ui| {
+                            ui.add_space(*depth as f32 * 18.0);
                             // Its title, its comment after it in grey, on one line (whole on hover).
                             let mut job = egui::text::LayoutJob::default();
                             let fmt = |size: f32, color: Color32, italics: bool| egui::TextFormat { font_id: egui::FontId::proportional(size), color, italics, ..Default::default() };
@@ -780,7 +813,7 @@ impl App {
                             }
                         });
                         // The state: a pill; a click, the others.
-                        cell(ui, COLS[0], |ui| {
+                        cell(ui, COLS[0], LINE_H, false, |ui| {
                             let pill = status_pill(ui, i.status, t, &theme);
                             if p.role.writes() {
                                 egui::Popup::menu(&pill).show(|ui| {
@@ -792,55 +825,61 @@ impl App {
                                 });
                             }
                         });
-                        cell(ui, COLS[1], |ui| {
+                        cell(ui, COLS[1], LINE_H, false, |ui| {
                             ui.add(egui::Label::new(i.requester.as_deref().map_or_else(|| muted("—"), |w| egui::RichText::new(w).size(12.5).color(theme.text))).truncate());
                         });
                         // Who worked on it: those who logged time on it, or on its sub-tasks.
                         let workers = p.workers(&i.id);
-                        cell(ui, COLS[2], |ui| {
+                        cell(ui, COLS[2], LINE_H, false, |ui| {
                             if workers.is_empty() {
                                 ui.label(muted("—"));
                             } else {
                                 ui.add(egui::Label::new(egui::RichText::new(workers.join(", ")).size(12.5).color(theme.text)).truncate()).on_hover_text(workers.join("\n"));
                             }
                         });
-                        cell(ui, COLS[3], |ui| {
-                            ui.label(day(&i.requested).map_or_else(|| muted("—"), |d| muted(&d)));
+                        cell(ui, COLS[3], LINE_H, false, |ui| {
+                            ui.label(day(&i.requested).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(theme.text)));
                         });
                         let late = i.late(&today);
-                        cell(ui, COLS[4], |ui| {
-                            ui.label(day(&i.due).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(if late { RED } else { theme.text_muted }).strong()));
+                        cell(ui, COLS[4], LINE_H, false, |ui| {
+                            ui.label(day(&i.due).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(if late { RED } else { theme.text }).strong()));
                         });
-                        cell(ui, COLS[5], |ui| {
-                            ui.label(day(&i.finished).map_or_else(|| muted("—"), |d| muted(&d)));
+                        cell(ui, COLS[5], LINE_H, false, |ui| {
+                            ui.label(day(&i.finished).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(theme.text)));
                         });
-                        cell(ui, COLS[6], |ui| match i.env.as_deref() {
-                            Some(e) => {
-                                chip(ui, env_name(e), env_color(e, &theme));
-                            }
+                        cell(ui, COLS[6], LINE_H, false, |ui| match i.env.as_deref() {
+                            Some(e) => tag(ui, env_name(e), env_color(e, &theme)),
                             None => {
                                 ui.label(muted("—"));
                             }
                         });
                         let r = p.rollup(i);
-                        cell(ui, COLS[7], |ui| {
+                        cell(ui, COLS[7], LINE_H, true, |ui| {
                             ui.label(if r.estimate > 0 { egui::RichText::new(hm(r.estimate as i64)).size(12.5).color(theme.text) } else { muted("—") });
                         });
-                        cell(ui, COLS[8], |ui| {
+                        cell(ui, COLS[8], LINE_H, true, |ui| {
                             ui.label(if r.spent > 0 { egui::RichText::new(hm(r.spent as i64)).size(12.5).color(if r.estimate > 0 && r.spent > r.estimate { RED } else { theme.text }) } else { muted("—") });
                         });
-                        cell(ui, COLS[9], |ui| {
+                        cell(ui, COLS[9], LINE_H, true, |ui| {
                             ui.label(i.progress().map_or_else(|| muted("—"), |v| egui::RichText::new(format!("{v} %")).size(12.5).color(theme.text)));
                         });
                     });
                     // The row under the pointer, lit.
                     let r = Rect::from_min_size(row.response.rect.min, Vec2::new(row_w, row.response.rect.height()));
                     if ui.rect_contains_pointer(r) {
-                        ui.painter().set(back, egui::Shape::rect_filled(r, 6.0, theme.tab_hover.gamma_multiply(0.45)));
+                        painter.set(back, egui::Shape::rect_filled(r, 0.0, line.gamma_multiply(0.35)));
                     }
+                    spans.push((r.top(), r.bottom()));
+                    full(r.bottom(), thin);
+                    bottom = r.bottom();
                 }
-                ui.add_space(6.0);
             }
+            for (a, b) in spans {
+                for x in &edges {
+                    painter.vline(*x, a..=b, thin);
+                }
+            }
+            painter.rect_stroke(Rect::from_min_max(top, egui::pos2(top.x + row_w, bottom)), 8.0, Stroke::new(1.0, line), egui::StrokeKind::Inside);
         };
         if title_w + others <= room + 0.5 {
             table(ui);
