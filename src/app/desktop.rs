@@ -822,7 +822,16 @@ fn matheo_save(at: Pos2) {
 /// Mathéo's place among the screens' foot (`grounds`): where he lands (the bottom of the screen under
 /// him; on the Dock, `dock`, where it is), back on a screen if left between two.
 fn matheo_floor(at: Pos2, grounds: &[Rect], dock: Option<Rect>) -> (f32, f32) {
-    let Some(ground) = grounds.iter().find(|w| (w.min.x..w.max.x).contains(&at.x)).or_else(|| grounds.iter().min_by(|a, b| a.center().distance(at).total_cmp(&b.center().distance(at)))) else {
+    // The screens in his column: the one he's over, else the first floor below him, else the lowest;
+    // none, the nearest screen. (Screens one above the other: the first one in his column took him
+    // back to the screen above.)
+    let column = || grounds.iter().filter(|w| (w.min.x..w.max.x).contains(&at.x));
+    let Some(ground) = column()
+        .find(|w| (w.min.y..=w.max.y).contains(&at.y))
+        .or_else(|| column().filter(|w| w.max.y >= at.y).min_by(|a, b| a.max.y.total_cmp(&b.max.y)))
+        .or_else(|| column().max_by(|a, b| a.max.y.total_cmp(&b.max.y)))
+        .or_else(|| grounds.iter().min_by(|a, b| a.center().distance(at).total_cmp(&b.center().distance(at))))
+    else {
         return (at.x, at.y);
     };
     let half = MATHEO_H * 0.4;
@@ -2748,6 +2757,18 @@ mod tests {
         assert_eq!(matheo_floor(Pos2::new(700.0, 100.0), &works, None), (700.0, 860.0));
         let (x, y) = matheo_floor(Pos2::new(3500.0, 100.0), &works, None);
         assert!(x < 3360.0 && y == 1040.0);
+    }
+
+    #[test]
+    fn matheo_lands_on_the_screen_under_him_when_screens_are_stacked() {
+        // A laptop under a bigger screen.
+        let top = Rect::from_min_max(Pos2::new(-200.0, -1080.0), Pos2::new(1720.0, 0.0));
+        let bottom = Rect::from_min_max(Pos2::new(0.0, 25.0), Pos2::new(1512.0, 982.0));
+        let grounds = [top, bottom];
+        assert_eq!(matheo_floor(Pos2::new(700.0, 500.0), &grounds, None), (700.0, 982.0));
+        assert_eq!(matheo_floor(Pos2::new(700.0, -500.0), &grounds, None), (700.0, 0.0));
+        // Between the two (the lower one's menu bar): onto the lower one.
+        assert_eq!(matheo_floor(Pos2::new(700.0, 10.0), &grounds, None), (700.0, 982.0));
     }
 
     #[test]

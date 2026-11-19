@@ -4,6 +4,8 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-19
+
 ### Nouveautés
 
 - **Suivi, des documents joints** : un PDF, un Word, un Excel, une image… se joint au projet (le contrat, une carte « Documents » sur sa vue d’ensemble), à un compteur, à un devis, à une tâche prévue ou à un temps passé : bouton « Joindre un fichier… » ou fichiers glissés sur la fenêtre, 25 Mo au plus. Gardés par floor, partagés avec l’équipe du projet ; un clic les ouvre, leur auteur ou un gestionnaire les retire. Demande floor 0.26.0.
@@ -11,6 +13,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ### Corrections
 
+- Mathéo retombe sur l’écran qui est sous lui quand deux écrans sont l’un au-dessus de l’autre (un portable sous un grand écran), au lieu de remonter sur celui du haut.
 - Apparence : « Sur tous les écrans » coupé, tous les compagnons restent dans Ronnie (droïde, elfe, licorne, louveteau, Gérard, la horde de 10 h, Mathéo), et plus seulement le mouton ; leurs interrupteurs ne sont plus grisés.
 - Suivi : un temps saisi peut aller jusqu’à 1000 h (pour décompter d’un coup un bloc d’heures déjà faites), au lieu de 24 h. Demande floor 0.25.0.
 - macOS : Mathéo se pose sur le Dock là où il est, et tout en bas de l’écran à côté, au lieu de flotter à la hauteur du Dock sur toute la largeur. Il faut que Ronnie soit autorisé dans Accessibilité (Paramètres › Apparence le propose s’il ne l’est pas).
