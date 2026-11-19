@@ -14,8 +14,8 @@ use crate::floor::{USER_AGENT, account_agent};
 /// The error of a call refused because the account isn't allowed yet by floor's administrator.
 pub const PENDING: &str = "pending";
 
-/// A task: 24 h at most (as floor takes).
-pub const TASK_MAX: u32 = 24 * 60;
+/// A task: 1000 h at most (as floor takes): a block of hours already done, charged at once.
+pub const TASK_MAX: u32 = 1000 * 60;
 
 /// What someone can do in a project, from the least.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -860,7 +860,7 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             }
             let minutes = parse_duration(duration).ok_or_else(|| format!("{duration}: a duration as 1h30, 1,5, 45m"))?;
             if minutes > TASK_MAX {
-                return Err("A task: 24 h at most.".into());
+                return Err("A task: 1000 h at most.".into());
             }
             let p = open(project)?;
             let mut task = TaskInput { day: day_of(&o)?, label: words.join(" "), minutes, ..TaskInput::default() };
