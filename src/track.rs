@@ -228,7 +228,13 @@ pub struct Item {
     /// A short comment.
     #[serde(default)]
     pub comment: Option<String>,
+    /// Where it is: `local`, `dev`, `test` or `prod` (floor 0.27).
+    #[serde(default)]
+    pub env: Option<String>,
 }
+
+/// Where a planned task can be, in their order.
+pub const ENVS: [&str; 4] = ["local", "dev", "test", "prod"];
 
 impl Item {
     /// How far it is (%): said, else finished = 100, else the time spent over the estimate (99 at most).
@@ -393,6 +399,22 @@ impl Project {
         }
     }
 
+    /// Who worked on a planned task: the authors of the time logged on it and on its sub-tasks, each
+    /// once, by name.
+    pub fn workers(&self, item: &str) -> Vec<String> {
+        let mut under = vec![item.to_owned()];
+        let mut k = 0;
+        while k < under.len() {
+            let id = under[k].clone();
+            under.extend(self.items.iter().filter(|i| i.parent.as_deref() == Some(id.as_str())).map(|i| i.id.clone()));
+            k += 1;
+        }
+        let mut names: Vec<String> = self.tasks.iter().filter(|t| t.item.as_ref().is_some_and(|i| under.contains(i))).filter_map(|t| t.author.clone()).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        names.dedup();
+        names
+    }
+
     /// The path of a planned task: its parents' titles, then its own.
     pub fn item_path(&self, id: &str) -> String {
         let mut names = Vec::new();
@@ -469,6 +491,7 @@ pub struct ItemInput {
     pub requester: Option<String>,
     pub progress: Option<u8>,
     pub comment: Option<String>,
+    pub env: Option<String>,
 }
 
 /// The calls to floor's tracking, with an account.
@@ -1237,7 +1260,7 @@ mod tests {
     fn planned_tasks_add_up() {
         let item = |id: &str, parent: Option<&str>, minutes: Option<u64>, spent: u64, status: Status| Item {
             id: id.into(), quote: Some("q".into()), parent: parent.map(Into::into), title: id.into(), body: None, minutes, status, position: 0, spent,
-            requested: None, due: None, finished: None, live: None, requester: None, progress: None, comment: None,
+            requested: None, due: None, finished: None, live: None, requester: None, progress: None, comment: None, env: None,
         };
         let p = Project {
             id: "p".into(), name: "P".into(), client: None, color: None, note: None, role: Role::Owner, updated: 0, archived: None, members: vec![], counters: vec![], tasks: vec![],
