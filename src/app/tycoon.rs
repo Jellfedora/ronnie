@@ -1469,6 +1469,19 @@ impl App {
                     });
                 }
             });
+            if c.has_role(Special::Lead) && p.auto.tasks {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(tx(("Priorité du ou de la chef·fe de projet", "The project manager's priority"), fr)).size(13.0).color(theme.text).strong());
+                let labels = [tx(("Contrats", "Contracts"), fr).to_owned(), tx(("Équilibré", "Balanced"), fr).to_owned(), tx(("Produits", "Products"), fr).to_owned()];
+                if let Some(v) = segmented(ui, p.auto.focus.min(2), &labels, theme) {
+                    p.auto.focus = v;
+                }
+                muted(ui, tx(match p.auto.focus {
+                    0 => ("Les contrats d'abord : une personne sur les produits, plus seulement quand ils ont trop de bugs.", "The contracts first: one person on the products, more only when they have too many bugs."),
+                    1 => ("La moitié de l'équipe sur les produits, le reste sur les contrats.", "Half the team on the products, the rest on the contracts."),
+                    _ => ("Les produits d'abord : tout le monde dessus, sauf la recherche et une personne sur les contrats.", "The products first: everyone on them, but research and one person on the contracts."),
+                }, fr), theme);
+            }
         }
         c.set_policy(p);
 
