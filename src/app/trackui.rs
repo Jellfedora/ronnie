@@ -390,9 +390,56 @@ fn widths(room: f32, mut fixed: Vec<f32>, flex: usize, min: f32) -> Vec<f32> {
     fixed
 }
 
+/// A column's head.
+fn head_text(text: &str, color: Color32) -> egui::RichText {
+    egui::RichText::new(text.to_owned()).size(13.0).strong().color(color)
+}
+
+/// A day, short: « 17/09 » this year, « 17/09/25 » another.
+fn short_day(d: &str) -> String {
+    let today = track::today();
+    match (d.get(..4), d.get(2..4), d.get(5..7), d.get(8..10)) {
+        (Some(y), _, Some(m), Some(dd)) if today.get(..4) == Some(y) => format!("{dd}/{m}"),
+        (_, Some(yy), Some(m), Some(dd)) => format!("{dd}/{m}/{yy}"),
+        _ => d.to_owned(),
+    }
+}
+
+/// A task's title in a table: indented by its depth (« ↳ » under another), its comment after it in grey,
+/// one line (whole on hover); clickable.
+fn task_title(ui: &mut Ui, i: &Item, depth: usize, theme: &Theme) -> egui::Response {
+    ui.add_space(depth as f32 * 18.0);
+    let mut job = egui::text::LayoutJob::default();
+    let fmt = |size: f32, color: Color32, italics: bool| egui::TextFormat { font_id: egui::FontId::proportional(size), color, italics, ..Default::default() };
+    job.append(&if depth > 0 { format!("↳ {}", i.title) } else { i.title.clone() }, 0.0, fmt(13.0, if i.status.closed() { theme.text_muted } else { theme.text }, false));
+    if let Some(c) = &i.comment {
+        job.append(&format!("  ·  {c}"), 0.0, fmt(12.0, theme.text_muted, true));
+    }
+    let full = format!("{}{}", i.title, i.comment.as_ref().map(|c| format!("\n{c}")).unwrap_or_default());
+    ui.add(egui::Label::new(job).truncate().sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(full)
+}
+
+/// A task's state in a table: its pill; a click, the others (to those who write).
+fn status_cell(ui: &mut Ui, i: &Item, writes: bool, t: &Strings, theme: &Theme) -> Option<Status> {
+    let pill = status_pill(ui, i.status, t, theme);
+    let mut chosen = None;
+    if writes {
+        egui::Popup::menu(&pill).show(|ui| {
+            for st in Status::ALL {
+                if ui.add(egui::Button::new(egui::RichText::new(status_name(st, t)).color(status_color(st, theme))).selected(st == i.status)).clicked() && st != i.status {
+                    chosen = Some(st);
+                }
+            }
+        });
+    }
+    chosen
+}
+
 /// A table drawn as it goes: a frame, a heading row, a line under each row, lines between the columns
 /// of the rows that have them (not across a band, a project's or a day's).
 struct Table {
+    /// Its background, painted under it once its height is known: the same in a card or out.
+    back: egui::layers::ShapeIdx,
     top: egui::Pos2,
     widths: Vec<f32>,
     spans: Vec<(f32, f32)>,
@@ -402,7 +449,7 @@ struct Table {
 impl Table {
     fn new(ui: &Ui, widths: Vec<f32>) -> Self {
         let top = ui.cursor().min;
-        Table { top, widths, spans: Vec::new(), bottom: top.y }
+        Table { back: ui.painter().add(egui::Shape::Noop), top, widths, spans: Vec::new(), bottom: top.y }
     }
 
     fn width(&self) -> f32 {
@@ -411,16 +458,31 @@ impl Table {
 
     /// The heading row: `heads` (right aligned where `right`).
     fn head(&mut self, ui: &mut Ui, theme: &Theme, heads: &[&str], right: &[bool]) {
-        let bg = ui.painter().add(egui::Shape::Noop);
         let w = self.widths.clone();
+        self.head_cells(ui, theme, |ui| {
+            for (k, h) in heads.iter().enumerate() {
+                tcell(ui, w[k], HEAD_H, line_at(right.get(k).copied().unwrap_or(false)), |ui| {
+                    ui.label(head_text(h, theme.text_muted));
+                });
+            }
+        });
+    }
+
+    /// A band across the table (a project, a day): tinted `color`, a bar of it on the left; no lines
+    /// between its columns. Its rectangle.
+    fn band(&mut self, ui: &mut Ui, theme: &Theme, color: Color32, add: impl FnOnce(&mut Ui)) -> Rect {
+        let r = self.row(ui, theme, false, Some(color.gamma_multiply(0.10)), add);
+        ui.painter().rect_filled(Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, color);
+        r
+    }
+
+    /// The heading row, its cells added by `add` (as `head` does, or with menus).
+    fn head_cells(&mut self, ui: &mut Ui, theme: &Theme, add: impl FnOnce(&mut Ui)) {
+        let bg = ui.painter().add(egui::Shape::Noop);
         let r = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                for (k, h) in heads.iter().enumerate() {
-                    tcell(ui, w[k], HEAD_H, line_at(right.get(k).copied().unwrap_or(false)), |ui| {
-                        ui.label(egui::RichText::new(*h).size(13.0).strong().color(theme.text_muted));
-                    });
-                }
+                add(ui);
             })
             .response
             .rect;
@@ -467,6 +529,7 @@ impl Table {
             }
         }
         let frame = Rect::from_min_max(self.top, egui::pos2(self.top.x + self.width(), self.bottom));
+        ui.painter().set(self.back, egui::Shape::rect_filled(frame, 8.0, theme.bg));
         ui.painter().rect_stroke(frame, 8.0, Stroke::new(1.0, theme.tab_hover), egui::StrokeKind::Inside);
     }
 }
@@ -831,77 +894,35 @@ impl App {
                 ui.label(egui::RichText::new(t.track_no_planned).size(12.5).color(theme.text_muted));
             });
         }
-        let muted = |s: &str| egui::RichText::new(s).size(12.5).color(theme.text_muted);
-        // Short: « 17/09 » this year, « 17/09/25 » another.
-        let year = today.get(..4).unwrap_or("").to_owned();
-        let day = |d: &Option<String>| {
-            d.as_deref().map(|d| match (d.get(..4), d.get(2..4), d.get(5..7), d.get(8..10)) {
-                (Some(y), _, Some(m), Some(dd)) if y == year => format!("{dd}/{m}"),
-                (_, Some(yy), Some(m), Some(dd)) => format!("{dd}/{m}/{yy}"),
-                _ => d.to_owned(),
-            })
-        };
-        // A real table: a frame, a heading row, a line under each row, a line between columns. The columns
-        // after the task's are each their width (padding inside); the task's takes what is left (220 at
-        // least), the table scrolling sideways only in a narrow window.
-        const COLS: [f32; 10] = [112.0, 104.0, 112.0, 80.0, 88.0, 86.0, 74.0, 76.0, 76.0, 58.0];
-        // The figures, right aligned.
-        const RIGHT: [bool; 10] = [false, false, false, false, false, false, false, true, true, true];
-        const PAD: f32 = 10.0;
-        const LINE_H: f32 = 38.0;
-        const HEAD_H: f32 = 34.0;
-        let others: f32 = COLS.iter().sum();
+        let muted = |s: &str| egui::RichText::new(s.to_owned()).size(12.5).color(theme.text_muted);
+        let plain = |s: &str| egui::RichText::new(s.to_owned()).size(12.5).color(theme.text);
+        // The same table as the project's pages: the task's column takes what is left (220 at least), the
+        // table scrolling sideways only in a narrow window.
+        // Tâche, État, Demandeur, Traité par, Demande, Fin prévue, Fin réelle, Env., Estimé, Passé, %.
+        const RIGHT: [bool; 11] = [false, false, false, false, false, false, false, false, true, true, true];
         let room = ui.available_width();
-        let title_w = (room - others - 2.0).max(220.0);
-        let heads = [t.track_status, t.track_requester, t.track_worked_by, t.track_requested, t.track_due, t.track_finished, t.track_env_short, t.track_estimate_short, t.track_spent_short, "%"];
-        // A cell `w` wide and `h` high, its content on one line, centered in its height, padded.
-        fn cell(ui: &mut Ui, w: f32, h: f32, right: bool, add: impl FnOnce(&mut Ui)) {
-            let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
-            ui.allocate_ui_with_layout(Vec2::new(w, h), layout, |ui| {
-                ui.set_width(w);
-                ui.set_height(h);
-                ui.add_space(PAD);
-                ui.allocate_ui_with_layout(Vec2::new(w - 2.0 * PAD, h), layout, |ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
-                    add(ui);
-                });
-            });
-        }
+        let w = widths(room, vec![0.0, 112.0, 104.0, 112.0, 80.0, 88.0, 86.0, 74.0, 76.0, 76.0, 58.0], 0, 220.0);
+        let table_w: f32 = w.iter().sum();
+        let heads = [t.track_task_col, t.track_status, t.track_requester, t.track_worked_by, t.track_requested, t.track_due, t.track_finished, t.track_env_short, t.track_estimate_short, t.track_spent_short, "%"];
         let mut table = |ui: &mut Ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
-            let row_w = title_w + others;
-            let top = ui.cursor().min;
-            let painter = ui.painter().clone();
-            let line = theme.tab_hover;
-            let thin = Stroke::new(1.0, line.gamma_multiply(0.7));
-            let full = |y: f32, stroke: Stroke| painter.hline(top.x..=top.x + row_w, y, stroke);
-            // Where the columns meet, and the rows they are drawn across (not the projects').
-            let mut edges = vec![top.x + title_w];
-            for w in &COLS[..COLS.len() - 1] {
-                let last = *edges.last().unwrap_or(&top.x);
-                edges.push(last + w);
-            }
-            let mut spans: Vec<(f32, f32)> = Vec::new();
-            let head_bg = painter.add(egui::Shape::Noop);
-            let head = ui.horizontal(|ui| {
-                cell(ui, title_w, HEAD_H, false, |ui| {
-                    ui.label(egui::RichText::new(t.track_task_col).size(13.0).strong().color(theme.text_muted));
-                });
+            let mut tb = Table::new(ui, w.clone());
+            tb.head_cells(ui, &theme, |ui| {
                 for (k, h) in heads.iter().enumerate() {
                     // Who asked, who worked, where: a filter, its values ticked in a menu.
                     let col = match k {
-                        1 => Some(0),
-                        2 => Some(1),
-                        6 => Some(2),
+                        2 => Some(0),
+                        3 => Some(1),
+                        7 => Some(2),
                         _ => None,
                     };
-                    cell(ui, COLS[k], HEAD_H, RIGHT[k], |ui| {
+                    tcell(ui, w[k], HEAD_H, line_at(RIGHT[k]), |ui| {
                         let Some(c) = col else {
-                            ui.label(egui::RichText::new(*h).size(13.0).strong().color(theme.text_muted));
+                            ui.label(head_text(h, theme.text_muted));
                             return;
                         };
                         let on = !self.track.tasks.cols[c].is_empty();
-                        let text = egui::RichText::new(format!("{h}  {}", if on { "●" } else { "▾" })).size(13.0).strong().color(if on { theme.accent } else { theme.text_muted });
+                        let text = head_text(&format!("{h}  {}", if on { "●" } else { "▾" }), if on { theme.accent } else { theme.text_muted });
                         let resp = ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand);
                         egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                             if ui.add_enabled(on, egui::Button::new(t.track_col_all)).clicked() {
@@ -919,142 +940,97 @@ impl App {
                     });
                 }
             });
-            let hr = Rect::from_min_size(head.response.rect.min, Vec2::new(row_w, head.response.rect.height()));
-            painter.set(head_bg, egui::Shape::rect_filled(hr, egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, line.gamma_multiply(0.55)));
-            spans.push((hr.top(), hr.bottom()));
-            full(hr.bottom(), Stroke::new(1.0, line));
-            let mut bottom = hr.bottom();
             for (p, rows) in &groups {
-                // The project: a row across, tinted its color, its client and name, its time together.
+                // The project: a band, its client and name, its time together; a click folds its tasks.
                 let (est, spent) = rows.iter().filter(|(_, d)| *d == 0).fold((0u64, 0u64), |(e, s), (i, _)| {
                     let r = p.rollup(i);
                     (e + r.estimate, s + r.spent)
                 });
                 let color = color_of(p.color.as_deref()).unwrap_or(theme.accent);
-                let band = painter.add(egui::Shape::Noop);
                 let shut = self.track.tasks.folded.contains(&p.id);
-                let head = ui.horizontal(|ui| {
-                    cell(ui, title_w, LINE_H - 4.0, false, |ui| {
-                        ui.label(egui::RichText::new(if shut { "▸" } else { "▾" }).size(13.0).color(theme.text_muted));
+                let r = tb.band(ui, &theme, color, |ui| {
+                    tcell(ui, w[0], CELL_H, line_at(false), |ui| {
+                        ui.label(muted(if shut { "▸" } else { "▾" }));
                         if let Some(c) = &p.client {
                             ui.label(egui::RichText::new(c).size(13.0).color(theme.text_muted));
-                            ui.label(egui::RichText::new("›").size(13.0).color(theme.text_muted));
+                            ui.label(muted("›"));
                         }
-                        ui.label(egui::RichText::new(&p.name).size(13.5).strong().color(theme.text));
+                        ui.label(egui::RichText::new(&p.name).size(13.0).strong().color(theme.text));
                     });
-                    for (k, w) in COLS.iter().enumerate() {
-                        cell(ui, *w, LINE_H - 4.0, RIGHT[k], |ui| match k {
-                            7 if est > 0 => {
-                                ui.label(egui::RichText::new(hm(est as i64)).size(12.5).strong().color(theme.text));
+                    for k in 1..w.len() {
+                        tcell(ui, w[k], CELL_H, line_at(RIGHT[k]), |ui| match k {
+                            8 if est > 0 => {
+                                ui.label(plain(&hm(est as i64)).strong());
                             }
-                            8 if spent > 0 => {
-                                ui.label(egui::RichText::new(hm(spent as i64)).size(12.5).strong().color(theme.text));
+                            9 if spent > 0 => {
+                                ui.label(plain(&hm(spent as i64)).strong());
                             }
                             _ => {}
                         });
                     }
                 });
-                let r = Rect::from_min_size(head.response.rect.min, Vec2::new(row_w, head.response.rect.height()));
-                // A click on it folds its tasks, or unfolds them.
-                let fold = ui.interact(r, ui.id().with(("fold", &p.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                if fold.clicked() {
+                if ui.interact(r, ui.id().with(("fold", &p.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     out.push(TaskAct::Fold(p.id.clone()));
                 }
-                let color = if fold.hovered() { color.gamma_multiply(1.6) } else { color };
-                painter.set(band, egui::Shape::Vec(vec![egui::Shape::rect_filled(r, 0.0, color.gamma_multiply(0.10)), egui::Shape::rect_filled(Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, color)]));
-                full(r.bottom(), thin);
-                bottom = r.bottom();
                 if shut {
                     continue;
                 }
                 for (i, depth) in rows {
-                    let back = painter.add(egui::Shape::Noop);
-                    let row = ui.horizontal(|ui| {
-                        cell(ui, title_w, LINE_H, false, |ui| {
-                            ui.add_space(*depth as f32 * 18.0);
-                            // Its title, its comment after it in grey, on one line (whole on hover).
-                            let mut job = egui::text::LayoutJob::default();
-                            let fmt = |size: f32, color: Color32, italics: bool| egui::TextFormat { font_id: egui::FontId::proportional(size), color, italics, ..Default::default() };
-                            job.append(&if *depth > 0 { format!("↳ {}", i.title) } else { i.title.clone() }, 0.0, fmt(13.0, if i.status.closed() { theme.text_muted } else { theme.text }, false));
-                            if let Some(c) = &i.comment {
-                                job.append(&format!("  ·  {c}"), 0.0, fmt(12.0, theme.text_muted, true));
-                            }
-                            let full = format!("{}{}", i.title, i.comment.as_ref().map(|c| format!("\n{c}")).unwrap_or_default());
-                            let resp = ui.add(egui::Label::new(job).truncate().sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(full);
-                            if resp.clicked() {
+                    tb.row(ui, &theme, true, None, |ui| {
+                        tcell(ui, w[0], CELL_H, line_at(false), |ui| {
+                            if task_title(ui, i, *depth, &theme).clicked() {
                                 out.push(TaskAct::Open(p.id.clone(), i.id.clone()));
                             }
                         });
-                        // The state: a pill; a click, the others.
-                        cell(ui, COLS[0], LINE_H, false, |ui| {
-                            let pill = status_pill(ui, i.status, t, &theme);
-                            if p.role.writes() {
-                                egui::Popup::menu(&pill).show(|ui| {
-                                    for st in Status::ALL {
-                                        if ui.add(egui::Button::new(egui::RichText::new(status_name(st, t)).color(status_color(st, &theme))).selected(st == i.status)).clicked() && st != i.status {
-                                            out.push(TaskAct::Status(p.id.clone(), i.id.clone(), st));
-                                        }
-                                    }
-                                });
+                        tcell(ui, w[1], CELL_H, line_at(false), |ui| {
+                            if let Some(st) = status_cell(ui, i, p.role.writes(), t, &theme) {
+                                out.push(TaskAct::Status(p.id.clone(), i.id.clone(), st));
                             }
                         });
-                        cell(ui, COLS[1], LINE_H, false, |ui| {
-                            ui.add(egui::Label::new(i.requester.as_deref().map_or_else(|| muted("—"), |w| egui::RichText::new(w).size(12.5).color(theme.text))).truncate());
+                        tcell(ui, w[2], CELL_H, line_at(false), |ui| {
+                            ui.add(egui::Label::new(i.requester.as_deref().map_or_else(|| muted("—"), plain)).truncate());
                         });
                         // Who worked on it: those who logged time on it, or on its sub-tasks.
                         let workers = p.workers(&i.id);
-                        cell(ui, COLS[2], LINE_H, false, |ui| {
+                        tcell(ui, w[3], CELL_H, line_at(false), |ui| {
                             if workers.is_empty() {
                                 ui.label(muted("—"));
                             } else {
-                                ui.add(egui::Label::new(egui::RichText::new(workers.join(", ")).size(12.5).color(theme.text)).truncate()).on_hover_text(workers.join("\n"));
+                                ui.add(egui::Label::new(plain(&workers.join(", "))).truncate()).on_hover_text(workers.join("\n"));
                             }
                         });
-                        cell(ui, COLS[3], LINE_H, false, |ui| {
-                            ui.label(day(&i.requested).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(theme.text)));
+                        tcell(ui, w[4], CELL_H, line_at(false), |ui| {
+                            ui.label(i.requested.as_deref().map_or_else(|| muted("—"), |d| plain(&short_day(d))));
                         });
                         let late = i.late(&today);
-                        cell(ui, COLS[4], LINE_H, false, |ui| {
-                            ui.label(day(&i.due).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(if late { RED } else { theme.text }).strong()));
+                        tcell(ui, w[5], CELL_H, line_at(false), |ui| {
+                            ui.label(i.due.as_deref().map_or_else(|| muted("—"), |d| plain(&short_day(d)).color(if late { RED } else { theme.text })));
                         });
-                        cell(ui, COLS[5], LINE_H, false, |ui| {
-                            ui.label(day(&i.finished).map_or_else(|| muted("—"), |d| egui::RichText::new(d).size(12.5).color(theme.text)));
+                        tcell(ui, w[6], CELL_H, line_at(false), |ui| {
+                            ui.label(i.finished.as_deref().map_or_else(|| muted("—"), |d| plain(&short_day(d))));
                         });
-                        cell(ui, COLS[6], LINE_H, false, |ui| match i.env.as_deref() {
+                        tcell(ui, w[7], CELL_H, line_at(false), |ui| match i.env.as_deref() {
                             Some(e) => tag(ui, env_name(e), env_color(e, &theme)),
                             None => {
                                 ui.label(muted("—"));
                             }
                         });
                         let r = p.rollup(i);
-                        cell(ui, COLS[7], LINE_H, true, |ui| {
-                            ui.label(if r.estimate > 0 { egui::RichText::new(hm(r.estimate as i64)).size(12.5).color(theme.text) } else { muted("—") });
+                        tcell(ui, w[8], CELL_H, line_at(true), |ui| {
+                            ui.label(if r.estimate > 0 { plain(&hm(r.estimate as i64)) } else { muted("—") });
                         });
-                        cell(ui, COLS[8], LINE_H, true, |ui| {
-                            ui.label(if r.spent > 0 { egui::RichText::new(hm(r.spent as i64)).size(12.5).color(if r.estimate > 0 && r.spent > r.estimate { RED } else { theme.text }) } else { muted("—") });
+                        tcell(ui, w[9], CELL_H, line_at(true), |ui| {
+                            ui.label(if r.spent > 0 { plain(&hm(r.spent as i64)).color(if r.estimate > 0 && r.spent > r.estimate { RED } else { theme.text }) } else { muted("—") });
                         });
-                        cell(ui, COLS[9], LINE_H, true, |ui| {
-                            ui.label(i.progress().map_or_else(|| muted("—"), |v| egui::RichText::new(format!("{v} %")).size(12.5).color(theme.text)));
+                        tcell(ui, w[10], CELL_H, line_at(true), |ui| {
+                            ui.label(i.progress().map_or_else(|| muted("—"), |v| plain(&format!("{v} %"))));
                         });
                     });
-                    // The row under the pointer, lit.
-                    let r = Rect::from_min_size(row.response.rect.min, Vec2::new(row_w, row.response.rect.height()));
-                    if ui.rect_contains_pointer(r) {
-                        painter.set(back, egui::Shape::rect_filled(r, 0.0, line.gamma_multiply(0.35)));
-                    }
-                    spans.push((r.top(), r.bottom()));
-                    full(r.bottom(), thin);
-                    bottom = r.bottom();
                 }
             }
-            for (a, b) in spans {
-                for x in &edges {
-                    painter.vline(*x, a..=b, thin);
-                }
-            }
-            painter.rect_stroke(Rect::from_min_max(top, egui::pos2(top.x + row_w, bottom)), 8.0, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+            tb.finish(ui, &theme);
         };
-        if title_w + others <= room + 0.5 {
+        if table_w <= room + 0.5 {
             table(ui);
         } else {
             egui::ScrollArea::horizontal().id_salt("tasks-table").show(ui, |ui| {
@@ -1490,11 +1466,11 @@ impl App {
                 let of_day: Vec<&Task> = shown[k..].iter().take_while(|x| x.day == d).copied().collect();
                 k += of_day.len();
                 let total: i64 = of_day.iter().map(|x| x.minutes as i64).sum();
-                tb.row(ui, &theme, false, Some(theme.tab_hover.gamma_multiply(0.3)), |ui| {
-                    tcell(ui, w[0], CELL_H - 4.0, line_at(true), |ui| {
+                tb.band(ui, &theme, theme.text_muted, |ui| {
+                    tcell(ui, w[0], CELL_H, line_at(true), |ui| {
                         ui.label(egui::RichText::new(hm(total)).size(12.5).strong().color(theme.text));
                     });
-                    tcell(ui, table_w - w[0], CELL_H - 4.0, line_at(false), |ui| {
+                    tcell(ui, table_w - w[0], CELL_H, line_at(false), |ui| {
                         ui.label(egui::RichText::new(long_day(d, t)).size(13.0).strong().color(theme.text));
                     });
                 });
@@ -1502,12 +1478,19 @@ impl App {
                     let can = p.role.manages() || (p.role.writes() && task.mine);
                     tb.row(ui, &theme, true, None, |ui| {
                         tcell(ui, w[0], CELL_H, line_at(true), |ui| {
-                            ui.label(egui::RichText::new(hm(task.minutes as i64)).size(13.5).strong().color(theme.text));
+                            ui.label(egui::RichText::new(hm(task.minutes as i64)).size(12.5).strong().color(theme.text));
                         });
                         tcell(ui, w[1], CELL_H, line_at(false), |ui| {
                             tag(ui, &self.track_charged(p, task), billing_color(&theme, task.billing));
                         });
                         // What was done: its task first if any, the text (long ones folded), the files.
+                        // One plain line, like every cell; several (or formatted), the text from the top.
+                        let simple = !task.label.contains('\n') && !task.label.contains(['*', '`', '#', '[', '!', '|']) && task.item.is_none() && files_of(p, &format!("task:{}", task.id)).is_empty();
+                        if simple {
+                            tcell(ui, w[2], CELL_H, line_at(false), |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(&task.label).size(12.5).color(theme.text)).truncate()).on_hover_text(&task.label);
+                            });
+                        } else {
                         tcell(ui, w[2], CELL_H, egui::Layout::top_down(egui::Align::Min), |ui| {
                             let body_w = w[2] - 2.0 * CELL_PAD;
                             ui.add_space(9.0);
@@ -1527,6 +1510,7 @@ impl App {
                             }
                             ui.add_space(8.0);
                         });
+                        }
                         tcell(ui, w[3], CELL_H, line_at(false), |ui| {
                             initial(ui, task.author.as_deref().unwrap_or("?"), &theme);
                             ui.add(egui::Label::new(egui::RichText::new(task.author.as_deref().unwrap_or("—")).size(12.5).color(theme.text)).truncate());
@@ -1696,33 +1680,21 @@ impl App {
                     let at = siblings.iter().position(|s| s.id == item.id).unwrap_or(0);
                     tb.row(ui, &theme, true, None, |ui| {
                         tcell(ui, w[0], CELL_H, line_at(false), |ui| {
-                            ui.add_space(*depth as f32 * 20.0);
-                            let closed = item.status.closed();
-                            let text = if *depth > 0 { format!("↳ {}", item.title) } else { item.title.clone() };
-                            let title = egui::RichText::new(text).size(13.0).color(if closed { theme.text_muted } else { theme.text });
-                            let title = if closed { title.strikethrough() } else { title };
+                            // Its description unfolded under it with a click (its title, or the arrow).
                             let has_body = item.body.as_deref().is_some_and(|b| !b.trim().is_empty());
                             let mut toggle = false;
                             if has_body {
                                 toggle |= ui.add(link_button(if open { "▾" } else { "▸" }, theme.text_muted)).on_hover_text(t.track_details).clicked();
                             }
-                            let resp = ui.add(egui::Label::new(if *depth == 0 { title.strong() } else { title }).truncate().sense(Sense::click())).on_hover_text(&item.title);
-                            toggle |= has_body && resp.clicked();
+                            toggle |= task_title(ui, item, *depth, &theme).clicked() && has_body;
                             if toggle && !self.track.page.open_items.remove(&item.id) {
                                 self.track.page.open_items.insert(item.id.clone());
                             }
                         });
                         // The state: a pill; a click, the others.
                         tcell(ui, w[1], CELL_H, line_at(false), |ui| {
-                            let pill = status_pill(ui, item.status, t, &theme);
-                            if p.role.writes() {
-                                egui::Popup::menu(&pill).show(|ui| {
-                                    for st in Status::ALL {
-                                        if ui.add(egui::Button::new(egui::RichText::new(status_name(st, t)).color(status_color(st, &theme))).selected(st == item.status)).clicked() && st != item.status {
-                                            acts.push(Act::SetStatus(item.id.clone(), st));
-                                        }
-                                    }
-                                });
+                            if let Some(st) = status_cell(ui, item, p.role.writes(), t, &theme) {
+                                acts.push(Act::SetStatus(item.id.clone(), st));
                             }
                         });
                         tcell(ui, w[2], CELL_H, line_at(false), |ui| {
@@ -1730,7 +1702,7 @@ impl App {
                         });
                         tcell(ui, w[3], CELL_H, line_at(false), |ui| {
                             let late = item.late(&today);
-                            ui.label(item.due.as_deref().map_or_else(|| muted("—"), |d| egui::RichText::new(show_day(d)).size(12.5).color(if late { RED } else { theme.text })));
+                            ui.label(item.due.as_deref().map_or_else(|| muted("—"), |d| plain(&short_day(d)).color(if late { RED } else { theme.text })));
                         });
                         tcell(ui, w[4], CELL_H, line_at(false), |ui| match item.env.as_deref() {
                             Some(e) => tag(ui, env_name(e), env_color(e, &theme)),
@@ -1908,16 +1880,16 @@ impl App {
                             tb.head(ui, &theme, &[t.track_day, t.track_duration, t.track_description, t.track_logged_by], &[false, true, false, false]);
                             for task in entries {
                                 tb.row(ui, &theme, true, None, |ui| {
-                                    tcell(ui, w[0], CELL_H - 6.0, line_at(false), |ui| {
-                                        ui.label(egui::RichText::new(show_day(&task.day)).size(12.5).color(theme.text));
+                                    tcell(ui, w[0], CELL_H, line_at(false), |ui| {
+                                        ui.label(egui::RichText::new(short_day(&task.day)).size(12.5).color(theme.text));
                                     });
-                                    tcell(ui, w[1], CELL_H - 6.0, line_at(true), |ui| {
+                                    tcell(ui, w[1], CELL_H, line_at(true), |ui| {
                                         ui.label(egui::RichText::new(hm(task.minutes as i64)).size(12.5).strong().color(theme.text));
                                     });
-                                    tcell(ui, w[2], CELL_H - 6.0, line_at(false), |ui| {
+                                    tcell(ui, w[2], CELL_H, line_at(false), |ui| {
                                         ui.add(egui::Label::new(egui::RichText::new(first_line(&task.label)).size(12.5).color(theme.text)).truncate()).on_hover_text(&task.label);
                                     });
-                                    tcell(ui, w[3], CELL_H - 6.0, line_at(false), |ui| {
+                                    tcell(ui, w[3], CELL_H, line_at(false), |ui| {
                                         ui.add(egui::Label::new(egui::RichText::new(task.author.as_deref().unwrap_or("—")).size(12.5).color(theme.text_muted)).truncate());
                                     });
                                 });
