@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use super::super::mdedit::{first_line, md_editor, md_view};
 use super::*;
-use crate::track::{Item, ItemInput, Quote, Status, Task};
+use crate::track::{Item, ItemInput, Quote, Status, Task, TrackFile};
 use egui::Id;
 
 /// The time spent shown: when.
@@ -24,6 +24,8 @@ pub(super) enum Period {
 #[derive(Default)]
 pub(super) struct EntryForm {
     editing: Option<String>,
+    /// Files sent while it is being made (joined to the project until then, to it once made).
+    pending: Vec<String>,
     day: String,
     duration: String,
     label: String,
@@ -36,6 +38,8 @@ pub(super) struct EntryForm {
 #[derive(Default)]
 pub(super) struct QuoteForm {
     editing: Option<String>,
+    /// Files sent while it is being made (joined to the project until then, to it once made).
+    pending: Vec<String>,
     number: String,
     label: String,
     hours: String,
@@ -46,6 +50,8 @@ pub(super) struct QuoteForm {
 #[derive(Default)]
 pub(super) struct CounterForm {
     editing: Option<String>,
+    /// Files sent while it is being made (joined to the project until then, to it once made).
+    pending: Vec<String>,
     label: String,
     hours: String,
     day: String,
@@ -54,6 +60,8 @@ pub(super) struct CounterForm {
 #[derive(Default)]
 pub(super) struct ItemForm {
     editing: Option<String>,
+    /// Files sent while it is being made (joined to the project until then, to it once made).
+    pending: Vec<String>,
     quote: Option<String>,
     parent: Option<String>,
     title: String,
@@ -145,6 +153,76 @@ enum Act {
     Unshare(String),
     Tab(Tab),
     ExportCsv,
+    /// A file of something (`project`, `task:<id>`...) picked, opened or taken off.
+    Files(String, FileAct),
+}
+
+/// What the files of a window or a card ask.
+pub(super) enum FileAct {
+    Pick,
+    Open(TrackFile),
+    Delete(String),
+}
+
+/// The files joined to something: each a chip (its name and size; a click opens it, ✕ takes it off for
+/// its author or a manager), then « Joindre un fichier… » when one may add.
+fn files_ui(ui: &mut Ui, files: &[&TrackFile], manages: bool, add: bool, theme: &Theme, t: &Strings, out: &mut Vec<FileAct>) {
+    if files.is_empty() && !add {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+        for f in files {
+            let text = egui::RichText::new(format!("📎 {}  ·  {}", f.name, track::size_text(f.size))).size(12.0).color(theme.text);
+            if ui.add(egui::Button::new(text).corner_radius(10.0)).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t.track_file_open).clicked() {
+                out.push(FileAct::Open((*f).clone()));
+            }
+            if (manages || f.mine) && ui.add(egui::Button::new(egui::RichText::new("✕").size(11.0).color(theme.text_muted)).frame(false)).on_hover_text(t.track_file_delete).clicked() {
+                out.push(FileAct::Delete(f.id.clone()));
+            }
+            ui.add_space(6.0);
+        }
+        if add && ui.add(egui::Button::new(egui::RichText::new(t.track_attach).size(12.0).color(theme.accent)).corner_radius(10.0)).clicked() {
+            out.push(FileAct::Pick);
+        }
+    });
+}
+
+/// The files joined to `on` (`project`, `task:<id>`...), but the images shown in a description.
+fn files_of<'a>(p: &'a Project, on: &str) -> Vec<&'a TrackFile> {
+    let shown: HashSet<&str> = std::iter::once(p.note.as_deref().unwrap_or(""))
+        .chain(p.tasks.iter().map(|x| x.label.as_str()))
+        .chain(p.quotes.iter().map(|x| x.note.as_deref().unwrap_or("")))
+        .chain(p.items.iter().map(|x| x.body.as_deref().unwrap_or("")))
+        .flat_map(super::super::notes::image_sources)
+        .filter_map(|src| src.strip_prefix(track::FILES_PREFIX))
+        .collect();
+    p.files.iter().filter(|f| f.on == on && !shown.contains(f.id.as_str())).collect()
+}
+
+/// A card's files and its « Joindre » (when `add`): their clicks as acts.
+fn files_row(ui: &mut Ui, p: &Project, on: &str, add: bool, theme: &Theme, t: &Strings, acts: &mut Vec<Act>) {
+    let files = files_of(p, on);
+    if files.is_empty() && !add {
+        return;
+    }
+    let mut out = Vec::new();
+    ui.add_space(6.0);
+    files_ui(ui, &files, p.role.manages(), add, theme, t, &mut out);
+    acts.extend(out.into_iter().map(|a| Act::Files(on.to_owned(), a)));
+}
+
+/// After making something: the files sent while it was written (joined to the project meanwhile)
+/// joined to it — its id the one of `ids` not in `before`, `kind` its sort (`task`, `quote`...).
+fn adopt(c: &track::Client, id: &str, made: Project, ids: impl Fn(&Project) -> Vec<String>, before: &[String], kind: &str, pending: &[String]) -> Result<Project, String> {
+    if pending.is_empty() {
+        return Ok(made);
+    }
+    let Some(new) = ids(&made).into_iter().find(|i| !before.contains(i)) else { return Ok(made) };
+    for f in pending {
+        c.move_file(id, f, &format!("{kind}:{new}"))?;
+    }
+    c.project(id)
 }
 
 /// A card: the chrome's color, a thin edge, round corners.
@@ -353,6 +431,10 @@ impl App {
 
     /// One project: its head, its tabs.
     pub(super) fn track_project(&mut self, ui: &mut Ui, p: &Project) {
+        // The images its descriptions show, asked of floor once.
+        for text in std::iter::once(p.note.as_deref().unwrap_or("")).chain(p.tasks.iter().map(|x| x.label.as_str())).chain(p.quotes.iter().map(|x| x.note.as_deref().unwrap_or(""))).chain(p.items.iter().map(|x| x.body.as_deref().unwrap_or(""))) {
+            self.track_want_images(&p.id, text);
+        }
         let t = self.t();
         let theme = self.theme.clone();
         let mut acts = Vec::new();
@@ -630,12 +712,20 @@ impl App {
             ui.add_space(6.0);
             match p.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 Some(note) => {
-                    md_view(ui, Id::new(("track-note", &p.id)), note, width - 32.0, &theme, t);
+                    md_view(ui, Id::new(("track-note", &p.id)), note, width - 32.0, &theme, t, &self.track.images);
                 }
                 None => {
                     ui.label(egui::RichText::new(t.track_note_empty).size(12.5).color(theme.text_muted));
                 }
             }
+        });
+
+        // The project's documents (a contract, a specification...).
+        ui.add_space(gap);
+        card(ui, &theme, |ui| {
+            ui.set_width(width - 32.0);
+            heading(ui, t.track_documents, &theme);
+            files_row(ui, p, "project", p.role.writes(), &theme, t, acts);
         });
     }
 
@@ -762,10 +852,11 @@ impl App {
                             let long = task.label.lines().count() > 6 || task.label.len() > 600;
                             let open = self.track.page.open_entries.contains(&task.id);
                             let text = if long && !open { task.label.lines().take(5).collect::<Vec<_>>().join("\n") } else { task.label.clone() };
-                            let clicked = md_view(ui, Id::new(("track-entry", &task.id, open)), &text, body_w, &theme, t);
+                            let clicked = md_view(ui, Id::new(("track-entry", &task.id, open)), &text, body_w, &theme, t, &self.track.images);
                             if let Some(new) = clicked.toggled.filter(|_| can && (!long || open)) {
                                 acts.push(Act::EntryText(task.id.clone(), new));
                             }
+                            files_row(ui, p, &format!("task:{}", task.id), false, &theme, t, acts);
                             if long && ui.add(link_button(if open { t.track_show_less } else { t.track_show_more }, theme.accent)).clicked() {
                                 if open {
                                     self.track.page.open_entries.remove(&task.id);
@@ -869,12 +960,14 @@ impl App {
                 if open {
                     ui.add_space(10.0);
                     if let Some(note) = q.note.as_deref().filter(|n| !n.trim().is_empty()) {
-                        let clicked = md_view(ui, Id::new(("quote-note", &q.id)), note, width - 32.0, &theme, t);
+                        let clicked = md_view(ui, Id::new(("quote-note", &q.id)), note, width - 32.0, &theme, t, &self.track.images);
                         if let Some(new) = clicked.toggled.filter(|_| p.role.manages()) {
                             acts.push(Act::QuoteNote(q.id.clone(), new));
                         }
                         ui.add_space(10.0);
                     }
+                    files_row(ui, p, &format!("quote:{}", q.id), p.role.manages(), &theme, t, acts);
+                    ui.add_space(6.0);
                     self.track_items_tree(ui, p, Some(&q.id), width - 32.0, acts);
                 }
             });
@@ -1005,10 +1098,11 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.add_space(indent + 28.0);
                     ui.vertical(|ui| {
-                        let clicked = md_view(ui, Id::new(("item-body", &item.id)), body, width - indent - 40.0, &theme, t);
+                        let clicked = md_view(ui, Id::new(("item-body", &item.id)), body, width - indent - 40.0, &theme, t, &self.track.images);
                         if let Some(new) = clicked.toggled.filter(|_| p.role.manages()) {
                             acts.push(Act::ItemBody(item.id.clone(), new));
                         }
+                        files_row(ui, p, &format!("item:{}", item.id), p.role.writes(), &theme, t, acts);
                     });
                 });
             }
@@ -1095,6 +1189,7 @@ impl App {
                         ui.add_space(26.0);
                     }
                 });
+                files_row(ui, p, &format!("counter:{}", c.id), open && p.role.manages(), &theme, t, acts);
                 ui.add_space(6.0);
                 let fraction = if c.minutes > 0 { c.used as f32 / c.minutes as f32 } else { 1.0 };
                 gauge(ui, width - 32.0, fraction, left_color_bar(&theme, c.left(), c.minutes), &theme);
@@ -1233,6 +1328,9 @@ impl App {
     fn track_page_act(&mut self, act: Act, p: Option<&Project>) {
         let id = p.map(|p| p.id.clone()).unwrap_or_default();
         match act {
+            Act::Files(on, act) => {
+                self.track_file_acts(&id, &on, vec![act]);
+            }
             Act::Select(sel) => self.track_select(sel),
             Act::NewProject => self.track.new_project = Some(NewProject { name: String::new(), client: String::new(), color: None, profile: None }),
             Act::Import => self.track_import_open(),
@@ -1264,6 +1362,7 @@ impl App {
                     counter: task.counter.clone(),
                     quote: task.quote.clone(),
                     item: task.item.clone(),
+                    pending: Vec::new(),
                 });
             }
             Act::DeleteEntry(task) => {
@@ -1290,6 +1389,7 @@ impl App {
                         hours: q.minutes.map(typed).unwrap_or_default(),
                         day: show_day(&q.day),
                         note: q.note.clone().unwrap_or_default(),
+                        pending: Vec::new(),
                     });
                 }
             }
@@ -1303,7 +1403,7 @@ impl App {
             Act::EditCounter(counter) => {
                 if let Some(c) = p.and_then(|p| p.counters.iter().find(|c| c.id == counter)) {
                     self.track.page.form_error = None;
-                    self.track.page.counter = Some(CounterForm { editing: Some(c.id.clone()), label: c.label.clone(), hours: typed(c.minutes), day: show_day(&c.day) });
+                    self.track.page.counter = Some(CounterForm { editing: Some(c.id.clone()), label: c.label.clone(), hours: typed(c.minutes), day: show_day(&c.day), pending: Vec::new() });
                 }
             }
             Act::CloseCounter(counter, closed) => self.track_write(move |c| c.update_counter(&id, &counter, serde_json::json!({ "closed": closed }))),
@@ -1323,6 +1423,7 @@ impl App {
                         body: i.body.clone().unwrap_or_default(),
                         hours: i.minutes.map(typed).unwrap_or_default(),
                         status: i.status,
+                        pending: Vec::new(),
                     });
                 }
             }
@@ -1435,6 +1536,9 @@ impl App {
 
         // Time spent.
         if let Some(f) = &mut self.track.page.entry {
+            let images = &self.track.images;
+            let on_target = f.editing.as_ref().map(|e| format!("task:{e}"));
+            let (mut pasted, mut file_acts) = (None::<(String, Vec<u8>)>, Vec::new());
             let mut send = None;
             let mut close = false;
             let error = self.track.page.form_error.clone();
@@ -1540,7 +1644,14 @@ impl App {
                     });
                 }
                 field(ui, t.track_description);
-                md_editor(ui, Id::new(("entry-label", f.editing.clone())), &mut f.label, 640.0, 6, t.track_label_hint, &theme, t);
+                let edited = md_editor(ui, Id::new(("entry-label", f.editing.clone())), &mut f.label, 640.0, 6, t.track_label_hint, &theme, t, images);
+                if edited.pasted.is_some() {
+                    pasted = edited.pasted;
+                }
+                field(ui, t.track_files);
+                let shown: Vec<&TrackFile> = p.files.iter().filter(|x| on_target.as_deref() == Some(x.on.as_str()) || f.pending.contains(&x.id)).collect();
+                files_ui(ui, &shown, p.role.manages(), true, &theme, t, &mut file_acts);
+                ui.label(egui::RichText::new(t.track_files_hint).size(11.0).color(theme.text_muted));
                 let ready = track::parse_duration(&f.duration).is_some() && !f.label.trim().is_empty();
                 let (ok, cancel) = footer(ui, &error, if f.editing.is_some() { t.track_save } else { t.track_add_task }, ready);
                 close = cancel;
@@ -1548,6 +1659,22 @@ impl App {
                     send = Some(());
                 }
             });
+            // Its files: an image pasted, files picked or dropped on the window (sent to what it is,
+            // or, being made, to the project until it is).
+            let target = on_target.clone().unwrap_or_else(|| "project".to_owned());
+            let mut sent = Vec::new();
+            if let Some((file, png)) = pasted {
+                sent.push(file.clone());
+                self.track_pasted(&id, &target, file, png);
+            }
+            sent.extend(self.track_file_acts(&id, &target, file_acts));
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|d| d.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+            sent.extend(self.track_attach(&id, &target, dropped));
+            if on_target.is_none()
+                && let Some(f) = &mut self.track.page.entry
+            {
+                f.pending.extend(sent);
+            }
             if send.is_some() {
                 let f = self.track.page.entry.as_ref().unwrap();
                 let checked = (|| -> Result<(Option<String>, TaskInput), &'static str> {
@@ -1570,21 +1697,27 @@ impl App {
                 match checked {
                     Ok((editing, input)) => {
                         let id = id.clone();
+                        let pending = self.track.page.entry.as_ref().map(|f| f.pending.clone()).unwrap_or_default();
+                        let before: Vec<String> = p.tasks.iter().map(|x| x.id.clone()).collect();
                         self.track_write(move |c| match editing {
                             Some(task) => c.update_task(&id, &task, &input),
-                            None => c.add_task(&id, &input),
+                            None => adopt(c, &id, c.add_task(&id, &input)?, |p| p.tasks.iter().map(|x| x.id.clone()).collect(), &before, "task", &pending),
                         });
                         self.track.page.entry = None;
                     }
                     Err(e) => self.track.page.form_error = Some(e.to_owned()),
                 }
             } else if close || modal.should_close() {
-                self.track.page.entry = None;
+                let pending = self.track.page.entry.take().map(|f| f.pending);
+                self.track_drop_pending(&id, pending);
             }
         }
 
         // A quote.
         if let Some(f) = &mut self.track.page.quote {
+            let images = &self.track.images;
+            let on_target = f.editing.as_ref().map(|e| format!("quote:{e}"));
+            let (mut pasted, mut file_acts) = (None::<(String, Vec<u8>)>, Vec::new());
             let (mut ok, mut close) = (false, false);
             let error = self.track.page.form_error.clone();
             let modal = egui::Modal::new(Id::new("track-quote")).frame(frame).show(ctx, |ui| {
@@ -1612,31 +1745,59 @@ impl App {
                     ui.label(egui::RichText::new(t.track_planned_hint).size(11.5).color(theme.text_muted));
                 });
                 field(ui, t.track_description);
-                md_editor(ui, Id::new(("quote-note-edit", f.editing.clone())), &mut f.note, 640.0, 8, t.track_quote_note_hint, &theme, t);
+                let edited = md_editor(ui, Id::new(("quote-note-edit", f.editing.clone())), &mut f.note, 640.0, 8, t.track_quote_note_hint, &theme, t, images);
+                if edited.pasted.is_some() {
+                    pasted = edited.pasted;
+                }
+                field(ui, t.track_files);
+                let shown: Vec<&TrackFile> = p.files.iter().filter(|x| on_target.as_deref() == Some(x.on.as_str()) || f.pending.contains(&x.id)).collect();
+                files_ui(ui, &shown, p.role.manages(), true, &theme, t, &mut file_acts);
+                ui.label(egui::RichText::new(t.track_files_hint).size(11.0).color(theme.text_muted));
                 let ready = !f.label.trim().is_empty() && (f.hours.trim().is_empty() || track::parse_duration(&f.hours).is_some());
                 (ok, close) = footer(ui, &error, if f.editing.is_some() { t.track_save } else { t.track_create }, ready);
             });
+            // Its files: an image pasted, files picked or dropped on the window (sent to what it is,
+            // or, being made, to the project until it is).
+            let target = on_target.clone().unwrap_or_else(|| "project".to_owned());
+            let mut sent = Vec::new();
+            if let Some((file, png)) = pasted {
+                sent.push(file.clone());
+                self.track_pasted(&id, &target, file, png);
+            }
+            sent.extend(self.track_file_acts(&id, &target, file_acts));
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|d| d.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+            sent.extend(self.track_attach(&id, &target, dropped));
+            if on_target.is_none()
+                && let Some(f) = &mut self.track.page.quote
+            {
+                f.pending.extend(sent);
+            }
             if ok {
                 let f = self.track.page.quote.as_ref().unwrap();
                 match track::parse_day(&f.day) {
                     Some(day) => {
                         let (editing, number, label, minutes, note) = (f.editing.clone(), Some(f.number.trim().to_owned()).filter(|n| !n.is_empty()), f.label.trim().to_owned(), track::parse_duration(&f.hours).map(u64::from), f.note.trim().to_owned());
                         let id = id.clone();
+                        let (pending, before): (Vec<String>, Vec<String>) = (f.pending.clone(), p.quotes.iter().map(|x| x.id.clone()).collect());
                         self.track_write(move |c| match editing {
                             Some(q) => c.update_quote(&id, &q, serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day, "note": note })),
-                            None => c.add_quote_full(&id, number.as_deref(), &label, minutes, &day, Some(note.as_str()).filter(|n| !n.is_empty())),
+                            None => adopt(c, &id, c.add_quote_full(&id, number.as_deref(), &label, minutes, &day, Some(note.as_str()).filter(|n| !n.is_empty()))?, |p| p.quotes.iter().map(|x| x.id.clone()).collect(), &before, "quote", &pending),
                         });
                         self.track.page.quote = None;
                     }
                     None => self.track.page.form_error = Some(t.track_bad_day.to_owned()),
                 }
             } else if close || modal.should_close() {
-                self.track.page.quote = None;
+                let pending = self.track.page.quote.take().map(|f| f.pending);
+                self.track_drop_pending(&id, pending);
             }
         }
 
         // A counter.
         if let Some(f) = &mut self.track.page.counter {
+            let images = &self.track.images;
+            let on_target = f.editing.as_ref().map(|e| format!("counter:{e}"));
+            let (mut pasted, mut file_acts) = (None::<(String, Vec<u8>)>, Vec::new());
             let (mut ok, mut close) = (false, false);
             let error = self.track.page.form_error.clone();
             let modal = egui::Modal::new(Id::new("track-counter")).frame(frame).show(ctx, |ui| {
@@ -1656,30 +1817,56 @@ impl App {
                 });
                 field(ui, t.track_counter_label);
                 ui.add(egui::TextEdit::singleline(&mut f.label).desired_width(f32::INFINITY).hint_text(t.track_counter_hint));
+                field(ui, t.track_files);
+                let shown: Vec<&TrackFile> = p.files.iter().filter(|x| on_target.as_deref() == Some(x.on.as_str()) || f.pending.contains(&x.id)).collect();
+                files_ui(ui, &shown, p.role.manages(), true, &theme, t, &mut file_acts);
+                ui.label(egui::RichText::new(t.track_files_hint).size(11.0).color(theme.text_muted));
+                let _ = (&mut pasted, images);
                 let ready = track::parse_duration(&f.hours).is_some();
                 (ok, close) = footer(ui, &error, if f.editing.is_some() { t.track_save } else { t.track_create }, ready);
             });
+            // Its files: an image pasted, files picked or dropped on the window (sent to what it is,
+            // or, being made, to the project until it is).
+            let target = on_target.clone().unwrap_or_else(|| "project".to_owned());
+            let mut sent = Vec::new();
+            if let Some((file, png)) = pasted {
+                sent.push(file.clone());
+                self.track_pasted(&id, &target, file, png);
+            }
+            sent.extend(self.track_file_acts(&id, &target, file_acts));
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|d| d.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+            sent.extend(self.track_attach(&id, &target, dropped));
+            if on_target.is_none()
+                && let Some(f) = &mut self.track.page.counter
+            {
+                f.pending.extend(sent);
+            }
             if ok {
                 let f = self.track.page.counter.as_ref().unwrap();
                 match (track::parse_day(&f.day), track::parse_duration(&f.hours)) {
                     (Some(day), Some(minutes)) => {
                         let label = if f.label.trim().is_empty() { t.track_counter_default.replace("{h}", &hm(minutes as i64)).replace("{d}", &show_day(&day)) } else { f.label.trim().to_owned() };
                         let (editing, id) = (f.editing.clone(), id.clone());
+                        let (pending, before): (Vec<String>, Vec<String>) = (f.pending.clone(), p.counters.iter().map(|x| x.id.clone()).collect());
                         self.track_write(move |c| match editing {
                             Some(k) => c.update_counter(&id, &k, serde_json::json!({ "label": label, "minutes": minutes, "day": day })),
-                            None => c.add_counter(&id, &label, minutes as u64, &day),
+                            None => adopt(c, &id, c.add_counter(&id, &label, minutes as u64, &day)?, |p| p.counters.iter().map(|x| x.id.clone()).collect(), &before, "counter", &pending),
                         });
                         self.track.page.counter = None;
                     }
                     _ => self.track.page.form_error = Some(t.track_bad_day.to_owned()),
                 }
             } else if close || modal.should_close() {
-                self.track.page.counter = None;
+                let pending = self.track.page.counter.take().map(|f| f.pending);
+                self.track_drop_pending(&id, pending);
             }
         }
 
         // A planned task.
         if let Some(f) = &mut self.track.page.item {
+            let images = &self.track.images;
+            let on_target = f.editing.as_ref().map(|e| format!("item:{e}"));
+            let (mut pasted, mut file_acts) = (None::<(String, Vec<u8>)>, Vec::new());
             let (mut ok, mut close) = (false, false);
             let error = self.track.page.form_error.clone();
             let modal = egui::Modal::new(Id::new("track-item")).frame(frame).show(ctx, |ui| {
@@ -1717,10 +1904,33 @@ impl App {
                     });
                 });
                 field(ui, t.track_description);
-                md_editor(ui, Id::new(("item-body-edit", f.editing.clone())), &mut f.body, 640.0, 6, t.track_item_body_hint, &theme, t);
+                let edited = md_editor(ui, Id::new(("item-body-edit", f.editing.clone())), &mut f.body, 640.0, 6, t.track_item_body_hint, &theme, t, images);
+                if edited.pasted.is_some() {
+                    pasted = edited.pasted;
+                }
+                field(ui, t.track_files);
+                let shown: Vec<&TrackFile> = p.files.iter().filter(|x| on_target.as_deref() == Some(x.on.as_str()) || f.pending.contains(&x.id)).collect();
+                files_ui(ui, &shown, p.role.manages(), true, &theme, t, &mut file_acts);
+                ui.label(egui::RichText::new(t.track_files_hint).size(11.0).color(theme.text_muted));
                 let ready = !f.title.trim().is_empty() && (f.hours.trim().is_empty() || track::parse_duration(&f.hours).is_some());
                 (ok, close) = footer(ui, &error, if f.editing.is_some() { t.track_save } else { t.track_create }, ready);
             });
+            // Its files: an image pasted, files picked or dropped on the window (sent to what it is,
+            // or, being made, to the project until it is).
+            let target = on_target.clone().unwrap_or_else(|| "project".to_owned());
+            let mut sent = Vec::new();
+            if let Some((file, png)) = pasted {
+                sent.push(file.clone());
+                self.track_pasted(&id, &target, file, png);
+            }
+            sent.extend(self.track_file_acts(&id, &target, file_acts));
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|d| d.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+            sent.extend(self.track_attach(&id, &target, dropped));
+            if on_target.is_none()
+                && let Some(f) = &mut self.track.page.item
+            {
+                f.pending.extend(sent);
+            }
             if ok {
                 let f = self.track.page.item.take().unwrap();
                 let input = ItemInput { title: f.title.trim().to_owned(), body: Some(f.body.trim().to_owned()).filter(|b| !b.is_empty()), minutes: track::parse_duration(&f.hours).map(u64::from), status: f.status };
@@ -1729,12 +1939,14 @@ impl App {
                 if let Some(q) = f.quote.as_ref().filter(|q| p.quotes.iter().any(|x| &x.id == *q && x.closed.is_some())) {
                     self.track.page.open_quotes.insert(q.clone());
                 }
+                let before: Vec<String> = p.items.iter().map(|x| x.id.clone()).collect();
                 self.track_write(move |c| match f.editing {
                     Some(i) => c.update_item(&id, &i, serde_json::json!({ "title": input.title, "body": input.body, "minutes": input.minutes, "status": input.status.word() })),
-                    None => c.add_item(&id, f.quote.as_deref(), f.parent.as_deref(), &input),
+                    None => adopt(c, &id, c.add_item(&id, f.quote.as_deref(), f.parent.as_deref(), &input)?, |p| p.items.iter().map(|x| x.id.clone()).collect(), &before, "item", &f.pending),
                 });
             } else if close || modal.should_close() {
-                self.track.page.item = None;
+                let pending = self.track.page.item.take().map(|f| f.pending);
+                self.track_drop_pending(&id, pending);
             }
         }
     }

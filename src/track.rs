@@ -226,6 +226,63 @@ pub struct Project {
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub items: Vec<Item>,
+    /// The files joined to it, its counters, quotes, planned tasks, time spent (floor 0.26).
+    #[serde(default)]
+    pub files: Vec<TrackFile>,
+}
+
+/// A file joined in the project (a contract, a quote's PDF, a screenshot in a description), kept by floor.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct TrackFile {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    #[serde(rename = "type", default)]
+    pub mime: String,
+    /// What it is joined to: `project`, `counter:<id>`, `quote:<id>`, `item:<id>`, `task:<id>`.
+    pub on: String,
+    pub author: Option<String>,
+    #[serde(default)]
+    pub mine: bool,
+}
+
+/// Where an image joined to a description is, in its Markdown: `track-files/<id>`.
+pub const FILES_PREFIX: &str = "track-files/";
+
+/// A file at most (floor's limit).
+pub const FILE_MAX: u64 = 25 * 1024 * 1024;
+
+/// The media type of a file, by its name (what floor serves it as).
+pub fn mime_of(name: &str) -> &'static str {
+    match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("doc") => "application/msword",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("ppt") => "application/vnd.ms-powerpoint",
+        Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        Some("odt") => "application/vnd.oasis.opendocument.text",
+        Some("ods") => "application/vnd.oasis.opendocument.spreadsheet",
+        Some("txt" | "md" | "csv") => "text/plain",
+        Some("zip") => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
+/// A size said simply: « 840 o », « 12 Ko », « 3,4 Mo ».
+pub fn size_text(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} o")
+    } else if bytes < 1024 * 1024 {
+        format!("{} Ko", bytes.div_ceil(1024))
+    } else {
+        format!("{:.1} Mo", bytes as f64 / (1024.0 * 1024.0)).replace('.', ",")
+    }
 }
 
 /// A planned task with the time of its sub-tasks: estimated (its own, else theirs), spent, done.
@@ -481,6 +538,47 @@ impl Client {
 
     pub fn delete_task(&self, id: &str, task: &str) -> Answer<Project> {
         self.project_of("DELETE", &format!("/projects/{id}/tasks/{task}"), None)
+    }
+
+    /// A file sent to floor, joined to `on` (`project`, `task:<id>`...), under the id given (Ronnie
+    /// picks it: an image's Markdown is written before it's sent).
+    pub fn upload(&self, id: &str, on: &str, file: &str, name: &str, bytes: &[u8]) -> Answer<()> {
+        crate::telemetry::count("track.file");
+        let url = format!("{}/v1/track/projects/{id}/files?on={}", self.url, urlencode(on));
+        let res = account_agent()
+            .post(&url)
+            .header("User-Agent", USER_AGENT)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Content-Type", mime_of(name))
+            .header("X-File-Name", &urlencode(name))
+            .header("X-File-Id", file)
+            .send(bytes);
+        let mut res = res.map_err(|e| e.to_string())?;
+        let status = res.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let value: Value = res.body_mut().read_json().unwrap_or(Value::Null);
+        Err(value.get("error").and_then(Value::as_str).map_or_else(|| format!("floor answered {status}"), str::to_owned))
+    }
+
+    /// A file joined elsewhere in the project (an image pasted before what it's in was made).
+    pub fn move_file(&self, id: &str, file: &str, on: &str) -> Answer<()> {
+        self.call("PATCH", &format!("/projects/{id}/files/{file}"), Some(serde_json::json!({ "on": on }))).map(|_| ())
+    }
+
+    pub fn delete_file(&self, id: &str, file: &str) -> Answer<()> {
+        self.call("DELETE", &format!("/projects/{id}/files/{file}"), None).map(|_| ())
+    }
+
+    /// A file's bytes.
+    pub fn download(&self, id: &str, file: &str) -> Answer<Vec<u8>> {
+        let url = format!("{}/v1/track/projects/{id}/files/{file}", self.url);
+        let mut res = account_agent().get(&url).header("User-Agent", USER_AGENT).header("Authorization", &format!("Bearer {}", self.token)).call().map_err(|e| e.to_string())?;
+        if res.status().as_u16() != 200 {
+            return Err(format!("floor answered {}", res.status().as_u16()));
+        }
+        res.body_mut().with_config().limit(FILE_MAX + 1024).read_to_vec().map_err(|e| e.to_string())
     }
 
     /// A planned task, of `quote` (None: the project's), under `parent`.
@@ -980,8 +1078,27 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
     }
 }
 
+/// A text for a URL's query or a header: every byte but letters, digits and `-_.~:` escaped.
+fn urlencode(text: &str) -> String {
+    text.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~:".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn joined_files_named_typed_and_sized() {
+        assert_eq!(super::mime_of("Contrat signé.PDF"), "application/pdf");
+        assert_eq!(super::mime_of("devis.docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        assert_eq!(super::mime_of("sans-extension"), "application/octet-stream");
+        assert_eq!(super::size_text(900), "900 o");
+        assert_eq!(super::size_text(12 * 1024), "12 Ko");
+        assert_eq!(super::size_text(3_565_158), "3,4 Mo");
+        assert_eq!(super::urlencode("task:a1"), "task:a1");
+        assert_eq!(super::urlencode("Contrat signé.pdf"), "Contrat%20sign%C3%A9.pdf");
+    }
+
     use super::*;
 
     #[test]
@@ -1034,6 +1151,7 @@ mod tests {
                 item("a2", Some("a"), Some(120), 60, Status::Doing),
                 item("b", None, Some(600), 120, Status::Todo),
             ],
+            files: vec![],
         };
         let a = p.rollup(&p.items[0]);
         // No estimate of its own: its sub-tasks'.
@@ -1060,6 +1178,7 @@ mod tests {
             quotes: vec![],
             tasks: vec![],
             items: vec![],
+            files: vec![],
         };
         assert_eq!(p.current_counter().map(|c| c.id.as_str()), Some("b"));
         assert!(!p.counters_spent());

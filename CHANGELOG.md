@@ -4,6 +4,11 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+### Nouveautés
+
+- **Suivi, des documents joints** : un PDF, un Word, un Excel, une image… se joint au projet (le contrat, une carte « Documents » sur sa vue d’ensemble), à un compteur, à un devis, à une tâche prévue ou à un temps passé : bouton « Joindre un fichier… » ou fichiers glissés sur la fenêtre, 25 Mo au plus. Gardés par floor, partagés avec l’équipe du projet ; un clic les ouvre, leur auteur ou un gestionnaire les retire. Demande floor 0.26.0.
+- **Suivi, une image collée dans une description** : ⌘ V avec une capture d’écran dans la description d’un temps, d’un devis, d’une tâche prévue ou la note du projet la met dans le texte, où elle s’affiche.
+
 ### Corrections
 
 - Apparence : « Sur tous les écrans » coupé, tous les compagnons restent dans Ronnie (droïde, elfe, licorne, louveteau, Gérard, la horde de 10 h, Mathéo), et plus seulement le mouton ; leurs interrupteurs ne sont plus grisés.

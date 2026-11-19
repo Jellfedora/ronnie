@@ -36,6 +36,10 @@ enum Done {
     People(Result<Vec<String>, String>),
     /// Projects made from profiles: each one and its profile.
     Made(Vec<(Result<Project, String>, Option<Uuid>)>),
+    /// An image of a description read from floor (`track-files/<id>`).
+    Image { src: String, result: Result<Vec<u8>, String> },
+    /// A joined file opened (downloaded, then given to the system), or not.
+    Opened(Result<(), String>),
 }
 
 #[path = "trackui.rs"]
@@ -114,6 +118,9 @@ pub(super) struct Track {
     /// An account waiting for floor's administrator: when it was last looked at, the look going on.
     pending_at: Option<f64>,
     pending_check: Option<std::sync::Arc<std::sync::Mutex<Option<Option<bool>>>>>,
+    /// The images the descriptions show, read from floor (or just pasted), and those being read.
+    images: super::mdedit::Images,
+    asked: std::collections::HashSet<String>,
 }
 
 impl Default for Track {
@@ -136,6 +143,8 @@ impl Default for Track {
             chat: Default::default(),
             pending_at: None,
             pending_check: None,
+            images: HashMap::new(),
+            asked: std::collections::HashSet::new(),
         }
     }
 }
@@ -263,6 +272,116 @@ impl App {
         self.track.spawn(&ctx, client, move |c| Done::Project { result: Box::new(call(c)), select: false });
     }
 
+    /// The images `text` shows (`track-files/<id>`) not read yet, asked of floor.
+    fn track_want_images(&mut self, project: &str, text: &str) {
+        let wanted: Vec<String> = super::notes::image_sources(text).into_iter().filter(|s| s.starts_with(track::FILES_PREFIX)).map(str::to_owned).collect();
+        for src in wanted {
+            if self.track.images.contains_key(&src) || !self.track.asked.insert(src.clone()) {
+                continue;
+            }
+            let Some(client) = self.track_client() else { return };
+            let (ctx, project, file) = (self.ctx.clone(), project.to_owned(), src[track::FILES_PREFIX.len()..].to_owned());
+            self.track.spawn(&ctx, client, move |c| Done::Image { result: c.download(&project, &file), src });
+        }
+    }
+
+    /// An image just pasted in a description: shown at once, sent to floor joined to `on`.
+    fn track_pasted(&mut self, project: &str, on: &str, file: String, png: Vec<u8>) {
+        let src = format!("{}{file}", track::FILES_PREFIX);
+        let img = super::notes::Img::from_bytes(&self.ctx, &src, &png);
+        self.track.images.insert(src, img);
+        self.track_send_file(project, on, file, "image.png".to_owned(), png);
+    }
+
+    /// A file sent to floor, joined to `on` (`project`, `task:<id>`...), under the id `file`.
+    fn track_send_file(&mut self, project: &str, on: &str, file: String, name: String, bytes: Vec<u8>) {
+        let (id, on) = (project.to_owned(), on.to_owned());
+        self.track_write(move |c| {
+            c.upload(&id, &on, &file, &name, &bytes)?;
+            c.project(&id)
+        });
+    }
+
+    /// Files picked or dropped, sent joined to `on`; too big ones said. The ids given them.
+    fn track_attach(&mut self, project: &str, on: &str, paths: Vec<std::path::PathBuf>) -> Vec<String> {
+        let mut sent = Vec::new();
+        for path in paths {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "fichier".into());
+            match std::fs::metadata(&path) {
+                Ok(m) if m.len() > track::FILE_MAX => {
+                    self.error = Some(self.t().track_file_too_big.replace("{file}", &name));
+                    continue;
+                }
+                Err(e) => {
+                    self.error = Some(format!("{name} : {e}"));
+                    continue;
+                }
+                Ok(_) => {}
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let file = Uuid::new_v4().to_string();
+                    sent.push(file.clone());
+                    self.track_send_file(project, on, file, name, bytes);
+                }
+                Err(e) => self.error = Some(format!("{name} : {e}")),
+            }
+        }
+        sent
+    }
+
+    /// A joined file opened: downloaded in a folder of Ronnie's, then given to the system.
+    fn track_open_file(&mut self, project: &str, file: &track::TrackFile) {
+        let Some(client) = self.track_client() else { return };
+        let (ctx, project, id, name) = (self.ctx.clone(), project.to_owned(), file.id.clone(), file.name.clone());
+        self.track.spawn(&ctx, client, move |c| {
+            Done::Opened((|| {
+                let bytes = c.download(&project, &id)?;
+                let dir = std::env::temp_dir().join("ronnie-track").join(&id);
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                // Its name, never a path.
+                let safe: String = name.chars().map(|ch| if matches!(ch, '/' | '\\' | ':') || ch.is_control() { '_' } else { ch }).collect();
+                let path = dir.join(if safe.trim_matches('.').is_empty() { "fichier".to_owned() } else { safe });
+                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                crate::terminal::links::open(&path.to_string_lossy());
+                Ok(())
+            })())
+        });
+    }
+
+    /// What the files of something asked: picked (sent joined to `on`), opened, taken off. The ids of
+    /// those sent.
+    fn track_file_acts(&mut self, project: &str, on: &str, acts: Vec<page::FileAct>) -> Vec<String> {
+        let mut sent = Vec::new();
+        for act in acts {
+            match act {
+                page::FileAct::Pick => {
+                    if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                        sent.extend(self.track_attach(project, on, paths));
+                    }
+                }
+                page::FileAct::Open(f) => self.track_open_file(project, &f),
+                page::FileAct::Delete(f) => self.track_delete_file(project, &f),
+            }
+        }
+        sent
+    }
+
+    /// A window closed without making what it wrote: the files sent for it taken off again.
+    fn track_drop_pending(&mut self, project: &str, pending: Option<Vec<String>>) {
+        for file in pending.unwrap_or_default() {
+            self.track_delete_file(project, &file);
+        }
+    }
+
+    fn track_delete_file(&mut self, project: &str, file: &str) {
+        let (id, file) = (project.to_owned(), file.to_owned());
+        self.track_write(move |c| {
+            c.delete_file(&id, &file)?;
+            c.project(&id)
+        });
+    }
+
     /// Collects what floor answered; asks again now and then.
     /// An account not allowed yet by floor's administrator: looked at again every minute, and
     /// everything online starts again once it is.
@@ -364,6 +483,13 @@ impl App {
                     }
                 }
                 Done::Gone(Err(e)) => self.error = Some(format!("{} : {e}", t.track_failed)),
+                Done::Image { src, result } => {
+                    self.track.asked.remove(&src);
+                    let img = super::notes::Img::from_bytes(&self.ctx, &src, &result.unwrap_or_default());
+                    self.track.images.insert(src, img);
+                }
+                Done::Opened(Ok(())) => {}
+                Done::Opened(Err(e)) => self.error = Some(format!("{} : {e}", t.track_failed)),
                 Done::People(Ok(people)) => self.track.people = people,
                 Done::People(Err(_)) => {}
                 Done::Made(made) => {
@@ -854,6 +980,7 @@ impl App {
         if let Some(e) = &mut self.track.edit {
             let role = self.track.projects.get(&e.id).map_or(Role::Viewer, |p| p.role);
             let mut close = false;
+            let (images, pid, mut pasted) = (&self.track.images, e.id.clone(), None);
             let modal = egui::Modal::new(egui::Id::new("track-edit")).frame(frame).show(ctx, |ui| {
                 ui.set_width(560.0);
                 ui.label(egui::RichText::new(t.track_settings).size(19.0).strong().color(theme.text));
@@ -874,7 +1001,10 @@ impl App {
                 ui.add_space(8.0);
                 if role.manages() {
                     ui.label(egui::RichText::new(t.track_note).size(12.0).color(theme.text_muted));
-                    super::mdedit::md_editor(ui, egui::Id::new(("project-note", &e.id)), &mut e.note, 560.0, 5, t.track_note_hint, &theme, t);
+                    let edited = super::mdedit::md_editor(ui, egui::Id::new(("project-note", &e.id)), &mut e.note, 560.0, 5, t.track_note_hint, &theme, t, images);
+                    if edited.pasted.is_some() {
+                        pasted = edited.pasted;
+                    }
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(t.track_color).size(12.0).color(theme.text_muted));
                     color_row(ui, &mut e.color);
@@ -919,6 +1049,10 @@ impl App {
                     }
                 });
             });
+            // An image pasted in the project's note: joined to the project.
+            if let Some((file, png)) = pasted {
+                self.track_pasted(&pid, "project", file, png);
+            }
             if close || modal.should_close() || done.is_some() {
                 self.track.edit = None;
             }

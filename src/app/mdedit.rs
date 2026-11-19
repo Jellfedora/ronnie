@@ -21,20 +21,28 @@ struct Laid {
     live: std::sync::Arc<notes::Live>,
 }
 
-fn key_of(text: &str, raw: bool, width: f32, theme: &Theme) -> u64 {
+/// The images a description shows (`track-files/<id>`), by their source, as read so far.
+pub(super) type Images = HashMap<String, notes::Img>;
+
+fn key_of(text: &str, raw: bool, width: f32, theme: &Theme, images: &Images) -> u64 {
     let mut h = std::hash::DefaultHasher::new();
     (text, raw, width.to_bits(), notes::color_key(theme)).hash(&mut h);
+    // An image read since: laid out again, with its room.
+    for src in notes::image_sources(text) {
+        images.get(src).and_then(notes::Img::size).map(|s| (s.x.to_bits(), s.y.to_bits())).hash(&mut h);
+    }
     h.finish()
 }
 
 /// The notes' layout of `text`, kept in memory under `id`.
-fn laid_out(ctx: &egui::Context, id: Id, text: &str, raw: bool, width: f32, theme: &Theme) -> std::sync::Arc<notes::Live> {
-    let key = key_of(text, raw, width, theme);
+fn laid_out(ctx: &egui::Context, id: Id, text: &str, raw: bool, width: f32, theme: &Theme, images: &Images) -> std::sync::Arc<notes::Live> {
+    let key = key_of(text, raw, width, theme, images);
     let store = id.with("md-laid");
     if let Some(l) = ctx.data(|d| d.get_temp::<Laid>(store)).filter(|l| l.key == key) {
         return l.live;
     }
-    let live = std::sync::Arc::new(notes::live_with(text, None, raw, theme, width, &|_| None, false));
+    let sizes = |src: &str| images.get(src).and_then(notes::Img::size);
+    let live = std::sync::Arc::new(notes::live_with(text, None, raw, theme, width, &sizes, false));
     ctx.data_mut(|d| d.insert_temp(store, Laid { key, live: live.clone() }));
     live
 }
@@ -48,8 +56,8 @@ pub(super) struct Clicked {
 
 /// `text` rendered, `width` wide. A box ticked gives the text changed (the caller saves it, or not);
 /// a link opens.
-pub(super) fn md_view(ui: &mut Ui, id: Id, text: &str, width: f32, theme: &Theme, t: &Strings) -> Clicked {
-    let live = laid_out(ui.ctx(), id, text, false, width, theme);
+pub(super) fn md_view(ui: &mut Ui, id: Id, text: &str, width: f32, theme: &Theme, t: &Strings, images: &Images) -> Clicked {
+    let live = laid_out(ui.ctx(), id, text, false, width, theme, images);
     let back = ui.painter().add(egui::Shape::Noop);
     let mut job = live.job.clone();
     job.wrap.max_width = width;
@@ -57,7 +65,7 @@ pub(super) fn md_view(ui: &mut Ui, id: Id, text: &str, width: f32, theme: &Theme
     // Drawn as it is (no text field: nothing to scroll to, nothing to focus).
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, galley.size().y), Sense::click());
     ui.painter().galley(rect.min, galley.clone(), theme.text);
-    let hits = notes::paint_live(ui, &live, &galley, rect.min, width, back, &response, &HashMap::new(), theme, t, true, None);
+    let hits = notes::paint_live(ui, &live, &galley, rect.min, width, back, &response, images, theme, t, true, None);
     let mut clicked = Clicked::default();
     if let Some(byte) = hits.toggle {
         let mut changed = text.to_owned();
@@ -105,14 +113,35 @@ fn apply(text: &mut String, sel: Range<usize>, format: Format, t: &Strings) -> R
     }
 }
 
-/// A Markdown editor `width` wide, at least `rows` lines high, its toolbar on top: true when `text`
-/// changed. Rendered when not focused (a click edits it), its Markdown while being edited.
+/// What an editor did this frame: an image pasted (⌘ V with an image on the clipboard),
+/// put in the text as `![image](track-files/<id>)` at the cursor: its id and its PNG, to send.
+#[derive(Default)]
+pub(super) struct Edited {
+    pub(super) pasted: Option<(String, Vec<u8>)>,
+}
+
+/// The clipboard's image (when it holds no text: egui pastes that), as PNG.
+fn clipboard_png() -> Option<Vec<u8>> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    if clipboard.get_text().is_ok_and(|s| !s.is_empty()) {
+        return None;
+    }
+    let image = clipboard.get_image().ok()?;
+    let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(rgba).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    Some(png)
+}
+
+/// A Markdown editor `width` wide, at least `rows` lines high, its toolbar on top. Rendered when not
+/// focused (a click edits it), its Markdown while being edited; the images it shows from `images`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn md_editor(ui: &mut Ui, id: Id, text: &mut String, width: f32, rows: usize, hint: &str, theme: &Theme, t: &Strings) -> bool {
+pub(super) fn md_editor(ui: &mut Ui, id: Id, text: &mut String, width: f32, rows: usize, hint: &str, theme: &Theme, t: &Strings, images: &Images) -> Edited {
     let ctx = ui.ctx().clone();
     let editor = id.with("md-editor");
     let focused = ctx.memory(|m| m.has_focus(editor));
     let mut changed = false;
+    let mut pasted = None;
     let selection = |ctx: &egui::Context| {
         egui::TextEdit::load_state(ctx, editor).and_then(|s| s.cursor.char_range()).map(|r| {
             let (a, b) = (r.primary.index.0, r.secondary.index.0);
@@ -177,16 +206,29 @@ pub(super) fn md_editor(ui: &mut Ui, id: Id, text: &mut String, width: f32, rows
             }
         }
 
+        // ⌘ V with an image (egui only pastes text): on a line of its own at the cursor.
+        if focused
+            && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command)))
+            && let Some(png) = clipboard_png()
+        {
+            let file = uuid::Uuid::new_v4().to_string();
+            let at = selection(&ctx).map_or(text.chars().count(), |s| s.end);
+            let (_, after) = notes::insert_block(text, at, &format!("![image]({}{file})", crate::track::FILES_PREFIX));
+            notes::set_cursor(&ctx, editor, after);
+            pasted = Some((file, png));
+            changed = true;
+        }
+
         // Rendered when not edited; its Markdown, dimmed marks, while being edited.
         let raw = focused || ctx.memory(|m| m.has_focus(editor));
         let inner = width - 24.0;
-        let live = laid_out(&ctx, id, text, raw, inner, theme);
+        let live = laid_out(&ctx, id, text, raw, inner, theme, images);
         let back = ui.painter().add(egui::Shape::Noop);
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none());
         let theme_c = theme.clone();
         let mut layouter = move |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
             let text = buf.as_str();
-            let live = laid_out(ui.ctx(), id, text, raw, inner, &theme_c);
+            let live = laid_out(ui.ctx(), id, text, raw, inner, &theme_c, images);
             let mut job = live.job.clone();
             job.wrap.max_width = wrap;
             ui.painter().layout_job(job)
@@ -211,8 +253,8 @@ pub(super) fn md_editor(ui: &mut Ui, id: Id, text: &mut String, width: f32, rows
             }
         }
         // The layout the editor used this frame (the text may have changed since: laid out again).
-        let live = if out.response.changed() { laid_out(&ctx, id, text, raw, inner, theme) } else { live };
-        let hits = notes::paint_live(ui, &live, &out.galley, out.galley_pos, inner, back, &out.response, &HashMap::new(), theme, t, !raw, None);
+        let live = if out.response.changed() { laid_out(&ctx, id, text, raw, inner, theme, images) } else { live };
+        let hits = notes::paint_live(ui, &live, &out.galley, out.galley_pos, inner, back, &out.response, images, theme, t, !raw, None);
         if let Some(byte) = hits.toggle
             && byte < text.len()
         {
@@ -225,7 +267,8 @@ pub(super) fn md_editor(ui: &mut Ui, id: Id, text: &mut String, width: f32, rows
             ctx.memory_mut(|m| m.request_focus(editor));
         }
     });
-    changed
+    let _ = changed;
+    Edited { pasted }
 }
 
 /// The first line of a Markdown text, its marks gone (a title for a list).

@@ -1834,6 +1834,32 @@ pub(super) struct Img {
     size: Option<Vec2>,
 }
 
+impl Img {
+    /// An image read from its bytes (shown under `key`); unreadable, a frame with nothing in it.
+    pub(super) fn from_bytes(ctx: &egui::Context, key: &str, bytes: &[u8]) -> Img {
+        match image::load_from_memory(bytes) {
+            Ok(image) => {
+                let size = Vec2::new(image.width() as f32, image.height() as f32) / ctx.pixels_per_point();
+                let image = if image.width().max(image.height()) > 2400 { image.thumbnail(2400, 2400) } else { image };
+                let rgba = image.to_rgba8();
+                let color = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
+                Img { texture: Some(ctx.load_texture(format!("md-image:{key}"), color, egui::TextureOptions::LINEAR)), size: Some(size) }
+            }
+            Err(_) => Img { texture: None, size: None },
+        }
+    }
+
+    /// Its size on screen (points), once read.
+    pub(super) fn size(&self) -> Option<Vec2> {
+        self.size
+    }
+}
+
+/// The images a text shows (`![label](src)` on lines of their own): their sources.
+pub(super) fn image_sources(text: &str) -> Vec<&str> {
+    text.lines().filter_map(image_src).collect()
+}
+
 /// A line of the note.
 #[derive(Clone)]
 struct Line {
