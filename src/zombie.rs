@@ -196,6 +196,12 @@ pub const MEMO_GRADE: u32 = 4;
 
 pub const SHOP_GRADE: [(&str, u32); 10] = [("mug", 0), ("dmg", 0), ("mag", 0), ("extinguisher", 1), ("turret", 3), ("confetti", 4), ("tape", 1), ("stamp", 2), ("plant", 5), ("projector", 6)];
 
+/// The turrets carried at most, how far from oneself one is set down, and how far it fires (floor's
+/// TURRET_CARRY, TURRET_REACH, TURRET_RANGE).
+pub const TURRET_CARRY: u32 = 3;
+pub const TURRET_REACH: f32 = 220.0;
+pub const TURRET_RANGE: f32 = 420.0;
+
 /// The weapons, in floor's order (its WEAPON_IDS).
 pub const WEAPONS: [&str; 8] = ["staple", "postit", "extinguisher", "confetti", "stamp", "tape", "plant", "projector"];
 
@@ -304,6 +310,8 @@ pub struct Frame {
     pub grades: Vec<(u32, u32)>,
     /// Those whose memo of this wave is still to send.
     pub memos: Vec<u32>,
+    /// The turrets bought and carried, to set down (F): player id, how many.
+    pub carried: Vec<(u32, u32)>,
     pub players: Vec<Player>,
     pub zombies: Vec<Zombie>,
     pub shots: Vec<Shot>,
@@ -407,6 +415,11 @@ impl Frame {
     /// Player `id`'s meal tickets (the team's, from a floor older than each one's own).
     pub fn grade_of(&self, id: u32) -> u32 {
         self.grades.iter().find(|g| g.0 == id).map_or(0, |g| g.1)
+    }
+
+    /// The turrets player `id` carries.
+    pub fn carried_by(&self, id: u32) -> u32 {
+        self.carried.iter().find(|c| c.0 == id).map_or(0, |c| c.1)
     }
 
     pub fn tickets_of(&self, id: u32) -> u32 {
@@ -730,6 +743,8 @@ pub struct News {
     pub lost: bool,
 }
 
+// Read once per message and taken apart at once: the frame's size doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize)]
 #[serde(tag = "t")]
 enum Wire {
@@ -819,6 +834,8 @@ enum Wire {
         gr: Vec<f64>,
         #[serde(default)]
         mm: Vec<f64>,
+        #[serde(default)]
+        tc: Vec<f64>,
     },
     #[serde(rename = "news")]
     News { l: Vec<serde_json::Value> },
@@ -1001,6 +1018,11 @@ impl Online {
         self.send(json!({ "t": "dash" }));
     }
 
+    /// A turret carried, set down toward (x, y) on the floor (floor keeps it within `TURRET_REACH`).
+    pub fn place(&self, x: f32, y: f32) {
+        self.send(json!({ "t": "place", "x": x.round(), "y": y.round() }));
+    }
+
     /// The memo (from Manager): a megaphone blast, once a wave.
     pub fn memo(&self) {
         self.send(json!({ "t": "memo" }));
@@ -1145,7 +1167,7 @@ impl Online {
                     self.before = None;
                 }
             }
-            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, ar, sh, fz, hz, ob, dk, nx, pa, fl, ps, pb, pk, tq, c, pt, gr, mm } => {
+            Wire::Frame { ph, w, tl, zl, tk, p, z, b, a, g, tu, l, d, m, ar, sh, fz, hz, ob, dk, nx, pa, fl, ps, pb, pk, tq, c, pt, gr, mm, tc } => {
                 let mut players: Vec<Player> = p
                     .chunks_exact(22)
                     .map(|v| v.iter().map(|&x| x as f32).collect::<Vec<f32>>())
@@ -1233,9 +1255,10 @@ impl Online {
                 let own_tickets = pt.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 let grades = gr.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 let memos = mm.iter().map(|&id| id as u32).collect();
+                let carried = tc.chunks_exact(2).map(|v| (v[0] as u32, v[1].max(0.0) as u32)).collect();
                 self.before = self.frame.take();
                 let objective = ob.map(|o| *o);
-                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, upcoming: nx, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, armors, shields, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
+                self.frame = Some(Frame { wave_on: ph == 1 || ph == 2, exiting: ph == 2, objective, dark: dk == 1, upcoming: nx, wave: w, break_left: tl, left: zl, tickets: tk, own_tickets, grades, memos, carried, turret_ranges: tq, crates, players, zombies, shots, agnes, gerard, turrets, letters, drops, kits, armors, shields, audited, heal_zones, floor: fl.min(5), paused: ps == 1, paused_by: pb, kick_in: pk, at });
             }
             Wire::News { l } => news.happened.extend(l.iter().filter_map(happened)),
             Wire::Over(over) => news.over = Some(over),
@@ -1346,7 +1369,8 @@ fn run(url: &str, token: &str, commands: &mpsc::Receiver<serde_json::Value>, eve
         MaybeTlsStream::Rustls(s) => s.get_mut().set_read_timeout(wait).and_then(|()| s.get_mut().set_nodelay(true)),
         _ => Ok(()),
     };
-    let hello = json!({ "t": "hello", "token": token });
+    // `carry`: a turret bought is kept, to set down with F (an older Ronnie's is set down at once).
+    let hello = json!({ "t": "hello", "token": token, "carry": true });
     if socket.send(tungstenite::Message::text(hello.to_string())).is_err() {
         return closed(None);
     }
@@ -1492,9 +1516,10 @@ mod tests {
     fn each_ones_tickets_and_the_turret_crates() {
         let mut online = Online::default();
         take(&mut online, r#"{"t":"welcome","map":{"w":1600,"h":1000,"wall":20,"desks":[],"coffee":{"x":90,"y":500},"doors":[]}}"#);
-        take(&mut online, r#"{"t":"s","ph":1,"w":3,"tl":0,"zl":4,"tk":130,"p":[],"z":[],"b":[],"tu":[10,20,0,9],"tq":[240],"c":[300,400,15,18],"pt":[7,100,8,30],"gr":[7,4,8,0],"mm":[7]}"#);
+        take(&mut online, r#"{"t":"s","ph":1,"w":3,"tl":0,"zl":4,"tk":130,"p":[],"z":[],"b":[],"tu":[10,20,0,9],"tq":[240],"c":[300,400,15,18],"pt":[7,100,8,30],"gr":[7,4,8,0],"mm":[7],"tc":[7,2]}"#);
         let f = online.frame.clone().unwrap();
         assert_eq!((f.grade_of(7), f.grade_of(8), f.memos.clone()), (4, 0, vec![7]));
+        assert_eq!((f.carried_by(7), f.carried_by(8)), (2, 0));
         assert_eq!((f.tickets_of(7), f.tickets_of(8), f.tickets_of(9)), (100, 30, 0));
         assert_eq!((f.turret_ranges.clone(), f.crates.clone()), (vec![240.0], vec![(300.0, 400.0, 1.5, 18)]));
         // From an older floor: the team's tickets for everyone.

@@ -70,6 +70,8 @@ pub(super) struct Monday {
     letters_open: bool,
     /// Shift, at the last frame.
     shift_was: bool,
+    /// F held at the last frame, a turret carried: let go, it is set down where the pointer is.
+    placing: bool,
     /// The menu of Escape is open (the game is paused meanwhile, for the whole room).
     menu: bool,
     /// When the player last resumed (the frames, once a second in pause, may still say paused).
@@ -1609,6 +1611,30 @@ impl App {
                 let world = (ptr - origin) / scale;
                 self.monday.online.mark(world.x, world.y);
             }
+            // F held, a turret carried: where it would go (toward the pointer, within reach) and how far it
+            // would fire; F let go: set down there.
+            let carried = frame.carried_by(p.id);
+            let held = carried > 0
+                && p.state == State::Up
+                && !self.monday.chat.typing
+                && ui.memory(|m| m.focused().is_none())
+                && ui.input(|i| i.key_down(Key::F));
+            if let Some(ptr) = pointer.filter(|_| carried > 0 && p.state == State::Up) {
+                let me_at = Vec2::new(x, y);
+                let toward = (ptr - origin) / scale - me_at;
+                let spot = me_at + if toward.length() > crate::zombie::TURRET_REACH { toward.normalized() * crate::zombie::TURRET_REACH } else { toward };
+                if held {
+                    let gold = Color32::from_rgb(255, 181, 71);
+                    painter.circle_stroke(at(x, y), crate::zombie::TURRET_REACH * scale, Stroke::new(1.0, Color32::from_white_alpha(40)));
+                    painter.circle_filled(at(spot.x, spot.y), crate::zombie::TURRET_RANGE * scale, gold.gamma_multiply(0.06));
+                    painter.circle_stroke(at(spot.x, spot.y), crate::zombie::TURRET_RANGE * scale, Stroke::new(1.5, gold.gamma_multiply(0.5)));
+                    painter.circle_filled(at(spot.x, spot.y), 16.0 * scale, gold.gamma_multiply(0.55));
+                    painter.circle_stroke(at(spot.x, spot.y), 16.0 * scale, Stroke::new(2.0, gold));
+                } else if self.monday.placing {
+                    self.monday.online.place(spot.x, spot.y);
+                }
+            }
+            self.monday.placing = held;
         }
         if let Some(p) = pointer {
             let s = Stroke::new(2.0, Color32::from_white_alpha(210));
@@ -1763,6 +1789,12 @@ impl App {
         // The perks' keys, and when they're back.
         if let Some(p) = mine {
             let mut y = field.max.y - 16.0;
+            // The turrets carried, to set down.
+            let carried = frame.carried_by(p.id);
+            if carried > 0 {
+                hud.text(Pos2::new(field.min.x + 18.0, y), Align2::LEFT_CENTER, t.monday_turret_key.replace("{n}", &carried.to_string()), FontId::proportional(12.0), theme.accent);
+                y -= 18.0;
+            }
             // The memo (from Manager), once a wave.
             if frame.grade_of(p.id) >= crate::zombie::MEMO_GRADE {
                 let ready = frame.memos.contains(&p.id) && frame.wave_on;
@@ -2194,6 +2226,8 @@ impl App {
             } else if !unlocked {
                 let grade = crate::zombie::SHOP_GRADE.iter().find(|(i, _)| i == item).map_or(0, |(_, g)| *g);
                 (t.monday_locked_grade.replace("{g}", &grade_name(t, grade, 0)), false)
+            } else if *item == "turret" && frame.carried_by(me.id) >= crate::zombie::TURRET_CARRY {
+                (t.monday_turret_carried.replace("{n}", &frame.carried_by(me.id).to_string()).replace("{max}", &crate::zombie::TURRET_CARRY.to_string()), false)
             } else if let Some(price) = price {
                 (format!("{price}"), frame.tickets_of(me.id) >= price && !(*item == "mug" && me.hp >= me.max_hp))
             } else {
