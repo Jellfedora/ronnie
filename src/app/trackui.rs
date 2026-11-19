@@ -167,6 +167,10 @@ pub(super) struct TasksState {
     /// The ones done with (finished, in production, cancelled) instead of those going on.
     archives: bool,
     find: String,
+    /// The projects folded in the table, their tasks hidden (a click on their row).
+    folded: std::collections::HashSet<String>,
+    /// The column filters (the table's heads): who asked, who worked on it, where it is ("" none); empty, all.
+    cols: [BTreeSet<String>; 3],
 }
 
 /// What a click in the tasks' table asks: a task opened, its state changed, one added to a project.
@@ -174,6 +178,10 @@ enum TaskAct {
     Open(String, String),
     Status(String, String, Status),
     New(String),
+    Fold(String),
+    /// A value of a column's filter ticked or unticked (column 0 who asked, 1 who worked, 2 where); none, the
+    /// filter cleared.
+    Filter(usize, Option<String>),
 }
 
 /// What the project's page keeps between frames.
@@ -664,6 +672,9 @@ impl App {
                 && f.project.as_ref().is_none_or(|id| &p.id == id)
                 && (words.is_empty() || [Some(&i.title), i.requester.as_ref(), i.comment.as_ref(), Some(&p.name)].into_iter().flatten().any(|s| s.to_lowercase().contains(&words)))
         };
+        // What a task shows in each filtered column ("" none).
+        let values = |p: &Project, i: &Item| -> [Vec<String>; 3] { [vec![i.requester.clone().unwrap_or_default()], { let w = p.workers(&i.id); if w.is_empty() { vec![String::new()] } else { w } }, vec![i.env.clone().unwrap_or_default()]] };
+        let mut choices: [BTreeSet<String>; 3] = Default::default();
         let mut groups: Vec<(&Project, Vec<(&Item, usize)>)> = Vec::new();
         for p in &projects {
             fn walk<'a>(p: &'a Project, quote: Option<&str>, parent: Option<&str>, depth: usize, out: &mut Vec<(&'a Item, usize)>) {
@@ -677,7 +688,17 @@ impl App {
             for q in &p.quotes {
                 walk(p, Some(&q.id), None, 0, &mut all);
             }
-            let rows: Vec<(&Item, usize)> = all.into_iter().filter(|(i, _)| keep(p, i)).collect();
+            let rows: Vec<(&Item, usize)> = all
+                .into_iter()
+                .filter(|(i, _)| keep(p, i))
+                .filter(|(i, _)| {
+                    let v = values(p, i);
+                    for (k, vs) in v.iter().enumerate() {
+                        choices[k].extend(vs.iter().cloned());
+                    }
+                    v.iter().zip(&f.cols).all(|(vs, chosen)| chosen.is_empty() || vs.iter().any(|x| chosen.contains(x)))
+                })
+                .collect();
             if !rows.is_empty() {
                 groups.push((p, rows));
             }
@@ -752,8 +773,34 @@ impl App {
                     ui.label(egui::RichText::new(t.track_task_col).size(13.0).strong().color(theme.text_muted));
                 });
                 for (k, h) in heads.iter().enumerate() {
+                    // Who asked, who worked, where: a filter, its values ticked in a menu.
+                    let col = match k {
+                        1 => Some(0),
+                        2 => Some(1),
+                        6 => Some(2),
+                        _ => None,
+                    };
                     cell(ui, COLS[k], HEAD_H, RIGHT[k], |ui| {
-                        ui.label(egui::RichText::new(*h).size(13.0).strong().color(theme.text_muted));
+                        let Some(c) = col else {
+                            ui.label(egui::RichText::new(*h).size(13.0).strong().color(theme.text_muted));
+                            return;
+                        };
+                        let on = !self.track.tasks.cols[c].is_empty();
+                        let text = egui::RichText::new(format!("{h}  {}", if on { "●" } else { "▾" })).size(13.0).strong().color(if on { theme.accent } else { theme.text_muted });
+                        let resp = ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand);
+                        egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                            if ui.add_enabled(on, egui::Button::new(t.track_col_all)).clicked() {
+                                out.push(TaskAct::Filter(c, None));
+                            }
+                            ui.separator();
+                            for v in &choices[c] {
+                                let mut ticked = self.track.tasks.cols[c].contains(v);
+                                let name = if v.is_empty() { "—".to_owned() } else if c == 2 { env_name(v).to_owned() } else { v.clone() };
+                                if ui.checkbox(&mut ticked, name).changed() {
+                                    out.push(TaskAct::Filter(c, Some(v.clone())));
+                                }
+                            }
+                        });
                     });
                 }
             });
@@ -770,8 +817,10 @@ impl App {
                 });
                 let color = color_of(p.color.as_deref()).unwrap_or(theme.accent);
                 let band = painter.add(egui::Shape::Noop);
+                let shut = self.track.tasks.folded.contains(&p.id);
                 let head = ui.horizontal(|ui| {
                     cell(ui, title_w, LINE_H - 4.0, false, |ui| {
+                        ui.label(egui::RichText::new(if shut { "▸" } else { "▾" }).size(13.0).color(theme.text_muted));
                         if let Some(c) = &p.client {
                             ui.label(egui::RichText::new(c).size(13.0).color(theme.text_muted));
                             ui.label(egui::RichText::new("›").size(13.0).color(theme.text_muted));
@@ -791,9 +840,18 @@ impl App {
                     }
                 });
                 let r = Rect::from_min_size(head.response.rect.min, Vec2::new(row_w, head.response.rect.height()));
+                // A click on it folds its tasks, or unfolds them.
+                let fold = ui.interact(r, ui.id().with(("fold", &p.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if fold.clicked() {
+                    out.push(TaskAct::Fold(p.id.clone()));
+                }
+                let color = if fold.hovered() { color.gamma_multiply(1.6) } else { color };
                 painter.set(band, egui::Shape::Vec(vec![egui::Shape::rect_filled(r, 0.0, color.gamma_multiply(0.10)), egui::Shape::rect_filled(Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, color)]));
                 full(r.bottom(), thin);
                 bottom = r.bottom();
+                if shut {
+                    continue;
+                }
                 for (i, depth) in rows {
                     let back = painter.add(egui::Shape::Noop);
                     let row = ui.horizontal(|ui| {
@@ -899,6 +957,19 @@ impl App {
                     self.track_select(Some(pid));
                     self.track.page.tab = Tab::Quotes;
                     self.track.page.item = form;
+                }
+                TaskAct::Filter(c, v) => match v {
+                    None => self.track.tasks.cols[c].clear(),
+                    Some(v) => {
+                        if !self.track.tasks.cols[c].remove(&v) {
+                            self.track.tasks.cols[c].insert(v);
+                        }
+                    }
+                },
+                TaskAct::Fold(pid) => {
+                    if !self.track.tasks.folded.remove(&pid) {
+                        self.track.tasks.folded.insert(pid);
+                    }
                 }
                 TaskAct::Status(pid, item, status) => self.track_write(move |c| c.update_item(&pid, &item, serde_json::json!({ "status": status.word() }))),
                 TaskAct::New(pid) => {
