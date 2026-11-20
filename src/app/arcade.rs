@@ -1,4 +1,4 @@
-//! The games' page: the games by kind (with colleagues, reflexes, puzzles, in the long run), each in a
+//! The games' page: the games by kind (multiplayer, arcade, brain teasers, build and collect), each in a
 //! card with a banner in its colors (its icon on a medallion, lively when hovered), what it is, its best
 //! score or who is online, its rewards. Reached from the sidebar's Games icon. A click opens it, a right
 //! click in a new window.
@@ -40,23 +40,34 @@ fn banner_colors(game: HomeGame) -> (Color32, Color32) {
 }
 
 /// A rectangle filled from `top` to `bottom`, its corners rounded by `r` (top left, top right,
-/// bottom right, bottom left).
+/// bottom right, bottom left), its edge smoothed: a ring fading out over a pixel, as egui does.
 fn paint_gradient(painter: &egui::Painter, rect: Rect, r: [f32; 4], top: Color32, bottom: Color32) {
     let color = |y: f32| top.lerp_to_gamma(bottom, ((y - rect.min.y) / rect.height()).clamp(0.0, 1.0));
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.center(), color(rect.center().y));
-    // Around, clockwise from the left: each corner's arc (a point when not rounded).
+    let half = 0.5 / painter.pixels_per_point();
+    // Around, clockwise from the left: each corner's arc (one point when not rounded), and the way out there.
     let corners = [(Pos2::new(rect.min.x + r[0], rect.min.y + r[0]), r[0], 180.0f32), (Pos2::new(rect.max.x - r[1], rect.min.y + r[1]), r[1], 270.0), (Pos2::new(rect.max.x - r[2], rect.max.y - r[2]), r[2], 0.0), (Pos2::new(rect.min.x + r[3], rect.max.y - r[3]), r[3], 90.0)];
+    let mut edge = Vec::new();
     for (center, radius, start) in corners {
-        for k in 0..=6 {
-            let a = (start + 90.0 * k as f32 / 6.0).to_radians();
-            let p = center + radius * Vec2::new(a.cos(), a.sin());
-            mesh.colored_vertex(p, color(p.y));
+        for k in 0..=12 {
+            let a = (start + 90.0 * k as f32 / 12.0).to_radians();
+            let out = Vec2::new(a.cos(), a.sin());
+            edge.push((center + radius * out, out));
         }
     }
-    let n = mesh.vertices.len() as u32 - 1;
-    for i in 1..=n {
-        mesh.add_triangle(0, i, if i == n { 1 } else { i + 1 });
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.center(), color(rect.center().y));
+    for &(p, out) in &edge {
+        let inner = p - out * half;
+        mesh.colored_vertex(inner, color(inner.y));
+        mesh.colored_vertex(p + out * half, Color32::TRANSPARENT);
+    }
+    let m = edge.len() as u32;
+    for i in 0..m {
+        let j = (i + 1) % m;
+        let (a, b, a_out, b_out) = (1 + 2 * i, 1 + 2 * j, 2 + 2 * i, 2 + 2 * j);
+        mesh.add_triangle(0, a, b);
+        mesh.add_triangle(a, a_out, b_out);
+        mesh.add_triangle(a, b_out, b);
     }
     painter.add(mesh);
 }
@@ -72,11 +83,10 @@ struct Block {
     titled: bool,
 }
 
-/// The sections (`sizes`: their number of cards) packed in lines `avail` wide: a section joins the
-/// line of the one before when it fits whole, a longer one than a line takes its own lines. The blocks,
-/// and the size of the whole.
+/// The sections (`sizes`: their number of cards) in lines `avail` wide, each one on its own (side by side,
+/// they read badly), one longer than a line going on over the next ones. The blocks, and the size of the whole.
 fn pack(sizes: &[usize], avail: f32, card: Vec2, gap: f32, head: f32) -> (Vec<Block>, Vec2) {
-    let (side_gap, line_gap) = (36.0, 22.0);
+    let line_gap = 22.0;
     let max_cols = (((avail + gap) / (card.x + gap)).floor() as usize).max(1);
     let width = |n: usize| n as f32 * card.x + n.saturating_sub(1) as f32 * gap;
     let mut blocks = Vec::new();
@@ -85,10 +95,7 @@ fn pack(sizes: &[usize], avail: f32, card: Vec2, gap: f32, head: f32) -> (Vec<Bl
         let mut from = 0;
         while from < n {
             let count = (n - from).min(max_cols);
-            let whole = from == 0 && count == n;
-            if open && whole && x + side_gap + width(count) <= avail {
-                x += side_gap;
-            } else if open {
+            if open {
                 (x, y, line_h) = (0.0, y + line_h + line_gap, 0.0);
             }
             let titled = from == 0;
@@ -122,8 +129,8 @@ impl App {
         let sizes: Vec<usize> = by_kind.iter().map(Vec::len).collect();
         let kind_names = [t.arcade_kind_online, t.arcade_kind_reflex, t.arcade_kind_puzzle, t.arcade_kind_long];
 
-        // Tall cards (the banner on top) when they fit the page, else flat ones (the banner on the
-        // left), the page scrolling when even those don't.
+        // Tall cards (the banner on top), the page scrolling when they don't fit; flat ones (the banner
+        // on the left) only on a page too low for a line of tall ones.
         let avail = (rect.width() - 96.0).max(200.0);
         let layout = |tall: bool| {
             let (card, gap, head, title_h) = if tall { (Vec2::new(228.0, 238.0), 16.0, 34.0, 96.0) } else { (Vec2::new(300.0, 96.0), 12.0, 30.0, 78.0) };
@@ -131,10 +138,8 @@ impl App {
             let (blocks, size) = pack(&sizes, avail, card, gap, head);
             (card, gap, head, title_h, blocks, size)
         };
-        let fits = |l: &(Vec2, f32, f32, f32, Vec<Block>, Vec2)| 40.0 + l.3 + l.5.y + 24.0 <= rect.height();
-        let tall_layout = layout(true);
-        let wide = fits(&tall_layout);
-        let (card_size, gap, head, title_h, blocks, size) = if wide { tall_layout } else { layout(false) };
+        let wide = rect.height() >= 560.0;
+        let (card_size, gap, head, title_h, blocks, size) = layout(wide);
         let content_h = (40.0 + title_h + size.y + 24.0).max(rect.height());
         let time = ui.input(|i| i.time) as f32;
 
@@ -190,12 +195,14 @@ impl App {
                     let corners = if wide { [14.0, 14.0, 0.0, 0.0] } else { [14.0, 0.0, 0.0, 14.0] };
                     let (c_top, c_bottom) = banner_colors(game);
                     paint_gradient(&painter, banner, corners, c_top, c_bottom);
-                    let glow = painter.with_clip_rect(banner.shrink(1.0));
                     let seed = |i: u32| ((game as u32 * 7919 + i * 104_729 + 31) % 997) as f32 / 997.0;
+                    // Each glow wholly inside the banner, away from its rounded corners, drifting a little.
                     for i in 0..5 {
-                        let drift = Vec2::new((time * 0.9 + i as f32 * 1.7).sin(), (time * 0.7 + i as f32 * 2.3).cos()) * 6.0 * lift;
-                        let p = banner.min + Vec2::new(seed(i) * banner.width(), seed(i + 11) * banner.height()) + drift;
-                        glow.circle_filled(p, 8.0 + seed(i + 23) * 22.0, Color32::from_white_alpha(14 + (seed(i + 37) * 14.0) as u8));
+                        let radius = 6.0 + seed(i + 23) * 12.0;
+                        let room = banner.shrink(radius + 8.0);
+                        let drift = Vec2::new((time * 0.9 + i as f32 * 1.7).sin(), (time * 0.7 + i as f32 * 2.3).cos()) * 5.0 * lift;
+                        let p = room.min + Vec2::new(seed(i) * room.width(), seed(i + 11) * room.height()) + drift;
+                        painter.circle_filled(p, radius, Color32::from_white_alpha(14 + (seed(i + 37) * 14.0) as u8));
                     }
                     let (radius, scale) = if wide { (36.0, 2.3) } else { (28.0, 1.7) };
                     let bob = (time * 3.2).sin() * 3.0 * lift;
@@ -393,16 +400,16 @@ impl App {
 mod tests {
     use super::*;
 
-    /// Small sections share a line, one longer than a line goes on, untitled, over the next.
+    /// Each section on its own line, one longer than a line going on, untitled, over the next.
     #[test]
     fn sections_pack_in_lines() {
         let card = Vec2::new(100.0, 50.0);
-        // Room for 6 cards: the 4 alone (the 5 doesn't fit beside), the 5, then both 2 side by side.
+        // Room for 6 cards: a line each, all at the left.
         let (blocks, size) = pack(&[4, 5, 2, 2], 6.0 * 100.0 + 5.0 * 10.0, card, 10.0, 20.0);
         let lines: Vec<f32> = blocks.iter().map(|b| b.at.y).collect();
-        assert_eq!(lines, [0.0, 92.0, 184.0, 184.0]);
-        assert_eq!(blocks[3].at.x, 2.0 * 100.0 + 10.0 + 36.0);
-        assert_eq!(size, Vec2::new(5.0 * 100.0 + 4.0 * 10.0, 184.0 + 70.0));
+        assert_eq!(lines, [0.0, 92.0, 184.0, 276.0]);
+        assert!(blocks.iter().all(|b| b.at.x == 0.0 && b.titled));
+        assert_eq!(size, Vec2::new(5.0 * 100.0 + 4.0 * 10.0, 276.0 + 70.0));
         // Room for 3: the 5 on two lines, the second untitled.
         let (blocks, _) = pack(&[4, 5, 2, 2], 320.0, card, 10.0, 20.0);
         let five: Vec<(usize, usize, bool)> = blocks.iter().filter(|b| b.kind == 1).map(|b| (b.from, b.count, b.titled)).collect();
