@@ -107,7 +107,7 @@ impl App {
                 let need = super::trail::TRAIL_METERS;
                 vec![Unlock { what: t.unlock_trail.into(), how: t.unlock_trail_how.replace("{n}", &need.to_string()), done: super::trail::unlocked(s.runner_best), progress: Some((s.runner_best, need)), info: false, reward: Some(Reward::Trail), gives: t.trail_setting_desc.into() }]
             }
-            HomeGame::BugHunt | HomeGame::Fishing => {
+            HomeGame::BugHunt | HomeGame::Fishing | HomeGame::Friday => {
                 let frames = super::frames::FRAMES.iter().filter(|f| if game == HomeGame::BugHunt { matches!(f.need, super::frames::Need::Wave(_)) } else { matches!(f.need, super::frames::Need::Cards(_)) }).map(|f| {
                     let what = t.unlock_frame.replace("{n}", super::frames::frame_name(t, f.id));
                     Unlock { what, how: super::frames::how(f, t), done: super::frames::unlocked(f, s), progress: Some(super::frames::progress(f, s)), info: false, reward: Some(Reward::Frame(f.id)), gives: t.frame_unlocked_body.into() }

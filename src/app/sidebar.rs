@@ -39,7 +39,7 @@ impl App {
                 return;
             }
             // These fold the sidebar themselves, during a run, a song, a show.
-            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::Coffee | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing | super::four::HomeGame::Monday | super::four::HomeGame::Tycoon) {
+            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::Coffee | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing | super::four::HomeGame::Monday | super::four::HomeGame::Tycoon | super::four::HomeGame::Friday) {
                 self.games_drawn.push(self.home_which);
                 return match self.home_which {
                     super::four::HomeGame::Runner => self.runner_page(ui, rect),
@@ -48,6 +48,7 @@ impl App {
                     super::four::HomeGame::Fishing => self.fishing_page(ui, rect),
                     super::four::HomeGame::Monday => self.monday_page(ui, rect),
                     super::four::HomeGame::Tycoon => self.tycoon_page(ui, rect),
+                    super::four::HomeGame::Friday => self.friday_page(ui, rect),
                     super::four::HomeGame::Coffee => self.coffee_page(ui, rect),
                     _ => self.backstage_page(ui, rect),
                 };
@@ -514,6 +515,7 @@ impl App {
                 HomeGame::Monday => super::zombie::paint_monday_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, 1.0),
                 HomeGame::Tycoon => super::tycoon::paint_tycoon_icon(&painter, icon, &theme, 1.0),
+                HomeGame::Friday => super::friday::paint_friday_icon(&painter, icon, &theme, 1.0),
             }
             // The note on the right; the name cut before it if both don't fit.
             let note_w = note.map_or(0.0, |note| painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85)).width() + 10.0);
@@ -537,7 +539,7 @@ impl App {
     /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
     /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
     /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 13] {
+    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 14] {
         use super::four::HomeGame;
         let t = self.t();
         let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
@@ -553,10 +555,11 @@ impl App {
         let bughunt_best = (self.config.settings.bughunt_best > 0).then(|| self.config.settings.bughunt_best.to_string());
         let cards = self.config.settings.fish_cards.len();
         let tycoon = self.tycoon_note();
+        let friday_best = (self.config.settings.friday_best > 0).then(|| self.config.settings.friday_best.to_string());
         let fishing = (cards > 0).then(|| t.fishing_species.replace("{n}", &cards.to_string()).replace("{max}", &crate::fishing::FISH.len().to_string()));
         // Short, as the others: the wave reached.
         let monday_best = (self.config.settings.monday_best > 0).then(|| t.monday_wave.to_lowercase().replace("{n}", &self.config.settings.monday_best.to_string()));
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing), (HomeGame::Monday, t.monday_name, monday_best), (HomeGame::Tycoon, t.tycoon_name, tycoon)];
+        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing), (HomeGame::Monday, t.monday_name, monday_best), (HomeGame::Tycoon, t.tycoon_name, tycoon), (HomeGame::Friday, t.friday_name, friday_best)];
         for (game, _, note) in &mut games {
             if let Some(p) = self.game_locked(*game) {
                 *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
@@ -592,6 +595,9 @@ impl App {
         if !drawn.contains(&HomeGame::Monday) {
             self.monday.leave();
         }
+        if !drawn.contains(&HomeGame::Friday) {
+            self.friday.leave();
+        }
         if !drawn.contains(&HomeGame::Fishing) {
             self.fishing.leave(self.config.settings.floor.as_ref());
         }
@@ -621,6 +627,7 @@ impl App {
             HomeGame::Fishing => self.open_fishing(),
             HomeGame::Monday => self.open_monday(),
             HomeGame::Tycoon => self.open_tycoon(),
+            HomeGame::Friday => self.open_friday(),
         }
     }
 
