@@ -36,7 +36,6 @@ mod files;
 mod filesearch;
 mod four;
 mod larsen;
-mod president;
 mod bughunt;
 mod zombie;
 mod zombie_floors;
@@ -429,7 +428,6 @@ pub struct App {
     /// Puissance 4's page.
     four: four::Four,
     larsen: larsen::Larsen,
-    president: president::President,
     bughunt: bughunt::BugHunt,
     monday: zombie::Monday,
     fishing: fishing::Fishing,
@@ -1343,7 +1341,6 @@ impl App {
             versus: crate::live::Live::default(),
             four: four::Four::default(),
             larsen: larsen::Larsen::default(),
-            president: president::President::default(),
             bughunt: bughunt::BugHunt::default(),
             monday: zombie::Monday::default(),
             fishing: fishing::Fishing::default(),
