@@ -1170,7 +1170,7 @@ pub struct GameUsage {
     pub backstage: bool,
     /// Larsen.
     pub larsen: bool,
-    /// The Président.
+    /// The Président, a game since removed: kept so the half-days sealed with it stay valid.
     pub president: bool,
     /// Bug Hunt.
     pub bughunt: bool,

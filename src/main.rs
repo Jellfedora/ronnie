@@ -48,7 +48,6 @@ mod putty;
 mod procs;
 mod playtime;
 mod tycoon;
-mod president;
 mod notesync;
 mod progress;
 mod recap;

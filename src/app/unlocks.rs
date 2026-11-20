@@ -156,7 +156,6 @@ impl App {
                     Unlock { what: t.unlock_cheque.to_owned(), how: t.unlock_cheque_how.to_owned(), done: sales > 0, progress: None, info: false, reward: Some(Reward::Cheque), gives: t.cheque_desc.into() },
                 ]
             }
-            _ => Vec::new(),
         }
     }
 

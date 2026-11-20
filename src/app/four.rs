@@ -20,7 +20,6 @@ pub(super) enum HomeGame {
     Backstage,
     Coffee,
     Larsen,
-    President,
     BugHunt,
     Fishing,
     /// Lundi matin.
@@ -110,7 +109,6 @@ fn invite_texts(t: &Strings, game: Option<&str>) -> (&'static str, &'static str)
         Some("ronnie-io") => (t.blob_name, t.blob_invited),
         Some("riff-hero") => (t.riff_name, t.riff_invited),
         Some("larsen") => (t.larsen_name, t.larsen_invited),
-        Some("president") => (t.president_name, t.president_invited),
         Some("lundi-matin") => (t.monday_name, t.monday_invited),
         _ => (t.four_name, t.four_invited),
     }
@@ -291,11 +289,6 @@ impl App {
                 self.open_four();
             }
         }
-        // Seated at a table of the Président (opened by inviting, or joined): to its page, once.
-        if let Some(id) = self.versus.seated.clone().filter(|id| self.president.followed.as_ref() != Some(id)) {
-            self.president.followed = Some(id);
-            self.president_online();
-        }
         self.invite_window(ctx);
     }
 
@@ -306,7 +299,6 @@ impl App {
             Some("ronnie-io") => HomeGame::Blob,
             Some("riff-hero") => HomeGame::Riff,
             Some("larsen") => HomeGame::Larsen,
-            Some("president") => HomeGame::President,
             Some("lundi-matin") => HomeGame::Monday,
             _ => HomeGame::Four,
         };
@@ -325,7 +317,6 @@ impl App {
                     HomeGame::Blob => super::blob::paint_blob_icon(ui.painter(), rect.center(), &theme, 1.2),
                     HomeGame::Riff => super::riff::paint_riff_icon(ui.painter(), rect.center(), &theme, 1.2),
                     HomeGame::Larsen => super::larsen::paint_larsen_icon(ui.painter(), rect.center(), &theme, 1.2),
-                    HomeGame::President => super::president::paint_president_icon(ui.painter(), rect.center(), &theme, 1.2),
                     HomeGame::Monday => super::zombie::paint_monday_icon(ui.painter(), rect.center(), &theme, 1.2),
                     _ => paint_four_icon(ui.painter(), rect.center(), &theme, 1.2),
                 }
@@ -360,11 +351,6 @@ impl App {
             Some(true) if game == HomeGame::Riff => {
                 self.versus.accept(&invite.id);
                 self.open_riff_battle();
-            }
-            // The Président: a seat at the table of who invited.
-            Some(true) if game == HomeGame::President => {
-                self.versus.accept(&invite.id);
-                self.president_online();
             }
             Some(true) if game == HomeGame::Larsen => {
                 self.versus.accept(&invite.id);
