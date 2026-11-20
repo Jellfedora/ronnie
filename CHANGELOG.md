@@ -4,6 +4,16 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-20
+
+### Nouveautés
+
+- **Une nouvelle page des jeux, rangés par genre** : À plusieurs (Puissance 4, Larsen, Ronnie.io, Lundi matin), Arcade (Speed Metal, Ronnie Run, Riff Hero, Backstage, Bug Hunt), Réflexion (Démineur, Pause Café), Gestion et collection (Ronnie Corp, Pêche aux talents). Chaque carte a une bannière aux couleurs de son jeu, avec ses récompenses ; survolée, elle se soulève et son icône flotte. Un jeu assez joué pour la demi-journée a sa bannière assombrie, et la note dit quand il revient. Merci Jonathan.
+
+### Retraits
+
+- **Le Président s'en va**, le jeu et ses tables en ligne. Demande floor 0.29.0. Merci Jonathan.
+
 ## [1.9.0] - 2026-11-19
 
 ### Nouveautés
