@@ -37,6 +37,7 @@ mod filesearch;
 mod four;
 mod larsen;
 mod bughunt;
+mod friday;
 mod zombie;
 mod zombie_floors;
 mod zombie_rewards;
@@ -429,6 +430,7 @@ pub struct App {
     four: four::Four,
     larsen: larsen::Larsen,
     bughunt: bughunt::BugHunt,
+    friday: friday::Friday,
     monday: zombie::Monday,
     fishing: fishing::Fishing,
     tycoon: tycoon::Tycoon,
@@ -1342,6 +1344,7 @@ impl App {
             four: four::Four::default(),
             larsen: larsen::Larsen::default(),
             bughunt: bughunt::BugHunt::default(),
+            friday: friday::Friday::default(),
             monday: zombie::Monday::default(),
             fishing: fishing::Fishing::default(),
             tycoon: tycoon::Tycoon::default(),

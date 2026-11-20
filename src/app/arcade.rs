@@ -14,7 +14,7 @@ fn kind(game: HomeGame) -> usize {
     match game {
         HomeGame::Four | HomeGame::Larsen | HomeGame::Blob | HomeGame::Monday => 0,
         HomeGame::SpeedMetal | HomeGame::Runner | HomeGame::Riff | HomeGame::Backstage | HomeGame::BugHunt => 1,
-        HomeGame::Mines | HomeGame::Coffee => 2,
+        HomeGame::Mines | HomeGame::Coffee | HomeGame::Friday => 2,
         HomeGame::Tycoon | HomeGame::Fishing => 3,
     }
 }
@@ -36,6 +36,7 @@ fn banner_colors(game: HomeGame) -> (Color32, Color32) {
         HomeGame::Fishing => (c(66, 178, 228), c(18, 78, 140)),
         HomeGame::Monday => (c(124, 160, 98), c(48, 66, 44)),
         HomeGame::Tycoon => (c(244, 196, 78), c(172, 108, 28)),
+        HomeGame::Friday => (c(70, 96, 150), c(18, 22, 40)),
     }
 }
 
@@ -223,6 +224,7 @@ impl App {
                         HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, scale),
                         HomeGame::Monday => super::zombie::paint_monday_icon(&painter, icon, &theme, scale),
                         HomeGame::Tycoon => super::tycoon::paint_tycoon_icon(&painter, icon, &theme, scale),
+                        HomeGame::Friday => super::friday::paint_friday_icon(&painter, icon, &theme, scale),
                     }
                     // Played enough this half-day: the banner dimmed (the note says when it's back).
                     if locked {
@@ -245,6 +247,7 @@ impl App {
                         HomeGame::Fishing => t.fishing_arcade,
                         HomeGame::Monday => t.arcade_monday,
                         HomeGame::Tycoon => t.tycoon_arcade,
+                        HomeGame::Friday => t.arcade_friday,
                     };
                     let name_color = if hot { theme.text } else { theme.text.gamma_multiply(0.92) };
                     let note_color = if locked { theme.text_muted } else { theme.accent };

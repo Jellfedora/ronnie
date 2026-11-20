@@ -25,6 +25,8 @@ pub(super) enum HomeGame {
     /// Lundi matin.
     Monday,
     Tycoon,
+    /// Mise en prod du vendredi.
+    Friday,
 }
 
 /// A disc falling into place, since `at`.
