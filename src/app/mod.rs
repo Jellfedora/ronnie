@@ -44,6 +44,11 @@ mod monday_theme;
 mod fishing;
 mod tycoon;
 mod tycoon_scene;
+mod openspace;
+mod openspace_scene;
+mod openspace_raid;
+mod openspace_cards;
+mod openspace_drone;
 mod frames;
 mod trail;
 mod game;
@@ -433,6 +438,7 @@ pub struct App {
     monday: zombie::Monday,
     fishing: fishing::Fishing,
     tycoon: tycoon::Tycoon,
+    openspace: openspace::Space,
     /// The pointer's trail (unlocked at Ronnie Run).
     trail: trail::Trail,
     /// The trail run in its preview (Settings › Rewards).
@@ -1349,6 +1355,7 @@ impl App {
             monday: zombie::Monday::default(),
             fishing: fishing::Fishing::default(),
             tycoon: tycoon::Tycoon::default(),
+            openspace: openspace::Space::default(),
             trail: trail::Trail::default(),
             trail_preview: trail::Trail::default(),
             wand: wizard::Wand::default(),
@@ -6096,6 +6103,7 @@ impl eframe::App for App {
         self.recap_poll(ctx);
         self.progress_tick(ctx);
         self.tycoon_tick(ctx);
+        self.openspace_tick(ctx);
         self.notesync_tick(ctx);
         self.desktop_tick();
         self.assist_tick();

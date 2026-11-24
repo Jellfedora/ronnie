@@ -60,6 +60,7 @@ pub(crate) struct Fx {
     sleigh: bool,
     #[serde(default)]
     snow: bool,
+    drone: bool,
     /// The trail in bank notes (Ronnie Corp's).
     #[serde(default)]
     bills: bool,
@@ -71,7 +72,7 @@ pub(crate) struct Fx {
 
 impl Fx {
     fn any(&self) -> bool {
-        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.elf || self.unicorn || self.wolf || self.sleigh || self.snow || self.pointer.is_some()
+        self.trail || self.sheep || self.droid || self.horde || self.gerard || self.matheo || self.elf || self.unicorn || self.wolf || self.sleigh || self.snow || self.drone || self.pointer.is_some()
     }
 
     /// The pointer is followed (else it needn't be): Mathéo too, to be grabbed.
@@ -133,7 +134,7 @@ impl App {
         let official = crate::config::OFFICIAL;
         let worn = trail::worn(s);
         let pointer = Some(trail::pointer(s)).filter(|p| *p != Pointer::System);
-        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep && office::sheep_unlocked(s), droid: d.droid && (!official || s.hyperspace_unlocked), horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), matheo_tips: d.matheo_tips, lang: s.language, elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), wolf: d.wolf && (!official || crate::coffee::thrones_won(&s.coffee_bests)), sleigh: d.sleigh && (!official || s.christmas_unlocked), snow: d.snow && (!official || s.christmas_unlocked), bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
+        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep && office::sheep_unlocked(s), droid: d.droid && (!official || s.hyperspace_unlocked), horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), matheo_tips: d.matheo_tips, lang: s.language, elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), wolf: d.wolf && (!official || crate::coffee::thrones_won(&s.coffee_bests)), sleigh: d.sleigh && (!official || s.christmas_unlocked), snow: d.snow && (!official || s.christmas_unlocked), drone: d.drone && super::openspace_drone::drone_unlocked(s), bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -152,7 +153,7 @@ impl App {
         }
         let Some(area) = self.terminals_rect else { return };
         let fx = Fx { sheep: false, trail: false, pointer: None, ..self.companions() };
-        if !(fx.droid || fx.gerard || fx.elf || fx.unicorn || fx.wolf || fx.sleigh || fx.snow || fx.horde || fx.matheo) {
+        if !(fx.droid || fx.gerard || fx.elf || fx.unicorn || fx.wolf || fx.sleigh || fx.snow || fx.drone || fx.horde || fx.matheo) {
             return;
         }
         let now = ctx.input(|i| i.time);
@@ -1393,7 +1394,7 @@ fn walk_screen(lap: f64, salt: u64, n: usize) -> usize {
 
 /// The sheep's, the droid's, Gérard's, the house-elf's, the unicorn's and the direwolf cub's walks under
 /// way, and the screen each goes along (any of the `n`).
-fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 7] {
+fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 8] {
     let gerard = gerard_every();
     let at = |lap: f64, salt: u64| walk_screen(lap, salt, n);
     [
@@ -1404,6 +1405,7 @@ fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 7] {
         (fx.unicorn && wallstreet::unicorn_at(now).is_ok(), at(wallstreet::unicorn_lap(now), 5)),
         (fx.wolf && wolf_at(now).is_ok(), at(((now + 40.0) / WOLF_EVERY).floor(), 6)),
         (fx.sleigh && noel::sleigh_at(now).is_ok(), at(noel::sleigh_lap(now), 7)),
+        (fx.drone && super::openspace_drone::drone_at(now).is_ok(), at(super::openspace_drone::drone_lap(now), 8)),
     ]
 }
 
@@ -1415,7 +1417,7 @@ fn walkers_on(fx: &Fx, now: f64, here: usize, n: usize) -> bool {
 /// On screen `here` (of `n`): the walkers going along it (`strip`, its foot) and
 /// the horde (`whole`). Something shown, and when to look again.
 fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, here: usize, n: usize, fx: &Fx) -> (bool, f32) {
-    let [sheep, droid, gerard, elf, unicorn, wolf, sleigh] = walks(fx, now, n);
+    let [sheep, droid, gerard, elf, unicorn, wolf, sleigh, drone] = walks(fx, now, n);
     let (mut busy, mut next) = (false, 1.0f32);
     if fx.sheep && sheep.1 == here {
         let (shown, again) = office::sheep(painter, strip, now);
@@ -1449,6 +1451,11 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
     }
     if fx.sleigh && sleigh.1 == here {
         let (shown, again) = noel::sleigh_run(painter, strip, now);
+        busy |= shown;
+        next = next.min(again);
+    }
+    if fx.drone && drone.1 == here {
+        let (shown, again) = super::openspace_drone::drone_run(painter, strip, now);
         busy |= shown;
         next = next.min(again);
     }
@@ -2839,7 +2846,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, matheo_tips: true, lang: crate::i18n::Lang::En, elf: true, unicorn: true, wolf: true, sleigh: true, snow: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, matheo_tips: true, lang: crate::i18n::Lang::En, elf: true, unicorn: true, wolf: true, sleigh: true, snow: true, drone: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

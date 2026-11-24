@@ -54,6 +54,8 @@ pub(super) enum Reward {
     Unicorn,
     /// The giant cheque, sent from the chat (Ronnie Corp).
     Cheque,
+    /// The delivery drone flying along the foot of the screen (Open Space).
+    Drone,
 }
 
 impl App {
@@ -154,6 +156,16 @@ impl App {
                     at(t.unlock_unicorn, UNICORN_STAGE, Reward::Unicorn, t.unicorn_desc),
                     Unlock { what: t.unlock_frame.replace("{n}", super::frames::frame_name(t, ticker.id)), how: super::frames::how(ticker, t), done: super::frames::unlocked(ticker, s), progress: None, info: false, reward: Some(Reward::Frame(ticker.id)), gives: t.frame_unlocked_body.into() },
                     Unlock { what: t.unlock_cheque.to_owned(), how: t.unlock_cheque_how.to_owned(), done: sales > 0, progress: None, info: false, reward: Some(Reward::Cheque), gives: t.cheque_desc.into() },
+                ]
+            }
+            // Open Space: the drone (campaign stars), the « Pare-feu » frame (the boss's office at its top).
+            HomeGame::OpenSpace => {
+                use super::openspace_drone::{drone_progress, drone_unlocked, hq_level, FRAME_HQ};
+                let (have, need) = drone_progress(s);
+                let frame = super::frames::FRAMES.iter().find(|f| f.id == "firewall").expect("the firewall frame");
+                vec![
+                    Unlock { what: t.unlock_drone.into(), how: t.unlock_drone_how.replace("{n}", &need.to_string()), done: drone_unlocked(s), progress: Some((have, need)), info: false, reward: Some(Reward::Drone), gives: t.drone_desc.into() },
+                    Unlock { what: t.unlock_frame.replace("{n}", super::frames::frame_name(t, frame.id)), how: super::frames::how(frame, t), done: super::frames::unlocked(frame, s), progress: Some((hq_level(s).min(FRAME_HQ) as u32, FRAME_HQ as u32)), info: false, reward: Some(Reward::Frame(frame.id)), gives: t.frame_unlocked_body.into() },
                 ]
             }
         }

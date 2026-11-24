@@ -165,7 +165,7 @@ pub fn merge(base: &Value, local: &Value, remote: &Value) -> Value {
             "fish_cards" => cards(b, l, r),
             "fish_baits" => baits(b, l, r),
             "fish_budget" => counter(b, l, r),
-            "tycoon" => match company(l, r) {
+            "tycoon" | "openspace" => match company(l, r) {
                 Some(v) => v,
                 None => continue,
             },
