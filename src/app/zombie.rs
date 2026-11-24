@@ -2096,7 +2096,8 @@ impl App {
     /// ready, the perks (Shift: dash, T: back to the coffee).
     fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame, (weapon, owned): (usize, u8)) {
         let free = ui.ctx().memory(|m| m.focused().is_none());
-        let memo = free && ui.input(|i| i.key_pressed(Key::E));
+        // The memo: E, or a right click on the field.
+        let memo = free && ui.input(|i| i.key_pressed(Key::E) || (i.pointer.secondary_pressed() && i.pointer.hover_pos().is_some_and(|p| field.contains(p))));
         let (mx, my, fire, pick, reload, ready, shift, tp) = ui.input(|i| {
             let down = |keys: &[Key]| free && keys.iter().any(|k| i.key_down(*k));
             let mx = f32::from(down(&[Key::D, Key::ArrowRight])) - f32::from(down(&[Key::Q, Key::A, Key::ArrowLeft]));
