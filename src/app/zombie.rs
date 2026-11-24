@@ -7,7 +7,7 @@
 
 use super::four::HomeGame;
 use super::*;
-use crate::zombie::{AgnesState, Frame, Happened, Kind, Milestone, Online, Over, State, Status};
+use crate::zombie::{AgnesState, Frame, Happened, Kind, Milestone, Online, Over, State, Status, WEAPONS};
 
 /// The players' colors, by seat.
 const COLORS: [Color32; 4] = [Color32::from_rgb(79, 195, 255), Color32::from_rgb(255, 122, 182), Color32::from_rgb(255, 211, 79), Color32::from_rgb(94, 224, 122)];
@@ -15,6 +15,60 @@ const COLORS: [Color32; 4] = [Color32::from_rgb(79, 195, 255), Color32::from_rgb
 const ZOMBIE: Color32 = Color32::from_rgb(143, 209, 106);
 /// The input is sent again at least this often (s), and whenever it changes.
 const INPUT_EVERY: f64 = 0.1;
+/// A touch glide (a Magic Mouse, a touchpad) this long (points) changes the weapon, once a gesture;
+/// a gesture ends after this many seconds without any glide (its inertia included).
+const GLIDE_NEED: f32 = 90.0;
+const GLIDE_GAP: f64 = 0.35;
+
+/// The mouse wheel turning the weapons: a notch of a wheel, a change; a touch glide (the Magic Mouse,
+/// a touchpad), one change a gesture, however far it slides on.
+#[derive(Default)]
+struct Wheel {
+    /// Notches turned not yet a change (a fine wheel sends parts of one).
+    notches: f32,
+    /// The gesture under way: how far it went, when it last moved, whether it changed already.
+    glide: f32,
+    last: f64,
+    done: bool,
+}
+
+impl Wheel {
+    /// `notches` turned (down negative), `glide` points slid (down negative), at `now`: a change (1: the
+    /// next weapon, -1: the one before), if any.
+    fn feed(&mut self, notches: f32, glide: f32, now: f64) -> Option<i8> {
+        if notches != 0.0 {
+            self.notches += notches;
+            if self.notches.abs() >= 1.0 {
+                let dir = if self.notches < 0.0 { 1 } else { -1 };
+                self.notches = 0.0;
+                return Some(dir);
+            }
+        }
+        if glide == 0.0 {
+            return None;
+        }
+        if now - self.last > GLIDE_GAP {
+            *self = Wheel { notches: self.notches, ..Wheel::default() };
+        }
+        self.last = now;
+        if self.done {
+            return None;
+        }
+        self.glide += glide;
+        if self.glide.abs() < GLIDE_NEED {
+            return None;
+        }
+        self.done = true;
+        Some(if self.glide < 0.0 { 1 } else { -1 })
+    }
+}
+
+/// The weapon after `from` (`step` 1) or before it (`step` WEAPONS.len() - 1) among those in `owned` (bits
+/// in WEAPONS' order), round; None when one has no other.
+fn next_weapon(from: usize, owned: u8, step: usize) -> Option<usize> {
+    let n = WEAPONS.len();
+    (1..n).map(|k| (from + k * step) % n).find(|&w| owned & (1 << w) != 0)
+}
 /// Seconds a revive takes (floor's REVIVE).
 const REVIVE: f32 = 3.0;
 /// The coffee machine's column, on the left of the field (its panel this wide).
@@ -57,6 +111,8 @@ pub(super) struct Monday {
     last_said: u32,
     /// The marks on the floor: who, where, since when.
     marks: Vec<(u32, f32, f32, f64)>,
+    /// The mouse wheel (or a touch glide) turning the weapons.
+    wheel: Wheel,
     /// The objective last seen (its id, the lift's stage): a banner when it changes.
     objective_seen: Option<(String, String, bool)>,
     /// An error floor sent (a room full...), and since.
@@ -1630,7 +1686,7 @@ impl App {
             }
         } else if let Some(p) = mine {
             let (x, y) = mix.player(p.id, p.x, p.y);
-            self.monday_controls(ui, now, at(x, y), pointer, field, &frame);
+            self.monday_controls(ui, now, at(x, y), pointer, field, &frame, (p.weapon, p.owned));
             // G: a mark where the pointer is (« come here! »).
             if let Some(ptr) = pointer
                 && !self.monday.chat.typing
@@ -2090,9 +2146,10 @@ impl App {
 
     /// The keys and the mouse, to floor: moving, aiming at the pointer, firing, a weapon, reloading,
     /// ready, the perks (Shift: dash, T: back to the coffee).
-    fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame) {
+    fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame, (weapon, owned): (usize, u8)) {
         let free = ui.ctx().memory(|m| m.focused().is_none());
-        let memo = free && ui.input(|i| i.key_pressed(Key::E));
+        // The memo: E, or a right click on the field.
+        let memo = free && ui.input(|i| i.key_pressed(Key::E) || (i.pointer.secondary_pressed() && i.pointer.hover_pos().is_some_and(|p| field.contains(p))));
         let (mx, my, fire, pick, reload, ready, shift, tp) = ui.input(|i| {
             let down = |keys: &[Key]| free && keys.iter().any(|k| i.key_down(*k));
             let mx = f32::from(down(&[Key::D, Key::ArrowRight])) - f32::from(down(&[Key::Q, Key::A, Key::ArrowLeft]));
@@ -2108,6 +2165,23 @@ impl App {
         if due {
             self.monday.online.input(mx, my, aim, fire);
             self.monday.sent = Some((input, now));
+        }
+        // The mouse wheel over the field: the next weapon one has (down) or the one before (up), round.
+        // A wheel's notches (lines, pages) and a touch glide's points (a Magic Mouse, a touchpad), apart.
+        let (notches, glide) = ui.input(|i| {
+            if !i.pointer.hover_pos().is_some_and(|p| field.contains(p)) {
+                return (0.0, 0.0);
+            }
+            i.events.iter().fold((0.0, 0.0), |(n, g), e| match e {
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } => (n, g + delta.y),
+                egui::Event::MouseWheel { delta, .. } => (n + delta.y, g),
+                _ => (n, g),
+            })
+        });
+        let mut pick = pick;
+        if let Some(dir) = self.monday.wheel.feed(notches, glide, now) {
+            let step = if dir > 0 { 1 } else { WEAPONS.len() - 1 };
+            pick = pick.or_else(|| next_weapon(weapon, owned, step));
         }
         if let Some(k) = pick {
             self.monday.online.pick(k);
@@ -3948,4 +4022,56 @@ const LETTERS_EN: [&str; 12] = [
 fn mix_white(c: Color32, k: f32) -> Color32 {
     let m = |v: u8| (v as f32 + (255.0 - v as f32) * k).round() as u8;
     Color32::from_rgb(m(c.r()), m(c.g()), m(c.b()))
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+
+    #[test]
+    fn the_wheel_goes_round_the_weapons_one_has() {
+        // The stapler, the extinguisher, the plant.
+        let owned = 0b0100_0101;
+        assert_eq!(next_weapon(0, owned, 1), Some(2));
+        assert_eq!(next_weapon(2, owned, 1), Some(6));
+        assert_eq!(next_weapon(6, owned, 1), Some(0));
+        let back = WEAPONS.len() - 1;
+        assert_eq!(next_weapon(0, owned, back), Some(6));
+        assert_eq!(next_weapon(6, owned, back), Some(2));
+        // Only the stapler: nothing to change to.
+        assert_eq!(next_weapon(0, 0b1, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod glide_tests {
+    use super::*;
+
+    #[test]
+    fn a_wheel_changes_every_notch() {
+        let mut w = Wheel::default();
+        assert_eq!(w.feed(-1.0, 0.0, 0.0), Some(1));
+        assert_eq!(w.feed(1.0, 0.0, 0.05), Some(-1));
+        // A fine wheel: halves of a notch.
+        assert_eq!(w.feed(-0.5, 0.0, 0.1), None);
+        assert_eq!(w.feed(-0.5, 0.0, 0.15), Some(1));
+    }
+
+    #[test]
+    fn a_touch_glide_changes_once_a_gesture() {
+        let mut w = Wheel::default();
+        // A brush while moving the mouse: nothing.
+        assert_eq!(w.feed(0.0, -12.0, 0.0), None);
+        assert_eq!(w.feed(0.0, -15.0, 0.05), None);
+        // A real swipe: one change, then its long inertia changes nothing more.
+        assert_eq!(w.feed(0.0, -70.0, 0.1), Some(1));
+        let mut t = 0.1;
+        for _ in 0..40 {
+            t += 0.03;
+            assert_eq!(w.feed(0.0, -40.0, t), None);
+        }
+        // A pause, then another swipe the other way: one change.
+        assert_eq!(w.feed(0.0, 60.0, t + 0.5), None);
+        assert_eq!(w.feed(0.0, 60.0, t + 0.53), Some(-1));
+    }
 }
