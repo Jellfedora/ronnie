@@ -902,6 +902,7 @@ pub(super) fn troop_colors(t: Troop) -> (Color32, Color32) {
         Troop::Designer => (rgb(0xff70a6), rgb(0xffffff)),
         Troop::Drone => (rgb(0x495057), rgb(0xff006e)),
         Troop::Consultant => (rgb(0x111111), rgb(0xd4af37)),
+        Troop::Lead => (rgb(0x5a189a), rgb(0xffc43d)),
     }
 }
 
@@ -912,6 +913,7 @@ pub(super) fn paint_troop(painter: &egui::Painter, t: Troop, p: Pos2, k: f32, ti
     let size = match t {
         Troop::Sales => 1.3,
         Troop::Consultant => 1.7,
+        Troop::Lead => 1.35,
         Troop::Intern => 0.85,
         _ => 1.0,
     } * k;
@@ -928,6 +930,11 @@ pub(super) fn paint_troop(painter: &egui::Painter, t: Troop, p: Pos2, k: f32, ti
         painter.rect_filled(Rect::from_center_size(up + Vec2::new(0.0, 4.0 * k), Vec2::new(7.0, 6.0) * k), 1.0, rgb(0xc8a165));
         painter.circle_filled(up, 3.0 * k, accent);
         return;
+    }
+    if t == Troop::Lead {
+        // The hero: a golden glow at their feet.
+        let glow = (time * 3.0).sin() * 0.15 + 0.85;
+        painter.add(egui::Shape::ellipse_stroke(p, Vec2::new(10.0, 5.0) * size * glow, Stroke::new(1.6 * k, alpha(accent, 0.7))));
     }
     let lift = if st.air { 18.0 * k } else { 0.0 };
     let bob = if moving { (time * 12.0).sin().abs() * 2.0 * k } else { 0.0 };
@@ -972,6 +979,25 @@ pub(super) fn paint_troop(painter: &egui::Painter, t: Troop, p: Pos2, k: f32, ti
         }
         Troop::Consultant => {
             painter.rect_filled(Rect::from_center_size(arm + Vec2::new(0.0, 3.0 * size), Vec2::new(7.0, 5.0) * size), 1.0, accent);
+        }
+        Troop::Lead => {
+            // The hoodie's hood, dark hair, a golden headset and its mic, a mug of coffee in hand.
+            painter.circle_filled(head + Vec2::new(0.0, 2.5 * size), 5.2 * size, shade(shirt, 0.8));
+            painter.circle_filled(head, 4.6 * size, rgb(0xf1c27d));
+            painter.circle_filled(head - Vec2::new(0.0, 2.6 * size), 3.4 * size, rgb(0x3d2c1e));
+            let band: Vec<Pos2> = (0..=8)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (1.0 + i as f32 / 8.0);
+                    head + Vec2::new(a.cos(), a.sin()) * 5.2 * size
+                })
+                .collect();
+            painter.add(egui::Shape::line(band, Stroke::new(1.4 * size, accent)));
+            for side in [-1.0f32, 1.0] {
+                painter.circle_filled(head + Vec2::new(side * 5.0, 0.6) * size, 1.7 * size, accent);
+            }
+            painter.line_segment([head + Vec2::new(-5.0, 1.0) * size, head + Vec2::new(-2.0, 3.6) * size], Stroke::new(1.0 * size, accent));
+            painter.rect_filled(Rect::from_center_size(arm, Vec2::new(4.0, 4.5) * size), 1.0, rgb(0xf8f9fa));
+            painter.text(body.center() + Vec2::new(0.0, 1.0 * size), Align2::CENTER_CENTER, "</>", FontId::monospace(4.0 * size), accent);
         }
         Troop::Drone => {}
     }

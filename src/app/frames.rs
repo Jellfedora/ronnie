@@ -16,7 +16,7 @@ pub(super) enum Need {
     Dailies(u32),
     /// Ronnie Corp listed, or sold once (floor checks the score's `stage` and `stars`).
     Listed,
-    /// Open Space's boss's office at this level (floor will check the same, `firewall`).
+    /// Open Space's boss's office at this level (floor checks the same in the synced progress).
     OpenSpaceHq(u8),
 }
 

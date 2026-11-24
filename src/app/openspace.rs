@@ -85,7 +85,7 @@ fn arrow_at(painter: &egui::Painter, tip: Pos2, time: f64, color: Color32) {
     painter.rect_filled(Rect::from_min_max(tip + Vec2::new(-5.0, -32.0), tip + Vec2::new(5.0, -15.0)), 2.0, color);
 }
 
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
@@ -421,7 +421,7 @@ impl App {
         } else if st.panel == 2
             && let Some(level) = panel(ui, side, "campaign", &theme, |ui| super::openspace_raid::campaign_ui(ui, &s, fr, &theme))
         {
-            st.fight = Some(super::openspace_raid::Fight::new(level, &s));
+            st.fight = Some(super::openspace_raid::Fight::new(level, &s, unix));
             st.panel = 0;
             st.selected = None;
         } else if st.panel == 3 {
@@ -783,6 +783,10 @@ fn selected_ui(ui: &mut Ui, s: &mut OpenSpace, id: u32, fr: bool, theme: &Theme,
     facts.push(format!("{} {}", os::short(b.kind.hp(b.level) as f64, fr), tx(("PV", "HP"), fr)));
     ui.label(egui::RichText::new(facts.join("   ·   ")).size(12.5).color(theme.text));
     ui.add_space(6.0);
+    if b.kind == Kind::Heroes && b.level >= 1 {
+        super::openspace_raid::hero_ui(ui, s, fr, theme, unix, said);
+        ui.add_space(4.0);
+    }
 
     if let Some(job) = &b.job {
         let left = job.until - unix;
@@ -798,10 +802,8 @@ fn selected_ui(ui: &mut Ui, s: &mut OpenSpace, id: u32, fr: bool, theme: &Theme,
             {
                 *said = Some(why);
             }
-            if b.kind != Kind::Hq || b.level > 0 {
-                if small(ui, tx(("Annuler (½ remboursé)", "Cancel (½ back)"), fr)) {
-                    s.cancel(id);
-                }
+            if (b.kind != Kind::Hq || b.level > 0) && small(ui, tx(("Annuler (½ remboursé)", "Cancel (½ back)"), fr)) {
+                s.cancel(id);
             }
         });
         return close;
@@ -815,10 +817,10 @@ fn selected_ui(ui: &mut Ui, s: &mut OpenSpace, id: u32, fr: bool, theme: &Theme,
                 let (r, price) = os::cost(b.kind, b.level + 1, 0);
                 let secs = os::build_time(b.kind, b.level + 1);
                 let text = format!("⬆ {} {}  ·  {}  ·  {}", tx(("Niveau", "Level"), fr), b.level + 1, os::amount_text(price as f64, r, fr), if secs == 0 { tx(("immédiat", "at once"), fr).to_owned() } else { os::duration_text(secs as i64, fr) });
-                if button(ui, can.is_ok(), text, theme) {
-                    if let Err(why) = s.upgrade(id, unix) {
-                        *said = Some(why);
-                    }
+                if button(ui, can.is_ok(), text, theme)
+                    && let Err(why) = s.upgrade(id, unix)
+                {
+                    *said = Some(why);
                 }
                 if let Err(why) = can {
                     ui.label(egui::RichText::new(why.text(fr)).size(12.0).color(theme.ansi[3]));

@@ -27,6 +27,8 @@ pub enum Troop {
     Designer,
     Drone,
     Consultant,
+    /// The hero: the lead dev (one, from the lead dev's office; not recruited, see `HERO_MAX`).
+    Lead,
 }
 
 pub const TROOPS: [Troop; 9] = [Troop::Intern, Troop::Dev, Troop::Tester, Troop::Devops, Troop::Sales, Troop::Data, Troop::Designer, Troop::Drone, Troop::Consultant];
@@ -90,6 +92,7 @@ impl Troop {
             Troop::Designer => ("Designer", "Designer"),
             Troop::Drone => ("Drone livreur", "Delivery drone"),
             Troop::Consultant => ("Consultant", "Consultant"),
+            Troop::Lead => ("Lead Dev", "Lead dev"),
         }
     }
 
@@ -104,6 +107,7 @@ impl Troop {
             Troop::Designer => ("Vole au-dessus du champ de bataille et soigne les troupes autour. N'attaque pas.", "Flies over the battlefield and heals the troops around. Doesn't attack."),
             Troop::Drone => ("Vole par-dessus les murs vers les défenses et largue des colis explosifs.", "Flies over the walls to the defenses and drops exploding parcels."),
             Troop::Consultant => ("Hors de prix, très lent, mais il démolit tout sur son passage.", "Overpriced, very slow, but wrecks everything in their way."),
+            Troop::Lead => ("Ton héros : costaud, frappe fort et ne prend pas de place. Une fois posé, « Mode crunch » le soigne et fait foncer les troupes autour. S'il tombe, il se repose avant le prochain raid.", "Your hero: tough, hits hard and takes no room. Once dropped, « Crunch mode » heals them and makes the troops around rush. If they fall, they rest before the next raid."),
         }
     }
 
@@ -119,6 +123,7 @@ impl Troop {
             Troop::Designer => s(14, 500.0, 35.0, 4.0, 2.0, Prefers::Any, 2.0, true, true, 600, 5_000, 7, 6),
             Troop::Drone => s(5, 260.0, 40.0, 0.8, 1.4, Prefers::Defense, 1.2, true, false, 300, 3_000, 8, 6),
             Troop::Consultant => s(20, 3_200.0, 280.0, 0.9, 1.1, Prefers::Any, 0.6, false, false, 900, 25_000, 9, 5),
+            Troop::Lead => s(0, 1_100.0, 75.0, 0.9, 1.9, Prefers::Any, 0.0, false, false, 0, 0, 0, HERO_MAX),
         }
     }
 
@@ -282,6 +287,13 @@ impl OpenSpace {
             self.research = None;
             self.xp += os::xp_for(secs);
         }
+        if let Some((until, secs)) = self.hero_training
+            && until <= now
+        {
+            self.hero_level = self.hero_level() + 1;
+            self.hero_training = None;
+            self.xp += os::xp_for(secs);
+        }
         while let Some(&t) = self.queue.first() {
             if self.queue_until > now {
                 break;
@@ -338,6 +350,114 @@ impl OpenSpace {
         }
         self.actions += 1;
         Outcome { coffee: got_coffee, budget: got_budget, tickets, stars, new_stars: stars.saturating_sub(before), cards }
+    }
+}
+
+/// The hero's highest level, and how many the lead dev's office allows by its level.
+pub const HERO_MAX: u8 = 20;
+pub const HERO_PER_OFFICE: u8 = 5;
+/// « Crunch mode »: how far around the hero the troops rush.
+pub const CRUNCH_RADIUS: f32 = 3.5;
+
+/// The hero's training to `to`: its cost (coffee), its time (seconds).
+pub fn hero_training(to: u8) -> (u64, u32) {
+    let to = to as u64;
+    (15_000 * to * to, (3_600 * to as u32).min(259_200))
+}
+
+/// How long a fallen hero rests, at `level` (seconds).
+pub fn hero_rest_secs(level: u8) -> i64 {
+    600 + 120 * level as i64
+}
+
+/// « Crunch mode » at `level`: the share of their hit points the hero gets back, how long the rush lasts.
+pub fn crunch_power(level: u8) -> (f32, f32) {
+    (0.4, 5.0 + 0.25 * level as f32)
+}
+
+/// Where the hero is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hero {
+    /// No lead dev's office yet.
+    None,
+    /// Ready for a raid.
+    Ready,
+    /// Training to the next level, until then.
+    Training(i64),
+    /// Fell in a raid, resting until then.
+    Resting(i64),
+}
+
+impl OpenSpace {
+    pub fn hero_level(&self) -> u8 {
+        self.hero_level.max(1)
+    }
+
+    /// The hero's highest level for now (the lead dev's office's level).
+    pub fn hero_cap(&self) -> u8 {
+        (self.top_level(Kind::Heroes) * HERO_PER_OFFICE).min(HERO_MAX)
+    }
+
+    pub fn hero(&self, now: i64) -> Hero {
+        if self.top_level(Kind::Heroes) == 0 {
+            Hero::None
+        } else if let Some((until, _)) = self.hero_training {
+            Hero::Training(until)
+        } else if self.hero_rest > now {
+            Hero::Resting(self.hero_rest)
+        } else {
+            Hero::Ready
+        }
+    }
+
+    pub fn can_train_hero(&self) -> Result<(), Why> {
+        if self.top_level(Kind::Heroes) == 0 {
+            return Err(Why::NeedHq(Kind::Heroes.unlocked_at()));
+        }
+        if self.hero_training.is_some() {
+            return Err(Why::Busy);
+        }
+        let level = self.hero_level();
+        if level >= self.hero_cap() {
+            return Err(Why::MaxLevel);
+        }
+        let (price, _) = hero_training(level + 1);
+        if self.coffee < price as f64 {
+            return Err(Why::Short(Res::Coffee, price - self.coffee as u64));
+        }
+        Ok(())
+    }
+
+    /// The hero trained to the next level (away from raids meanwhile).
+    pub fn train_hero(&mut self, now: i64) -> Result<(), Why> {
+        self.can_train_hero()?;
+        let (price, secs) = hero_training(self.hero_level() + 1);
+        self.coffee -= price as f64;
+        self.hero_training = Some((now + secs as i64, secs));
+        self.actions += 1;
+        Ok(())
+    }
+
+    /// The hero fell in a raid: resting for a while.
+    pub fn hero_fell(&mut self, now: i64) {
+        self.hero_rest = now + hero_rest_secs(self.hero_level());
+        self.actions += 1;
+    }
+
+    /// The hero's rest cut short for tickets: its cost.
+    pub fn wake_hero_cost(&self, now: i64) -> u32 {
+        os::finish_cost(self.hero_rest - now)
+    }
+
+    pub fn wake_hero(&mut self, now: i64) -> Result<(), Why> {
+        let price = self.wake_hero_cost(now);
+        if self.tickets < price {
+            return Err(Why::Tickets(price - self.tickets));
+        }
+        self.tickets -= price;
+        self.hero_rest = 0;
+        self.actions += 1;
+        Ok(())
     }
 }
 
@@ -628,6 +748,9 @@ pub struct Battle {
     pub boosts: Vec<(Troop, f32, f32)>,
     /// The action cards brought: each, its level, whether it was played.
     pub cards: Vec<(Action, u8, bool)>,
+    /// The hero brought (to drop like a troop), and whether « Crunch mode » was used.
+    pub had_hero: bool,
+    pub crunched: bool,
 }
 
 const INF: f32 = f32::INFINITY;
@@ -652,6 +775,7 @@ impl Ord for Node {
 
 impl Battle {
     pub fn new(base: &[Building], army: Vec<(Troop, u8, u32)>) -> Self {
+        let had_hero = army.iter().any(|(t, _, n)| *t == Troop::Lead && *n > 0);
         let defs: Vec<Def> = base
             .iter()
             .filter(|b| b.level >= 1 && !matches!(b.kind.group(), Group::Decor | Group::Obstacle))
@@ -682,7 +806,7 @@ impl Battle {
                 }
             }
         }
-        Battle { defs, units: Vec::new(), fx: Vec::new(), time: 0.0, left: army.into_iter().filter(|(_, _, n)| *n > 0).collect(), started: false, next_unit: 1, grid, drop_ok, fields: HashMap::new(), boosts: Vec::new(), cards: Vec::new() }
+        Battle { defs, units: Vec::new(), fx: Vec::new(), time: 0.0, left: army.into_iter().filter(|(_, _, n)| *n > 0).collect(), started: false, next_unit: 1, grid, drop_ok, fields: HashMap::new(), boosts: Vec::new(), cards: Vec::new(), had_hero, crunched: false }
     }
 
     pub fn can_drop(&self, x: f32, y: f32) -> bool {
@@ -767,6 +891,36 @@ impl Battle {
         }
         self.started = true;
         true
+    }
+
+    /// The hero on the field, standing.
+    pub fn hero(&self) -> Option<&Unit> {
+        self.units.iter().find(|u| u.troop == Troop::Lead && u.hp > 0.0)
+    }
+
+    /// « Crunch mode », once a raid: the hero gets some hit points back, they and the troops around rush.
+    pub fn crunch(&mut self) -> bool {
+        if self.crunched || self.over() {
+            return false;
+        }
+        let Some(h) = self.units.iter().position(|u| u.troop == Troop::Lead && u.hp > 0.0) else { return false };
+        let (heal, secs) = crunch_power(self.units[h].level);
+        let (x, y) = (self.units[h].x, self.units[h].y);
+        self.units[h].hp = (self.units[h].hp + self.units[h].max * heal).min(self.units[h].max);
+        self.units[h].stun = 0.0;
+        self.units[h].slow = 0.0;
+        for u in self.units.iter_mut().filter(|u| (u.x - x).hypot(u.y - y) <= CRUNCH_RADIUS) {
+            u.rush = u.rush.max(secs);
+        }
+        self.fx.push(Fx { kind: FxKind::Zap { at: (x, y) }, at: self.time });
+        self.fx.push(Fx { kind: FxKind::Heal { at: (x, y) }, at: self.time + 0.1 });
+        self.crunched = true;
+        true
+    }
+
+    /// The hero dropped and fallen.
+    pub fn hero_fell(&self) -> bool {
+        self.had_hero && !self.left.iter().any(|(t, _, n)| *t == Troop::Lead && *n > 0) && self.hero().is_none()
     }
 
     pub fn troops_left(&self) -> u32 {
@@ -1218,6 +1372,57 @@ mod tests {
         while !b.over() {
             b.step();
         }
+    }
+
+    #[test]
+    fn the_hero_trains_with_the_office_and_rests_after_falling() {
+        let mut s = camp();
+        assert_eq!(s.hero(T0), Hero::None);
+        let id = 9_999;
+        s.buildings.push(Building { id, kind: Kind::Heroes, x: 20, y: 10, level: 1, job: None, stored: 0.0 });
+        assert_eq!((s.hero(T0), s.hero_level(), s.hero_cap()), (Hero::Ready, 1, HERO_PER_OFFICE));
+        s.coffee = 0.0;
+        assert!(matches!(s.can_train_hero(), Err(Why::Short(Res::Coffee, _))));
+        s.coffee = 1e9;
+        s.train_hero(T0).unwrap();
+        let (_, secs) = hero_training(2);
+        assert!(matches!(s.hero(T0 + 1), Hero::Training(_)));
+        assert_eq!(s.train_hero(T0 + 1), Err(Why::Busy));
+        s.run_army(T0 + secs as i64);
+        assert_eq!((s.hero(T0 + secs as i64), s.hero_level()), (Hero::Ready, 2));
+        // Up to the office's cap.
+        s.hero_level = HERO_PER_OFFICE;
+        assert_eq!(s.can_train_hero(), Err(Why::MaxLevel));
+        // Fallen: resting, then back; or woken for tickets.
+        s.hero_fell(T0);
+        assert!(matches!(s.hero(T0 + 1), Hero::Resting(_)));
+        assert_eq!(s.hero(T0 + hero_rest_secs(s.hero_level())), Hero::Ready);
+        s.tickets = 100;
+        s.wake_hero(T0 + 1).unwrap();
+        assert_eq!(s.hero(T0 + 1), Hero::Ready);
+        assert!(s.tickets < 100);
+    }
+
+    #[test]
+    fn the_hero_crunches_once_and_can_fall() {
+        let mut b = Battle::new(&rival_base(30), vec![(Troop::Intern, 1, 3), (Troop::Lead, 5, 1)]);
+        assert!(b.had_hero && b.hero().is_none() && !b.hero_fell());
+        assert!(!b.crunch(), "no crunch before the hero is dropped");
+        let spot = (0..GRID).flat_map(|x| (0..GRID).map(move |y| (x as f32 + 0.5, y as f32 + 0.5))).find(|&(x, y)| b.can_drop(x, y)).unwrap();
+        assert!(b.drop(Troop::Lead, spot.0, spot.1));
+        assert!(!b.drop(Troop::Lead, spot.0, spot.1), "one hero");
+        assert!(b.drop(Troop::Intern, spot.0, spot.1));
+        let max = b.hero().unwrap().max;
+        assert_eq!(max, Troop::Lead.hp(5));
+        b.units[0].hp = max * 0.3;
+        assert!(b.crunch());
+        let h = b.hero().unwrap();
+        assert!((h.hp - max * 0.7).abs() < 1e-3);
+        assert!(h.rush > 0.0 && b.units[1].rush > 0.0, "the troops around rush too");
+        assert!(!b.crunch(), "once a raid");
+        b.units[0].hp = 0.0;
+        b.step();
+        assert!(b.hero_fell());
     }
 
     #[test]

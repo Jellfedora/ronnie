@@ -344,7 +344,7 @@ pub(super) fn cards_ui(ui: &mut Ui, s: &mut OpenSpace, fr: bool, theme: &Theme, 
 
 /// The mission under way, on the left (`folded`: just its title). What it gave once claimed (a card).
 pub(super) fn mission_ui(ui: &mut Ui, at: Pos2, s: &mut OpenSpace, folded: &mut bool, fr: bool, theme: &Theme) -> Option<Option<usize>> {
-    let Some(m) = s.mission() else { return None };
+    let m = s.mission()?;
     let time = ui.input(|i| i.time);
     let gold = Color32::from_rgb(255, 196, 64);
     let done = s.mission_done();

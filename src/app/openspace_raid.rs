@@ -6,7 +6,7 @@
 use super::openspace_scene::{self as scene, Iso, View};
 use super::*;
 use crate::openspace::{self as os, tx, OpenSpace, Why};
-use crate::openspace_battle::{self as war, Battle, Outcome, Troop, CHAPTERS, LEVELS, STEP, TIME_LIMIT, TROOPS};
+use crate::openspace_battle::{self as war, Battle, Hero, Outcome, Troop, CHAPTERS, LEVELS, STEP, TIME_LIMIT, TROOPS};
 
 /// A raid under way.
 pub(super) struct Fight {
@@ -23,9 +23,12 @@ pub(super) struct Fight {
 }
 
 impl Fight {
-    /// A raid on the campaign's `level`, with the whole army.
-    pub fn new(level: u32, s: &OpenSpace) -> Self {
-        let army = s.army.iter().map(|(t, n)| (*t, s.troop_level(*t), *n)).collect();
+    /// A raid on the campaign's `level`, with the whole army, and the hero when ready.
+    pub fn new(level: u32, s: &OpenSpace, now: i64) -> Self {
+        let mut army: Vec<(Troop, u8, u32)> = s.army.iter().map(|(t, n)| (*t, s.troop_level(*t), *n)).collect();
+        if s.hero(now) == Hero::Ready {
+            army.push((Troop::Lead, s.hero_level(), 1));
+        }
         let mut b = Battle::new(&war::rival_base(level), army);
         b.boosts = TROOPS.iter().map(|&t| { let (hp, dps) = s.troop_boost(t); (t, hp, dps) }).collect();
         b.cards = s.raid_cards().into_iter().map(|(a, l)| (a, l, false)).collect();
@@ -42,6 +45,72 @@ fn portrait(painter: &egui::Painter, t: Troop, r: Rect, time: f64) {
     scene::paint_troop(painter, t, feet + if t.stats().air { Vec2::new(0.0, 10.0) } else { Vec2::ZERO }, r.height() / 34.0, time as f32, false, false, (1.0, 0.3));
 }
 
+/// The hero's card: their portrait, level, stats, where they are (ready, training, resting), the
+/// training to the next level and the rest cut short for tickets.
+pub(super) fn hero_ui(ui: &mut Ui, s: &mut OpenSpace, fr: bool, theme: &Theme, unix: i64, said: &mut Option<Why>) {
+    let time = ui.input(|i| i.time);
+    let state = s.hero(unix);
+    if state == Hero::None {
+        return;
+    }
+    let level = s.hero_level();
+    let gold = Color32::from_rgb(255, 196, 64);
+    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 62.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(r.shrink2(Vec2::new(0.0, 2.0)), 10.0, gold.gamma_multiply(0.12));
+    p.rect_stroke(r.shrink2(Vec2::new(0.0, 2.0)), 10.0, Stroke::new(1.5, gold.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+    portrait(p, Troop::Lead, Rect::from_center_size(Pos2::new(r.min.x + 30.0, r.center().y), Vec2::splat(48.0)), time);
+    let left = r.min.x + 62.0;
+    p.text(Pos2::new(left, r.min.y + 15.0), Align2::LEFT_CENTER, format!("♛ {}  {} {level} / {}", tx(Troop::Lead.name(), fr), tx(("niv.", "lv."), fr), s.hero_cap()), FontId::proportional(14.0), theme.text);
+    let st = Troop::Lead.stats();
+    p.text(
+        Pos2::new(left, r.min.y + 32.0),
+        Align2::LEFT_CENTER,
+        format!("{:.0} {}  ·  {:.0} {}  ·  {} {}", Troop::Lead.hp(level), tx(("PV", "HP"), fr), Troop::Lead.dps(level), tx(("dégâts/s", "dmg/s"), fr), st.housing, tx(("place", "room"), fr)),
+        FontId::proportional(11.5),
+        theme.text_muted,
+    );
+    let (status, color) = match state {
+        Hero::Ready => (tx(("Prêt pour le prochain raid", "Ready for the next raid"), fr).to_owned(), theme.ansi[2]),
+        Hero::Training(until) => (format!("{} {} ({})", tx(("À l'entraînement vers le niveau", "Training to level"), fr), level + 1, os::duration_text(until - unix, fr)), theme.accent),
+        Hero::Resting(until) => (format!("{} ({})", tx(("Se repose après sa chute", "Resting after falling"), fr), os::duration_text(until - unix, fr)), theme.ansi[3]),
+        Hero::None => (String::new(), theme.text),
+    };
+    p.text(Pos2::new(left, r.min.y + 48.0), Align2::LEFT_CENTER, status, FontId::proportional(11.5), color);
+    ui.horizontal_wrapped(|ui| {
+        match state {
+            Hero::Resting(_) => {
+                let price = s.wake_hero_cost(unix);
+                if ui.add(egui::Button::new(egui::RichText::new(format!("☕ {} {price} 🎫", tx(("Le réveiller :", "Wake them:"), fr))).size(11.5)).corner_radius(6.0)).clicked()
+                    && let Err(why) = s.wake_hero(unix)
+                {
+                    *said = Some(why);
+                }
+            }
+            Hero::Training(_) => {}
+            _ => match s.can_train_hero() {
+                Err(Why::MaxLevel) => {
+                    let text = if level >= war::HERO_MAX { tx(("Niveau maximum", "Highest level"), fr) } else { tx(("Améliore son bureau pour aller plus haut", "Upgrade their office to go higher"), fr) };
+                    ui.label(egui::RichText::new(text).size(11.5).color(theme.text_muted));
+                }
+                can => {
+                    let (price, secs) = war::hero_training(level + 1);
+                    let text = format!("⬆ {} {}  ·  {}  ·  {}", tx(("Niveau", "Level"), fr), level + 1, os::amount_text(price as f64, os::Res::Coffee, fr), os::duration_text(secs as i64, fr));
+                    let resp = ui.add_enabled(can.is_ok(), egui::Button::new(egui::RichText::new(text).size(11.5)).corner_radius(6.0));
+                    if resp.on_hover_text(tx(("Pas de raid pour lui pendant l'entraînement.", "No raids for them while training."), fr)).clicked()
+                        && let Err(why) = s.train_hero(unix)
+                    {
+                        *said = Some(why);
+                    }
+                    if let Err(why) = can {
+                        ui.label(egui::RichText::new(why.text(fr)).size(11.0).color(theme.ansi[3]));
+                    }
+                }
+            },
+        }
+    });
+}
+
 /// The « Army » panel: true when something was done (the tutorial checks).
 pub(super) fn army_ui(ui: &mut Ui, s: &mut OpenSpace, fr: bool, theme: &Theme, unix: i64, said: &mut Option<Why>) {
     let time = ui.input(|i| i.time);
@@ -53,6 +122,7 @@ pub(super) fn army_ui(ui: &mut Ui, s: &mut OpenSpace, fr: bool, theme: &Theme, u
                 .on_hover_text(tx(("Place prise (armée et troupes en formation) / place des salles de pause", "Room taken (army and troops in training) / the break rooms' room"), fr));
         });
     });
+    hero_ui(ui, s, fr, theme, unix, said);
     if room == 0 {
         ui.label(egui::RichText::new(tx(("Construis une salle de pause pour loger tes troupes, et une salle de recrutement pour les former.", "Build a break room to house your troops, and a recruiting room to train them."), fr)).size(12.5).color(theme.ansi[3]));
     }
@@ -225,6 +295,9 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
         }
         if f.b.over() {
             f.result = Some(s.finish_raid(f.level, f.b.stars(), f.b.destroyed()));
+            if f.b.hero_fell() {
+                s.hero_fell(super::openspace::unix_now());
+            }
         }
     }
 
@@ -271,8 +344,11 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
         && time - f.last_drop > 0.12
     {
         let (x, y) = iso.back(p);
-        if s.army_count(t) > 0 && f.b.drop(t, x, y) {
-            s.take_troop(t);
+        // The hero isn't in the army: dropped from the raid's own count.
+        if (t == Troop::Lead || s.army_count(t) > 0) && f.b.drop(t, x, y) {
+            if t != Troop::Lead {
+                s.take_troop(t);
+            }
             f.last_drop = time;
         }
         if !f.b.left.iter().any(|(k, _, n)| *k == t && *n > 0) {
@@ -392,6 +468,34 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
                 _ => 1.0,
             };
         }
+        // The hero's « Crunch mode », once they're on the field.
+        if !f.b.crunched
+            && let Some(h) = f.b.hero()
+        {
+            let (heal, secs) = war::crunch_power(h.level);
+            let at = Rect::from_min_size(Pos2::new(rect.min.x + 16.0, rect.max.y - 108.0), Vec2::new(170.0, 42.0));
+            let pulse = (time * 4.0).sin() as f32 * 0.5 + 0.5;
+            let gold = Color32::from_rgb(255, 196, 64);
+            let button = egui::Button::new(egui::RichText::new(format!("⚡ {}", tx(("Mode crunch", "Crunch mode"), fr))).size(14.5).strong().color(Color32::from_rgb(40, 20, 0)))
+                .fill(gold.gamma_multiply(0.8 + 0.2 * pulse))
+                .stroke(Stroke::new(2.0, Color32::WHITE.gamma_multiply(0.4 + 0.6 * pulse)))
+                .corner_radius(12.0);
+            let tip = format!(
+                "{} {:.0} % {}, {} {:.0} s {} ({} {:.1} {}).",
+                tx(("Ton Lead Dev récupère", "Your lead dev gets back"), fr),
+                heal * 100.0,
+                tx(("de ses PV", "of their HP"), fr),
+                tx(("et fonce avec les troupes autour pendant", "and rushes with the troops around for"), fr),
+                secs,
+                tx(("(plus vite, plus fort)", "(faster, harder)"), fr),
+                tx(("rayon", "radius"), fr),
+                war::CRUNCH_RADIUS,
+                tx(("cases", "tiles"), fr)
+            );
+            if ui.put(at, button).on_hover_text(tip).clicked() {
+                f.b.crunch();
+            }
+        }
         if !f.b.started {
             let hint = tx(("Choisis une troupe en bas, puis clique (ou reste appuyé) autour de leur open space, hors de la zone rouge.", "Pick a troop at the bottom, then click (or hold) around their open space, outside the red area."), fr);
             let g = painter.layout_no_wrap(hint.to_owned(), FontId::proportional(13.0), Color32::WHITE);
@@ -431,6 +535,10 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
                     if !o.cards.is_empty() {
                         let text = if o.cards.len() == 1 { tx(("+1 carte à découvrir !", "+1 card to turn over!"), fr).to_owned() } else { format!("+{} {}", o.cards.len(), tx(("cartes à découvrir !", "cards to turn over!"), fr)) };
                         ui.label(egui::RichText::new(format!("♠ {text}")).size(14.0).color(Color32::from_rgb(255, 196, 64)));
+                    }
+                    if f.b.hero_fell() {
+                        let back = os::duration_text(war::hero_rest_secs(s.hero_level()), fr);
+                        ui.label(egui::RichText::new(format!("{} {back}", tx(("Ton Lead Dev est tombé : il se repose, de retour dans", "Your lead dev fell: resting, back in"), fr))).size(12.5).color(theme.ansi[3]));
                     }
                     if o.stars > 0 && f.level < LEVELS {
                         ui.label(egui::RichText::new(format!("{} {}", tx(("Niveau suivant débloqué :", "Next level unlocked:"), fr), war::rival_name(f.level + 1))).size(12.5).color(theme.ansi[2]));
