@@ -1084,6 +1084,8 @@ pub struct Strings {
     pub monday_picked: &'static str,
     /// The weapons, short, for the HUD's slots.
     pub monday_weapons_short: &'static str,
+    /// What the green plant counts toward the arsenal (its heals, not its zombies).
+    pub monday_plant_heals: &'static str,
     /// What a goal of the week gives ({n} XP).
     pub monday_week_xp: &'static str,
     pub monday_agnes_up: &'static str,
@@ -3762,7 +3764,7 @@ pub static FR: Strings = Strings {
     monday_ms_achievement: "Succès : {t}",
     monday_ms_title: "Nouveau titre : « {t} », à porter depuis ta carrière",
     monday_titles: "Nouvel arrivant|Secouriste du travail|Tueur de lundis|Monté sur le toit|Sauveur de la boîte|Loup solitaire|Intouchable|Chasseur de cadres|Cupidon de l’accueil|Toujours à l’heure|Couteau suisse|Zoologue de bureau",
-    monday_achievements_how: "Finir une partie|Relever 50 collègues|Abattre 1 000 zombies|Atteindre la vague 26, sur le toit|Battre le Comité de direction|Gagner seul|Gagner sans jamais être à terre|Abattre chacun des 5 boss d’étage|Que Gérard retrouve Agnès|Réussir 7 défis du jour|Abattre 100 zombies avec chacune des 8 armes|Croiser toutes les sortes de zombies",
+    monday_achievements_how: "Finir une partie|Relever 50 collègues|Abattre 1 000 zombies|Atteindre la vague 26, sur le toit|Battre le Comité de direction|Gagner seul|Gagner sans jamais être à terre|Abattre chacun des 5 boss d’étage|Que Gérard retrouve Agnès|Réussir 7 défis du jour|Abattre 100 zombies avec chacune des 8 armes (la plante verte : 100 soins, 10 PV rendus chacun)|Croiser toutes les sortes de zombies",
     monday_achievements: "Succès et titres",
     monday_title_hint: "Clique un succès obtenu pour porter son titre : tes collègues le voient dans le tchat, les salles et le classement.",
     monday_watch: "Regarder",
@@ -3939,6 +3941,7 @@ pub static FR: Strings = Strings {
     monday_grade_perk_names: "Prime d’embauche : 100 tickets au départ|Caisse de tourelle : 3 s dessus, une tourelle 10 s|Réunion d’équipe : tu relèves en 2 s|Note de service (E) : un coup de mégaphone par vague|Place de parking : mort, tu reviens où tu étais tombé|Voiture de fonction : 10 % plus rapide|Parachute doré : une fois par partie, tu te relèves seul",
     monday_picked: "{w} : à toi ! (touche {k})|{w} : dégâts +1|{w} : chargeur +1|{w} : chargeur plein",
     monday_weapons_short: "Agrafeuse|Post-it|Extincteur|Confettis|Tampon|Scotch|Plante|Projo",
+    monday_plant_heals: "soins",
     monday_week_xp: "chacun +{n} XP, pour monter en grade",
     monday_agnes_up: "Merci… vous êtes bien les seuls à me dire bonjour.",
     monday_coffee: "Le café est chaud !",
@@ -6612,7 +6615,7 @@ pub static EN: Strings = Strings {
     monday_ms_achievement: "Achievement: {t}",
     monday_ms_title: "New title: “{t}”, to wear from your career",
     monday_titles: "Newcomer|Workplace first-aider|Monday slayer|Made it to the roof|Saved the company|Lone wolf|Untouchable|Executive hunter|Reception’s Cupid|Always on time|Swiss army knife|Office zoologist",
-    monday_achievements_how: "Finish a game|Help 50 colleagues up|Take out 1,000 zombies|Reach wave 26, on the roof|Beat the executive committee|Win alone|Win without ever going down|Take out each of the 5 floor bosses|Have Gérard find Agnès|Complete 7 daily challenges|Take out 100 zombies with each of the 8 weapons|Meet every kind of zombie",
+    monday_achievements_how: "Finish a game|Help 50 colleagues up|Take out 1,000 zombies|Reach wave 26, on the roof|Beat the executive committee|Win alone|Win without ever going down|Take out each of the 5 floor bosses|Have Gérard find Agnès|Complete 7 daily challenges|Take out 100 zombies with each of the 8 weapons (the green plant: 100 heals, 10 HP given back each)|Meet every kind of zombie",
     monday_achievements: "Achievements and titles",
     monday_title_hint: "Click an achievement won to wear its title: your colleagues see it in the chat, the rooms and the board.",
     monday_watch: "Watch",
@@ -6789,6 +6792,7 @@ pub static EN: Strings = Strings {
     monday_grade_perk_names: "Hiring bonus: 100 tickets to start with|Turret crate: 3 s on it, a turret for 10 s|Team meeting: you help up in 2 s|Memo (E): a megaphone blast once a wave|Parking space: dead, you come back where you fell|Company car: 10% faster|Golden parachute: once a game, you get up alone",
     monday_picked: "{w}: yours! (key {k})|{w}: damage +1|{w}: magazine +1|{w}: full magazine",
     monday_weapons_short: "Stapler|Post-it|Extinguisher|Confetti|Stamp|Tape|Plant|Projector",
+    monday_plant_heals: "heals",
     monday_week_xp: "each +{n} XP, to get promoted",
     monday_agnes_up: "Thanks… you’re the only ones who say hello.",
     monday_coffee: "Coffee’s hot!",
