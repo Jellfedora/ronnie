@@ -621,6 +621,12 @@ impl App {
                 super::wizard::gold_line(ui.painter(), band);
                 ui.add_space(10.0);
             }
+            // Christmas: fairy lights on top, « Ho ho ho ! ».
+            if self.theme.christmas {
+                let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
+                super::noel::garland(ui.painter(), band);
+                ui.add_space(10.0);
+            }
             // Game of Thrones: a sword on top, the alert.
             if self.theme.thrones {
                 let (band, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -649,6 +655,8 @@ impl App {
                 super::monday_theme::ALERT
             } else if self.theme.wizard {
                 super::wizard::ALERT
+            } else if self.theme.christmas {
+                super::noel::ALERT
             } else {
                 t.guard_title
             };
@@ -669,6 +677,11 @@ impl App {
                     // Gryffindor: a lightning bolt.
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
                     super::wizard::paint_bolt(ui.painter(), r.center(), 34.0);
+                } else if self.theme.christmas {
+                    // Christmas: a bell ringing.
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                    super::noel::paint_bell(ui.painter(), r.center() + Vec2::new(0.0, 3.0), 32.0);
+                    ui.ctx().request_repaint();
                 } else {
                     ui.add(egui::Image::new(&hand).fit_to_exact_size(Vec2::splat(34.0)).tint(self.theme.ansi[1]));
                 }

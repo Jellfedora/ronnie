@@ -36,6 +36,9 @@ pub struct Theme {
     /// Wall Street: the skyline, a stock ticker with the company's valuation, the opening bell when a
     /// long command ends (see `app::wallstreet`).
     pub wallstreet: bool,
+    /// Christmas: a candy cane for the pointer, fairy lights, holly, the snowy village, Santa's sleigh
+    /// (see `app::noel`).
+    pub christmas: bool,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -104,7 +107,38 @@ pub const WALL_STREET_THEME: &str = "wall-street";
 /// The themes with their own touches, most won in the games, shown apart in the settings.
 /// Lundi matin, won by beating the executive committee on the roof.
 pub const MONDAY_THEME: &str = "lundi-matin";
-pub const SPECIAL_THEMES: [&str; 8] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME, MONDAY_THEME, WALL_STREET_THEME];
+/// Christmas, given to everyone from the 1st of December to the 6th of January (`christmas_season`), kept
+/// for good once had.
+pub const CHRISTMAS_THEME: &str = "noel";
+pub const SPECIAL_THEMES: [&str; 9] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME, MONDAY_THEME, WALL_STREET_THEME, CHRISTMAS_THEME];
+
+/// The days the Christmas theme is given: from the 1st of December to the 6th of January.
+pub fn christmas_season(day: chrono::NaiveDate) -> bool {
+    use chrono::Datelike;
+    day.month() == 12 || (day.month() == 1 && day.day() <= 6)
+}
+
+/// The Christmas season `day` is in, named by the year of its December (None: out of season).
+pub fn christmas_year(day: chrono::NaiveDate) -> Option<i32> {
+    use chrono::Datelike;
+    christmas_season(day).then(|| if day.month() == 12 { day.year() } else { day.year() - 1 })
+}
+
+#[cfg(test)]
+mod christmas_tests {
+    use super::*;
+
+    #[test]
+    fn the_season_runs_from_december_to_epiphany() {
+        let d = |y, m, j| chrono::NaiveDate::from_ymd_opt(y, m, j).unwrap();
+        assert_eq!(christmas_year(d(2026, 11, 30)), None);
+        assert_eq!(christmas_year(d(2026, 12, 1)), Some(2026));
+        assert_eq!(christmas_year(d(2027, 1, 6)), Some(2026));
+        assert_eq!(christmas_year(d(2027, 1, 7)), None);
+        assert_eq!(christmas_year(d(2027, 12, 25)), Some(2027));
+    }
+}
+
 /// Letters to reach in a round of the typing game to unlock it.
 pub const METAL_UNLOCK: u32 = 300;
 
@@ -327,6 +361,23 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
+    // Christmas: a winter night in the fir trees, deep green for the sidebar and the bars, snow white
+    // text, Christmas red for the accent, the gold of the star for the cursor.
+    Preset {
+        id: CHRISTMAS_THEME,
+        name: "Noël",
+        bg: 0x0d1f1a,
+        fg: 0xf4f6fb,
+        cursor: 0xf2c14e,
+        chrome: 0x123629,
+        surface: 0x1f4f3c,
+        accent: 0xe8474f,
+        ansi: [
+            0x1c3a30, 0xe8474f, 0x5fd08a, 0xf2c14e, 0x6fb0f0, 0xe88ad0, 0x6fd8c8, 0xe8eef6, //
+            0x456a5c, 0xff6b72, 0x8ae6a8, 0xffd870, 0x95c8ff, 0xf2a8e0, 0x98ece0, 0xffffff,
+        ],
+        dark: true,
+    },
     // Game of Thrones: night over the North, iron for the bars, the ice of the Wall for the accent, the
     // gold of the crown for the cursor.
     Preset {
@@ -465,6 +516,7 @@ impl Preset {
             thrones: self.id == THRONES_THEME,
             monday: self.id == MONDAY_THEME,
             wallstreet: self.id == WALL_STREET_THEME,
+            christmas: self.id == CHRISTMAS_THEME,
         }
     }
 
@@ -472,8 +524,8 @@ impl Preset {
     /// the park, whether Larsen unlocked hyperspace, and whether the fishing's binder is full (never in
     /// a dev build, to try them).
     #[allow(clippy::too_many_arguments)]
-    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool, monday: bool, wallstreet: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == WALL_STREET_THEME && !wallstreet) || (self.id == MONDAY_THEME && !monday) || (self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
+    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool, monday: bool, wallstreet: bool, christmas: bool) -> bool {
+        crate::config::OFFICIAL && ((self.id == CHRISTMAS_THEME && !christmas) || (self.id == WALL_STREET_THEME && !wallstreet) || (self.id == MONDAY_THEME && !monday) || (self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
     }
 
     /// The preset with this id, or the default one.

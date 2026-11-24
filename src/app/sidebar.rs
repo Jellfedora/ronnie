@@ -360,6 +360,9 @@ impl App {
             let active = category == shown;
             if active {
                 ui.painter().rect_filled(slot, 9.0, self.theme.tab_active);
+                if self.theme.christmas {
+                    super::noel::active_slot(ui.painter(), slot);
+                }
                 if self.theme.wizard {
                     super::wizard::active_slot(ui.painter(), slot);
                 }
@@ -1060,6 +1063,8 @@ impl App {
         let bar = ui.max_rect();
         if self.theme.wizard {
             super::wizard::strip_bg(ui.painter(), bar);
+        } else if self.theme.christmas {
+            super::noel::strip_bg(ui.painter(), bar);
         } else {
             ui.painter().rect_filled(bar, 0.0, self.theme.chrome_bg);
             ui.painter().vline(bar.max.x - 0.5, bar.y_range(), Stroke::new(1.0, self.theme.tab_hover));
@@ -1075,6 +1080,8 @@ impl App {
         let r_at = Pos2::new(cx, bar.min.y + top + LOGO_H / 2.0 - 2.0);
         if self.theme.wizard {
             super::wizard::crest(ui.painter(), Rect::from_center_size(r_at, Vec2::new(28.0, 34.0)));
+        } else if self.theme.christmas {
+            super::noel::bauble(ui.painter(), Rect::from_center_size(r_at, Vec2::new(28.0, 34.0)));
         } else if self.theme.thrones {
             super::thrones::throne(ui.painter(), r_at + Vec2::new(0.0, 4.0), 14.0, 1.0);
         } else if self.theme.monday {
@@ -1783,6 +1790,9 @@ impl App {
         if self.theme.wizard {
             super::wizard::panel_bg(ui.painter(), bar);
             super::wizard::strip_bg(ui.painter(), strip);
+        } else if self.theme.christmas {
+            super::noel::panel_bg(ui.painter(), bar);
+            super::noel::strip_bg(ui.painter(), strip);
         } else {
             ui.painter().rect_filled(strip, 0.0, self.theme.bg.gamma_multiply(0.3));
             ui.painter().vline(strip.max.x - 0.5, strip.y_range(), Stroke::new(1.0, self.theme.tab_hover.gamma_multiply(0.7)));
@@ -1835,6 +1845,9 @@ impl App {
         if self.theme.wizard {
             super::wizard::ornament(ui.painter(), Pos2::new(logo_rect.center().x, logo_rect.max.y + 2.0), (logo_rect.width() - 40.0).min(200.0));
         }
+        if self.theme.christmas {
+            super::noel::ornament(ui.painter(), Pos2::new(logo_rect.center().x, logo_rect.max.y + 2.0), (logo_rect.width() - 40.0).min(200.0));
+        }
         // The logo leads home (the typing game).
         let logo_hit = Rect::from_center_size(logo_rect.center(), Vec2::new(150.0, logo_rect.height()));
         let logo = ui.interact(logo_hit, ui.id().with("logo-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1842,7 +1855,7 @@ impl App {
         // Dev builds say so, next to the logo: they don't share the installed app's profiles.
         if !config::OFFICIAL {
             // Gryffindor's name sits further right, its crest before it.
-            let at = Pos2::new(logo_rect.center().x + if self.theme.wizard { 66.0 } else { 58.0 }, logo_rect.center().y - 12.0);
+            let at = Pos2::new(logo_rect.center().x + if self.theme.wizard || self.theme.christmas { 66.0 } else { 58.0 }, logo_rect.center().y - 12.0);
             let galley = ui.painter().layout_no_wrap("DEV".to_owned(), FontId::monospace(9.5), self.theme.bg);
             let badge = Rect::from_min_size(at, galley.size() + Vec2::new(8.0, 2.0));
             ui.painter().rect_filled(badge, 3.0, self.theme.ansi[3]);
@@ -1908,6 +1921,15 @@ impl App {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
             ui.interact(super::wizard::castle_rect(field), ui.id().with("castle"), Sense::hover()).on_hover_text(t.wizard_castle);
         }
+        if self.theme.christmas && fits(150.0) {
+            // Christmas: the snowy village at night, the tree, the snowman, the sleigh, just above the cards.
+            let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 150.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
+            scene_top = field.min.y;
+            let now = ui.input(|i| i.time);
+            let again = super::noel::scene(ui.painter(), field, now);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
+            ui.interact(super::noel::village_rect(field), ui.id().with("village"), Sense::hover()).on_hover_text(t.christmas_village);
+        }
         if self.theme.wallstreet && fits(110.0) {
             // Wall Street: the towers at night and the ticker over them, the company's valuation first,
             // just above the cards.
@@ -1953,6 +1975,9 @@ impl App {
         } else if self.theme.wizard {
             // Gryffindor: a gold line above the settings.
             super::wizard::gold_line(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 2.0), Pos2::new(bar.max.x - 1.0, footer_top + 2.0)));
+        } else if self.theme.christmas {
+            // Christmas: fairy lights above the settings.
+            super::noel::garland(ui.painter(), Rect::from_min_max(Pos2::new(bar.min.x, footer_top - 4.0), Pos2::new(bar.max.x - 1.0, footer_top + 3.0)));
         } else if self.theme.monday {
             // Lundi matin: blood dripping above the settings.
             let now = ui.input(|i| i.time);
@@ -2387,6 +2412,13 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
         // Gryffindor: a gold diamond before, a gold line fading out after.
         let end = rect.min.x + 10.0 + galley.size().x;
         super::wizard::title_marks(painter, rect, end);
+        painter.galley(Pos2::new(rect.min.x + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
+        return;
+    }
+    if theme.christmas {
+        // Christmas: a gold star before, a string of lights fading out after.
+        let end = rect.min.x + 10.0 + galley.size().x;
+        super::noel::title_marks(painter, rect, end);
         painter.galley(Pos2::new(rect.min.x + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme.text_muted);
         return;
     }

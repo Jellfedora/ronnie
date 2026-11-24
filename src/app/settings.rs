@@ -899,7 +899,7 @@ impl App {
         let touring = self.tour.is_some();
         let screen = ctx.content_rect();
         let size = Vec2::new(SETTINGS_WIDTH.min(screen.width() - 60.0).max(640.0), SETTINGS_HEIGHT.min(screen.height() - 80.0).max(380.0));
-        let edge = if theme.wizard { Stroke::new(1.2, super::wizard::GOLD.gamma_multiply(0.7)) } else if theme.thrones { Stroke::new(1.3, super::thrones::GOLD.gamma_multiply(0.8)) } else { Stroke::new(1.0, theme.tab_hover) };
+        let edge = if theme.wizard { Stroke::new(1.2, super::wizard::GOLD.gamma_multiply(0.7)) } else if theme.christmas { Stroke::new(1.2, super::noel::RED.gamma_multiply(0.8)) } else if theme.thrones { Stroke::new(1.3, super::thrones::GOLD.gamma_multiply(0.8)) } else { Stroke::new(1.0, theme.tab_hover) };
         let frame = Frame::popup(&ctx.global_style()).inner_margin(0.0).fill(theme.chrome_bg).corner_radius(if theme.thrones { 3.0 } else { 14.0 }).stroke(edge);
         let modal = egui::Modal::new(egui::Id::new("settings")).frame(frame).backdrop_color(Color32::from_black_alpha(190)).show(ctx, |ui| {
             // Same size on every page: pages scroll inside, the window never jumps around.
@@ -913,6 +913,12 @@ impl App {
                 super::wizard::corners(ui.painter(), whole.shrink(5.0));
                 ui.painter().vline(nav.max.x, nav.y_range().shrink(30.0), Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.5)));
                 super::wizard::diamond(ui.painter(), Pos2::new(nav.max.x, nav.center().y), 3.2);
+            }
+            if theme.christmas {
+                // Christmas: holly at the window's corners, a string of lights beside the navigation.
+                super::noel::corners(ui.painter(), whole.shrink(5.0));
+                ui.painter().vline(nav.max.x, nav.y_range().shrink(30.0), Stroke::new(1.0, super::noel::GOLD.gamma_multiply(0.35)));
+                super::noel::mark(ui.painter(), Pos2::new(nav.max.x, nav.center().y), 3.2);
             }
 
             // Navigation.
@@ -984,6 +990,10 @@ impl App {
                 if theme.wizard {
                     // Gryffindor: an ornament after the page's title.
                     super::wizard::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x + 6.0, title_galley.min.y), Pos2::new(head.max.x - 10.0, title_galley.max.y)), title_galley.max.x + 10.0);
+                }
+                if theme.christmas {
+                    // Christmas: a star and a string of lights after the page's title.
+                    super::noel::title_marks(ui.painter(), Rect::from_min_max(Pos2::new(title_galley.max.x + 6.0, title_galley.min.y), Pos2::new(head.max.x - 10.0, title_galley.max.y)), title_galley.max.x + 10.0);
                 }
                 ui.painter().text(head.left_top() + Vec2::new(0.0, 32.0), Align2::LEFT_TOP, subtitle, FontId::proportional(13.0), theme.text_muted);
                 let x_rect = Rect::from_min_size(Pos2::new(head.max.x - 28.0, head.min.y), Vec2::splat(28.0));
@@ -1776,8 +1786,10 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests), picked.monday_wins > 0, super::wallstreet::theme_unlocked(picked)) {
-                            let how = if preset.id == crate::theme::WALL_STREET_THEME {
+                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests), picked.monday_wins > 0, super::wallstreet::theme_unlocked(picked), picked.christmas_unlocked || crate::theme::christmas_season(chrono::Local::now().date_naive())) {
+                            let how = if preset.id == crate::theme::CHRISTMAS_THEME {
+                                t.unlock_christmas_how.to_owned()
+                            } else if preset.id == crate::theme::WALL_STREET_THEME {
                                 t.theme_locked_corp.to_owned()
                             } else if preset.id == crate::theme::HYPERSPACE_THEME {
                                 t.theme_locked_larsen.to_owned()
@@ -2327,6 +2339,9 @@ impl App {
         let days = crate::theme::WIZARD_DAYS;
         let wizard = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: t.unlock_wizard_how.replace("{n}", &days.to_string()), done: !config::OFFICIAL || picked.wizard_unlocked, progress: Some((picked.open_streak.min(days), days)), info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)), gives: t.unlock_gives_theme.into() }];
         all.push((t.rewards_loyal, wizard));
+        // The season's: Christmas, given in December.
+        let christmas = vec![super::unlocks::Unlock { what: t.unlock_christmas.to_owned(), how: t.unlock_christmas_how.to_owned(), done: !config::OFFICIAL || picked.christmas_unlocked, progress: None, info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::CHRISTMAS_THEME)), gives: t.unlock_gives_theme.into() }];
+        all.push((t.rewards_season, christmas));
         let counted = all.iter().flat_map(|(_, u)| u.iter()).filter(|u| !u.info);
         let (done, total) = counted.fold((0, 0), |(d, n), u| (d + u.done as usize, n + 1));
         ui.horizontal(|ui| {
@@ -2392,6 +2407,8 @@ impl App {
             !official || picked.wizard_unlocked,
             super::wallstreet::unicorn_unlocked(picked),
             !official || crate::coffee::thrones_won(&picked.coffee_bests),
+            !official || picked.christmas_unlocked,
+            !official || picked.christmas_unlocked,
         ];
         let any_walker = desktop && walkers.iter().any(|w| *w);
         if pointers.len() < 2 && trails.len() < 2 && !sheep_won && !any_walker {
@@ -2446,7 +2463,7 @@ impl App {
             }
             let fx = &mut picked.desktop_fx;
             let on = fx.on;
-            let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn), (t.desktop_wolf, &mut fx.wolf)];
+            let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn), (t.desktop_wolf, &mut fx.wolf), (t.desktop_sleigh, &mut fx.sleigh), (t.desktop_snow, &mut fx.snow)];
             for ((label, shown), won) in rows.into_iter().zip(walkers) {
                 if !won {
                     continue;
@@ -2499,6 +2516,7 @@ fn pointer_name(t: &Strings, pointer: config::Pointer) -> &'static str {
         config::Pointer::Wand => t.pointer_wand,
         config::Pointer::Sword => t.pointer_sword,
         config::Pointer::Stapler => t.pointer_stapler,
+        config::Pointer::Cane => t.pointer_cane,
     }
 }
 
@@ -2514,6 +2532,9 @@ fn nav_item(ui: &mut Ui, theme: &Theme, icon: &str, label: &str, selected: bool)
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
     let fill = if selected { theme.tab_active } else if resp.hovered() { theme.tab_hover } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, 8.0, fill);
+    if selected && theme.christmas {
+        super::noel::active_nav(ui.painter(), rect);
+    }
     if selected && theme.wizard {
         super::wizard::active_nav(ui.painter(), rect);
     }
@@ -2572,6 +2593,17 @@ fn section_title(ui: &mut Ui, theme: &Theme, title: &str) {
         ui.add_space(8.0);
         return;
     }
+    if theme.christmas {
+        // Christmas: a gold star before, a string of lights fading out after.
+        let resp = ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8))
+        });
+        let r = resp.response.rect;
+        super::noel::title_marks(ui.painter(), Rect::from_min_max(r.min, Pos2::new(ui.max_rect().max.x, r.max.y)), resp.inner.rect.max.x);
+        ui.add_space(8.0);
+        return;
+    }
     ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(theme.text_muted).extra_letter_spacing(0.8));
     ui.add_space(8.0);
 }
@@ -2581,7 +2613,7 @@ fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut U
     if let Some(title) = title {
         section_title(ui, theme, title);
     }
-    let edge = if theme.wizard { Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.3)) } else if theme.thrones { Stroke::new(1.0, super::thrones::GOLD.gamma_multiply(0.35)) } else { Stroke::new(1.0, theme.tab_hover) };
+    let edge = if theme.wizard { Stroke::new(1.0, super::wizard::GOLD.gamma_multiply(0.3)) } else if theme.christmas { Stroke::new(1.0, super::noel::RED.gamma_multiply(0.35)) } else if theme.thrones { Stroke::new(1.0, super::thrones::GOLD.gamma_multiply(0.35)) } else { Stroke::new(1.0, theme.tab_hover) };
     let shown = Frame::NONE.fill(theme.bg).stroke(edge).corner_radius(if theme.thrones { 3.0 } else { 10.0 }).inner_margin(egui::Margin::symmetric(18, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui);
@@ -2591,6 +2623,11 @@ fn card(ui: &mut Ui, theme: &Theme, title: Option<&str>, add: impl FnOnce(&mut U
         let r = shown.response.rect;
         super::wizard::diamond(ui.painter(), Pos2::new(r.min.x + 10.0, r.min.y), 2.6);
         super::wizard::diamond(ui.painter(), Pos2::new(r.max.x - 10.0, r.min.y), 2.6);
+    }
+    if theme.christmas {
+        // Christmas: a sprig of holly on the card's top corner.
+        let r = shown.response.rect;
+        super::noel::holly(ui.painter(), Pos2::new(r.max.x - 12.0, r.min.y + 2.0), 13.0, std::f32::consts::TAU * 3.0 / 8.0);
     }
     if theme.thrones {
         // Game of Thrones: a rivet in each corner of the card.
