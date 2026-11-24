@@ -50,6 +50,7 @@ mod playtime;
 mod tycoon;
 mod openspace;
 mod openspace_battle;
+mod openspace_cards;
 mod notesync;
 mod progress;
 mod recap;

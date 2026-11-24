@@ -204,7 +204,7 @@ impl Kind {
             Kind::Bug => ("Piège invisible : explose quand on marche dessus.", "Invisible trap: explodes when stepped on."),
             Kind::Printer => ("Piège invisible : bloque les troupes qui passent un moment.", "Invisible trap: holds the troops passing by for a while."),
             Kind::Aircon => ("Piège invisible : ralentit tout le monde autour.", "Invisible trap: slows down everyone around."),
-            Kind::Training => ("On y prépare les process, les sorts des raids (bientôt).", "Where the processes, the raids' spells, are prepared (soon)."),
+            Kind::Training => ("Une carte action de plus dans ton deck de raid (et encore une au niveau 3).", "One more action card in your raid deck (and another at level 3)."),
             Kind::Heroes => ("Le bureau de ton héros, le Lead Dev (bientôt).", "Your hero's office, the Lead Dev (soon)."),
             Kind::Plant | Kind::Foosball | Kind::Fountain | Kind::Sofa | Kind::Arcade | Kind::Statue => ("Une décoration : elle ne sert à rien… sauf à rendre ton open space plus beau.", "A decoration: useless… except to make your open space look better."),
             Kind::Boxes | Kind::OldPc | Kind::DeadPlant | Kind::Chairs => ("Ça encombre. Débarrasse-le pour faire de la place : ça rapporte un peu d'XP, et parfois des tickets RH.", "It's in the way. Clear it to make room: it gives a little XP, and sometimes HR tickets."),
@@ -220,9 +220,9 @@ impl Kind {
             Kind::Fridge => ("Le frigo augmente ce que tu peux stocker de café. Tant que tes stocks sont pleins, ce que tu récoltes reste dans les machines.\n\nAstuce : en raid, les attaquants visent aussi tes frigos : protège-les derrière tes pare-feux.", "The fridge raises how much coffee you can store. While your stock is full, what you collect stays in the machines.\n\nTip: in raids, attackers go for your fridges too: shelter them behind your firewalls."),
             Kind::Safe => ("Le coffre-fort augmente ce que tu peux stocker de budget. Les gros chantiers (comme le bureau du boss) en demandent beaucoup : sans coffre, impossible de les payer.\n\nAstuce : mets-le au centre, c'est la cible préférée des raids.", "The safe raises how much budget you can store. Big works (like the boss's office) need a lot of it: without safes, you can't pay for them.\n\nTip: put it in the middle, it's the raids' favourite target."),
             Kind::Interns => ("Chaque bureau des alternants te donne un alternant de plus, donc un chantier de plus en même temps. Le premier est gratuit, les suivants coûtent de plus en plus cher.\n\nAstuce : c'est l'investissement le plus rentable du jeu : tout va deux fois plus vite avec deux alternants.", "Each interns' desk gives you one more intern, so one more work at the same time. The first is free, the next ones cost more and more.\n\nTip: it's the best investment in the game: everything goes twice as fast with two interns."),
-            Kind::Recruit => ("La salle de recrutement est l'endroit où tu formeras tes troupes : stagiaires, devs, testeurs… Chaque niveau débloque une nouvelle troupe.\n\nLes raids arrivent dans une prochaine étape du jeu.", "The recruiting room is where you'll train your troops: interns, devs, testers… Each level unlocks a new troop.\n\nRaids come in a next step of the game."),
-            Kind::Lounge => ("La salle de pause, c'est la place de ton armée : plus elle est grande (et plus tu en as), plus tu emmènes de monde en raid.\n\nLes raids arrivent dans une prochaine étape du jeu.", "The break room is your army's room: the bigger it is (and the more you have), the more people you take on a raid.\n\nRaids come in a next step of the game."),
-            Kind::Meeting => ("La salle de réunion fait monter tes troupes de niveau : plus de points de vie, plus de dégâts. C'est long et ça coûte du café.\n\nLes raids arrivent dans une prochaine étape du jeu.", "The meeting room levels your troops up: more hit points, more damage. It takes long and costs coffee.\n\nRaids come in a next step of the game."),
+            Kind::Recruit => ("La salle de recrutement est l'endroit où tu formeras tes troupes : stagiaires, devs, testeurs… Chaque niveau débloque une nouvelle troupe.","The recruiting room is where you'll train your troops: interns, devs, testers… Each level unlocks a new troop."),
+            Kind::Lounge => ("La salle de pause, c'est la place de ton armée : plus elle est grande (et plus tu en as), plus tu emmènes de monde en raid.","The break room is your army's room: the bigger it is (and the more you have), the more people you take on a raid."),
+            Kind::Meeting => ("La salle de réunion fait monter tes troupes de niveau : plus de points de vie, plus de dégâts. C'est long et ça coûte du café.","The meeting room levels your troops up: more hit points, more damage. It takes long and costs coffee."),
             Kind::Wall => ("Le pare-feu ralentit les attaquants : ils doivent le casser ou le contourner, pendant que tes défenses tirent. Il se construit tout de suite, sans alternant.\n\nAstuce : pose-les en ligne (ils se relient) pour fermer des compartiments autour de tes défenses et de tes stocks. Clique sur le sol plusieurs fois pour en poser à la suite.", "The firewall slows attackers down: they have to break it or go around, while your defenses shoot. It's built at once, no intern needed.\n\nTip: put them in lines (they join up) to close compartments around your defenses and storage. Click the floor several times to place them one after the other."),
             Kind::Linter => ("La tourelle linter tire de loin, une cible à la fois, au sol comme en l'air. Elle couvre une grande zone.\n\nAstuce : place-la derrière tes pare-feux, pour qu'elle tire pendant que les attaquants cassent les murs.", "The linter turret shoots from afar, one target at a time, ground and air. It covers a large area.\n\nTip: put it behind your firewalls, so it shoots while the attackers break the walls."),
             Kind::Review => ("Le bureau du code review frappe fort, de près, et seulement au sol. Rien ne passe sans sa validation.\n\nAstuce : près de ton QG et de tes stocks, c'est ta première vraie défense.", "The code review desk hits hard, up close, ground only. Nothing gets through without its approval.\n\nTip: near your HQ and your storage, it's your first real defense."),
@@ -234,8 +234,8 @@ impl Kind {
             Kind::Bug => ("Le bug caché est un piège invisible : il explose quand des troupes marchent dessus, et blesse tout le groupe.\n\nAstuce : mets-le dans les passages entre tes pare-feux, là où les troupes se pressent.", "The hidden bug is an invisible trap: it explodes when troops step on it, and hurts the whole group.\n\nTip: put it in the gaps between your firewalls, where troops crowd."),
             Kind::Printer => ("L'imprimante qui bourre est un piège invisible : les troupes qui passent dessus restent bloquées un moment à essayer de la réparer.\n\nAstuce : devant une défense qui frappe fort, pour qu'elle ait le temps de tirer.", "The jamming printer is an invisible trap: troops passing over it get stuck a while trying to fix it.\n\nTip: in front of a hard-hitting defense, so it has time to shoot."),
             Kind::Aircon => ("La clim à fond est un piège invisible : elle ralentit toutes les troupes autour pendant un moment.\n\nAstuce : au milieu de tes défenses, elle les laisse tirer bien plus longtemps.", "The air con on full blast is an invisible trap: it slows every troop around for a while.\n\nTip: in the middle of your defenses, it lets them shoot much longer."),
-            Kind::Training => ("La salle de formation prépare les process, les « sorts » des raids : Daily stand-up (soigne), Rush (accélère), Hotfix (frappe une zone), Gel du code (fige les défenses).\n\nLes raids arrivent dans une prochaine étape du jeu.", "The training room prepares the processes, the raids' « spells »: Daily stand-up (heals), Rush (speeds up), Hotfix (hits an area), Code freeze (freezes the defenses).\n\nRaids come in a next step of the game."),
-            Kind::Heroes => ("Le bureau du Lead Dev accueille ton héros : il défend ton open space et part en raid avec toi. Il monte de niveau et a une capacité spéciale.\n\nLes raids arrivent dans une prochaine étape du jeu.", "The lead dev's office hosts your hero: they defend your open space and come on raids with you. They level up and have a special ability.\n\nRaids come in a next step of the game."),
+            Kind::Training => ("La salle de formation agrandit ton deck de raid : une carte action de plus (Hotfix, Daily stand-up, Gel du code…), et encore une au niveau 3.\n\nChoisis tes cartes dans « Cartes ».", "The training room makes your raid deck bigger: one more action card (Hotfix, Daily stand-up, Code freeze…), and another at level 3.\n\nPick your cards in « Cards »."),
+            Kind::Heroes => ("Le bureau du Lead Dev accueille ton héros : il défend ton open space et part en raid avec toi. Il monte de niveau et a une capacité spéciale.\n\nLe héros arrive dans une prochaine mise à jour.", "The lead dev's office hosts your hero: they defend your open space and come on raids with you. They level up and have a special ability.\n\nThe hero comes in a next update."),
             Kind::Plant | Kind::Foosball | Kind::Fountain | Kind::Sofa | Kind::Arcade | Kind::Statue => ("Les décorations ne servent à rien en raid : elles rendent juste ton open space plus beau, et montrent à tes collègues jusqu'où tu es allé·e.\n\nAstuce : tu peux les déplacer à tout moment, comme le reste.", "Decorations do nothing in raids: they just make your open space look better, and show your colleagues how far you've come.\n\nTip: you can move them anytime, like everything else."),
             Kind::Boxes | Kind::OldPc | Kind::DeadPlant | Kind::Chairs => ("Ton open space est encombré : cartons, vieux PC, plantes mortes, chaises cassées… Débarrasse-les pour faire de la place. Ça rapporte de l'XP, et parfois des tickets RH. De nouveaux reviennent avec le temps.", "Your open space is cluttered: boxes, old PCs, dead plants, broken chairs… Clear them to make room. It gives XP, and sometimes HR tickets. New ones come back over time."),
         }
@@ -662,6 +662,23 @@ pub struct OpenSpace {
     pub raids: u32,
     #[serde(default)]
     pub wins: u32,
+    /// The cards: how many copies of each (see `crate::openspace_cards`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cards: Vec<u32>,
+    /// The raid deck: the action cards taken on a raid (their numbers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deck: Vec<usize>,
+    /// The missions done (the one under way is the next).
+    #[serde(default)]
+    pub missions: u16,
+    /// When the internal mail was last opened (unix seconds; 0: never).
+    #[serde(default)]
+    pub mail: i64,
+    /// The obstacles cleared, the troops trained (the achievements count them).
+    #[serde(default)]
+    pub cleared: u32,
+    #[serde(default)]
+    pub trained: u32,
 }
 
 /// What a tutorial step points at.
@@ -677,6 +694,10 @@ pub enum Spot {
     Army,
     /// The « Attack » button.
     Attack,
+    /// The « Cards » button.
+    Cards,
+    /// Nothing in particular.
+    None,
 }
 
 /// A tutorial step: its title, its text, what it points at, and what ends it (None: « Next »).
@@ -821,7 +842,7 @@ impl OpenSpace {
 
     /// A new open space: the boss's office alone in the middle, enough to get going.
     pub fn new(now: i64, seed: u64) -> Self {
-        let mut s = OpenSpace { at: now, actions: 0, rng: seed | 1, next_id: 1, coffee: 1_000.0, budget: 1_000.0, tickets: START_TICKETS, xp: 0, buildings: Vec::new(), tuto: 0, seen: vec![Kind::Hq], collects: 0, next_obstacle: 0, army: Vec::new(), queue: Vec::new(), queue_until: 0, troop_levels: Vec::new(), research: None, campaign: Vec::new(), raids: 0, wins: 0 };
+        let mut s = OpenSpace { at: now, actions: 0, rng: seed | 1, next_id: 1, coffee: 1_000.0, budget: 1_000.0, tickets: START_TICKETS, xp: 0, buildings: Vec::new(), tuto: 0, seen: vec![Kind::Hq], collects: 0, next_obstacle: 0, army: Vec::new(), queue: Vec::new(), queue_until: 0, troop_levels: Vec::new(), research: None, campaign: Vec::new(), raids: 0, wins: 0, cards: Vec::new(), deck: Vec::new(), missions: 0, mail: 0, cleared: 0, trained: 0 };
         let c = GRID / 2;
         for (kind, x, y) in [(Kind::Hq, c - 2, c - 2)] {
             let id = s.take_id();
@@ -836,6 +857,10 @@ impl OpenSpace {
     }
 
     /// A pseudo-random number (xorshift), from the open space's own seed.
+    pub(crate) fn rand_u64(&mut self) -> u64 {
+        self.rand()
+    }
+
     fn rand(&mut self) -> u64 {
         let mut x = self.rng.max(1);
         x ^= x << 13;
@@ -884,6 +909,7 @@ impl OpenSpace {
         self.budget -= price as f64;
         self.buildings.remove(i);
         self.xp += 6;
+        self.cleared += 1;
         // Now and then, tickets under it: 0 most of the time, up to 5.
         let roll = self.rand() % 100;
         let found = match roll {

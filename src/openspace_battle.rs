@@ -12,6 +12,7 @@ use std::collections::{BinaryHeap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::openspace_cards::{Action, Rarity};
 use crate::openspace::{self as os, Building, Group, Kind, OpenSpace, Res, Tx, Why, GRID, HQ_MAX};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -288,6 +289,7 @@ impl OpenSpace {
             let done_at = self.queue_until;
             self.queue.remove(0);
             self.add_troop(t);
+            self.trained += 1;
             if let Some(&next) = self.queue.first() {
                 self.queue_until = done_at + self.train_secs(next);
             }
@@ -307,7 +309,7 @@ impl OpenSpace {
     /// tickets for a first 3 stars.
     pub fn finish_raid(&mut self, level: u32, stars: u8, destroyed: f32) -> Outcome {
         let (coffee, budget) = reward(level);
-        let share = destroyed.clamp(0.0, 1.0) as f64;
+        let share = destroyed.clamp(0.0, 1.0) as f64 * self.loot_boost();
         let room = |s: &Self, r| (s.capacity(r) - s.amount(r)).max(0.0);
         let got_coffee = (coffee as f64 * share).floor().min(room(self, Res::Coffee));
         let got_budget = (budget as f64 * share).floor().min(room(self, Res::Budget));
@@ -322,12 +324,20 @@ impl OpenSpace {
         self.tickets += tickets;
         self.campaign[i] = before.max(stars);
         self.xp += 5 + 10 * stars as u64;
+        // A card for a win; a rare or better for a first 3 stars.
+        let mut cards = Vec::new();
+        if stars > 0 {
+            cards.push(self.draw_card(Rarity::Common));
+        }
+        if stars == 3 && before < 3 {
+            cards.push(self.draw_card(Rarity::Rare));
+        }
         self.raids += 1;
         if stars > 0 {
             self.wins += 1;
         }
         self.actions += 1;
-        Outcome { coffee: got_coffee, budget: got_budget, tickets, stars, new_stars: stars.saturating_sub(before) }
+        Outcome { coffee: got_coffee, budget: got_budget, tickets, stars, new_stars: stars.saturating_sub(before), cards }
     }
 }
 
@@ -339,6 +349,8 @@ pub struct Outcome {
     pub tickets: u32,
     pub stars: u8,
     pub new_stars: u8,
+    /// The cards found (their numbers).
+    pub cards: Vec<usize>,
 }
 
 /// The loot of the campaign's `level` all destroyed (coffee, budget).
@@ -509,6 +521,8 @@ pub struct Def {
     pub hp: f32,
     pub max: f32,
     cool: f32,
+    /// Not shooting (a code freeze) for that long.
+    pub frozen: f32,
     /// The troop it shoots at (its id).
     aim: Option<u32>,
     /// The board's beam warming up on the same target.
@@ -573,6 +587,8 @@ pub struct Unit {
     pub hitting: bool,
     /// Where it looks.
     pub dir: (f32, f32),
+    /// Faster and harder hitting (a double espresso) for that long.
+    pub rush: f32,
 }
 
 /// What shows for a moment.
@@ -608,6 +624,10 @@ pub struct Battle {
     /// Where troops can be dropped.
     pub drop_ok: Vec<bool>,
     fields: HashMap<usize, Vec<f32>>,
+    /// The cards' bonus to each troop: hit points, damage (times).
+    pub boosts: Vec<(Troop, f32, f32)>,
+    /// The action cards brought: each, its level, whether it was played.
+    pub cards: Vec<(Action, u8, bool)>,
 }
 
 const INF: f32 = f32::INFINITY;
@@ -637,7 +657,7 @@ impl Battle {
             .filter(|b| b.level >= 1 && !matches!(b.kind.group(), Group::Decor | Group::Obstacle))
             .map(|b| {
                 let max = b.kind.hp(b.level) as f32;
-                Def { id: b.id, kind: b.kind, x: b.x, y: b.y, level: b.level, hp: max, max, cool: 0.5, aim: None, ramp: 0.0, revealed: false }
+                Def { id: b.id, kind: b.kind, x: b.x, y: b.y, level: b.level, hp: max, max, cool: 0.5, aim: None, ramp: 0.0, revealed: false, frozen: 0.0 }
             })
             .collect();
         let mut grid = vec![None; (GRID * GRID) as usize];
@@ -662,7 +682,7 @@ impl Battle {
                 }
             }
         }
-        Battle { defs, units: Vec::new(), fx: Vec::new(), time: 0.0, left: army.into_iter().filter(|(_, _, n)| *n > 0).collect(), started: false, next_unit: 1, grid, drop_ok, fields: HashMap::new() }
+        Battle { defs, units: Vec::new(), fx: Vec::new(), time: 0.0, left: army.into_iter().filter(|(_, _, n)| *n > 0).collect(), started: false, next_unit: 1, grid, drop_ok, fields: HashMap::new(), boosts: Vec::new(), cards: Vec::new() }
     }
 
     pub fn can_drop(&self, x: f32, y: f32) -> bool {
@@ -677,9 +697,74 @@ impl Battle {
         let Some(slot) = self.left.iter_mut().find(|(k, _, n)| *k == t && *n > 0) else { return false };
         slot.2 -= 1;
         let level = slot.1;
-        let max = t.hp(level);
-        self.units.push(Unit { id: self.next_unit, troop: t, level, x, y, hp: max, max, target: None, wall: None, cool: 0.3, stun: 0.0, slow: 0.0, hitting: false, dir: (1.0, 0.0) });
+        let max = t.hp(level) * self.boost(t).0;
+        self.units.push(Unit { id: self.next_unit, troop: t, level, x, y, hp: max, max, target: None, wall: None, cool: 0.3, stun: 0.0, slow: 0.0, hitting: false, dir: (1.0, 0.0), rush: 0.0 });
         self.next_unit += 1;
+        self.started = true;
+        true
+    }
+
+    /// The cards' bonus to troop `t`: hit points, damage (times).
+    pub fn boost(&self, t: Troop) -> (f32, f32) {
+        self.boosts.iter().find(|(k, _, _)| *k == t).map_or((1.0, 1.0), |&(_, hp, dps)| (hp, dps))
+    }
+
+    /// Plays action card `i` (of `cards`) at (x, y): whether it could.
+    pub fn play(&mut self, i: usize, x: f32, y: f32) -> bool {
+        if self.over() || !(0.0..GRID as f32).contains(&x) || !(0.0..GRID as f32).contains(&y) {
+            return false;
+        }
+        let Some(&(action, level, false)) = self.cards.get(i) else { return false };
+        self.cards[i].2 = true;
+        let (r, p) = (action.radius(), action.power(level));
+        let now = self.time;
+        let near = |d: &Def| d.alive() && d.reach(x, y) <= r;
+        match action {
+            Action::Reinforce => {
+                let level = self.left.iter().find(|(t, _, _)| *t == Troop::Intern).map_or(1, |l| l.1).max(1);
+                let max = Troop::Intern.hp(level) * self.boost(Troop::Intern).0;
+                for k in 0..p as u32 {
+                    let a = k as f32 * 2.4;
+                    let (ux, uy) = (x + a.cos() * 0.6, y + a.sin() * 0.6);
+                    self.units.push(Unit { id: self.next_unit, troop: Troop::Intern, level, x: ux, y: uy, hp: max, max, target: None, wall: None, cool: 0.3, stun: 0.0, slow: 0.0, hitting: false, dir: (1.0, 0.0), rush: 0.0 });
+                    self.next_unit += 1;
+                }
+                self.fx.push(Fx { kind: FxKind::Heal { at: (x, y) }, at: now });
+            }
+            Action::Hotfix | Action::Friday => {
+                let hits: Vec<usize> = self.defs.iter().enumerate().filter(|(_, d)| near(d) && !d.is_trap()).map(|(i, _)| i).collect();
+                for i in hits {
+                    self.damage_def(i, p);
+                }
+                self.fx.push(Fx { kind: FxKind::Boom { at: (x, y), r }, at: now });
+                if action == Action::Friday {
+                    self.fx.push(Fx { kind: FxKind::Boom { at: (x, y), r: r * 0.6 }, at: now + 0.25 });
+                }
+            }
+            Action::Standup => {
+                for u in self.units.iter_mut().filter(|u| (u.x - x).hypot(u.y - y) <= r) {
+                    u.hp = (u.hp + p).min(u.max);
+                    u.stun = 0.0;
+                    u.slow = 0.0;
+                }
+                for k in 0..5 {
+                    let a = k as f32 * 1.26;
+                    self.fx.push(Fx { kind: FxKind::Heal { at: (x + a.cos() * r * 0.5, y + a.sin() * r * 0.5) }, at: now + k as f32 * 0.08 });
+                }
+            }
+            Action::Rush => {
+                for u in self.units.iter_mut().filter(|u| (u.x - x).hypot(u.y - y) <= r) {
+                    u.rush = u.rush.max(p);
+                }
+                self.fx.push(Fx { kind: FxKind::Zap { at: (x, y) }, at: now });
+            }
+            Action::Freeze => {
+                for d in self.defs.iter_mut().filter(|d| near(d)) {
+                    d.frozen = d.frozen.max(p);
+                }
+                self.fx.push(Fx { kind: FxKind::Freeze { at: (x, y), r }, at: now });
+            }
+        }
         self.started = true;
         true
     }
@@ -855,6 +940,10 @@ impl Battle {
             if !alive {
                 continue;
             }
+            if self.defs[i].frozen > 0.0 {
+                self.defs[i].frozen -= STEP;
+                continue;
+            }
             let (cx, cy) = self.defs[i].center();
             let in_reach = |u: &Unit| {
                 let air = u.troop.stats().air;
@@ -925,7 +1014,13 @@ impl Battle {
             } else {
                 1.0
             };
-            let speed = st.speed * slow * STEP;
+            let rush = if self.units[u].rush > 0.0 {
+                self.units[u].rush -= STEP;
+                2.0
+            } else {
+                1.0
+            };
+            let speed = st.speed * slow * rush * STEP;
             let (x, y) = (self.units[u].x, self.units[u].y);
 
             if st.heals {
@@ -944,7 +1039,7 @@ impl Battle {
                         self.move_toward(u, tx_, ty_, speed);
                     }
                     if hurt.is_some() && d <= st.range {
-                        let heal = self.units[u].troop.dps(self.units[u].level) * STEP;
+                        let heal = self.units[u].troop.dps(self.units[u].level) * self.boost(self.units[u].troop).1 * STEP;
                         for o in self.units.iter_mut().filter(|o| o.hp > 0.0 && (o.x - tx_).hypot(o.y - ty_) <= st.splash) {
                             o.hp = (o.hp + heal).min(o.max);
                         }
@@ -982,7 +1077,7 @@ impl Battle {
                 self.units[u].cool -= STEP;
                 if self.units[u].cool <= 0.0 {
                     self.units[u].cool = 1.0;
-                    let mut dmg = self.units[u].troop.dps(self.units[u].level);
+                    let mut dmg = self.units[u].troop.dps(self.units[u].level) * self.boost(self.units[u].troop).1 * if self.units[u].rush > 0.0 { 1.6 } else { 1.0 };
                     if self.defs[h].kind == Kind::Wall && st.prefers == Prefers::Wall {
                         dmg *= 40.0;
                     }

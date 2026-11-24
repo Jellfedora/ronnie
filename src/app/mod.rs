@@ -47,6 +47,7 @@ mod tycoon_scene;
 mod openspace;
 mod openspace_scene;
 mod openspace_raid;
+mod openspace_cards;
 mod frames;
 mod trail;
 mod game;

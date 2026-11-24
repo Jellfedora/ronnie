@@ -53,15 +53,20 @@ pub(super) struct Space {
     build_rect: Rect,
     army_rect: Rect,
     attack_rect: Rect,
-    /// The side panel open: 0 none, 1 the army, 2 the campaign.
+    /// The side panel open: 0 none, 1 the army, 2 the campaign, 3 the cards, 4 the achievements.
     panel: u8,
     /// A raid under way.
     fight: Option<super::openspace_raid::Fight>,
+    /// Cards just found, being turned over (since when).
+    reveal: Option<(Vec<usize>, f64)>,
+    cards_rect: Rect,
+    /// The mission's card folded (just its title).
+    mission_folded: bool,
 }
 
 impl Default for Space {
     fn default() -> Self {
-        Self { live: None, written: None, wrote_at: 0.0, started: false, away: None, view: View { zoom: 1.15, pan: Vec2::ZERO }, selected: None, placing: None, shop: false, drag: Drag::None, moving: None, said: None, scene: Default::default(), discovered: None, shop_rects: Vec::new(), build_rect: Rect::NOTHING, army_rect: Rect::NOTHING, attack_rect: Rect::NOTHING, panel: 0, fight: None }
+        Self { live: None, written: None, wrote_at: 0.0, started: false, away: None, view: View { zoom: 1.15, pan: Vec2::ZERO }, selected: None, placing: None, shop: false, drag: Drag::None, moving: None, said: None, scene: Default::default(), discovered: None, shop_rects: Vec::new(), build_rect: Rect::NOTHING, army_rect: Rect::NOTHING, attack_rect: Rect::NOTHING, panel: 0, fight: None, reveal: None, cards_rect: Rect::NOTHING, mission_folded: false }
     }
 }
 
@@ -143,7 +148,26 @@ impl App {
         // TEMP-DEMO: opens the game on a demo open space (screenshots while developing).
         if !self.openspace.started && std::env::var("OPENSPACE_DEMO").is_ok() {
             self.open_openspace();
-            self.config.settings.openspace = Some(OpenSpace::new(unix_now(), 7));
+            let mut s = OpenSpace::new(unix_now(), 7);
+            let mode = std::env::var("OPENSPACE_DEMO").unwrap_or_default();
+            if mode != "1" {
+                s.tuto = os::TUTORIAL.len() as u8;
+                for n in [0, 0, 0, 1, 4, 6, 9, 10, 12, 13, 13, 13, 16, 17] {
+                    s.add_card(n);
+                }
+                s.cleared = 7;
+                s.collects = 30;
+            }
+            match mode.as_str() {
+                "cards" => self.openspace.panel = 3,
+                "raid" => {
+                    s.army = vec![(crate::openspace_battle::Troop::Intern, 20), (crate::openspace_battle::Troop::Dev, 10)];
+                    self.openspace.fight = Some(super::openspace_raid::Fight::new(3, &s));
+                }
+                "reveal" => self.openspace.reveal = Some((vec![17, 3, 11], 0.0)),
+                _ => {}
+            }
+            self.config.settings.openspace = Some(s);
         }
         let saved = &self.config.settings.openspace;
         if saved.is_none() && self.openspace.live.is_none() {
@@ -205,6 +229,10 @@ impl App {
         // A raid under way: its page only.
         if let Some(fight) = self.openspace.fight.as_mut() {
             if super::openspace_raid::fight_page(ui, rect, fight, &mut s, fr, &theme) {
+                let found = fight.result.as_ref().map(|o| o.cards.clone()).unwrap_or_default();
+                if !found.is_empty() {
+                    self.openspace.reveal = Some((found, time));
+                }
                 self.openspace.fight = None;
             }
             if self.openspace.live.as_ref() != Some(&s) {
@@ -375,7 +403,21 @@ impl App {
             st.shop = false;
             st.placing = None;
         }
-        let side = Rect::from_min_max(Pos2::new(rect.max.x - 360.0, rect.min.y + 96.0), Pos2::new(rect.max.x - 14.0, rect.max.y - 70.0));
+        // The cards; a dot when the mail came.
+        let cards = Rect::from_min_size(Pos2::new(army.min.x - 120.0, build.min.y), Vec2::new(110.0, 42.0));
+        st.cards_rect = cards;
+        if ui.put(cards, egui::Button::new(egui::RichText::new(format!("♠  {}", tx(("Cartes", "Cards"), fr))).size(14.0).strong()).corner_radius(10.0)).clicked() {
+            st.panel = if st.panel == 3 { 0 } else { 3 };
+            st.shop = false;
+            st.placing = None;
+        }
+        if unix >= s.mail_at() {
+            let c = cards.right_top() + Vec2::new(-4.0, 4.0);
+            let pulse = (time * 4.0).sin() as f32 * 0.5 + 0.5;
+            ui.painter().circle_filled(c, 6.0 + pulse * 1.5, Color32::from_rgb(220, 60, 60));
+        }
+        let wide = if st.panel == 3 { 420.0 } else { 360.0 };
+        let side = Rect::from_min_max(Pos2::new(rect.max.x - wide, rect.min.y + 96.0), Pos2::new(rect.max.x - 14.0, rect.max.y - 70.0));
         if st.panel == 1 {
             let mut said = None;
             panel(ui, side, "army", &theme, |ui| super::openspace_raid::army_ui(ui, &mut s, fr, &theme, unix, &mut said));
@@ -388,6 +430,11 @@ impl App {
             st.fight = Some(super::openspace_raid::Fight::new(level, &s));
             st.panel = 0;
             st.selected = None;
+        } else if st.panel == 3 {
+            let found = panel(ui, side, "cards", &theme, |ui| super::openspace_cards::cards_ui(ui, &mut s, fr, &theme, unix));
+            if !found.is_empty() {
+                st.reveal = Some((found, time));
+            }
         }
         if let Some(kind) = st.placing {
             let text = format!("{} — {}", tx(kind.name(), fr), tx(("clique pour poser · Échap ou clic droit pour arrêter", "click to place · Esc or right click to stop"), fr));
@@ -437,14 +484,21 @@ impl App {
             st.discovered = None;
         }
 
-        // The tutorial: its card on the left, an arrow on what to do.
+        // The tutorial, then the missions: a card on the left, an arrow on what to do.
         s.tutorial_advance();
-        if st.discovered.is_none()
-            && let Some(step) = s.step()
-        {
-            let gold = Color32::from_rgb(255, 196, 64);
-            let mut waiting = false;
-            match step.spot {
+        let gold = Color32::from_rgb(255, 196, 64);
+        let mut waiting = false;
+        let spot = if st.discovered.is_some() {
+            None
+        } else if let Some(step) = s.step() {
+            Some(step.spot)
+        } else if st.mission_folded {
+            None
+        } else {
+            super::openspace_cards::mission_spot(&s)
+        };
+        if let Some(spot) = spot {
+            match spot {
                 os::Spot::Shop(kind) if st.placing != Some(kind) => {
                     if !st.shop {
                         point_at(ui.painter(), st.build_rect, time, gold);
@@ -461,12 +515,26 @@ impl App {
                 }
                 os::Spot::Army if st.panel != 1 => point_at(ui.painter(), st.army_rect, time, gold),
                 os::Spot::Attack if st.panel != 2 => point_at(ui.painter(), st.attack_rect, time, gold),
+                os::Spot::Cards if st.panel != 3 => point_at(ui.painter(), st.cards_rect, time, gold),
                 os::Spot::Bubble => match s.buildings.iter().find(|b| scene::ripe(b)) {
                     Some(b) => arrow_at(ui.painter(), scene::bubble_at(&iso, b, time) - Vec2::new(0.0, 18.0), time, gold),
                     None => waiting = true,
                 },
                 _ => {}
             }
+        }
+        if st.discovered.is_none()
+            && s.step().is_none()
+            && let Some(got) = super::openspace_cards::mission_ui(ui, rect.min + Vec2::new(16.0, 104.0), &mut s, &mut st.mission_folded, fr, &theme)
+        {
+            st.scene.float(tx(("Mission accomplie !", "Mission done!"), fr).to_owned(), gold, (os::GRID as f32 / 2.0, os::GRID as f32 / 2.0), time);
+            if let Some(card) = got {
+                st.reveal = Some((vec![card], time));
+            }
+        }
+        if st.discovered.is_none()
+            && let Some(step) = s.step()
+        {
             let n = s.tuto as usize;
             let mut next = false;
             let mut skip = false;
@@ -511,6 +579,12 @@ impl App {
             && openspace_away(ui, &sum, fr, &theme)
         {
             st.away = None;
+        }
+
+        if let Some((found, since)) = st.reveal.clone()
+            && super::openspace_cards::reveal(ui, rect, &found, since, &s, fr, &theme)
+        {
+            st.reveal = None;
         }
 
         if self.openspace.live.as_ref() != Some(&s) {
@@ -567,7 +641,7 @@ impl App {
         x = rc.min.x - 8.0;
         scene::paint_ticket(painter, Pos2::new(rc.min.x + 20.0, rc.center().y), 14.0, rgb_ticket());
         painter.text(Pos2::new(rc.min.x + 36.0, rc.center().y), Align2::LEFT_CENTER, s.tickets.to_string(), FontId::proportional(14.0), theme.text);
-        ui.interact(rc, ui.id().with("os-tickets"), Sense::hover()).on_hover_text(tx(("Tickets RH : rares. Ils finissent un chantier tout de suite. On en gagnera avec les succès et la campagne.", "HR tickets: rare. They finish a work at once. More will come from achievements and the campaign."), fr));
+        ui.interact(rc, ui.id().with("os-tickets"), Sense::hover()).on_hover_text(tx(("Tickets RH : rares. Ils finissent un chantier tout de suite. On en gagne avec les succès, les 3 étoiles de la campagne, et parfois sous les obstacles.", "HR tickets: rare. They finish a work at once. Earned with achievements, the campaign's 3 stars, and now and then under obstacles."), fr));
         let rc = chip(painter, x, 112.0);
         x = rc.min.x - 8.0;
         let (busy, all) = (s.busy(), s.interns());
@@ -600,7 +674,7 @@ impl App {
                 scene::paint_mini(ui.painter(), Kind::Hq, r.center(), 110.0, time);
                 ui.label(egui::RichText::new(tx(("Ton open space", "Your open space"), fr)).size(20.0).strong().color(theme.text));
                 ui.add_space(6.0);
-                ui.add(egui::Label::new(egui::RichText::new(tx(("Tu prends la tête d'un open space. Construis, fais monter de niveau, récolte le café et le budget, protège-toi derrière tes pare-feux… Les chantiers durent de quelques secondes à plusieurs jours, et tout continue même Ronnie fermé : reviens aux pauses ! Bientôt : ton armée, la campagne, les cartes et les raids entre collègues.", "You take over an open space. Build, level up, collect coffee and budget, shelter behind your firewalls… Works take from a few seconds to several days, and everything goes on even with Ronnie closed: come back at your breaks! Soon: your army, the campaign, the cards and raids between colleagues."), fr)).size(13.5).color(theme.text_muted)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(tx(("Tu prends la tête d'un open space. Construis, fais monter de niveau, récolte le café et le budget, protège-toi derrière tes pare-feux… Les chantiers durent de quelques secondes à plusieurs jours, et tout continue même Ronnie fermé : reviens aux pauses ! Forme ton armée, attaque les boîtes concurrentes, collectionne les cartes… et bientôt, les raids entre collègues.", "You take over an open space. Build, level up, collect coffee and budget, shelter behind your firewalls… Works take from a few seconds to several days, and everything goes on even with Ronnie closed: come back at your breaks! Train your army, attack rival companies, collect the cards… and soon, raids between colleagues."), fr)).size(13.5).color(theme.text_muted)).wrap());
                 ui.add_space(14.0);
                 button(ui, true, tx(("Ouvrir mon open space", "Open my open space"), fr), theme)
             })

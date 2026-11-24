@@ -13,6 +13,8 @@ pub(super) struct Fight {
     pub b: Battle,
     pub level: u32,
     pick: Option<Troop>,
+    /// The action card picked (its place in the battle's cards), to play where clicked.
+    card: Option<usize>,
     acc: f32,
     last_drop: f64,
     pub result: Option<Outcome>,
@@ -24,9 +26,11 @@ impl Fight {
     /// A raid on the campaign's `level`, with the whole army.
     pub fn new(level: u32, s: &OpenSpace) -> Self {
         let army = s.army.iter().map(|(t, n)| (*t, s.troop_level(*t), *n)).collect();
-        let b = Battle::new(&war::rival_base(level), army);
+        let mut b = Battle::new(&war::rival_base(level), army);
+        b.boosts = TROOPS.iter().map(|&t| { let (hp, dps) = s.troop_boost(t); (t, hp, dps) }).collect();
+        b.cards = s.raid_cards().into_iter().map(|(a, l)| (a, l, false)).collect();
         let pick = b.left.first().map(|(t, _, _)| *t);
-        Fight { b, level, pick, acc: 0.0, last_drop: 0.0, result: None, speed: 1.0, view: View { zoom: 0.95, pan: Vec2::ZERO } }
+        Fight { b, level, pick, card: None, acc: 0.0, last_drop: 0.0, result: None, speed: 1.0, view: View { zoom: 0.95, pan: Vec2::ZERO } }
     }
 }
 
@@ -236,14 +240,30 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
             f.view.zoom = new;
         }
     }
-    let picking = f.pick.is_some() && f.result.is_none();
+    let carding = f.card.is_some() && f.result.is_none();
+    let picking = f.pick.is_some() && f.result.is_none() && !carding;
     // Dropping with the left button (held: one after the other); the camera with the right one, or the
     // left one when nothing is picked.
-    if map.dragged_by(egui::PointerButton::Secondary) || map.dragged_by(egui::PointerButton::Middle) || (!picking && map.dragged_by(egui::PointerButton::Primary)) {
+    if map.dragged_by(egui::PointerButton::Secondary) || map.dragged_by(egui::PointerButton::Middle) || (!picking && !carding && map.dragged_by(egui::PointerButton::Primary)) {
         f.view.pan += map.drag_delta();
     }
     let iso = Iso::new(rect, &f.view);
     let hover = map.hover_pos().map(|p| iso.back(p));
+    // An action card played where clicked; the troops picked again after.
+    if carding
+        && let Some(i) = f.card
+        && map.clicked()
+        && let Some(p) = map.interact_pointer_pos()
+    {
+        let (x, y) = iso.back(p);
+        if f.b.play(i, x, y) {
+            f.card = None;
+            f.last_drop = time;
+        }
+    }
+    if carding && (map.secondary_clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+        f.card = None;
+    }
     if picking
         && let Some(t) = f.pick
         && let Some(p) = map.interact_pointer_pos()
@@ -261,6 +281,28 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
     }
     let painter = ui.painter_at(rect);
     scene::paint_battle(&painter, rect, &f.view, &f.b, theme, time, picking, if picking { hover } else { None });
+    // The card's reach under the pointer; the frozen defenses.
+    for d in f.b.defs.iter().filter(|d| d.frozen > 0.0 && d.alive()) {
+        let (cx, cy) = d.center();
+        let half = d.kind.size() as f32 / 2.0;
+        let pts: Vec<Pos2> = [(-half, -half), (half, -half), (half, half), (-half, half)].iter().map(|(dx, dy)| iso.at(cx + dx, cy + dy)).collect();
+        painter.add(egui::Shape::convex_polygon(pts, Color32::from_rgba_unmultiplied(140, 210, 255, 70), Stroke::new(1.5, Color32::from_rgb(170, 225, 255))));
+        painter.text(iso.up(iso.at(cx, cy), 40.0), Align2::CENTER_CENTER, "❄", FontId::proportional(16.0), Color32::from_rgb(190, 235, 255));
+    }
+    if carding
+        && let (Some(i), Some((hx, hy))) = (f.card, hover)
+        && let Some(&(action, _, _)) = f.b.cards.get(i)
+    {
+        let r = action.radius();
+        let pts: Vec<Pos2> = (0..40).map(|k| {
+            let a = k as f32 * std::f32::consts::TAU / 40.0;
+            iso.at(hx + a.cos() * r, hy + a.sin() * r)
+        }).collect();
+        let col = super::openspace_cards::action_color(action);
+        let pulse = (time * 5.0).sin() as f32 * 0.5 + 0.5;
+        painter.add(egui::Shape::convex_polygon(pts, col.gamma_multiply(0.18 + 0.08 * pulse), Stroke::new(2.0, col)));
+        super::openspace_cards::paint_action_icon(&painter, action, iso.at(hx, hy), 22.0, time);
+    }
 
     // The top: the rival, the time, the share destroyed, the stars.
     let gold = Color32::from_rgb(255, 196, 64);
@@ -276,7 +318,7 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
 
     // The bottom: the troops to drop.
     if f.result.is_none() {
-        let n = f.b.left.len().max(1) as f32;
+        let n = f.b.left.len().max(1) as f32 + f.b.cards.len() as f32 * 0.85 + if f.b.cards.is_empty() { 0.0 } else { 0.2 };
         let w = (n * 74.0 + 12.0).min(rect.width() - 260.0);
         let tray = Rect::from_center_size(Pos2::new(rect.center().x, rect.max.y - 50.0), Vec2::new(w.max(200.0), 84.0));
         ui.interact(tray, ui.id().with("os-tray"), Sense::click());
@@ -287,7 +329,7 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
         for (k, (t, level, count)) in f.b.left.clone().into_iter().enumerate() {
             let r = Rect::from_min_size(tray.min + Vec2::new(8.0 + k as f32 * 74.0, 8.0), Vec2::new(68.0, 68.0));
             let resp = ui.interact(r, ui.id().with(("os-troop", k)), Sense::click());
-            let on = f.pick == Some(t);
+            let on = f.pick == Some(t) && f.card.is_none();
             painter.rect_filled(r, 10.0, if on { theme.accent.gamma_multiply(0.5) } else { Color32::from_white_alpha(if resp.hovered() { 30 } else { 14 }) });
             if on {
                 painter.rect_stroke(r, 10.0, Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
@@ -297,8 +339,41 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
             painter.text(r.left_bottom() + Vec2::new(6.0, -5.0), Align2::LEFT_BOTTOM, format!("{level}"), FontId::proportional(11.0), gold);
             if resp.clicked() && count > 0 {
                 f.pick = Some(t);
+                f.card = None;
             }
             resp.on_hover_text(tx(t.about(), fr));
+        }
+        // The action cards, after the troops: each played once.
+        let x0 = tray.min.x + 8.0 + f.b.left.len() as f32 * 74.0 + 14.0;
+        for (k, (action, level, used)) in f.b.cards.clone().into_iter().enumerate() {
+            let r = Rect::from_min_size(Pos2::new(x0 + k as f32 * 63.0, tray.min.y + 6.0), Vec2::new(56.0, 72.0));
+            let resp = ui.interact(r, ui.id().with(("os-card", k)), Sense::click());
+            let on = f.card == Some(k);
+            let col = super::openspace_cards::action_color(action);
+            let lift = if on { -6.0 } else if resp.hovered() && !used { -3.0 } else { 0.0 };
+            let r = r.translate(Vec2::new(0.0, lift));
+            painter.rect_filled(r, 8.0, if used { Color32::from_rgb(45, 45, 50) } else { Color32::from_rgb(40, 42, 54) });
+            painter.rect_stroke(r, 8.0, Stroke::new(if on { 3.0 } else { 2.0 }, if used { Color32::from_white_alpha(40) } else { col }), egui::StrokeKind::Inside);
+            if used {
+                super::openspace_cards::paint_action_icon(&painter.with_clip_rect(r), action, r.center() - Vec2::new(0.0, 6.0), 22.0, 0.0);
+                painter.rect_filled(r, 8.0, Color32::from_black_alpha(140));
+                painter.text(r.center(), Align2::CENTER_CENTER, "✔", FontId::proportional(20.0), Color32::from_white_alpha(140));
+            } else {
+                super::openspace_cards::paint_action_icon(&painter, action, r.center() - Vec2::new(0.0, 8.0), 24.0, time);
+                painter.text(r.center_bottom() - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, super::openspace_cards::action_short(action, fr), FontId::proportional(9.5), Color32::WHITE);
+                painter.text(r.left_top() + Vec2::new(5.0, 4.0), Align2::LEFT_TOP, format!("{level}"), FontId::proportional(10.0), gold);
+            }
+            if resp.clicked() && !used {
+                f.card = if on { None } else { Some(k) };
+            }
+            resp.on_hover_text(format!("{}\n{}", tx(super::openspace_cards::action_card(action).name, fr), action.text(level, fr)));
+        }
+        if carding {
+            let hint = tx(("Clique où jouer la carte · clic droit ou Échap pour annuler", "Click where to play the card · right click or Esc to cancel"), fr);
+            let g = painter.layout_no_wrap(hint.to_owned(), FontId::proportional(13.0), Color32::WHITE);
+            let r = Rect::from_center_size(Pos2::new(rect.center().x, tray.min.y - 22.0), g.size() + Vec2::new(24.0, 12.0));
+            painter.rect_filled(r, 10.0, Color32::from_black_alpha(170));
+            painter.galley(r.min + Vec2::new(12.0, 6.0), g, Color32::WHITE);
         }
         // End now, the speed.
         let end = Rect::from_min_size(Pos2::new(rect.max.x - 170.0, rect.max.y - 58.0), Vec2::new(156.0, 40.0));
@@ -352,6 +427,10 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
                     ui.label(egui::RichText::new(format!("+{}   +{}", os::amount_text(o.coffee, os::Res::Coffee, fr), os::amount_text(o.budget, os::Res::Budget, fr))).size(15.0).color(theme.text));
                     if o.tickets > 0 {
                         ui.label(egui::RichText::new(format!("+{} 🎫 {}", o.tickets, tx(("pour tes 3 étoiles !", "for your 3 stars!"), fr))).size(14.0).color(Color32::from_rgb(0xe2, 0x6b, 0xd8)));
+                    }
+                    if !o.cards.is_empty() {
+                        let text = if o.cards.len() == 1 { tx(("+1 carte à découvrir !", "+1 card to turn over!"), fr).to_owned() } else { format!("+{} {}", o.cards.len(), tx(("cartes à découvrir !", "cards to turn over!"), fr)) };
+                        ui.label(egui::RichText::new(format!("♠ {text}")).size(14.0).color(Color32::from_rgb(255, 196, 64)));
                     }
                     if o.stars > 0 && f.level < LEVELS {
                         ui.label(egui::RichText::new(format!("{} {}", tx(("Niveau suivant débloqué :", "Next level unlocked:"), fr), war::rival_name(f.level + 1))).size(12.5).color(theme.ansi[2]));
