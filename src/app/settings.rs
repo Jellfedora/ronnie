@@ -2298,6 +2298,11 @@ impl App {
                         super::wallstreet::unicorn_preview(&painter, rect, now);
                         ui.ctx().request_repaint();
                     }
+                    Some(Reward::Drone) => {
+                        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 8.0), rect.max), egui::CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, theme.tab_active);
+                        super::openspace_drone::drone_preview(&painter, rect, now);
+                        ui.ctx().request_repaint();
+                    }
                     Some(Reward::Cheque) => {
                         let fr = self.config.settings.language == crate::i18n::Lang::Fr;
                         let amount = crate::tycoon::money(super::wallstreet::cheque(&self.config.settings).unwrap_or(12_300_000.0), fr);
@@ -2391,6 +2396,7 @@ impl App {
             !official || picked.hyperspace_unlocked,
             !official || picked.wizard_unlocked,
             super::wallstreet::unicorn_unlocked(picked),
+            super::openspace_drone::drone_unlocked(picked),
             !official || crate::coffee::thrones_won(&picked.coffee_bests),
         ];
         let any_walker = desktop && walkers.iter().any(|w| *w);
@@ -2446,7 +2452,7 @@ impl App {
             }
             let fx = &mut picked.desktop_fx;
             let on = fx.on;
-            let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn), (t.desktop_wolf, &mut fx.wolf)];
+            let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn), (t.desktop_wolf, &mut fx.wolf), (t.desktop_drone, &mut fx.drone)];
             for ((label, shown), won) in rows.into_iter().zip(walkers) {
                 if !won {
                     continue;

@@ -200,6 +200,22 @@ impl App {
 
     fn openspace_write(&mut self, time: f64) {
         let Some(s) = self.openspace.live.clone() else { return };
+        // A reward just won (the drone, the frame): said, as the other games do.
+        if let Some(w) = &self.openspace.written {
+            use super::openspace_drone::{DRONE_STARS, FRAME_HQ};
+            let t = self.t();
+            let stars = |o: &OpenSpace| o.campaign.iter().map(|&n| n as u64).sum::<u64>();
+            let mut won: Vec<String> = Vec::new();
+            if stars(w) < DRONE_STARS && stars(&s) >= DRONE_STARS {
+                won.push(t.unlock_drone.to_owned());
+            }
+            if w.hq_level() < FRAME_HQ && s.hq_level() >= FRAME_HQ {
+                won.push(t.unlock_frame.replace("{n}", super::frames::frame_name(t, "firewall")));
+            }
+            if !won.is_empty() {
+                self.push_toast(super::Toast { ok: true, title: t.openspace_reward_title.to_owned(), body: format!("{}\n{}", won.join(" · "), t.corp_reward_where), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
+            }
+        }
         self.config.settings.openspace = Some(s.clone());
         self.openspace.written = Some(s);
         self.openspace.wrote_at = time;
@@ -363,6 +379,8 @@ impl App {
         self.openspace_back(ui, rect, t);
         paint_metal(ui.painter(), Pos2::new(rect.center().x, rect.min.y + 30.0), Align2::CENTER_CENTER, t.openspace_name, 28.0, theme.accent, 1.0);
         self.openspace_hud(ui, rect, &mut s, fr, &theme, time);
+        // What the game unlocks, as the other games: the pill in the bottom left corner.
+        self.unlocks_pill(ui, rect, HomeGame::OpenSpace);
 
         // The shop, the building clicked, the time away.
         let st = &mut self.openspace;

@@ -1029,11 +1029,13 @@ pub struct DesktopFx {
     pub matheo_tips: bool,
     /// The white direwolf cub trotting along the foot of the screen, sitting down to howl (Game of Thrones).
     pub wolf: bool,
+    /// The delivery drone flying along the foot of the screen, dropping a parcel (Open Space).
+    pub drone: bool,
 }
 
 impl Default for DesktopFx {
     fn default() -> Self {
-        Self { on: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true, matheo: true, matheo_tips: true, wolf: true }
+        Self { on: true, droid: true, elf: true, unicorn: true, horde: true, gerard: true, matheo: true, matheo_tips: true, wolf: true, drone: true }
     }
 }
 

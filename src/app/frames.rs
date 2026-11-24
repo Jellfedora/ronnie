@@ -16,6 +16,8 @@ pub(super) enum Need {
     Dailies(u32),
     /// Ronnie Corp listed, or sold once (floor checks the score's `stage` and `stars`).
     Listed,
+    /// Open Space's boss's office at this level (floor will check the same, `firewall`).
+    OpenSpaceHq(u8),
 }
 
 /// A frame: its id on floor, what unlocks it.
@@ -26,13 +28,14 @@ pub(super) struct FrameDef {
 
 /// The frames, in the order they unlock: Bug Hunt's (the first once the first boss is beaten), then
 /// the fishing's full binder.
-pub(super) const FRAMES: [FrameDef; 6] = [
+pub(super) const FRAMES: [FrameDef; 7] = [
     FrameDef { id: "glitch", need: Need::Wave(6) },
     FrameDef { id: "swarm", need: Need::Wave(11) },
     FrameDef { id: "circuit", need: Need::Wave(16) },
     FrameDef { id: "holo", need: Need::Cards(crate::fishing::FISH.len() as u32) },
     FrameDef { id: "survivor", need: Need::Dailies(crate::zombie::DAILIES_FRAME) },
     FrameDef { id: "ticker", need: Need::Listed },
+    FrameDef { id: "firewall", need: Need::OpenSpaceHq(super::openspace_drone::FRAME_HQ) },
 ];
 
 /// How far the player is toward a frame, and how far they must go.
@@ -46,6 +49,7 @@ pub(super) fn progress(def: &FrameDef, s: &crate::config::Settings) -> (u32, u32
             let (stage, sales) = super::wallstreet::reached(s);
             (if sales > 0 { crate::tycoon::LISTED_STAGE } else { stage } as u32, crate::tycoon::LISTED_STAGE as u32)
         }
+        Need::OpenSpaceHq(l) => (super::openspace_drone::hq_level(s) as u32, l as u32),
     }
 }
 
@@ -62,6 +66,7 @@ pub(super) fn how(def: &FrameDef, t: &Strings) -> String {
         Need::Cards(n) => t.frame_how_cards.replace("{n}", &n.to_string()),
         Need::Dailies(n) => t.unlock_monday_frame_how.replace("{n}", &n.to_string()),
         Need::Listed => t.frame_how_listed.to_owned(),
+        Need::OpenSpaceHq(l) => t.frame_how_openspace.replace("{n}", &l.to_string()),
     }
 }
 
@@ -208,6 +213,34 @@ pub(super) fn paint_frame(painter: &egui::Painter, c: Pos2, r: f32, id: Option<&
             let top = c + Vec2::new(0.0, -(ring + w * 3.2 + lift));
             let s = w * 1.5;
             painter.add(egui::Shape::convex_polygon(vec![top, top + Vec2::new(s, s * 1.1), top + Vec2::new(-s, s * 1.1)], green, Stroke::new(w * 0.3, gold)));
+        }
+        // Open Space's: a ring of bricks (a firewall), mortar between them, flames dancing on top.
+        "firewall" => {
+            let (brick, dark, mortar) = (Color32::from_rgb(0xc2, 0x4a, 0x2c), Color32::from_rgb(0x9a, 0x36, 0x1e), Color32::from_rgb(0xe8, 0xdc, 0xc8));
+            let n = if r < 12.0 { 10 } else { 16 };
+            painter.circle_stroke(c, ring, Stroke::new(w * 2.0, mortar));
+            for row in 0..2 {
+                let rr = ring + (row as f32 - 0.5) * w * 0.95;
+                for k in 0..n {
+                    let a0 = (k as f32 + row as f32 * 0.5) / n as f32 * tau;
+                    let a1 = a0 + tau / n as f32 * 0.86;
+                    let pts: Vec<Pos2> = [(a0, rr - w * 0.42), (a1, rr - w * 0.42), (a1, rr + w * 0.42), (a0, rr + w * 0.42)].iter().map(|&(a, d)| c + Vec2::angled(a) * d).collect();
+                    painter.add(egui::Shape::convex_polygon(pts, if (k + row) % 3 == 0 { dark } else { brick }, Stroke::NONE));
+                }
+            }
+            // The flames, over the top half.
+            let out = ring + w * 1.1;
+            let flames = if r < 12.0 { 5 } else { 9 };
+            for k in 0..flames {
+                let a = -std::f32::consts::PI * (0.15 + 0.7 * k as f32 / (flames - 1) as f32);
+                let flick = ((now * 7.0 + k as f64 * 1.7).sin() as f32 * 0.5 + 0.5) * w * 1.2;
+                let base = c + Vec2::angled(a) * out;
+                let side = Vec2::angled(a + tau / 4.0) * w * 0.7;
+                let tip = c + Vec2::angled(a) * (out + w * 1.6 + flick);
+                painter.add(egui::Shape::convex_polygon(vec![base + side, tip, base - side], Color32::from_rgb(0xff, 0x8a, 0x2a), Stroke::NONE));
+                let inner = c + Vec2::angled(a) * (out + w * 0.9 + flick * 0.6);
+                painter.add(egui::Shape::convex_polygon(vec![base + side * 0.5, inner, base - side * 0.5], Color32::from_rgb(0xff, 0xd3, 0x4f), Stroke::NONE));
+            }
         }
         _ => return,
     }
