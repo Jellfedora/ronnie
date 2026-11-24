@@ -15,8 +15,53 @@ const COLORS: [Color32; 4] = [Color32::from_rgb(79, 195, 255), Color32::from_rgb
 const ZOMBIE: Color32 = Color32::from_rgb(143, 209, 106);
 /// The input is sent again at least this often (s), and whenever it changes.
 const INPUT_EVERY: f64 = 0.1;
-/// The mouse wheel turned this far (points) changes the weapon once.
-const WHEEL_NOTCH: f32 = 30.0;
+/// A touch glide (a Magic Mouse, a touchpad) this long (points) changes the weapon, once a gesture;
+/// a gesture ends after this many seconds without any glide (its inertia included).
+const GLIDE_NEED: f32 = 90.0;
+const GLIDE_GAP: f64 = 0.35;
+
+/// The mouse wheel turning the weapons: a notch of a wheel, a change; a touch glide (the Magic Mouse,
+/// a touchpad), one change a gesture, however far it slides on.
+#[derive(Default)]
+struct Wheel {
+    /// Notches turned not yet a change (a fine wheel sends parts of one).
+    notches: f32,
+    /// The gesture under way: how far it went, when it last moved, whether it changed already.
+    glide: f32,
+    last: f64,
+    done: bool,
+}
+
+impl Wheel {
+    /// `notches` turned (down negative), `glide` points slid (down negative), at `now`: a change (1: the
+    /// next weapon, -1: the one before), if any.
+    fn feed(&mut self, notches: f32, glide: f32, now: f64) -> Option<i8> {
+        if notches != 0.0 {
+            self.notches += notches;
+            if self.notches.abs() >= 1.0 {
+                let dir = if self.notches < 0.0 { 1 } else { -1 };
+                self.notches = 0.0;
+                return Some(dir);
+            }
+        }
+        if glide == 0.0 {
+            return None;
+        }
+        if now - self.last > GLIDE_GAP {
+            *self = Wheel { notches: self.notches, ..Wheel::default() };
+        }
+        self.last = now;
+        if self.done {
+            return None;
+        }
+        self.glide += glide;
+        if self.glide.abs() < GLIDE_NEED {
+            return None;
+        }
+        self.done = true;
+        Some(if self.glide < 0.0 { 1 } else { -1 })
+    }
+}
 
 /// The weapon after `from` (`step` 1) or before it (`step` WEAPONS.len() - 1) among those in `owned` (bits
 /// in WEAPONS' order), round; None when one has no other.
@@ -66,8 +111,8 @@ pub(super) struct Monday {
     last_said: u32,
     /// The marks on the floor: who, where, since when.
     marks: Vec<(u32, f32, f32, f64)>,
-    /// The mouse wheel turned since the last weapon change (points): a weapon every notch.
-    wheel: f32,
+    /// The mouse wheel (or a touch glide) turning the weapons.
+    wheel: Wheel,
     /// The objective last seen (its id, the lift's stage): a banner when it changes.
     objective_seen: Option<(String, String, bool)>,
     /// An error floor sent (a room full...), and since.
@@ -2115,22 +2160,20 @@ impl App {
             self.monday.sent = Some((input, now));
         }
         // The mouse wheel over the field: the next weapon one has (down) or the one before (up), round.
-        let wheel: f32 = ui.input(|i| {
+        // A wheel's notches (lines, pages) and a touch glide's points (a Magic Mouse, a touchpad), apart.
+        let (notches, glide) = ui.input(|i| {
             if !i.pointer.hover_pos().is_some_and(|p| field.contains(p)) {
-                return 0.0;
+                return (0.0, 0.0);
             }
-            i.events.iter().map(|e| match e {
-                // A notch of a wheel: one change; a touchpad's glide: by its points.
-                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } => delta.y,
-                egui::Event::MouseWheel { delta, .. } => delta.y * WHEEL_NOTCH,
-                _ => 0.0,
-            }).sum()
+            i.events.iter().fold((0.0, 0.0), |(n, g), e| match e {
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } => (n, g + delta.y),
+                egui::Event::MouseWheel { delta, .. } => (n + delta.y, g),
+                _ => (n, g),
+            })
         });
-        self.monday.wheel += wheel;
         let mut pick = pick;
-        if self.monday.wheel.abs() >= WHEEL_NOTCH {
-            let step = if self.monday.wheel < 0.0 { 1 } else { WEAPONS.len() - 1 };
-            self.monday.wheel = 0.0;
+        if let Some(dir) = self.monday.wheel.feed(notches, glide, now) {
+            let step = if dir > 0 { 1 } else { WEAPONS.len() - 1 };
             pick = pick.or_else(|| next_weapon(weapon, owned, step));
         }
         if let Some(k) = pick {
@@ -3990,5 +4033,38 @@ mod wheel_tests {
         assert_eq!(next_weapon(6, owned, back), Some(2));
         // Only the stapler: nothing to change to.
         assert_eq!(next_weapon(0, 0b1, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod glide_tests {
+    use super::*;
+
+    #[test]
+    fn a_wheel_changes_every_notch() {
+        let mut w = Wheel::default();
+        assert_eq!(w.feed(-1.0, 0.0, 0.0), Some(1));
+        assert_eq!(w.feed(1.0, 0.0, 0.05), Some(-1));
+        // A fine wheel: halves of a notch.
+        assert_eq!(w.feed(-0.5, 0.0, 0.1), None);
+        assert_eq!(w.feed(-0.5, 0.0, 0.15), Some(1));
+    }
+
+    #[test]
+    fn a_touch_glide_changes_once_a_gesture() {
+        let mut w = Wheel::default();
+        // A brush while moving the mouse: nothing.
+        assert_eq!(w.feed(0.0, -12.0, 0.0), None);
+        assert_eq!(w.feed(0.0, -15.0, 0.05), None);
+        // A real swipe: one change, then its long inertia changes nothing more.
+        assert_eq!(w.feed(0.0, -70.0, 0.1), Some(1));
+        let mut t = 0.1;
+        for _ in 0..40 {
+            t += 0.03;
+            assert_eq!(w.feed(0.0, -40.0, t), None);
+        }
+        // A pause, then another swipe the other way: one change.
+        assert_eq!(w.feed(0.0, 60.0, t + 0.5), None);
+        assert_eq!(w.feed(0.0, 60.0, t + 0.53), Some(-1));
     }
 }
