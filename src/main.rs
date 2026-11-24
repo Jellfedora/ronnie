@@ -48,6 +48,8 @@ mod putty;
 mod procs;
 mod playtime;
 mod tycoon;
+mod openspace;
+mod openspace_battle;
 mod notesync;
 mod progress;
 mod recap;

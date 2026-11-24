@@ -25,6 +25,7 @@ pub(super) enum HomeGame {
     /// Lundi matin.
     Monday,
     Tycoon,
+    OpenSpace,
 }
 
 /// A disc falling into place, since `at`.
