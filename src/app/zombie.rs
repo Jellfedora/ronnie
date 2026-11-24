@@ -7,7 +7,7 @@
 
 use super::four::HomeGame;
 use super::*;
-use crate::zombie::{AgnesState, Frame, Happened, Kind, Milestone, Online, Over, State, Status};
+use crate::zombie::{AgnesState, Frame, Happened, Kind, Milestone, Online, Over, State, Status, WEAPONS};
 
 /// The players' colors, by seat.
 const COLORS: [Color32; 4] = [Color32::from_rgb(79, 195, 255), Color32::from_rgb(255, 122, 182), Color32::from_rgb(255, 211, 79), Color32::from_rgb(94, 224, 122)];
@@ -15,6 +15,15 @@ const COLORS: [Color32; 4] = [Color32::from_rgb(79, 195, 255), Color32::from_rgb
 const ZOMBIE: Color32 = Color32::from_rgb(143, 209, 106);
 /// The input is sent again at least this often (s), and whenever it changes.
 const INPUT_EVERY: f64 = 0.1;
+/// The mouse wheel turned this far (points) changes the weapon once.
+const WHEEL_NOTCH: f32 = 30.0;
+
+/// The weapon after `from` (`step` 1) or before it (`step` WEAPONS.len() - 1) among those in `owned` (bits
+/// in WEAPONS' order), round; None when one has no other.
+fn next_weapon(from: usize, owned: u8, step: usize) -> Option<usize> {
+    let n = WEAPONS.len();
+    (1..n).map(|k| (from + k * step) % n).find(|&w| owned & (1 << w) != 0)
+}
 /// Seconds a revive takes (floor's REVIVE).
 const REVIVE: f32 = 3.0;
 /// The coffee machine's column, on the left of the field (its panel this wide).
@@ -57,6 +66,8 @@ pub(super) struct Monday {
     last_said: u32,
     /// The marks on the floor: who, where, since when.
     marks: Vec<(u32, f32, f32, f64)>,
+    /// The mouse wheel turned since the last weapon change (points): a weapon every notch.
+    wheel: f32,
     /// The objective last seen (its id, the lift's stage): a banner when it changes.
     objective_seen: Option<(String, String, bool)>,
     /// An error floor sent (a room full...), and since.
@@ -1623,7 +1634,7 @@ impl App {
             }
         } else if let Some(p) = mine {
             let (x, y) = mix.player(p.id, p.x, p.y);
-            self.monday_controls(ui, now, at(x, y), pointer, field, &frame);
+            self.monday_controls(ui, now, at(x, y), pointer, field, &frame, (p.weapon, p.owned));
             // G: a mark where the pointer is (« come here! »).
             if let Some(ptr) = pointer
                 && !self.monday.chat.typing
@@ -2083,7 +2094,7 @@ impl App {
 
     /// The keys and the mouse, to floor: moving, aiming at the pointer, firing, a weapon, reloading,
     /// ready, the perks (Shift: dash, T: back to the coffee).
-    fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame) {
+    fn monday_controls(&mut self, ui: &Ui, now: f64, me: Pos2, pointer: Option<Pos2>, field: Rect, frame: &Frame, (weapon, owned): (usize, u8)) {
         let free = ui.ctx().memory(|m| m.focused().is_none());
         let memo = free && ui.input(|i| i.key_pressed(Key::E));
         let (mx, my, fire, pick, reload, ready, shift, tp) = ui.input(|i| {
@@ -2101,6 +2112,25 @@ impl App {
         if due {
             self.monday.online.input(mx, my, aim, fire);
             self.monday.sent = Some((input, now));
+        }
+        // The mouse wheel over the field: the next weapon one has (down) or the one before (up), round.
+        let wheel: f32 = ui.input(|i| {
+            if !i.pointer.hover_pos().is_some_and(|p| field.contains(p)) {
+                return 0.0;
+            }
+            i.events.iter().map(|e| match e {
+                // A notch of a wheel: one change; a touchpad's glide: by its points.
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } => delta.y,
+                egui::Event::MouseWheel { delta, .. } => delta.y * WHEEL_NOTCH,
+                _ => 0.0,
+            }).sum()
+        });
+        self.monday.wheel += wheel;
+        let mut pick = pick;
+        if self.monday.wheel.abs() >= WHEEL_NOTCH {
+            let step = if self.monday.wheel < 0.0 { 1 } else { WEAPONS.len() - 1 };
+            self.monday.wheel = 0.0;
+            pick = pick.or_else(|| next_weapon(weapon, owned, step));
         }
         if let Some(k) = pick {
             self.monday.online.pick(k);
@@ -3941,4 +3971,23 @@ const LETTERS_EN: [&str; 12] = [
 fn mix_white(c: Color32, k: f32) -> Color32 {
     let m = |v: u8| (v as f32 + (255.0 - v as f32) * k).round() as u8;
     Color32::from_rgb(m(c.r()), m(c.g()), m(c.b()))
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+
+    #[test]
+    fn the_wheel_goes_round_the_weapons_one_has() {
+        // The stapler, the extinguisher, the plant.
+        let owned = 0b0100_0101;
+        assert_eq!(next_weapon(0, owned, 1), Some(2));
+        assert_eq!(next_weapon(2, owned, 1), Some(6));
+        assert_eq!(next_weapon(6, owned, 1), Some(0));
+        let back = WEAPONS.len() - 1;
+        assert_eq!(next_weapon(0, owned, back), Some(6));
+        assert_eq!(next_weapon(6, owned, back), Some(2));
+        // Only the stapler: nothing to change to.
+        assert_eq!(next_weapon(0, 0b1, 1), None);
+    }
 }
