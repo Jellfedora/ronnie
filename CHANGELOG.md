@@ -4,6 +4,16 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-24
+
+### Nouveautés
+
+- **Open Space, un nouveau jeu au long cours** : construis ton open space en 2,5D, du bureau du boss (niveau 1 à 10) aux machines à café et aux serveurs de prod qui produisent café et budget, même Ronnie fermé ; recrute 9 sortes de troupes (stagiaire, dev, testeur, DevOps, commercial…), le lead dev en héros, et pars en raid contre 50 entreprises rivales en 5 chapitres, avec des cartes de combat (Hotfix, Daily stand-up, Déploiement du vendredi…) et 44 missions pour guider les débuts. À gagner : le drone de livraison qui longe le bas de l'écran (50 étoiles de campagne) et le cadre d'avatar « Pare-feu » (bureau du boss au niveau 10). Demande floor 0.30.0. Merci Jonathan.
+- **Un thème de Noël** : vert sapin, blanc neige, rouge et or ; des guirlandes qui clignotent, du houx, un village enneigé au pied de la barre latérale où passe le traîneau du Père Noël, un sucre d'orge en pointeur qui sème des flocons. Mis pour tout le monde à la première ouverture de chaque saison (du 1er décembre au 6 janvier), avec un cadeau qui s'ouvre sur « Jingle Bells » ; on l'enlève quand on veut, et il reste dans les récompenses une fois eu. Hors de la fenêtre, chacun avec son interrupteur : le traîneau au bas de l'écran, une averse de neige de temps en temps. Merci Jonathan.
+- **Lundi matin, l'arme à la molette** : sur le terrain, la molette passe à l'arme suivante ou précédente (un cran, un changement ; un geste sur une Magic Mouse ou un pavé, un seul changement). Les touches 1 à 8 marchent toujours. Merci Jonathan.
+- **Lundi matin, la note de service au clic droit**, E toujours là. Merci Jonathan.
+- **Lundi matin, la plante verte, le tampon et le scotch comptent pour l'arsenal** : 100 soins de 10 PV pour la plante, 100 zombies tamponnés ou scotchés pour les deux autres ; la bulle du succès dit où en est chaque arme (« Tampon : 42/100 tamponnés »). Demande floor 0.30.0. Merci Jonathan.
+
 ## [1.10.0] - 2026-11-20
 
 ### Nouveautés
