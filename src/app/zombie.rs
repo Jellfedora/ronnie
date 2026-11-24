@@ -976,8 +976,13 @@ impl App {
                     .map(|(w, weapon)| {
                         let kills = c.mastery.get(*weapon).map_or(0, |m| m.1);
                         let name = names.get(w).copied().unwrap_or(weapon);
-                        // The green plant counts its heals (floor adds them to its zombies).
-                        let unit = if *weapon == "plant" { format!(" {}", t.monday_plant_heals) } else { String::new() };
+                        // The green plant counts its heals, the stamp and the tape the zombies stamped and taped.
+                        let unit = match *weapon {
+                            "plant" => format!(" {}", t.monday_plant_heals),
+                            "stamp" => format!(" {}", t.monday_stamped),
+                            "tape" => format!(" {}", t.monday_taped),
+                            _ => String::new(),
+                        };
                         if kills >= ARSENAL_KILLS { format!("✓ {name}") } else { format!("·  {name} : {kills}/{ARSENAL_KILLS}{unit}") }
                     })
                     .collect();
