@@ -145,30 +145,6 @@ impl App {
 
     /// Each frame, whatever is shown: the open space run to now, and put in the settings when due.
     pub(super) fn openspace_tick(&mut self, ctx: &egui::Context) {
-        // TEMP-DEMO: opens the game on a demo open space (screenshots while developing).
-        if !self.openspace.started && std::env::var("OPENSPACE_DEMO").is_ok() {
-            self.open_openspace();
-            let mut s = OpenSpace::new(unix_now(), 7);
-            let mode = std::env::var("OPENSPACE_DEMO").unwrap_or_default();
-            if mode != "1" {
-                s.tuto = os::TUTORIAL.len() as u8;
-                for n in [0, 0, 0, 1, 4, 6, 9, 10, 12, 13, 13, 13, 16, 17] {
-                    s.add_card(n);
-                }
-                s.cleared = 7;
-                s.collects = 30;
-            }
-            match mode.as_str() {
-                "cards" => self.openspace.panel = 3,
-                "raid" => {
-                    s.army = vec![(crate::openspace_battle::Troop::Intern, 20), (crate::openspace_battle::Troop::Dev, 10)];
-                    self.openspace.fight = Some(super::openspace_raid::Fight::new(3, &s));
-                }
-                "reveal" => self.openspace.reveal = Some((vec![17, 3, 11], 0.0)),
-                _ => {}
-            }
-            self.config.settings.openspace = Some(s);
-        }
         let saved = &self.config.settings.openspace;
         if saved.is_none() && self.openspace.live.is_none() {
             return;
