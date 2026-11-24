@@ -165,6 +165,8 @@ impl App {
                     super::thrones::sword_along(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 5.0)), 1.0);
                 } else if theme.wizard {
                     super::wizard::gold_line(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));
+                } else if theme.christmas {
+                    super::noel::garland(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 6.0)));
                 } else if theme.wallstreet {
                     // Wall Street: a ticker tape along the active tab.
                     super::wallstreet::tape(&painter, Rect::from_min_size(r.min, Vec2::new(r.width(), 3.0)));

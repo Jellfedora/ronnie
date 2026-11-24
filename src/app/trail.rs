@@ -62,7 +62,7 @@ pub(super) fn worn(s: &crate::config::Settings) -> crate::config::Trail {
 /// Whether a theme is won (the usual ones always are).
 pub(super) fn theme_won(s: &crate::config::Settings, id: &str) -> bool {
     let best = s.typing_scores.first().map_or(0, |x| x.letters);
-    !crate::theme::Preset::find(id).locked(best, s.jurassic_unlocked, s.hyperspace_unlocked, crate::theme::office_unlocked(&s.riff_bests), s.wizard_unlocked, crate::coffee::thrones_won(&s.coffee_bests), s.monday_wins > 0, super::wallstreet::theme_unlocked(s))
+    !crate::theme::Preset::find(id).locked(best, s.jurassic_unlocked, s.hyperspace_unlocked, crate::theme::office_unlocked(&s.riff_bests), s.wizard_unlocked, crate::coffee::thrones_won(&s.coffee_bests), s.monday_wins > 0, super::wallstreet::theme_unlocked(s), s.christmas_unlocked || crate::theme::christmas_season(chrono::Local::now().date_naive()))
 }
 
 /// Whether this pointer is won (with its theme).

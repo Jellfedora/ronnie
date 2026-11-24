@@ -58,6 +58,7 @@ mod hyperspace;
 mod thrones;
 mod wallstreet;
 mod wizard;
+mod noel;
 mod office;
 mod library;
 mod mail;
@@ -438,8 +439,11 @@ pub struct App {
     trail_preview: trail::Trail,
     /// Gryffindor's wand and its sparks.
     wand: wizard::Wand,
+    cane: noel::Cane,
     /// Gryffindor picked: the Sorting Hat (when it started; NaN: at the next frame).
     sorting: Option<f64>,
+    /// Christmas's present opening (picking the theme): since when (NaN: not started yet).
+    present: Option<f64>,
     /// The opening's bells (opened when first played).
     bells: Option<blob::Sound>,
     /// The minesweeper's page.
@@ -1348,7 +1352,9 @@ impl App {
             trail: trail::Trail::default(),
             trail_preview: trail::Trail::default(),
             wand: wizard::Wand::default(),
+            cane: noel::Cane::default(),
             sorting: None,
+            present: None,
             bells: None,
             mines: mines::Mines::default(),
             runner: runner::Runner::default(),
@@ -2241,6 +2247,9 @@ impl App {
             self.theme.apply(&self.ctx);
             if config.settings.theme == crate::theme::HYPERSPACE_THEME {
                 self.jump = Some(f64::NAN);
+            }
+            if config.settings.theme == crate::theme::CHRISTMAS_THEME {
+                self.present = Some(f64::NAN);
             }
             if config.settings.theme == crate::theme::WIZARD_THEME {
                 self.sorting = Some(f64::NAN);
@@ -3450,6 +3459,9 @@ fn paint_logo(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     if theme.wizard {
         return wizard::logo(painter, rect);
     }
+    if theme.christmas {
+        return noel::logo(painter, rect);
+    }
     if theme.thrones {
         return thrones::logo(painter, rect);
     }
@@ -3954,6 +3966,10 @@ fn pane_header(ui: &mut Ui, rect: Rect, id: PaneId, header: Header, name: Option
     if focused && theme.wizard {
         // Gryffindor: a gold line under the bar.
         wizard::gold_line(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 3.0), rect.max));
+    }
+    if focused && theme.christmas {
+        // Christmas: fairy lights under the bar.
+        noel::garland(&painter, Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 4.0), rect.max));
     }
     if theme.monday && focused {
         // Lundi matin: blood running from under the bar of the pane that has the focus.
@@ -5413,6 +5429,8 @@ impl App {
                         monday_theme::frame(ui.painter(), r, ui.input(|i| i.time));
                     } else if split && self.theme.wizard {
                         wizard::frame(ui.painter(), r);
+                    } else if split && self.theme.christmas {
+                        noel::frame(ui.painter(), r);
                     } else if split {
                         ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(1.0, self.theme.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
                     }
@@ -5700,6 +5718,12 @@ impl App {
             let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you).to_owned();
             wizard::footprints(ui.ctx(), area, &name);
         }
+        if self.theme.christmas
+            && let Some(area) = self.terminals_rect
+        {
+            let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you).to_owned();
+            noel::footprints(ui.ctx(), area, &name);
+        }
 
         if dialogs_here {
             self.settings_window(ui.ctx());
@@ -5789,12 +5813,17 @@ impl App {
             if start.is_nan() && self.theme.wizard {
                 self.opening_tune();
             }
+            if start.is_nan() && self.theme.christmas {
+                self.christmas_tune();
+            }
             let start = if start.is_nan() { now } else { start };
             self.splash = Some(start);
             let skip = ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("splash")));
-            // Gryffindor: its own opening, the app's name under the crest.
-            let shown = if self.theme.wizard {
+            // Gryffindor: its own opening, the app's name under the crest; Christmas: a present opening.
+            let shown = if self.theme.christmas {
+                noel::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, "RONNIE", self.t().christmas_welcome)
+            } else if self.theme.wizard {
                 wizard::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, "RONNIE", self.t().wizard_welcome)
             } else {
                 paint_splash(&painter, ui.ctx().content_rect(), &self.theme, (now - start) as f32, self.t())
@@ -5875,6 +5904,23 @@ impl App {
             ui.ctx().request_repaint();
         }
 
+        // Christmas: a present opens; a click or a key skips it.
+        if let Some(start) = self.present.filter(|_| main_window) {
+            let now = ui.input(|i| i.time);
+            if start.is_nan() {
+                self.christmas_tune();
+            }
+            let start = if start.is_nan() { now } else { start };
+            self.present = Some(start);
+            let skip = now - start > 0.4 && ui.input(|i| i.pointer.any_pressed() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("present")));
+            let title = if self.config.settings.language == crate::i18n::Lang::Fr { "JOYEUX NOËL" } else { "MERRY CHRISTMAS" };
+            if skip || !noel::intro(&painter, ui.ctx().content_rect(), (now - start) as f32, title, self.t().christmas_present) {
+                self.present = None;
+            }
+            ui.ctx().request_repaint();
+        }
+
         // Keep the window title in sync (visible in the OS task switcher).
         {
             let title = self.tabs.get(self.active).map_or_else(|| APP_TITLE.to_owned(), |t| format!("{} — {APP_TITLE}", t.title()));
@@ -5899,6 +5945,7 @@ impl App {
                 config::Pointer::Wand => self.wand.frame(ui.ctx()),
                 config::Pointer::Sword => thrones::pointer(ui.ctx()),
                 config::Pointer::Stapler => monday_theme::pointer(ui.ctx()),
+                config::Pointer::Cane => self.cane.frame(ui.ctx()),
             }
         }
         // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
@@ -5917,10 +5964,42 @@ impl App {
             let t = self.t();
             self.push_toast(Toast { ok: true, title: t.wizard_unlocked_title.to_owned(), body: t.wizard_unlocked_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
         }
+        // Christmas: given in its season and kept for good; worn by everyone at the first opening of each
+        // season (a present opening), then taken off by whoever wants: not put back before the next one.
+        let season = crate::theme::christmas_year(today);
+        if let Some(year) = season
+            && self.config.settings.christmas_worn != year
+        {
+            let s = &mut self.config.settings;
+            s.christmas_unlocked = true;
+            s.christmas_worn = year;
+            if s.theme != crate::theme::CHRISTMAS_THEME {
+                s.theme = crate::theme::CHRISTMAS_THEME.to_owned();
+                self.theme = Preset::find(crate::theme::CHRISTMAS_THEME).theme();
+                self.theme.apply(ui.ctx());
+                self.present = Some(f64::NAN);
+            }
+            self.save_config();
+            let t = self.t();
+            self.push_toast(Toast { ok: true, title: t.christmas_unlocked_title.to_owned(), body: t.christmas_unlocked_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
+        }
     }
 }
 
 impl App {
+    /// Christmas' tune on bells (« Jingle Bells »), unless the themes' music is off.
+    fn christmas_tune(&mut self) {
+        if !self.config.settings.theme_music {
+            return;
+        }
+        if self.bells.is_none() {
+            self.bells = blob::Sound::open();
+        }
+        if let Some(bells) = &self.bells {
+            bells.bells(&noel::OPENING_TUNE, 0.9);
+        }
+    }
+
     /// Gryffindor's opening tune on bells, unless the themes' music is off.
     fn opening_tune(&mut self) {
         if !self.config.settings.theme_music {
