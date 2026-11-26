@@ -318,8 +318,12 @@ impl OpenSpace {
     }
 
     /// A raid on the campaign's `level` over: its loot (as much as there's room for), its stars kept,
-    /// tickets for a first 3 stars.
-    pub fn finish_raid(&mut self, level: u32, stars: u8, destroyed: f32) -> Outcome {
+    /// tickets for a first 3 stars, and the troops still standing (`back`) home in the army.
+    pub fn finish_raid(&mut self, level: u32, stars: u8, destroyed: f32, back: &[Troop]) -> Outcome {
+        let back: Vec<Troop> = back.iter().copied().filter(|t| *t != Troop::Lead).collect();
+        for &t in &back {
+            self.add_troop(t);
+        }
         let (coffee, budget) = reward(level);
         let share = destroyed.clamp(0.0, 1.0) as f64 * self.loot_boost();
         let room = |s: &Self, r| (s.capacity(r) - s.amount(r)).max(0.0);
@@ -349,7 +353,7 @@ impl OpenSpace {
             self.wins += 1;
         }
         self.actions += 1;
-        Outcome { coffee: got_coffee, budget: got_budget, tickets, stars, new_stars: stars.saturating_sub(before), cards }
+        Outcome { coffee: got_coffee, budget: got_budget, tickets, stars, new_stars: stars.saturating_sub(before), cards, back: back.len() as u32 }
     }
 }
 
@@ -471,6 +475,8 @@ pub struct Outcome {
     pub new_stars: u8,
     /// The cards found (their numbers).
     pub cards: Vec<usize>,
+    /// The troops back home alive (the hero aside).
+    pub back: u32,
 }
 
 /// The loot of the campaign's `level` all destroyed (coffee, budget).
@@ -921,6 +927,11 @@ impl Battle {
     /// The hero dropped and fallen.
     pub fn hero_fell(&self) -> bool {
         self.had_hero && !self.left.iter().any(|(t, _, n)| *t == Troop::Lead && *n > 0) && self.hero().is_none()
+    }
+
+    /// The troops dropped and still standing: they come back to the army after the raid.
+    pub fn survivors(&self) -> Vec<Troop> {
+        self.units.iter().filter(|u| u.hp > 0.0 && u.troop != Troop::Lead).map(|u| u.troop).collect()
     }
 
     pub fn troops_left(&self) -> u32 {
@@ -1482,13 +1493,27 @@ mod tests {
     fn a_raid_brings_loot_and_stars_once() {
         let mut s = camp();
         assert!(s.level_open(1) && !s.level_open(2));
-        let o = s.finish_raid(1, 3, 1.0);
+        let o = s.finish_raid(1, 3, 1.0, &[]);
         assert_eq!(o.new_stars, 3);
         assert!(o.tickets > 0 && o.coffee > 0.0);
         assert!(s.level_open(2));
-        let again = s.finish_raid(1, 3, 1.0);
+        let again = s.finish_raid(1, 3, 1.0, &[]);
         assert_eq!((again.new_stars, again.tickets), (0, 0));
         assert_eq!(s.stars(1), 3);
+    }
+
+    #[test]
+    fn survivors_come_back_to_the_army() {
+        let mut s = camp();
+        s.add_troop(Troop::Intern);
+        s.add_troop(Troop::Intern);
+        let had = s.army_count(Troop::Intern);
+        assert!(s.take_troop(Troop::Intern) && s.take_troop(Troop::Intern));
+        // One fell on the way, one still standing; the hero never joins the army.
+        let o = s.finish_raid(1, 0, 0.0, &[Troop::Intern, Troop::Lead]);
+        assert_eq!(o.back, 1);
+        assert_eq!(s.army_count(Troop::Intern), had - 1);
+        assert_eq!(s.army_count(Troop::Lead), 0);
     }
 
     #[test]

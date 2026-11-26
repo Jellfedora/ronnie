@@ -294,7 +294,7 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
             f.acc -= STEP;
         }
         if f.b.over() {
-            f.result = Some(s.finish_raid(f.level, f.b.stars(), f.b.destroyed()));
+            f.result = Some(s.finish_raid(f.level, f.b.stars(), f.b.destroyed(), &f.b.survivors()));
             if f.b.hero_fell() {
                 s.hero_fell(super::openspace::unix_now());
             }
@@ -535,6 +535,10 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
                     if !o.cards.is_empty() {
                         let text = if o.cards.len() == 1 { tx(("+1 carte à découvrir !", "+1 card to turn over!"), fr).to_owned() } else { format!("+{} {}", o.cards.len(), tx(("cartes à découvrir !", "cards to turn over!"), fr)) };
                         ui.label(egui::RichText::new(format!("♠ {text}")).size(14.0).color(Color32::from_rgb(255, 196, 64)));
+                    }
+                    if o.back > 0 {
+                        let text = if o.back == 1 { tx(("1 troupe rentre au bureau", "1 troop comes back to the office"), fr).to_owned() } else { format!("{} {}", o.back, tx(("troupes rentrent au bureau", "troops come back to the office"), fr)) };
+                        ui.label(egui::RichText::new(text).size(12.5).color(theme.text_muted));
                     }
                     if f.b.hero_fell() {
                         let back = os::duration_text(war::hero_rest_secs(s.hero_level()), fr);
