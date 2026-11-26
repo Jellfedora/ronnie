@@ -8,10 +8,36 @@ use super::*;
 use crate::openspace::{self as os, tx, OpenSpace, Why};
 use crate::openspace_battle::{self as war, Battle, Hero, Outcome, Troop, CHAPTERS, LEVELS, STEP, TIME_LIMIT, TROOPS};
 
+/// What a raid is on.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Target {
+    Campaign,
+    /// In the world: a player, a bot or the boss (floor's id for it), its name.
+    World { id: String, name: String },
+    /// A day's quest on the world's map.
+    Quest { id: String, name: String },
+}
+
+/// What floor said a world raid brought (kept after the cards' loot bonus and the room left).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Paid {
+    pub coffee: f64,
+    pub budget: f64,
+    pub tickets: u32,
+    /// The trophies won (or lost) and the new total, for a raid on a player or a bot.
+    pub trophies: Option<(i64, i64)>,
+    pub troops: Vec<(Troop, u32)>,
+}
+
 /// A raid under way.
 pub(super) struct Fight {
     pub b: Battle,
     pub level: u32,
+    pub target: Target,
+    /// A world raid's answer from floor: none while waiting, an error when it couldn't be counted.
+    pub paid: Option<Result<Paid, String>>,
+    /// Sent to floor once over.
+    pub sent: bool,
     pick: Option<Troop>,
     /// The action card picked (its place in the battle's cards), to play where clicked.
     card: Option<usize>,
@@ -25,21 +51,26 @@ pub(super) struct Fight {
 impl Fight {
     /// A raid on the campaign's `level`, with the whole army, and the hero when ready.
     pub fn new(level: u32, s: &OpenSpace, now: i64) -> Self {
+        Self::on(&war::rival_base(level), level, Target::Campaign, s, now)
+    }
+
+    /// A raid on `base` (a player's open space, or one drawn like the campaign's `level`).
+    pub fn on(base: &[os::Building], level: u32, target: Target, s: &OpenSpace, now: i64) -> Self {
         let mut army: Vec<(Troop, u8, u32)> = s.army.iter().map(|(t, n)| (*t, s.troop_level(*t), *n)).collect();
         if s.hero(now) == Hero::Ready {
             army.push((Troop::Lead, s.hero_level(), 1));
         }
-        let mut b = Battle::new(&war::rival_base(level), army);
+        let mut b = Battle::new(base, army);
         b.boosts = TROOPS.iter().map(|&t| { let (hp, dps) = s.troop_boost(t); (t, hp, dps) }).collect();
         b.cards = s.raid_cards().into_iter().map(|(a, l)| (a, l, false)).collect();
         let pick = b.left.first().map(|(t, _, _)| *t);
-        Fight { b, level, pick, card: None, acc: 0.0, last_drop: 0.0, result: None, speed: 1.0, view: View { zoom: 0.95, pan: Vec2::ZERO } }
+        Fight { b, level, target, paid: None, sent: false, pick, card: None, acc: 0.0, last_drop: 0.0, result: None, speed: 1.0, view: View { zoom: 0.95, pan: Vec2::ZERO } }
     }
 }
 
 
 /// A troop's little portrait, in `r`.
-fn portrait(painter: &egui::Painter, t: Troop, r: Rect, time: f64) {
+pub(super) fn portrait(painter: &egui::Painter, t: Troop, r: Rect, time: f64) {
     painter.circle_filled(r.center(), r.width().min(r.height()) / 2.0, scene::troop_colors(t).0.gamma_multiply(0.25));
     let feet = r.center_bottom() - Vec2::new(0.0, r.height() * 0.12);
     scene::paint_troop(painter, t, feet + if t.stats().air { Vec2::new(0.0, 10.0) } else { Vec2::ZERO }, r.height() / 34.0, time as f32, false, false, (1.0, 0.3));
@@ -294,7 +325,10 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
             f.acc -= STEP;
         }
         if f.b.over() {
-            f.result = Some(s.finish_raid(f.level, f.b.stars(), f.b.destroyed(), &f.b.survivors()));
+            f.result = Some(match f.target {
+                Target::Campaign => s.finish_raid(f.level, f.b.stars(), f.b.destroyed(), &f.b.survivors()),
+                _ => s.finish_world(f.b.stars(), &f.b.survivors()),
+            });
             if f.b.hero_fell() {
                 s.hero_fell(super::openspace::unix_now());
             }
@@ -384,7 +418,10 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
     let gold = Color32::from_rgb(255, 196, 64);
     let bar = Rect::from_center_size(Pos2::new(rect.center().x, rect.min.y + 36.0), Vec2::new(420.0, 52.0));
     painter.rect_filled(bar, 12.0, Color32::from_black_alpha(150));
-    painter.text(bar.left_center() + Vec2::new(14.0, -10.0), Align2::LEFT_CENTER, format!("{}. {}", f.level, war::rival_name(f.level)), FontId::proportional(14.0), Color32::WHITE);
+    painter.text(bar.left_center() + Vec2::new(14.0, -10.0), Align2::LEFT_CENTER, match &f.target {
+        Target::Campaign => format!("{}. {}", f.level, war::rival_name(f.level)),
+        Target::World { name, .. } | Target::Quest { name, .. } => name.clone(),
+    }, FontId::proportional(14.0), Color32::WHITE);
     painter.text(bar.left_center() + Vec2::new(14.0, 11.0), Align2::LEFT_CENTER, format!("{} {}", tx(("Temps", "Time"), fr), clock(TIME_LIMIT - f.b.time)), FontId::proportional(12.0), Color32::from_white_alpha(200));
     painter.text(bar.center() + Vec2::new(40.0, 0.0), Align2::CENTER_CENTER, format!("{:.0} %", f.b.destroyed() * 100.0), FontId::proportional(22.0), Color32::WHITE);
     let stars = f.b.stars();
@@ -544,7 +581,10 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
                         let back = os::duration_text(war::hero_rest_secs(s.hero_level()), fr);
                         ui.label(egui::RichText::new(format!("{} {back}", tx(("Ton Lead Dev est tombé : il se repose, de retour dans", "Your lead dev fell: resting, back in"), fr))).size(12.5).color(theme.ansi[3]));
                     }
-                    if o.stars > 0 && f.level < LEVELS {
+                    if f.target != Target::Campaign {
+                        world_paid(ui, f, fr, theme);
+                    }
+                    if o.stars > 0 && f.target == Target::Campaign && f.level < LEVELS {
                         ui.label(egui::RichText::new(format!("{} {}", tx(("Niveau suivant débloqué :", "Next level unlocked:"), fr), war::rival_name(f.level + 1))).size(12.5).color(theme.ansi[2]));
                     }
                     ui.add_space(12.0);
@@ -555,4 +595,35 @@ pub(super) fn fight_page(ui: &mut Ui, rect: Rect, f: &mut Fight, s: &mut OpenSpa
             });
     }
     leave
+}
+
+/// A world raid's end: what floor counted (trophies, loot), or that it's coming.
+fn world_paid(ui: &mut Ui, f: &Fight, fr: bool, theme: &Theme) {
+    match &f.paid {
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(tx(("Le monde compte ton raid…", "The world is counting your raid…"), fr)).size(13.0).color(theme.text_muted));
+            });
+        }
+        Some(Err(why)) => {
+            ui.label(egui::RichText::new(why).size(12.5).color(theme.ansi[1]));
+        }
+        Some(Ok(p)) => {
+            if let Some((won, total)) = p.trophies {
+                let color = if won >= 0 { Color32::from_rgb(255, 196, 64) } else { theme.ansi[1] };
+                ui.label(egui::RichText::new(format!("{}{won} 🏆   ({} {total})", if won >= 0 { "+" } else { "" }, tx(("total", "total"), fr))).size(16.0).strong().color(color));
+            }
+            if p.coffee >= 1.0 || p.budget >= 1.0 {
+                ui.label(egui::RichText::new(format!("+{}   +{}", os::amount_text(p.coffee, os::Res::Coffee, fr), os::amount_text(p.budget, os::Res::Budget, fr))).size(15.0).color(theme.text));
+            }
+            if p.tickets > 0 {
+                ui.label(egui::RichText::new(format!("+{} 🎫", p.tickets)).size(14.0).color(Color32::from_rgb(0xe2, 0x6b, 0xd8)));
+            }
+            if !p.troops.is_empty() {
+                let list: Vec<String> = p.troops.iter().map(|(t, n)| format!("{n} {}", tx(t.name(), fr))).collect();
+                ui.label(egui::RichText::new(format!("+ {}", list.join(", "))).size(13.0).color(theme.text));
+            }
+        }
+    }
 }

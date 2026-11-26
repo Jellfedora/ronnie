@@ -49,6 +49,7 @@ mod openspace_scene;
 mod openspace_raid;
 mod openspace_cards;
 mod openspace_drone;
+mod openspace_world;
 mod frames;
 mod trail;
 mod game;

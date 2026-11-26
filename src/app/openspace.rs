@@ -56,7 +56,9 @@ pub(super) struct Space {
     /// The side panel open: 0 none, 1 the army, 2 the campaign, 3 the cards, 4 the achievements.
     panel: u8,
     /// A raid under way.
-    fight: Option<super::openspace_raid::Fight>,
+    pub(super) fight: Option<super::openspace_raid::Fight>,
+    /// The world (the map shared on floor, the guild, the ranking).
+    pub(super) world: super::openspace_world::WorldPage,
     /// Cards just found, being turned over (since when).
     reveal: Option<(Vec<usize>, f64)>,
     cards_rect: Rect,
@@ -66,7 +68,7 @@ pub(super) struct Space {
 
 impl Default for Space {
     fn default() -> Self {
-        Self { live: None, written: None, wrote_at: 0.0, started: false, away: None, view: View { zoom: 1.15, pan: Vec2::ZERO }, selected: None, placing: None, shop: false, drag: Drag::None, moving: None, said: None, scene: Default::default(), discovered: None, shop_rects: Vec::new(), build_rect: Rect::NOTHING, army_rect: Rect::NOTHING, attack_rect: Rect::NOTHING, panel: 0, fight: None, reveal: None, cards_rect: Rect::NOTHING, mission_folded: false }
+        Self { live: None, written: None, wrote_at: 0.0, started: false, away: None, view: View { zoom: 1.15, pan: Vec2::ZERO }, selected: None, placing: None, shop: false, drag: Drag::None, moving: None, said: None, scene: Default::default(), discovered: None, shop_rects: Vec::new(), build_rect: Rect::NOTHING, army_rect: Rect::NOTHING, attack_rect: Rect::NOTHING, panel: 0, fight: None, reveal: None, cards_rect: Rect::NOTHING, mission_folded: false, world: Default::default() }
     }
 }
 
@@ -117,7 +119,7 @@ fn small(ui: &mut Ui, text: impl Into<String>) -> bool {
 }
 
 /// A card over the open space: it takes the clicks under it (not the open space).
-fn panel<R>(ui: &mut Ui, rect: Rect, id: &str, theme: &Theme, add: impl FnOnce(&mut Ui) -> R) -> R {
+pub(super) fn panel<R>(ui: &mut Ui, rect: Rect, id: &str, theme: &Theme, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.interact(rect, ui.id().with(("os-panel", id)), Sense::click_and_drag());
     ui.painter().rect_filled(rect.translate(Vec2::new(0.0, 3.0)), 12.0, Color32::from_black_alpha(60));
     ui.painter().rect_filled(rect, 12.0, theme.chrome_bg.gamma_multiply(0.97));
@@ -132,7 +134,7 @@ impl App {
         self.home_which = HomeGame::OpenSpace;
     }
 
-    fn os_fr(&self) -> bool {
+    pub(super) fn os_fr(&self) -> bool {
         self.config.settings.language == Lang::Fr
     }
 
@@ -218,6 +220,9 @@ impl App {
             return;
         };
 
+        // floor's answers about the world (a raid there counted, the guild...).
+        self.world_poll(&ui.ctx().clone(), &mut s, time);
+
         // A raid under way: its page only.
         if let Some(fight) = self.openspace.fight.as_mut() {
             if super::openspace_raid::fight_page(ui, rect, fight, &mut s, fr, &theme) {
@@ -227,6 +232,15 @@ impl App {
                 }
                 self.openspace.fight = None;
             }
+            if self.openspace.live.as_ref() != Some(&s) {
+                self.openspace.live = Some(s);
+            }
+            return;
+        }
+
+        // The world: its page only.
+        if self.openspace.world.open {
+            self.world_page(ui, rect, &mut s);
             if self.openspace.live.as_ref() != Some(&s) {
                 self.openspace.live = Some(s);
             }
@@ -410,6 +424,16 @@ impl App {
             let pulse = (time * 4.0).sin() as f32 * 0.5 + 0.5;
             ui.painter().circle_filled(c, 6.0 + pulse * 1.5, Color32::from_rgb(220, 60, 60));
         }
+        // The world: the map shared with the other players.
+        let world = Rect::from_min_size(rect.min + Vec2::new(16.0, 52.0), Vec2::new(150.0, 38.0));
+        if ui.put(world, egui::Button::new(egui::RichText::new(format!("🌍  {}", tx(("Le monde", "The world"), fr))).size(14.5).strong().color(Color32::WHITE)).fill(Color32::from_rgb(40, 120, 170)).corner_radius(10.0)).on_hover_text(tx(("La carte que tous les joueurs partagent : attaque tes collègues, fais les quêtes, rejoins une guilde.", "The map every player shares: attack your colleagues, do the quests, join a guild."), fr)).clicked() {
+            st.world.open = true;
+            st.world.asked_world_reset();
+            st.panel = 0;
+            st.shop = false;
+            st.placing = None;
+            st.selected = None;
+        }
         let wide = if st.panel == 3 { 420.0 } else { 360.0 };
         let side = Rect::from_min_max(Pos2::new(rect.max.x - wide, rect.min.y + 96.0), Pos2::new(rect.max.x - 14.0, rect.max.y - 70.0));
         if st.panel == 1 {
@@ -586,7 +610,7 @@ impl App {
         }
     }
 
-    fn openspace_back(&mut self, ui: &mut Ui, rect: Rect, t: &Strings) {
+    pub(super) fn openspace_back(&mut self, ui: &mut Ui, rect: Rect, t: &Strings) {
         let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(110.0, 28.0));
         if ui.put(back, egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).corner_radius(6.0)).clicked() {
             self.home_game = false;
@@ -594,7 +618,7 @@ impl App {
     }
 
     /// The top right: coffee, budget, tickets, the interns, the seniority.
-    fn openspace_hud(&mut self, ui: &mut Ui, rect: Rect, s: &mut OpenSpace, fr: bool, theme: &Theme, time: f64) {
+    pub(super) fn openspace_hud(&mut self, ui: &mut Ui, rect: Rect, s: &mut OpenSpace, fr: bool, theme: &Theme, time: f64) {
         let painter = ui.painter();
         let mut x = rect.max.x - 14.0;
         let y = rect.min.y + 14.0;

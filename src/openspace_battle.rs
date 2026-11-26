@@ -355,6 +355,68 @@ impl OpenSpace {
         self.actions += 1;
         Outcome { coffee: got_coffee, budget: got_budget, tickets, stars, new_stars: stars.saturating_sub(before), cards, back: back.len() as u32 }
     }
+
+    /// A raid in the world over (a player, a bot, the boss, a quest): the troops still standing home,
+    /// the seniority. Its loot and trophies come from floor after (`gain`).
+    pub fn finish_world(&mut self, stars: u8, back: &[Troop]) -> Outcome {
+        let back: Vec<Troop> = back.iter().copied().filter(|t| *t != Troop::Lead).collect();
+        for &t in &back {
+            self.add_troop(t);
+        }
+        self.xp += 5 + 10 * stars as u64;
+        self.raids += 1;
+        if stars > 0 {
+            self.wins += 1;
+        }
+        self.actions += 1;
+        Outcome { coffee: 0.0, budget: 0.0, tickets: 0, stars, new_stars: 0, cards: Vec::new(), back: back.len() as u32 }
+    }
+
+    /// Loot brought from the world (the cards' loot bonus on top), as much as there's room for: what
+    /// was kept.
+    pub fn gain(&mut self, coffee: f64, budget: f64, tickets: u32) -> (f64, f64) {
+        let boost = self.loot_boost();
+        let room = |s: &Self, r| (s.capacity(r) - s.amount(r)).max(0.0);
+        let c = (coffee.max(0.0) * boost).floor().min(room(self, Res::Coffee));
+        let b = (budget.max(0.0) * boost).floor().min(room(self, Res::Budget));
+        self.coffee += c;
+        self.budget += b;
+        self.tickets += tickets;
+        self.actions += 1;
+        (c, b)
+    }
+
+    /// Loot taken by a raid on this open space (what's there at most).
+    pub fn lose(&mut self, coffee: f64, budget: f64) {
+        self.coffee = (self.coffee - coffee.max(0.0)).max(0.0);
+        self.budget = (self.budget - budget.max(0.0)).max(0.0);
+        self.actions += 1;
+    }
+
+    /// Troops given (a guild, a quest): straight into the army.
+    pub fn give_troops(&mut self, list: &[(Troop, u32)]) {
+        for &(t, n) in list.iter().filter(|(t, _)| *t != Troop::Lead) {
+            for _ in 0..n {
+                self.add_troop(t);
+            }
+        }
+        self.actions += 1;
+    }
+
+    /// Troops given away (to a guild mate): false when the army doesn't have them.
+    pub fn give_away(&mut self, list: &[(Troop, u32)]) -> bool {
+        if list.iter().any(|&(t, n)| self.army_count(t) < n) {
+            return false;
+        }
+        for &(t, n) in list {
+            if let Some(slot) = self.army.iter_mut().find(|(k, _)| *k == t) {
+                slot.1 -= n;
+            }
+        }
+        self.army.retain(|(_, n)| *n > 0);
+        self.actions += 1;
+        true
+    }
 }
 
 /// The hero's highest level, and how many the lead dev's office allows by its level.
@@ -1500,6 +1562,34 @@ mod tests {
         let again = s.finish_raid(1, 3, 1.0, &[]);
         assert_eq!((again.new_stars, again.tickets), (0, 0));
         assert_eq!(s.stars(1), 3);
+    }
+
+    #[test]
+    fn the_world_pays_and_takes() {
+        let mut s = camp();
+        s.coffee = 0.0;
+        s.budget = 0.0;
+        let tickets = s.tickets;
+        // Loot as much as there's room for.
+        let room = s.capacity(Res::Coffee);
+        let (c, b) = s.gain(1e12, 50.0, 2);
+        assert_eq!((c, b, s.coffee, s.tickets), (room, 50.0, room, tickets + 2));
+        // A raid suffered: never below zero.
+        s.lose(1e12, 20.0);
+        assert_eq!((s.coffee, s.budget), (0.0, 30.0));
+        // A world raid: the survivors home, no loot until floor says.
+        s.add_troop(Troop::Intern);
+        assert!(s.take_troop(Troop::Intern));
+        let o = s.finish_world(2, &[Troop::Intern]);
+        assert_eq!((o.back, o.coffee, o.cards.len()), (1, 0.0, 0));
+        // Troops given and given away.
+        let had = s.army_count(Troop::Dev);
+        s.give_troops(&[(Troop::Dev, 3), (Troop::Lead, 1)]);
+        assert_eq!(s.army_count(Troop::Dev), had + 3);
+        assert_eq!(s.army_count(Troop::Lead), 0);
+        assert!(!s.give_away(&[(Troop::Dev, had + 4)]));
+        assert!(s.give_away(&[(Troop::Dev, had + 3)]));
+        assert_eq!(s.army_count(Troop::Dev), 0);
     }
 
     #[test]
