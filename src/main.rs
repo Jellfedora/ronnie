@@ -66,6 +66,8 @@ mod update;
 mod voice;
 mod worklog;
 #[cfg(windows)]
+mod start_menu;
+#[cfg(windows)]
 mod winproc;
 
 use std::sync::Arc;
@@ -320,6 +322,9 @@ fn main() -> eframe::Result {
         // Merge the title bar into the tab bar, keeping the traffic lights.
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
     }
+
+    #[cfg(windows)]
+    start_menu::ensure();
 
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut options = eframe::NativeOptions { viewport, ..Default::default() };
