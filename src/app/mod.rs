@@ -1429,9 +1429,11 @@ impl App {
                 app.error = Some(format!("{} : {e:#}", app.t().config_not_loaded));
             }
         }
-        // Anonymous usage statistics: not from a second Ronnie (the first one counts).
-        if !app.read_only {
-            crate::telemetry::start(app.config.settings.telemetry);
+        // The usage statistics went: what an older version kept for them goes too.
+        if !app.read_only
+            && let Some(dir) = config::config_dir()
+        {
+            let _ = std::fs::remove_file(dir.join("telemetry.json"));
         }
         if let Some(e) = session_error {
             app.session_frozen = true;
@@ -1713,7 +1715,6 @@ impl App {
     /// Connects to an SSH host, or switches to its tab if it is already open.
     /// Opens (or shows) the tab of database connection `id`.
     fn open_db(&mut self, id: Uuid) {
-        crate::telemetry::count("db.open");
         if let Some(index) = self.tabs.iter().position(|t| t.db == Some(id)) {
             if let Some(tab) = self.tabs.get_mut(index) {
                 tab.show_db = true;
@@ -1774,7 +1775,6 @@ impl App {
     }
 
     fn open_ssh(&mut self, id: Uuid) {
-        crate::telemetry::count("ssh.open");
         if let Some(index) = self.tabs.iter().position(|t| t.ssh == Some(id)) {
             self.select(index);
             return;
@@ -1811,7 +1811,6 @@ impl App {
 
     /// Opens a profile, or switches to its tab if it is already open (a profile is open at most once).
     fn open_profile(&mut self, id: Uuid) {
-        crate::telemetry::count("profile.open");
         if let Some(index) = self.tabs.iter().position(|t| t.profile == Some(id)) {
             self.select(index);
         } else if self.show_elsewhere(|t| t.profile == Some(id)) {
@@ -2069,9 +2068,6 @@ impl App {
 
     /// Switches to a new config (from the editor or the file), keeping open tabs consistent with it.
     fn apply_config(&mut self, config: Config) {
-        if config.settings.telemetry != self.config.settings.telemetry && !self.read_only {
-            crate::telemetry::set_enabled(config.settings.telemetry);
-        }
         if config.settings.theme != self.config.settings.theme {
             self.theme = Preset::find(&config.settings.theme).theme();
             self.theme.apply(&self.ctx);
@@ -2521,7 +2517,6 @@ impl App {
 
     /// A new local tab, its terminal in `cwd`.
     fn new_tab_in(&mut self, ctx: &egui::Context, cwd: Option<&Path>) {
-        crate::telemetry::count("tab.new");
         let history = Uuid::new_v4();
         // The Node.js version of new terminals, if one is picked (and still installed).
         let node = self.config.settings.node_default.clone().filter(|v| crate::node::is_installed(v));
@@ -2544,7 +2539,6 @@ impl App {
         if index >= self.tabs.len() {
             return;
         }
-        crate::telemetry::count("pane.split");
         // The new pane starts in the same directory as the one being split (or another ssh session to the same host).
         let tab = &self.tabs[index];
         let cwd = tab.panes.get(&tab.focused).and_then(Terminal::cwd);
@@ -4938,23 +4932,6 @@ impl App {
                         let node = tab.nodes.get(&id).cloned();
                         let header = if local { Header::Local(cwd.as_deref(), &urls, forge.as_ref(), node.as_deref()) } else { Header::Ssh(remote_label.as_deref().unwrap_or(&ssh_label), health.as_ref()) };
                         let clicks = pane_header(ui, head, id, header, tab.names.get(&id).map(String::as_str), tab.startup.contains_key(&id), id == tab.focused, claude.as_ref(), mic, claude_dir.is_some() || !local, &bar_hidden, &self.theme, strings, &self.config.settings.shortcuts);
-                        let claude_clicked = clicks.claude.as_ref().is_some_and(egui::Response::clicked);
-                        let node_clicked = clicks.node.as_ref().is_some_and(egui::Response::clicked);
-                        for (on, event) in [
-                            (claude_clicked, if local { "claude.button" } else { "claude.button_ssh" }),
-                            (clicks.mic, "pane.dictate"),
-                            (clicks.search, "pane.search"),
-                            (clicks.commands, "pane.commands"),
-                            (clicks.files, "pane.files"),
-                            (clicks.files_window, "pane.files_window"),
-                            (clicks.relaunch, "pane.relaunch"),
-                            (clicks.reconnect, "ssh.reconnect"),
-                            (node_clicked, "node.badge"),
-                        ] {
-                            if on {
-                                crate::telemetry::count(event);
-                            }
-                        }
                         if clicks.mic {
                             if self.dictation.as_ref().is_some_and(|(p, _)| *p == id) {
                                 // Dropped: stops listening, nothing sent.
@@ -5949,7 +5926,6 @@ impl eframe::App for App {
         crate::askpass::cleanup();
         self.mail_stop();
         self.projects_stop_all();
-        crate::telemetry::save();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

@@ -247,7 +247,6 @@ impl App {
                 if active && !elsewhere {
                     self.config.settings.sidebar_folded = true;
                 } else {
-                    crate::telemetry::count(&format!("category.{}", format!("{category:?}").to_lowercase()));
                     self.config.settings.sidebar_category = category;
                     if elsewhere {
                         self.show_category(category);

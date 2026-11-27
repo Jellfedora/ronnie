@@ -26,7 +26,6 @@ mod menu;
 mod mssql;
 mod subsonic;
 mod sysmon;
-mod telemetry;
 mod pane;
 mod putty;
 mod procs;

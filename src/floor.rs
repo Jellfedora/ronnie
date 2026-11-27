@@ -1,6 +1,6 @@
 //! floor: Ronnie's server (its own repository, next to Ronnie's): the accounts (a pseudo and a
 //! password, a session per machine), their avatars, and what the other features keep there (the notes
-//! in sync, the project tracking, the usage statistics, the releases).
+//! in sync, the project tracking, the releases).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

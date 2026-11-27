@@ -97,7 +97,6 @@ impl Dev {
         if self.installing(&version).is_some() {
             return;
         }
-        crate::telemetry::count("node.install");
         let progress = Arc::new(Mutex::new(Progress::default()));
         let result = Arc::new(Mutex::new(None));
         let (p, r, v, ctx) = (progress.clone(), result.clone(), version.clone(), ctx.clone());

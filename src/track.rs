@@ -567,7 +567,6 @@ impl Client {
     }
 
     pub fn create(&self, name: &str, client: Option<&str>, color: Option<&str>) -> Answer<Project> {
-        crate::telemetry::count("track.project");
         self.project_of("POST", "/projects", Some(serde_json::json!({ "name": name, "client": client, "color": color })))
     }
 
@@ -605,7 +604,6 @@ impl Client {
     }
 
     pub fn add_quote(&self, id: &str, number: Option<&str>, label: &str, minutes: Option<u64>, day: &str) -> Answer<Project> {
-        crate::telemetry::count("track.quote");
         self.project_of("POST", &format!("/projects/{id}/quotes"), Some(serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day })))
     }
 
@@ -618,7 +616,6 @@ impl Client {
     }
 
     pub fn add_task(&self, id: &str, task: &TaskInput) -> Answer<Project> {
-        crate::telemetry::count("track.task");
         self.project_of("POST", &format!("/projects/{id}/tasks"), Some(serde_json::to_value(task).map_err(|e| e.to_string())?))
     }
 
@@ -638,7 +635,6 @@ impl Client {
     /// A file sent to floor, joined to `on` (`project`, `task:<id>`...), under the id given (Ronnie
     /// picks it: an image's Markdown is written before it's sent).
     pub fn upload(&self, id: &str, on: &str, file: &str, name: &str, bytes: &[u8]) -> Answer<()> {
-        crate::telemetry::count("track.file");
         let url = format!("{}/v1/track/projects/{id}/files?on={}", self.url, urlencode(on));
         let res = account_agent()
             .post(&url)

@@ -1137,11 +1137,6 @@ impl App {
                 toggle(ui, theme, &mut picked.home_databases);
             });
         });
-        card(ui, theme, Some(t.telemetry_title), |ui| {
-            setting_row(ui, theme, t.telemetry_setting, Some(t.telemetry_desc), |ui| {
-                toggle(ui, theme, &mut picked.telemetry);
-            });
-        });
         card(ui, theme, Some(t.set_notifications), |ui| {
             setting_row(ui, theme, t.notify_commands, Some(t.notify_commands_hint), |ui| {
                 toggle(ui, theme, &mut picked.notify_commands);

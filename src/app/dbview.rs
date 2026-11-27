@@ -1166,7 +1166,6 @@ impl DbView {
         if sql.is_empty() {
             return;
         }
-        crate::telemetry::count("db.query");
         if let Some(danger) = super::guard::check(&sql, false) {
             let reason = match danger {
                 super::guard::Danger::DropDatabase => t.guard_drop.to_owned(),

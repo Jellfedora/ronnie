@@ -4,6 +4,10 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+### Retraits
+
+- **Plus de statistiques d'usage** : Ronnie n'envoie plus rien à floor (compteurs, lancements, plantages), et l'interrupteur de Paramètres › Général s'en va. Le fichier qui les gardait est effacé au lancement. Demande floor 0.32.0.
+
 ## [1.12.0] - 2026-11-27
 
 ### Retraits

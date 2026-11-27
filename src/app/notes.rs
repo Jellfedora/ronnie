@@ -576,7 +576,6 @@ impl Notes {
     }
 
     fn new_note(&mut self, ui: &Ui) {
-        crate::telemetry::count("notes.new");
         let folder = match self.place {
             Place::Folder(f) => f,
             Place::Trash => None,
