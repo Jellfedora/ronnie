@@ -227,21 +227,6 @@ fn answered(res: Result<ureq::http::Response<ureq::Body>, ureq::Error>, status: 
     Err(ClaimError::Refused(message))
 }
 
-/// Whether floor's administrator has allowed the account yet (None: floor didn't say).
-pub(crate) fn approved(account: &FloorAccount) -> Option<bool> {
-    #[derive(Deserialize)]
-    struct Me {
-        #[serde(default)]
-        approved: Option<bool>,
-    }
-    let mut res = account_agent().get(format!("{}/v1/players/me", account.url.trim_end_matches('/'))).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).call().ok()?;
-    if !res.status().is_success() {
-        return None;
-    }
-    // A floor from before the approval: everyone is.
-    Some(res.body_mut().read_json::<Me>().ok()?.approved.unwrap_or(true))
-}
-
 pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: AccountAsk) -> Result<AccountDone, ClaimError> {
     #[derive(Deserialize)]
     struct Signed {

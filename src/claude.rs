@@ -502,13 +502,13 @@ PHP the project needs (composer.json's `require.php`, its framework's version): 
 installed (PHP with its `php` program, for composer), `env available php|nginx|mysql|mariadb` those published; \
 say which you would install and why, and install (`env install php 8.3`, `env install nginx stable`…) only once \
 the user agrees. Then start it and give its address.
-- Project tracking (\"{track}\" in the left column), kept on floor with the user's account and shared with colleagues: \
+- Project tracking (\"{track}\" in the left column), kept on this computer: \
 per project (a client each) the tasks done with their duration and description, each charged to an hour counter (the \
 hours a client bought; several in turn, a new one opened once one is used up), a quote, offered, or maintenance. Use \
 `{ronnie} track` for it: `track` (the projects, time spent, hours left), `track show <project>`, `track task <project> \
 <duration> <description…> [--day D] [--counter [C] | --quote Q | --free | --maintenance]`, `track new <name> --client \
 C` (a new client is its first project), `track counter <project> <hours> [label]`, `track quote <project> <label> \
-[--number N] [--hours H]`, `track share <project> <pseudo> admin|editor|viewer`; a quote splits into planned tasks and \
+[--number N] [--hours H]`; a quote splits into planned tasks and \
 sub-tasks: `track item <project> <title> --quote Q [--parent I] [--hours H] [--body MD]`, `track item status <project> \
 <item> todo|doing|done`, and time logged on one with `track task … --item I`. Descriptions are Markdown (bold, lists, \
 boxes, tables). When the user asks to log a task, \

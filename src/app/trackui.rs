@@ -203,7 +203,6 @@ pub(super) struct PageState {
     open_entries: HashSet<String>,
     /// Something whose delete was clicked once (a second click deletes it).
     confirm: Option<String>,
-    share: (String, Role),
     /// The projects' cards: a search.
     find: String,
     /// Debug builds (`RONNIE_OPEN_TRACK`): a window to open once the project is there.
@@ -227,7 +226,6 @@ impl Default for PageState {
             open_items: HashSet::new(),
             open_entries: HashSet::new(),
             confirm: None,
-            share: (String::new(), Role::Editor),
             find: String::new(),
             demo: None,
         }
@@ -262,9 +260,6 @@ enum Act {
     DeleteItem(String),
     ItemBody(String, String),
     Move(String, i64),
-    Share,
-    SetRole(String, Role),
-    Unshare(String),
     Tab(Tab),
     ExportCsv,
     /// A file of something (`project`, `task:<id>`...) picked, opened or taken off.
@@ -690,13 +685,6 @@ impl App {
                                     if s.archived.is_some() {
                                         chip(ui, t.track_archived, theme.text_muted);
                                     }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if let Some(p) = &p {
-                                            for m in p.members.iter().take(5) {
-                                                initial(ui, &m.name, &theme);
-                                            }
-                                        }
-                                    });
                                 });
                                 ui.horizontal(|ui| {
                                     let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
@@ -752,7 +740,7 @@ impl App {
                                 }
                                 // When it last changed.
                                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                                    ui.label(egui::RichText::new(format!("{} · {}", role_name(t, s.role), t.track_changed_on.replace("{d}", &changed_day(s.updated)))).size(11.0).color(theme.text_muted.gamma_multiply(0.8)));
+                                    ui.label(egui::RichText::new(t.track_changed_on.replace("{d}", &changed_day(s.updated))).size(11.0).color(theme.text_muted.gamma_multiply(0.8)));
                                 });
                             });
                         });
@@ -1074,7 +1062,7 @@ impl App {
 
     /// One project: its head, its tabs.
     pub(super) fn track_project(&mut self, ui: &mut Ui, p: &Project) {
-        // The images its descriptions show, asked of floor once.
+        // The images its descriptions show, read once.
         for text in std::iter::once(p.note.as_deref().unwrap_or("")).chain(p.tasks.iter().map(|x| x.label.as_str())).chain(p.quotes.iter().map(|x| x.note.as_deref().unwrap_or(""))).chain(p.items.iter().map(|x| x.body.as_deref().unwrap_or(""))) {
             self.track_want_images(&p.id, text);
         }
@@ -1097,7 +1085,6 @@ impl App {
             ui.painter().circle_filled(dot.center(), 7.0, color_of(p.color.as_deref()).unwrap_or(theme.accent));
             ui.label(egui::RichText::new(&p.name).size(24.0).strong().color(theme.text));
             ui.add_space(6.0);
-            chip(ui, role_name(t, p.role), theme.text_muted);
             if p.archived.is_some() {
                 chip(ui, t.track_archived, theme.ansi[3]);
             }
@@ -1126,7 +1113,6 @@ impl App {
             (Tab::Time, format!("{}  {}", t.track_tab_time, p.tasks.len())),
             (Tab::Quotes, format!("{}  {}", t.track_tab_quotes, p.quotes.len())),
             (Tab::Counters, format!("{}  {}", t.track_tab_counters, p.counters.len())),
-            (Tab::Team, format!("{}  {}", t.track_tab_access, p.members.len())),
             (Tab::Claude, if self.track.chat.is_running(&p.id) { "Claude  ●".to_owned() } else { "Claude".to_owned() }),
         ];
         let bar_top = ui.cursor().min.y;
@@ -1160,7 +1146,7 @@ impl App {
                     Tab::Time => self.track_tab_time(ui, p, &mut acts),
                     Tab::Quotes => self.track_tab_quotes(ui, p, &mut acts),
                     Tab::Counters => self.track_tab_counters(ui, p, &mut acts),
-                    Tab::Team | Tab::Claude => self.track_tab_team(ui, p, &mut acts),
+                    Tab::Claude => {}
                 }
                 ui.add_space(30.0);
             });
@@ -1903,98 +1889,6 @@ impl App {
         }
     }
 
-    fn track_tab_team(&mut self, ui: &mut Ui, p: &Project, acts: &mut Vec<Act>) {
-        let t = self.t();
-        let theme = self.theme.clone();
-        ui.label(egui::RichText::new(t.track_access_intro).size(12.5).color(theme.text_muted));
-        ui.add_space(12.0);
-        let width = ui.available_width();
-        card(ui, &theme, |ui| {
-            ui.set_width(width - 32.0);
-            for (n, m) in p.members.iter().enumerate() {
-                if n > 0 {
-                    ui.add_space(6.0);
-                    ui.painter().hline(ui.min_rect().x_range(), ui.cursor().min.y - 3.0, Stroke::new(1.0, theme.tab_hover.gamma_multiply(0.7)));
-                    ui.add_space(4.0);
-                }
-                ui.horizontal(|ui| {
-                    initial(ui, &m.name, &theme);
-                    let name = if m.me { format!("{}  ({})", m.name, t.track_you) } else { m.name.clone() };
-                    ui.label(egui::RichText::new(name).size(13.5).color(theme.text));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let changeable = p.role.manages() && m.role != Role::Owner;
-                        if changeable || (m.me && m.role != Role::Owner) {
-                            let confirming = self.track.page.confirm.as_deref() == Some(m.id.as_str());
-                            let word = if m.me { t.track_leave } else { t.track_remove };
-                            if ui.add(link_button(if confirming { t.track_confirm_delete } else { word }, if confirming { RED } else { theme.text_muted })).clicked() {
-                                if confirming {
-                                    acts.push(Act::Unshare(m.id.clone()));
-                                } else {
-                                    self.track.page.confirm = Some(m.id.clone());
-                                }
-                            }
-                        }
-                        if changeable {
-                            let mut role = m.role;
-                            egui::ComboBox::from_id_salt(("track-role", &m.id)).selected_text(role_name(t, role)).width(170.0).show_ui(ui, |ui| {
-                                for r in Role::GIVEN {
-                                    ui.selectable_value(&mut role, r, role_name(t, r));
-                                }
-                            });
-                            if role != m.role {
-                                acts.push(Act::SetRole(m.name.clone(), role));
-                            }
-                        } else {
-                            chip(ui, role_name(t, m.role), theme.text_muted);
-                        }
-                    });
-                });
-            }
-        });
-        if !p.role.manages() {
-            return;
-        }
-        ui.add_space(14.0);
-        card(ui, &theme, |ui| {
-            ui.set_width(width - 32.0);
-            heading(ui, t.track_share_title, &theme);
-            ui.add_space(8.0);
-            let candidates: Vec<String> = self.track.people.iter().filter(|n| !p.members.iter().any(|m| m.name.eq_ignore_ascii_case(n))).cloned().collect();
-            ui.horizontal_wrapped(|ui| {
-                let (name, role) = &mut self.track.page.share;
-                let said = if name.is_empty() { t.track_pick_colleague.to_owned() } else { name.clone() };
-                egui::ComboBox::from_id_salt("track-share-name").selected_text(said).width(180.0).show_ui(ui, |ui| {
-                    for n in &candidates {
-                        ui.selectable_value(name, n.clone(), n);
-                    }
-                    if candidates.is_empty() {
-                        ui.label(egui::RichText::new(t.track_no_colleague).color(theme.text_muted));
-                    }
-                });
-                egui::ComboBox::from_id_salt("track-share-role").selected_text(role_name(t, *role)).width(190.0).show_ui(ui, |ui| {
-                    for r in Role::GIVEN {
-                        ui.selectable_value(role, r, role_name(t, r));
-                    }
-                });
-                if ui.add_enabled(!name.is_empty(), primary(t.track_share, &theme)).clicked() {
-                    acts.push(Act::Share);
-                }
-            });
-            ui.add_space(10.0);
-            for r in Role::GIVEN {
-                let what = match r {
-                    Role::Admin => t.track_role_admin_hint,
-                    Role::Editor => t.track_role_editor_hint,
-                    _ => t.track_role_viewer_hint,
-                };
-                ui.horizontal(|ui| {
-                    chip(ui, role_name(t, r), theme.accent);
-                    ui.label(egui::RichText::new(what).size(12.0).color(theme.text_muted));
-                });
-            }
-        });
-    }
-
     /// The entry window, ready for `project`: today, its current counter (or the quote of `item`).
     fn track_entry_open(&mut self, p: &Project, quote: Option<String>, item: Option<String>) {
         let mut f = EntryForm { day: show_day(&track::today()), ..EntryForm::default() };
@@ -2130,21 +2024,6 @@ impl App {
                         last.as_ref().map_err(String::clone)?;
                     }
                     last
-                });
-            }
-            Act::Share => {
-                let (name, role) = std::mem::replace(&mut self.track.page.share, (String::new(), Role::Editor));
-                self.track_write(move |c| c.share(&id, &name, role));
-            }
-            Act::SetRole(name, role) => self.track_write(move |c| c.share(&id, &name, role)),
-            Act::Unshare(player) => {
-                self.track.page.confirm = None;
-                let Some(client) = self.track_client() else { return };
-                let ctx = self.ctx.clone();
-                self.track.spawn(&ctx, client, move |c| match c.unshare(&id, &player) {
-                    Ok(Some(p)) => Done::Project { result: Box::new(Ok(p)), select: false },
-                    Ok(None) => Done::Gone(Ok(id)),
-                    Err(e) => Done::Gone(Err(e)),
                 });
             }
             Act::ExportCsv => {

@@ -1,6 +1,7 @@
 //! Exporting the configuration to a zip, and importing one, on this computer or another one (even
 //! under another system): settings, SSH hosts, database connections, profiles, open tabs, SQL and shell
-//! histories, terminal contents. Passwords and SSH key files go in too if asked, sealed with a password
+//! histories, terminal contents, the notes, the project tracking (its files and its conversations with
+//! Claude), the week's recap, the conversations brought back from the SSH servers. Passwords and SSH key files go in too if asked, sealed with a password
 //! chosen for the export.
 //!
 //! The automatic backup writes the same export, every day or week and when Ronnie closes, in a folder
@@ -21,8 +22,12 @@ const MANIFEST: &str = "manifest.json";
 const SECRETS: &str = "secrets.bin";
 const MAGIC: &[u8] = b"RONNIE-SECRETS-1";
 /// Files and folders of the config folder that travel (the rest belongs to this computer).
-const FILES: &[&str] = &["config.json", "session.json", "db-history.json", "notes.json", "claude-worklog.json", "recap.json"];
-const FOLDERS: &[&str] = &["history", "scrollback", "notes-files"];
+const FILES: &[&str] = &["config.json", "session.json", "db-history.json", "notes.json", "claude-worklog.json", "recap.json", "track.json", "matheo.json"];
+/// Folders taken whole, their sub-folders too (`FOLDER_DEPTH` levels at most): the histories, the
+/// terminals' contents, the notes' images, the project tracking's files and its conversations with
+/// Claude, the conversations brought back from the SSH servers.
+const FOLDERS: &[&str] = &["history", "scrollback", "notes-files", "track-files", "track-chats", "ssh-claude"];
+const FOLDER_DEPTH: usize = 4;
 /// Where the SSH keys of an import go, in the config folder.
 const KEYS: &str = "keys";
 pub(super) const MIN_PASSWORD: usize = 8;
@@ -240,13 +245,9 @@ fn write_export(dir: &Path, out: &Path, manifest: &Manifest, secrets: Option<(&S
             }
         }
         for folder in FOLDERS {
-            let Ok(entries) = std::fs::read_dir(dir.join(folder)) else { continue };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if entry.file_type().is_ok_and(|t| t.is_file()) && safe_name(&name) {
-                    zip.start_file(format!("{folder}/{name}"), dated(&entry.path()))?;
-                    zip.write_all(&std::fs::read(entry.path())?)?;
-                }
+            for (name, path) in folder_files(&dir.join(folder), folder) {
+                zip.start_file(name, dated(&path))?;
+                zip.write_all(&std::fs::read(&path)?)?;
             }
         }
         if let Some((secrets, password)) = secrets {
@@ -265,6 +266,36 @@ fn write_export(dir: &Path, out: &Path, manifest: &Manifest, secrets: Option<(&S
 /// A file name that stays in its folder.
 fn safe_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
+}
+
+/// The files under `dir`, its sub-folders too (`FOLDER_DEPTH` levels at most, links never followed),
+/// each named `<prefix>/<path>` as in the archive.
+fn folder_files(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let mut todo = vec![(dir.to_path_buf(), prefix.to_owned(), 0)];
+    while let Some((at, name, depth)) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else { continue };
+        for entry in entries.flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = entry.file_type() else { continue };
+            if !safe_name(&file) {
+                continue;
+            }
+            if kind.is_file() {
+                out.push((format!("{name}/{file}"), entry.path()));
+            } else if kind.is_dir() && depth + 1 < FOLDER_DEPTH {
+                todo.push((entry.path(), format!("{name}/{file}"), depth + 1));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// An archive's entry of one of `FOLDERS`: each part of its path a plain name, not too deep.
+fn folder_entry(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('/').collect();
+    parts.len() >= 2 && parts.len() <= FOLDER_DEPTH + 1 && FOLDERS.contains(&parts[0]) && parts[1..].iter().all(|p| safe_name(p))
 }
 
 /// `data` sealed with a key derived from `password` (Argon2id): magic, salt, nonce, ciphertext.
@@ -350,8 +381,7 @@ fn prepare(path: &Path, manifest: &Manifest, password: &str, t: &Strings) -> Res
     }
     let names: Vec<String> = zip.file_names().map(str::to_owned).collect();
     for name in names {
-        let Some((folder, file)) = name.split_once('/') else { continue };
-        if FOLDERS.contains(&folder) && safe_name(file) {
+        if folder_entry(&name) {
             let mut entry = zip.by_name(&name).map_err(|e| e.to_string())?;
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -908,6 +938,11 @@ mod tests {
         );
         std::fs::write(from.join("config.json"), config).unwrap();
         std::fs::write(from.join("history/abc"), "ls\n").unwrap();
+        std::fs::write(from.join("track.json"), r#"{"projects": []}"#).unwrap();
+        std::fs::create_dir_all(from.join("track-files/p1")).unwrap();
+        std::fs::write(from.join("track-files/p1/f1"), "PDF").unwrap();
+        std::fs::create_dir_all(from.join("ssh-claude/h/projects/-root")).unwrap();
+        std::fs::write(from.join("ssh-claude/h/projects/-root/c.jsonl"), "{}").unwrap();
         std::fs::write(from.join("shell/zshrc"), "not exported").unwrap();
         let secrets = Secrets { passwords: vec![(host, "pw".into())], keys: vec![(host, "id_ed25519".into(), b"KEY".to_vec())] };
         let manifest = Manifest { format: FORMAT, version: "0".into(), os: if os_id() == "windows" { "macos" } else { "windows" }.into(), created: 0, secrets: true, hosts: 1, databases: 0, profiles: 1, tabs: 0, auto: false };
@@ -932,6 +967,10 @@ mod tests {
         let passwords = write_import(&to, prepared).unwrap();
         assert_eq!(passwords, vec![(host, "pw".to_owned())]);
         assert_eq!(std::fs::read_to_string(to.join("history/abc")).unwrap(), "ls\n");
+        // The tracking and the conversations, sub-folders and all.
+        assert_eq!(std::fs::read_to_string(to.join("track.json")).unwrap(), r#"{"projects": []}"#);
+        assert_eq!(std::fs::read_to_string(to.join("track-files/p1/f1")).unwrap(), "PDF");
+        assert_eq!(std::fs::read_to_string(to.join("ssh-claude/h/projects/-root/c.jsonl")).unwrap(), "{}");
         assert!(!to.join("shell").exists());
         let imported = Config::from_json(&std::fs::read_to_string(to.join("config.json")).unwrap()).unwrap();
         let key = imported.ssh[0].identity_file.clone().unwrap();
@@ -987,5 +1026,12 @@ mod tests {
         assert!(auto_due(&folder, config::BackupEvery::Day));
         assert!(!auto_due(&folder, config::BackupEvery::Week));
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn folder_entries_stay_inside() {
+        assert!(folder_entry("track-files/p1/f1") && folder_entry("history/abc"));
+        assert!(!folder_entry("track-files/../config.json") && !folder_entry("shell/zshrc") && !folder_entry("track-files"));
+        assert!(!folder_entry("ssh-claude/a/b/c/d/e/f"), "too deep");
     }
 }

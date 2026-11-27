@@ -1,11 +1,11 @@
-//! The "Suivi" category: project tracking (see `crate::track`), kept on floor with the account. The
+//! The "Suivi" category: project tracking (see `crate::track`), kept on this computer. The
 //! sidebar lists the projects by client (the hours left on the current counter beside each); the page
 //! shows them all, or one: the time spent, its tasks (logged here: a day, a duration typed, a
 //! description, what it is charged to), its hour counters (a new one proposed once used up), its
-//! quotes, who has access. A project can be tied to a profile of this machine (its tab opened from
+//! quotes. A project can be tied to a profile of this machine (its tab opened from
 //! it), and the first projects made from the profiles picked.
 //!
-//! Every call to floor goes in a thread; what comes back arrives by a channel, read each frame.
+//! Every call goes in a thread; what comes back arrives by a channel, read each frame.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -14,7 +14,7 @@ use super::sidebar::{paint_panel_title, paint_row_bg};
 use super::*;
 use crate::track::{self, Billing, Client, Project, Role, Summary, TaskInput, format_minutes as hm, show_day};
 
-/// floor asked again this often while the page is shown (a colleague, or Claude, may have written).
+/// Read again this often while the page is shown (Claude may have written, with `ronnie track`).
 const REFRESH_SECS: f64 = 20.0;
 /// And this often otherwise (the sidebar shows the hours left).
 const IDLE_REFRESH_SECS: f64 = 300.0;
@@ -23,7 +23,7 @@ const RED: Color32 = Color32::from_rgb(0xe0, 0x55, 0x55);
 const GREEN: Color32 = Color32::from_rgb(0x4c, 0xc2, 0x6a);
 const ORANGE: Color32 = Color32::from_rgb(0xe0, 0xa8, 0x3c);
 
-/// What a call to floor gave back.
+/// What a call gave back.
 enum Done {
     List(Result<Vec<Summary>, String>),
     /// A project read, or written (then shown, when `select`).
@@ -33,10 +33,9 @@ enum Done {
     },
     /// A project gone (deleted, or left): its id.
     Gone(Result<String, String>),
-    People(Result<Vec<String>, String>),
     /// Projects made from profiles: each one and its profile.
     Made(Vec<(Result<Project, String>, Option<Uuid>)>),
-    /// An image of a description read from floor (`track-files/<id>`).
+    /// An image of a description read (`track-files/<id>`).
     Image { src: String, result: Result<Vec<u8>, String> },
     /// A joined file opened (downloaded, then given to the system), or not.
     Opened(Result<(), String>),
@@ -53,7 +52,6 @@ pub(super) enum Tab {
     Time,
     Quotes,
     Counters,
-    Team,
     /// The conversation with Claude Code, in the folder of the tied profile.
     Claude,
 }
@@ -106,7 +104,6 @@ pub(super) struct Track {
     fetched_at: Option<f64>,
     /// The project's page: its tab, its windows, its filters.
     page: page::PageState,
-    people: Vec<String>,
     new_project: Option<NewProject>,
     import: Option<Import>,
     edit: Option<EditProject>,
@@ -115,10 +112,7 @@ pub(super) struct Track {
     offered: bool,
     /// The conversations with Claude, by project.
     pub(super) chat: super::trackchat::ChatUi,
-    /// An account waiting for floor's administrator: when it was last looked at, the look going on.
-    pending_at: Option<f64>,
-    pending_check: Option<std::sync::Arc<std::sync::Mutex<Option<Option<bool>>>>>,
-    /// The images the descriptions show, read from floor (or just pasted), and those being read.
+    /// The images the descriptions show, read (or just pasted), and those being read.
     images: super::mdedit::Images,
     asked: std::collections::HashSet<String>,
     /// The tasks of every project as one table (« Tâches »), and its filters.
@@ -136,15 +130,12 @@ impl Default for Track {
             busy: 0,
             fetched_at: None,
             page: page::PageState::default(),
-            people: Vec::new(),
             new_project: None,
             import: None,
             edit: None,
             show_archived: false,
             offered: false,
             chat: Default::default(),
-            pending_at: None,
-            pending_check: None,
             images: HashMap::new(),
             asked: std::collections::HashSet::new(),
             tasks: page::TasksState::default(),
@@ -161,16 +152,6 @@ fn color_of(hex: Option<&str>) -> Option<Color32> {
 
 fn hex_of(c: Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
-}
-
-/// A role, said.
-fn role_name(t: &Strings, role: Role) -> &'static str {
-    match role {
-        Role::Owner => t.track_role_owner,
-        Role::Admin => t.track_role_admin,
-        Role::Editor => t.track_role_editor,
-        Role::Viewer => t.track_role_viewer,
-    }
 }
 
 fn billing_name(t: &Strings, billing: Billing) -> &'static str {
@@ -203,7 +184,7 @@ fn left_color(theme: &crate::theme::Theme, left: i64, of: u64) -> Color32 {
 }
 
 impl Track {
-    /// A call to floor, in a thread; its answer comes back by the channel.
+    /// A call, in a thread; its answer comes back by the channel.
     fn spawn(&mut self, ctx: &egui::Context, client: Client, call: impl FnOnce(&Client) -> Done + Send + 'static) {
         self.busy += 1;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
@@ -239,15 +220,14 @@ impl Track {
 enum Act {
     Select(Option<String>),
     Import,
-    SignIn,
 }
 
 impl App {
     fn track_client(&self) -> Option<Client> {
-        self.config.settings.floor.as_ref().filter(|a| a.name.is_some()).map(Client::new)
+        Client::local().ok()
     }
 
-    /// The list (and the projects changed since) asked of floor.
+    /// The list (and the projects changed since) read.
     pub(super) fn track_refresh(&mut self) {
         let Some(client) = self.track_client() else {
             return;
@@ -266,7 +246,7 @@ impl App {
         self.track.spawn(&ctx, client, move |c| Done::Project { result: Box::new(c.project(&id)), select });
     }
 
-    /// A write to floor; the project as it is then comes back.
+    /// A write; the project as it is then comes back.
     fn track_write(&mut self, call: impl FnOnce(&Client) -> Result<Project, String> + Send + 'static) {
         let Some(client) = self.track_client() else {
             return;
@@ -275,7 +255,7 @@ impl App {
         self.track.spawn(&ctx, client, move |c| Done::Project { result: Box::new(call(c)), select: false });
     }
 
-    /// The images `text` shows (`track-files/<id>`) not read yet, asked of floor.
+    /// The images `text` shows (`track-files/<id>`) not read yet, read.
     fn track_want_images(&mut self, project: &str, text: &str) {
         let wanted: Vec<String> = super::notes::image_sources(text).into_iter().filter(|s| s.starts_with(track::FILES_PREFIX)).map(str::to_owned).collect();
         for src in wanted {
@@ -288,7 +268,7 @@ impl App {
         }
     }
 
-    /// An image just pasted in a description: shown at once, sent to floor joined to `on`.
+    /// An image just pasted in a description: shown at once, kept joined to `on`.
     fn track_pasted(&mut self, project: &str, on: &str, file: String, png: Vec<u8>) {
         let src = format!("{}{file}", track::FILES_PREFIX);
         let img = super::notes::Img::from_bytes(&self.ctx, &src, &png);
@@ -296,7 +276,7 @@ impl App {
         self.track_send_file(project, on, file, "image.png".to_owned(), png);
     }
 
-    /// A file sent to floor, joined to `on` (`project`, `task:<id>`...), under the id `file`.
+    /// A file kept, joined to `on` (`project`, `task:<id>`...), under the id `file`.
     fn track_send_file(&mut self, project: &str, on: &str, file: String, name: String, bytes: Vec<u8>) {
         let (id, on) = (project.to_owned(), on.to_owned());
         self.track_write(move |c| {
@@ -385,49 +365,9 @@ impl App {
         });
     }
 
-    /// Collects what floor answered; asks again now and then.
-    /// An account not allowed yet by floor's administrator: looked at again every minute, and
-    /// everything online starts again once it is.
-    fn account_pending_poll(&mut self) {
-        let Some(account) = self.config.settings.floor.clone().filter(|a| a.pending) else { return };
-        if let Some(slot) = &self.track.pending_check {
-            let Some(answer) = slot.lock().unwrap().take() else { return };
-            self.track.pending_check = None;
-            if answer == Some(true) {
-                if let Some(a) = &mut self.config.settings.floor {
-                    a.pending = false;
-                }
-                self.track.list = None;
-                self.track_refresh();
-            }
-            return;
-        }
-        let now = self.ctx.input(|i| i.time);
-        if self.track.pending_at.is_some_and(|at| now - at < 60.0) {
-            self.ctx.request_repaint_after(std::time::Duration::from_secs(60));
-            return;
-        }
-        self.track.pending_at = Some(now);
-        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
-        self.track.pending_check = Some(slot.clone());
-        let ctx = self.ctx.clone();
-        let _ = std::thread::Builder::new().name("floor-approved".into()).spawn(move || {
-            *slot.lock().unwrap() = Some(crate::floor::approved(&account));
-            ctx.request_repaint();
-        });
-    }
-
-    /// floor said the account isn't allowed (any more): marked so, looked at again now and then.
-    fn track_pending(&mut self) {
-        if let Some(a) = &mut self.config.settings.floor {
-            a.pending = true;
-        }
-        self.track.pending_at = None;
-    }
-
+    /// Collects what the calls answered; asks again now and then.
     pub(super) fn track_poll(&mut self) {
         self.track_chat_poll();
-        self.account_pending_poll();
         let t = self.t();
         while let Ok(done) = self.track.rx.try_recv() {
             self.track.busy = self.track.busy.saturating_sub(1);
@@ -450,14 +390,12 @@ impl App {
                         self.track_import_open();
                     }
                 }
-                Done::List(Err(e)) if e == track::PENDING => self.track_pending(),
                 Done::List(Err(e)) => {
                     if !matches!(self.track.list, Some(Ok(_))) {
                         self.track.list = Some(Err(e));
                     }
                 }
                 Done::Project { result, select } => match *result {
-                    Err(e) if e == track::PENDING => self.track_pending(),
                     Err(e) => self.error = Some(format!("{} : {e}", t.track_failed)),
                     Ok(project) => {
                         if let Some(Ok(list)) = &mut self.track.list {
@@ -493,8 +431,6 @@ impl App {
                 }
                 Done::Opened(Ok(())) => {}
                 Done::Opened(Err(e)) => self.error = Some(format!("{} : {e}", t.track_failed)),
-                Done::People(Ok(people)) => self.track.people = people,
-                Done::People(Err(_)) => {}
                 Done::Made(made) => {
                     let mut errors = Vec::new();
                     for (result, profile) in made {
@@ -520,8 +456,7 @@ impl App {
             }
         }
         // Asked again: often while shown, now and then otherwise (the sidebar's hours left).
-        let pending = self.config.settings.floor.as_ref().is_some_and(|a| a.pending);
-        if self.track_client().is_some() && !pending && !self.config.settings.hidden_categories.contains(&Category::Track) && !self.read_only {
+        if self.track_client().is_some() && !self.config.settings.hidden_categories.contains(&Category::Track) && !self.read_only {
             let now = self.ctx.input(|i| i.time);
             let every = if self.track_page { REFRESH_SECS } else { IDLE_REFRESH_SECS };
             if self.track.busy == 0 && self.track.fetched_at.is_none_or(|at| now - at > every) {
@@ -537,7 +472,6 @@ impl App {
             "time" | "tasks" => Tab::Time,
             "counters" => Tab::Counters,
             "quotes" => Tab::Quotes,
-            "access" | "team" => Tab::Team,
             "claude" => Tab::Claude,
             "entry" | "item" | "quote-edit" | "settings" => {
                 self.track.page.demo = Some(tab.to_owned());
@@ -564,12 +498,6 @@ impl App {
         self.music_page = false;
         self.notes_page = false;
         self.track_refresh();
-        if self.track.people.is_empty()
-            && let Some(client) = self.track_client()
-        {
-            let ctx = self.ctx.clone();
-            self.track.spawn(&ctx, client, |c| Done::People(c.people()));
-        }
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
 
@@ -667,13 +595,7 @@ impl App {
             paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
             (slot, resp)
         };
-        if self.track_client().is_none() {
-            let (slot, resp) = row(ui, y, "sign-in", false);
-            painter.text(Pos2::new(slot.min.x + 12.0, slot.center().y), Align2::LEFT_CENTER, t.track_sign_in, FontId::proportional(12.5), theme.accent);
-            if resp.clicked() {
-                act = Some(Act::SignIn);
-            }
-        } else {
+        if self.track_client().is_some() {
             let selected = self.config.settings.track_selected.clone();
             // The overview.
             let (slot, resp) = row(ui, y, "all", self.track_page && selected.is_none());
@@ -737,21 +659,14 @@ impl App {
             }
         }
         match act {
-            Some(Act::SignIn) => self.track_sign_in(),
             Some(Act::Select(id)) => self.track_select(id),
             Some(Act::Import) => self.track_import_open(),
             _ => {}
         }
     }
 
-    fn track_sign_in(&mut self) {
-        self.settings_tab = SettingsTab::Account;
-        self.settings_dialog = true;
-    }
-
     /// The tracking page: every project, or the one picked.
     pub(super) fn track_page_ui(&mut self, ui: &mut Ui, rect: Rect) {
-        let t = self.t();
         let theme = self.theme.clone();
         ui.painter().rect_filled(rect, 0.0, theme.bg);
         let margin = if rect.width() > 900.0 { 40.0 } else { 18.0 };
@@ -759,24 +674,6 @@ impl App {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
         let ui = &mut child;
 
-        if self.track_client().is_none() {
-            ui.label(egui::RichText::new(t.cat_track).size(22.0).color(theme.text));
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new(t.track_signed_out).size(13.0).color(theme.text_muted));
-            ui.add_space(10.0);
-            if ui.add(egui::Button::new(egui::RichText::new(t.track_sign_in).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked() {
-                self.track_sign_in();
-            }
-            return;
-        }
-
-        // Not allowed yet by floor's administrator.
-        if self.config.settings.floor.as_ref().is_some_and(|a| a.pending) {
-            ui.label(egui::RichText::new(t.cat_track).size(22.0).color(theme.text));
-            ui.add_space(8.0);
-            ui.add(egui::Label::new(egui::RichText::new(t.account_pending).size(13.0).color(theme.ansi[3])).wrap());
-            return;
-        }
         let selected = self.config.settings.track_selected.clone().and_then(|id| self.track.projects.get(&id).cloned());
         match selected {
             Some(project) => self.track_project(ui, &project),

@@ -1,20 +1,13 @@
-//! Project tracking ("Suivi"), kept on floor (`/v1/track`) with the account, in clear: the projects
-//! (a client each), their hour counters (the client's contracts), their quotes, the tasks done (a
-//! duration, charged to a counter, to a quote, offered, or part of the maintenance), shared with
-//! colleagues as admin, to fill in tasks, or to look at.
+//! Project tracking ("Suivi"), kept on this computer: the projects (a client each), their hour
+//! counters (the client's contracts), their quotes, their planned tasks, the time spent (a duration,
+//! charged to a counter, to a quote, offered, or part of the maintenance), and the files joined.
 //!
 //! Blocking calls: the interface makes them in a thread (`app::track`), `ronnie track` directly.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::FloorAccount;
-use crate::floor::{USER_AGENT, account_agent};
-
-/// The error of a call refused because the account isn't allowed yet by floor's administrator.
-pub const PENDING: &str = "pending";
-
-/// A task: 1000 h at most (as floor takes): a block of hours already done, charged at once.
+/// A task: 1000 h at most (as the tracking takes): a block of hours already done, charged at once.
 pub const TASK_MAX: u32 = 1000 * 60;
 
 /// What someone can do in a project, from the least.
@@ -32,26 +25,6 @@ pub enum Role {
 }
 
 impl Role {
-    pub const GIVEN: [Role; 3] = [Role::Admin, Role::Editor, Role::Viewer];
-
-    pub fn word(self) -> &'static str {
-        match self {
-            Role::Viewer => "viewer",
-            Role::Editor => "editor",
-            Role::Admin => "admin",
-            Role::Owner => "owner",
-        }
-    }
-
-    pub fn parse(word: &str) -> Option<Role> {
-        match word.to_lowercase().as_str() {
-            "viewer" | "lecture" | "read" => Some(Role::Viewer),
-            "editor" | "saisie" | "write" => Some(Role::Editor),
-            "admin" => Some(Role::Admin),
-            _ => None,
-        }
-    }
-
     pub fn manages(self) -> bool {
         self >= Role::Admin
     }
@@ -137,7 +110,7 @@ pub struct Quote {
     pub used: u64,
 }
 
-/// Where a planned task is (floor 0.27: six of them; an unknown one, from a later floor, is « to do »).
+/// Where a planned task is (six of them; an unknown one is « to do »).
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -228,7 +201,7 @@ pub struct Item {
     /// A short comment.
     #[serde(default)]
     pub comment: Option<String>,
-    /// Where it is: `local`, `dev`, `test` or `prod` (floor 0.27).
+    /// Where it is: `local`, `dev`, `test` or `prod`.
     #[serde(default)]
     pub env: Option<String>,
 }
@@ -297,12 +270,12 @@ pub struct Project {
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub items: Vec<Item>,
-    /// The files joined to it, its counters, quotes, planned tasks, time spent (floor 0.26).
+    /// The files joined to it, its counters, quotes, planned tasks, time spent.
     #[serde(default)]
     pub files: Vec<TrackFile>,
 }
 
-/// A file joined in the project (a contract, a quote's PDF, a screenshot in a description), kept by floor.
+/// A file joined in the project (a contract, a quote's PDF, a screenshot in a description), kept beside the tracking.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct TrackFile {
     pub id: String,
@@ -320,10 +293,10 @@ pub struct TrackFile {
 /// Where an image joined to a description is, in its Markdown: `track-files/<id>`.
 pub const FILES_PREFIX: &str = "track-files/";
 
-/// A file at most (floor's limit).
+/// A file at most.
 pub const FILE_MAX: u64 = 25 * 1024 * 1024;
 
-/// The media type of a file, by its name (what floor serves it as).
+/// The media type of a file, by its name (what it opens as).
 pub fn mime_of(name: &str) -> &'static str {
     match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
         Some("pdf") => "application/pdf",
@@ -494,203 +467,905 @@ pub struct ItemInput {
     pub env: Option<String>,
 }
 
-/// The calls to floor's tracking, with an account.
+/// The tracking, kept on this computer: `track.json` beside the config, the joined files in
+/// `track-files/<project>/<id>` (never their own name). Every call reads it, changes it and writes it
+/// back, one at a time (the interface calls from threads, `ronnie track` from another process).
 #[derive(Clone)]
 pub struct Client {
-    url: String,
-    token: String,
+    dir: std::path::PathBuf,
 }
 
-/// What a call to floor gave back, an error said as floor said it.
+/// What a call gave back, or why not (said to the user).
 type Answer<T> = Result<T, String>;
 
-impl Client {
-    pub fn new(account: &FloorAccount) -> Client {
-        Client { url: account.url.trim_end_matches('/').to_owned(), token: account.token.clone() }
+/// One call at a time in this process.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A counter or a quote: 100 000 h at most.
+const HOURS_MAX: u64 = 100_000 * 60;
+/// Markdown texts: so many characters at most.
+const BODY_MAX: usize = 20_000;
+/// Planned tasks: so many levels (sub-tasks included) at most.
+const DEPTH_MAX: usize = 3;
+/// The joined files of a project, all of them, at most.
+const FILES_QUOTA: u64 = 500 * 1024 * 1024;
+
+#[derive(Serialize, Deserialize, Default)]
+struct Db {
+    #[serde(default)]
+    projects: Vec<StoredProject>,
+    #[serde(default)]
+    counters: Vec<StoredCounter>,
+    #[serde(default)]
+    quotes: Vec<StoredQuote>,
+    #[serde(default)]
+    tasks: Vec<StoredTask>,
+    #[serde(default)]
+    items: Vec<StoredItem>,
+    #[serde(default)]
+    files: Vec<StoredFile>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredProject {
+    id: String,
+    name: String,
+    client: Option<String>,
+    color: Option<String>,
+    note: Option<String>,
+    created: i64,
+    updated: i64,
+    archived: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredCounter {
+    id: String,
+    project: String,
+    label: String,
+    minutes: u64,
+    day: String,
+    closed: Option<i64>,
+    created: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredQuote {
+    id: String,
+    project: String,
+    number: Option<String>,
+    label: String,
+    note: Option<String>,
+    minutes: Option<u64>,
+    day: String,
+    closed: Option<i64>,
+    created: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredTask {
+    id: String,
+    project: String,
+    day: String,
+    label: String,
+    minutes: u32,
+    billing: Billing,
+    counter: Option<String>,
+    quote: Option<String>,
+    item: Option<String>,
+    created: i64,
+    updated: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredItem {
+    id: String,
+    project: String,
+    quote: Option<String>,
+    parent: Option<String>,
+    title: String,
+    body: Option<String>,
+    minutes: Option<u64>,
+    status: Status,
+    position: i64,
+    created: i64,
+    updated: i64,
+    requested: Option<String>,
+    due: Option<String>,
+    finished: Option<String>,
+    live: Option<String>,
+    requester: Option<String>,
+    progress: Option<u8>,
+    comment: Option<String>,
+    env: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredFile {
+    id: String,
+    project: String,
+    /// `project`, `counter:<id>`, `quote:<id>`, `item:<id>`, `task:<id>`.
+    on: String,
+    name: String,
+    mime: String,
+    size: u64,
+    created: i64,
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// A text cleaned (no control characters but line breaks, trimmed), `max` characters at most;
+/// `required`: not empty. None: no text.
+fn text(value: Option<&Value>, field: &str, max: usize, required: bool) -> Answer<Option<String>> {
+    let clean = match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.chars().filter(|c| *c == '\n' || !c.is_control()).collect::<String>().trim().to_owned(),
+        Some(_) => return Err(format!("{field}: a text")),
+    };
+    if clean.is_empty() {
+        return if required { Err(format!("{field}: required")) } else { Ok(None) };
+    }
+    if clean.chars().count() > max {
+        return Err(format!("{field}: {max} characters at most"));
+    }
+    Ok(Some(clean))
+}
+
+fn required(value: Option<&Value>, field: &str, max: usize) -> Answer<String> {
+    Ok(text(value, field, max, true)?.unwrap_or_default())
+}
+
+/// Minutes between 1 and `max` (None: none given, when not `needed`).
+fn minutes(value: Option<&Value>, field: &str, max: u64, needed: bool) -> Answer<Option<u64>> {
+    match value {
+        None | Some(Value::Null) if !needed => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(n) if (1..=max).contains(&n) => Ok(Some(n)),
+            _ => Err(format!("{field}: a number of minutes between 1 and {max}")),
+        },
+        None => Err(format!("{field}: required")),
+    }
+}
+
+fn valid_day(day: &str) -> bool {
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok() && day.len() == 10
+}
+
+fn day(value: Option<&Value>, field: &str) -> Answer<String> {
+    match value.and_then(Value::as_str) {
+        Some(d) if valid_day(d) => Ok(d.to_owned()),
+        _ => Err(format!("{field}: a date YYYY-MM-DD")),
+    }
+}
+
+/// An optional date: null (or none) clears it.
+fn day_or_none(value: Option<&Value>, field: &str) -> Answer<Option<String>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        v => day(v, field).map(Some),
+    }
+}
+
+fn color(value: Option<&Value>) -> Answer<Option<String>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(Value::String(s)) if s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit()) => Ok(Some(s.to_lowercase())),
+        _ => Err("color: #rrggbb".into()),
+    }
+}
+
+fn percent(value: Option<&Value>, field: &str) -> Answer<Option<u8>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().filter(|n| *n <= 100).map(|n| Some(n as u8)).ok_or_else(|| format!("{field}: a whole number between 0 and 100")),
+    }
+}
+
+fn env_of(value: Option<&Value>) -> Answer<Option<String>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(Value::String(s)) if ENVS.contains(&s.as_str()) => Ok(Some(s.clone())),
+        _ => Err(format!("env: {}", ENVS.join(", "))),
+    }
+}
+
+fn status_of(value: Option<&Value>) -> Answer<Status> {
+    value.and_then(Value::as_str).and_then(|w| Status::ALL.into_iter().find(|s| s.word() == w)).ok_or_else(|| format!("status: {}", Status::ALL.map(Status::word).join(", ")))
+}
+
+/// The dates a state fills in by itself (never over those already there): done → finished; in
+/// production → live, and finished if missing.
+fn dates_of(status: Status, finished: &mut Option<String>, live: &mut Option<String>, today: &str) {
+    if status.finished() && finished.is_none() {
+        *finished = Some(today.to_owned());
+    }
+    if status == Status::Live && live.is_none() {
+        *live = Some(today.to_owned());
+    }
+}
+
+/// A safe image, by its content (PNG, JPEG, GIF, WebP): its type.
+fn image_of(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// A file's name kept: no folder, no control or reserved character, not hidden, 120 characters at
+/// most (its extension kept). None: nothing left.
+fn clean_name(name: &str) -> Option<String> {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let base: String = base.chars().filter(|c| !c.is_control() && !"\"<>|:*?".contains(*c)).collect();
+    let base = base.split_whitespace().collect::<Vec<_>>().join(" ");
+    if base.is_empty() || base.starts_with('.') {
+        return None;
+    }
+    if base.chars().count() <= 120 {
+        return Some(base);
+    }
+    let ext = std::path::Path::new(&base).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    Some(base.chars().take(120 - ext.chars().count()).collect::<String>() + &ext)
+}
+
+/// Only letters, digits and dashes: an id safe in a path.
+fn safe_id(id: &str) -> String {
+    id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
+}
+
+impl Db {
+    fn project(&self, id: &str) -> Answer<&StoredProject> {
+        self.projects.iter().find(|p| p.id == id).ok_or_else(|| "Project not found".to_owned())
     }
 
-    fn call(&self, method: &str, path: &str, body: Option<Value>) -> Answer<Option<Value>> {
-        let agent = account_agent();
-        let url = format!("{}/v1/track{path}", self.url);
-        let auth = format!("Bearer {}", self.token);
-        let res = match (method, body) {
-            ("GET", _) => agent.get(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").call(),
-            ("DELETE", _) => agent.delete(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").call(),
-            ("POST", b) => agent.post(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").send_json(b.unwrap_or(Value::Null)),
-            ("PUT", b) => agent.put(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").send_json(b.unwrap_or(Value::Null)),
-            (_, b) => agent.patch(&url).header("User-Agent", USER_AGENT).header("Authorization", &auth).header("X-Track-Statuses", "6").send_json(b.unwrap_or(Value::Null)),
+    fn project_mut(&mut self, id: &str) -> Answer<&mut StoredProject> {
+        self.projects.iter_mut().find(|p| p.id == id).ok_or_else(|| "Project not found".to_owned())
+    }
+
+    fn touch(&mut self, id: &str) {
+        if let Ok(p) = self.project_mut(id) {
+            p.updated = now_ms();
+        }
+    }
+
+    fn counter_of(&self, project: &str, id: &str) -> bool {
+        self.counters.iter().any(|c| c.id == id && c.project == project)
+    }
+
+    fn quote_of(&self, project: &str, id: &str) -> bool {
+        self.quotes.iter().any(|q| q.id == id && q.project == project)
+    }
+
+    fn item_of(&self, project: &str, id: &str) -> Option<&StoredItem> {
+        self.items.iter().find(|i| i.id == id && i.project == project)
+    }
+
+    /// What a task is charged to: the counter or the quote, of the same project.
+    fn billing_of(&self, project: &str, b: &Value, old: Option<&StoredTask>) -> Answer<(Billing, Option<String>, Option<String>)> {
+        let billing = match b.get("billing") {
+            Some(v) => serde_json::from_value::<Billing>(v.clone()).map_err(|_| "billing: counter, quote, free, maintenance".to_owned())?,
+            None => old.map(|t| t.billing).ok_or("billing: counter, quote, free, maintenance")?,
         };
-        let mut res = res.map_err(|e| e.to_string())?;
-        let status = res.status().as_u16();
-        if status == 204 {
-            return Ok(None);
-        }
-        let value: Value = res.body_mut().read_json().unwrap_or(Value::Null);
-        if (200..300).contains(&status) {
-            return Ok(Some(value));
-        }
-        if value.get("code").and_then(Value::as_str) == Some("pending") {
-            return Err(PENDING.to_owned());
-        }
-        match value.get("error").and_then(Value::as_str) {
-            Some(e) => Err(e.to_owned()),
-            None => Err(format!("floor answered {status}")),
+        let pick = |key: &str, before: Option<&String>| match b.get(key) {
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => None,
+            None => before.cloned(),
+        };
+        match billing {
+            Billing::Counter => {
+                let c = pick("counter", old.and_then(|t| t.counter.as_ref())).filter(|c| self.counter_of(project, c)).ok_or("counter: a counter of this project")?;
+                Ok((billing, Some(c), None))
+            }
+            Billing::Quote => {
+                let q = pick("quote", old.and_then(|t| t.quote.as_ref())).filter(|q| self.quote_of(project, q)).ok_or("quote: a quote of this project")?;
+                Ok((billing, None, Some(q)))
+            }
+            _ => Ok((billing, None, None)),
         }
     }
 
-    fn project_of(&self, method: &str, path: &str, body: Option<Value>) -> Answer<Project> {
-        let value = self.call(method, path, body)?.ok_or("floor gave nothing back")?;
-        serde_json::from_value(value).map_err(|e| e.to_string())
+    /// The planned task some time is spent on: of the same project (None: none).
+    fn task_item(&self, project: &str, value: Option<&Value>) -> Answer<Option<String>> {
+        match value {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(id)) if self.item_of(project, id).is_some() => Ok(Some(id.clone())),
+            _ => Err("item: a planned task of this project".into()),
+        }
     }
 
-    /// The accounts one can share with.
-    pub fn people(&self) -> Answer<Vec<String>> {
-        #[derive(Deserialize)]
-        struct People {
-            people: Vec<String>,
+    /// A planned task's level (0: the first); None: `avoid` is above it (a task never goes under itself).
+    fn depth_of(&self, project: &str, id: &str, avoid: Option<&str>) -> Option<usize> {
+        let mut depth = 0;
+        let mut at = Some(id.to_owned());
+        while let Some(cur) = at {
+            if Some(cur.as_str()) == avoid || depth > DEPTH_MAX + 1 {
+                return None;
+            }
+            at = self.item_of(project, &cur).and_then(|i| i.parent.clone());
+            depth += 1;
         }
-        let value = self.call("GET", "/people", None)?.unwrap_or(Value::Null);
-        Ok(serde_json::from_value::<People>(value).map_err(|e| e.to_string())?.people)
+        Some(depth - 1)
+    }
+
+    fn parent_of(&self, project: &str, parent: Option<&Value>, quote: Option<&str>, me: Option<&str>) -> Answer<Option<String>> {
+        let id = match parent {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::String(id)) => id,
+            Some(_) => return Err("parent: a task of this project".into()),
+        };
+        let p = self.item_of(project, id).ok_or("parent: a task of this project")?;
+        if p.quote.as_deref() != quote {
+            return Err("parent: a task of the same quote".into());
+        }
+        let depth = self.depth_of(project, id, me).ok_or("parent: not under itself")?;
+        if depth + 1 >= DEPTH_MAX {
+            return Err(format!("{DEPTH_MAX} levels of tasks at most"));
+        }
+        Ok(Some(id.clone()))
+    }
+
+    fn last_position(&self, project: &str, quote: Option<&str>, parent: Option<&str>) -> i64 {
+        self.items.iter().filter(|i| i.project == project && i.quote.as_deref() == quote && i.parent.as_deref() == parent).map(|i| i.position).max().unwrap_or(-1)
+    }
+
+    /// What a file is joined to: the project, or one of its things (that must be there).
+    fn target_of(&self, project: &str, on: &str) -> Answer<String> {
+        if on.is_empty() || on == "project" {
+            return Ok("project".into());
+        }
+        let ok = match on.split_once(':') {
+            Some(("counter", id)) => self.counter_of(project, id),
+            Some(("quote", id)) => self.quote_of(project, id),
+            Some(("item", id)) => self.item_of(project, id).is_some(),
+            Some(("task", id)) => self.tasks.iter().any(|t| t.id == id && t.project == project),
+            _ => false,
+        };
+        if ok { Ok(on.to_owned()) } else { Err("on: project, or counter:, quote:, item:, task: and the id of one of this project's".into()) }
+    }
+
+    /// The planned tasks gone with what they were in (a quote, a task above), the time spent on them
+    /// kept; and the files of what's gone (returned, to take off the disk).
+    fn sweep(&mut self, project: &str) -> Vec<String> {
+        loop {
+            let gone: Vec<String> = self
+                .items
+                .iter()
+                .filter(|i| i.project == project)
+                .filter(|i| i.quote.as_ref().is_some_and(|q| !self.quote_of(project, q)) || i.parent.as_ref().is_some_and(|p| self.item_of(project, p).is_none()))
+                .map(|i| i.id.clone())
+                .collect();
+            if gone.is_empty() {
+                break;
+            }
+            self.items.retain(|i| !gone.contains(&i.id));
+        }
+        let items: Vec<String> = self.items.iter().map(|i| i.id.clone()).collect();
+        for t in self.tasks.iter_mut().filter(|t| t.project == project) {
+            if t.item.as_ref().is_some_and(|i| !items.contains(i)) {
+                t.item = None;
+            }
+        }
+        let orphans: Vec<String> = self.files.iter().filter(|f| f.project == project && self.target_of(project, &f.on).is_err()).map(|f| f.id.clone()).collect();
+        self.files.retain(|f| !orphans.contains(&f.id));
+        orphans
+    }
+
+    fn view(&self, id: &str) -> Answer<Project> {
+        let p = self.project(id)?;
+        let used = |pick: &dyn Fn(&StoredTask) -> bool| self.tasks.iter().filter(|t| t.project == p.id && pick(t)).map(|t| t.minutes as u64).sum::<u64>();
+        let mut counters: Vec<&StoredCounter> = self.counters.iter().filter(|c| c.project == p.id).collect();
+        counters.sort_by(|a, b| (&a.day, a.created).cmp(&(&b.day, b.created)));
+        let mut quotes: Vec<&StoredQuote> = self.quotes.iter().filter(|q| q.project == p.id).collect();
+        quotes.sort_by(|a, b| (&a.day, a.created).cmp(&(&b.day, b.created)));
+        let mut items: Vec<&StoredItem> = self.items.iter().filter(|i| i.project == p.id).collect();
+        items.sort_by_key(|i| (i.position, i.created));
+        let mut tasks: Vec<&StoredTask> = self.tasks.iter().filter(|t| t.project == p.id).collect();
+        tasks.sort_by(|a, b| (&b.day, b.created).cmp(&(&a.day, a.created)));
+        let mut files: Vec<&StoredFile> = self.files.iter().filter(|f| f.project == p.id).collect();
+        files.sort_by(|a, b| (a.created, &a.id).cmp(&(b.created, &b.id)));
+        Ok(Project {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            client: p.client.clone(),
+            color: p.color.clone(),
+            note: p.note.clone(),
+            role: Role::Owner,
+            updated: p.updated,
+            archived: p.archived,
+            members: Vec::new(),
+            counters: counters.into_iter().map(|c| Counter { id: c.id.clone(), label: c.label.clone(), minutes: c.minutes, day: c.day.clone(), closed: c.closed, used: used(&|t| t.counter.as_deref() == Some(c.id.as_str())) }).collect(),
+            quotes: quotes
+                .into_iter()
+                .map(|q| Quote { id: q.id.clone(), number: q.number.clone(), label: q.label.clone(), note: q.note.clone(), minutes: q.minutes, day: q.day.clone(), closed: q.closed, used: used(&|t| t.quote.as_deref() == Some(q.id.as_str())) })
+                .collect(),
+            tasks: tasks
+                .into_iter()
+                .map(|t| Task { id: t.id.clone(), day: t.day.clone(), label: t.label.clone(), minutes: t.minutes, billing: t.billing, counter: t.counter.clone(), quote: t.quote.clone(), item: t.item.clone(), author: None, mine: true })
+                .collect(),
+            items: items
+                .into_iter()
+                .map(|i| Item {
+                    id: i.id.clone(),
+                    quote: i.quote.clone(),
+                    parent: i.parent.clone(),
+                    title: i.title.clone(),
+                    body: i.body.clone(),
+                    minutes: i.minutes,
+                    status: i.status,
+                    position: i.position,
+                    spent: used(&|t| t.item.as_deref() == Some(i.id.as_str())),
+                    requested: i.requested.clone(),
+                    due: i.due.clone(),
+                    finished: i.finished.clone(),
+                    live: i.live.clone(),
+                    requester: i.requester.clone(),
+                    progress: i.progress,
+                    comment: i.comment.clone(),
+                    env: i.env.clone(),
+                })
+                .collect(),
+            files: files.into_iter().map(|f| TrackFile { id: f.id.clone(), name: f.name.clone(), size: f.size, mime: f.mime.clone(), on: f.on.clone(), author: None, mine: true }).collect(),
+        })
+    }
+}
+
+impl Client {
+    /// The tracking of this computer (in Ronnie's config folder).
+    pub fn local() -> Answer<Client> {
+        crate::config::config_dir().map(|dir| Client { dir }).ok_or_else(|| "no config folder".to_owned())
+    }
+
+    #[cfg(test)]
+    fn at(dir: &std::path::Path) -> Client {
+        Client { dir: dir.to_owned() }
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.dir.join("track.json")
+    }
+
+    fn file_path(&self, project: &str, file: &str) -> std::path::PathBuf {
+        self.dir.join("track-files").join(safe_id(project)).join(safe_id(file))
+    }
+
+    /// `change` made to the tracking, written back (only when it went well); what it gave.
+    fn with<T>(&self, change: impl FnOnce(&mut Db) -> Answer<T>) -> Answer<T> {
+        let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut db: Db = match std::fs::read_to_string(self.path()) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("track.json: {e}"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Db::default(),
+            Err(e) => return Err(format!("track.json: {e}")),
+        };
+        let out = change(&mut db)?;
+        crate::config::save(&self.path(), &db).map_err(|e| format!("{e:#}"))?;
+        Ok(out)
+    }
+
+    fn read<T>(&self, look: impl FnOnce(&Db) -> Answer<T>) -> Answer<T> {
+        let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let db: Db = match std::fs::read_to_string(self.path()) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("track.json: {e}"))?,
+            Err(_) => Db::default(),
+        };
+        look(&db)
+    }
+
+    /// `change` made to project `id`, its last change noted; the project as it is then.
+    fn change(&self, id: &str, change: impl FnOnce(&mut Db) -> Answer<()>) -> Answer<Project> {
+        let mut gone = Vec::new();
+        let project = self.with(|db| {
+            db.project(id)?;
+            change(db)?;
+            gone = db.sweep(id);
+            db.touch(id);
+            db.view(id)
+        })?;
+        for f in gone {
+            let _ = std::fs::remove_file(self.file_path(id, &f));
+        }
+        Ok(project)
     }
 
     pub fn projects(&self) -> Answer<Vec<Summary>> {
-        #[derive(Deserialize)]
-        struct List {
-            projects: Vec<Summary>,
-        }
-        let value = self.call("GET", "/projects", None)?.unwrap_or(Value::Null);
-        Ok(serde_json::from_value::<List>(value).map_err(|e| e.to_string())?.projects)
+        self.read(|db| {
+            let mut list: Vec<Summary> = db.projects.iter().filter_map(|p| db.view(&p.id).ok()).map(|p| p.summary()).collect();
+            list.sort_by_key(|s| (s.client.as_deref().unwrap_or_default().to_lowercase(), s.name.to_lowercase()));
+            Ok(list)
+        })
     }
 
     pub fn project(&self, id: &str) -> Answer<Project> {
-        self.project_of("GET", &format!("/projects/{id}"), None)
+        self.read(|db| db.view(id))
     }
 
     pub fn create(&self, name: &str, client: Option<&str>, color: Option<&str>) -> Answer<Project> {
-        self.project_of("POST", "/projects", Some(serde_json::json!({ "name": name, "client": client, "color": color })))
+        let b = serde_json::json!({ "name": name, "client": client, "color": color });
+        self.with(|db| {
+            let at = now_ms();
+            let id = new_id();
+            db.projects.push(StoredProject { id: id.clone(), name: required(b.get("name"), "name", 80)?, client: text(b.get("client"), "client", 80, false)?, color: self::color(b.get("color"))?, note: None, created: at, updated: at, archived: None });
+            db.view(&id)
+        })
     }
 
     /// The project's fields given in `fields` (name, client, color, note, archived) changed.
     pub fn update(&self, id: &str, fields: Value) -> Answer<Project> {
-        self.project_of("PATCH", &format!("/projects/{id}"), Some(fields))
+        self.change(id, |db| {
+            let name = fields.get("name").map(|v| required(Some(v), "name", 80)).transpose()?;
+            let client = fields.get("client").map(|v| text(Some(v), "client", 80, false)).transpose()?;
+            let color = fields.get("color").map(|v| self::color(Some(v))).transpose()?;
+            let note = fields.get("note").map(|v| text(Some(v), "note", BODY_MAX, false)).transpose()?;
+            let p = db.project_mut(id)?;
+            if let Some(n) = name {
+                p.name = n;
+            }
+            if let Some(c) = client {
+                p.client = c;
+            }
+            if let Some(c) = color {
+                p.color = c;
+            }
+            if let Some(n) = note {
+                p.note = n;
+            }
+            if let Some(a) = fields.get("archived") {
+                p.archived = if a.as_bool().unwrap_or(false) { p.archived.or(Some(now_ms())) } else { None };
+            }
+            Ok(())
+        })
     }
 
     pub fn delete(&self, id: &str) -> Answer<()> {
-        self.call("DELETE", &format!("/projects/{id}"), None).map(|_| ())
-    }
-
-    pub fn share(&self, id: &str, name: &str, role: Role) -> Answer<Project> {
-        self.project_of("PUT", &format!("/projects/{id}/members"), Some(serde_json::json!({ "name": name, "role": role.word() })))
-    }
-
-    /// A member taken off (None: oneself, who no longer sees it).
-    pub fn unshare(&self, id: &str, player: &str) -> Answer<Option<Project>> {
-        match self.call("DELETE", &format!("/projects/{id}/members/{player}"), None)? {
-            Some(v) => serde_json::from_value(v).map(Some).map_err(|e| e.to_string()),
-            None => Ok(None),
-        }
+        self.with(|db| {
+            db.project(id)?;
+            db.projects.retain(|p| p.id != id);
+            db.counters.retain(|c| c.project != id);
+            db.quotes.retain(|q| q.project != id);
+            db.tasks.retain(|t| t.project != id);
+            db.items.retain(|i| i.project != id);
+            db.files.retain(|f| f.project != id);
+            Ok(())
+        })?;
+        let _ = std::fs::remove_dir_all(self.dir.join("track-files").join(safe_id(id)));
+        Ok(())
     }
 
     pub fn add_counter(&self, id: &str, label: &str, minutes: u64, day: &str) -> Answer<Project> {
-        self.project_of("POST", &format!("/projects/{id}/counters"), Some(serde_json::json!({ "label": label, "minutes": minutes, "day": day })))
+        let b = serde_json::json!({ "label": label, "minutes": minutes, "day": day });
+        self.change(id, |db| {
+            let c = StoredCounter { id: new_id(), project: id.to_owned(), label: required(b.get("label"), "label", 120)?, minutes: self::minutes(b.get("minutes"), "minutes", HOURS_MAX, true)?.unwrap_or_default(), day: self::day(b.get("day"), "day")?, closed: None, created: now_ms() };
+            db.counters.push(c);
+            Ok(())
+        })
     }
 
     pub fn update_counter(&self, id: &str, counter: &str, fields: Value) -> Answer<Project> {
-        self.project_of("PATCH", &format!("/projects/{id}/counters/{counter}"), Some(fields))
+        self.change(id, |db| {
+            let label = fields.get("label").map(|v| required(Some(v), "label", 120)).transpose()?;
+            let minutes = fields.get("minutes").map(|v| self::minutes(Some(v), "minutes", HOURS_MAX, true)).transpose()?.flatten();
+            let day = fields.get("day").map(|v| self::day(Some(v), "day")).transpose()?;
+            let c = db.counters.iter_mut().find(|c| c.id == counter && c.project == id).ok_or("Counter not found")?;
+            if let Some(l) = label {
+                c.label = l;
+            }
+            if let Some(m) = minutes {
+                c.minutes = m;
+            }
+            if let Some(d) = day {
+                c.day = d;
+            }
+            if let Some(closed) = fields.get("closed") {
+                c.closed = if closed.as_bool().unwrap_or(false) { c.closed.or(Some(now_ms())) } else { None };
+            }
+            Ok(())
+        })
     }
 
     pub fn delete_counter(&self, id: &str, counter: &str) -> Answer<Project> {
-        self.project_of("DELETE", &format!("/projects/{id}/counters/{counter}"), None)
+        self.change(id, |db| {
+            if !db.counter_of(id, counter) {
+                return Err("Counter not found".into());
+            }
+            if db.tasks.iter().any(|t| t.counter.as_deref() == Some(counter)) {
+                return Err("Tasks are taken off this counter: charge them elsewhere first".into());
+            }
+            db.counters.retain(|c| c.id != counter);
+            Ok(())
+        })
     }
 
     pub fn add_quote(&self, id: &str, number: Option<&str>, label: &str, minutes: Option<u64>, day: &str) -> Answer<Project> {
-        self.project_of("POST", &format!("/projects/{id}/quotes"), Some(serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day })))
+        self.add_quote_full(id, number, label, minutes, day, None)
+    }
+
+    pub fn add_quote_full(&self, id: &str, number: Option<&str>, label: &str, minutes: Option<u64>, day: &str, note: Option<&str>) -> Answer<Project> {
+        let b = serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day, "note": note });
+        self.change(id, |db| {
+            let q = StoredQuote {
+                id: new_id(),
+                project: id.to_owned(),
+                number: text(b.get("number"), "number", 40, false)?,
+                label: required(b.get("label"), "label", 120)?,
+                note: text(b.get("note"), "note", BODY_MAX, false)?,
+                minutes: self::minutes(b.get("minutes"), "minutes", HOURS_MAX, false)?,
+                day: self::day(b.get("day"), "day")?,
+                closed: None,
+                created: now_ms(),
+            };
+            db.quotes.push(q);
+            Ok(())
+        })
     }
 
     pub fn update_quote(&self, id: &str, quote: &str, fields: Value) -> Answer<Project> {
-        self.project_of("PATCH", &format!("/projects/{id}/quotes/{quote}"), Some(fields))
+        self.change(id, |db| {
+            let number = fields.get("number").map(|v| text(Some(v), "number", 40, false)).transpose()?;
+            let label = fields.get("label").map(|v| required(Some(v), "label", 120)).transpose()?;
+            let minutes = fields.get("minutes").map(|v| self::minutes(Some(v), "minutes", HOURS_MAX, false)).transpose()?;
+            let day = fields.get("day").map(|v| self::day(Some(v), "day")).transpose()?;
+            let note = fields.get("note").map(|v| text(Some(v), "note", BODY_MAX, false)).transpose()?;
+            let q = db.quotes.iter_mut().find(|q| q.id == quote && q.project == id).ok_or("Quote not found")?;
+            if let Some(n) = number {
+                q.number = n;
+            }
+            if let Some(l) = label {
+                q.label = l;
+            }
+            if let Some(m) = minutes {
+                q.minutes = m;
+            }
+            if let Some(d) = day {
+                q.day = d;
+            }
+            if let Some(n) = note {
+                q.note = n;
+            }
+            if let Some(closed) = fields.get("closed") {
+                q.closed = if closed.as_bool().unwrap_or(false) { q.closed.or(Some(now_ms())) } else { None };
+            }
+            Ok(())
+        })
     }
 
     pub fn delete_quote(&self, id: &str, quote: &str) -> Answer<Project> {
-        self.project_of("DELETE", &format!("/projects/{id}/quotes/{quote}"), None)
+        self.change(id, |db| {
+            if !db.quote_of(id, quote) {
+                return Err("Quote not found".into());
+            }
+            if db.tasks.iter().any(|t| t.quote.as_deref() == Some(quote)) {
+                return Err("Tasks are charged to this quote: charge them elsewhere first".into());
+            }
+            db.quotes.retain(|q| q.id != quote);
+            Ok(())
+        })
     }
 
     pub fn add_task(&self, id: &str, task: &TaskInput) -> Answer<Project> {
-        self.project_of("POST", &format!("/projects/{id}/tasks"), Some(serde_json::to_value(task).map_err(|e| e.to_string())?))
+        let b = serde_json::to_value(task).map_err(|e| e.to_string())?;
+        self.change(id, |db| {
+            let (billing, counter, quote) = db.billing_of(id, &b, None)?;
+            let item = db.task_item(id, b.get("item"))?;
+            let at = now_ms();
+            let t = StoredTask {
+                id: new_id(),
+                project: id.to_owned(),
+                day: self::day(b.get("day"), "day")?,
+                label: required(b.get("label"), "label", BODY_MAX)?,
+                minutes: self::minutes(b.get("minutes"), "minutes", TASK_MAX as u64, true)?.unwrap_or_default() as u32,
+                billing,
+                counter,
+                quote,
+                item,
+                created: at,
+                updated: at,
+            };
+            db.tasks.push(t);
+            Ok(())
+        })
     }
 
     pub fn update_task(&self, id: &str, task: &str, input: &TaskInput) -> Answer<Project> {
-        let mut body = serde_json::to_value(input).map_err(|e| e.to_string())?;
+        let mut b = serde_json::to_value(input).map_err(|e| e.to_string())?;
         // Charged elsewhere: the old counter or quote forgotten.
-        body["counter"] = input.counter.clone().map_or(Value::Null, Value::String);
-        body["quote"] = input.quote.clone().map_or(Value::Null, Value::String);
-        body["item"] = input.item.clone().map_or(Value::Null, Value::String);
-        self.project_of("PATCH", &format!("/projects/{id}/tasks/{task}"), Some(body))
+        b["counter"] = input.counter.clone().map_or(Value::Null, Value::String);
+        b["quote"] = input.quote.clone().map_or(Value::Null, Value::String);
+        b["item"] = input.item.clone().map_or(Value::Null, Value::String);
+        self.change(id, |db| {
+            let old = db.tasks.iter().find(|t| t.id == task && t.project == id).cloned().ok_or("Task not found")?;
+            let (billing, counter, quote) = db.billing_of(id, &b, Some(&old))?;
+            let item = db.task_item(id, b.get("item"))?;
+            let day = self::day(b.get("day"), "day")?;
+            let label = required(b.get("label"), "label", BODY_MAX)?;
+            let minutes = self::minutes(b.get("minutes"), "minutes", TASK_MAX as u64, true)?.unwrap_or_default() as u32;
+            let t = db.tasks.iter_mut().find(|t| t.id == task).ok_or("Task not found")?;
+            (t.day, t.label, t.minutes, t.billing, t.counter, t.quote, t.item, t.updated) = (day, label, minutes, billing, counter, quote, item, now_ms());
+            Ok(())
+        })
     }
 
     pub fn delete_task(&self, id: &str, task: &str) -> Answer<Project> {
-        self.project_of("DELETE", &format!("/projects/{id}/tasks/{task}"), None)
+        self.change(id, |db| {
+            if !db.tasks.iter().any(|t| t.id == task && t.project == id) {
+                return Err("Task not found".into());
+            }
+            db.tasks.retain(|t| t.id != task);
+            Ok(())
+        })
     }
 
-    /// A file sent to floor, joined to `on` (`project`, `task:<id>`...), under the id given (Ronnie
-    /// picks it: an image's Markdown is written before it's sent).
+    /// A file joined to `on` (`project`, `task:<id>`...), under the id given (Ronnie picks it: an
+    /// image's Markdown is written before it's kept).
     pub fn upload(&self, id: &str, on: &str, file: &str, name: &str, bytes: &[u8]) -> Answer<()> {
-        let url = format!("{}/v1/track/projects/{id}/files?on={}", self.url, urlencode(on));
-        let res = account_agent()
-            .post(&url)
-            .header("User-Agent", USER_AGENT)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Content-Type", mime_of(name))
-            .header("X-File-Name", &urlencode(name))
-            .header("X-File-Id", file)
-            .send(bytes);
-        let mut res = res.map_err(|e| e.to_string())?;
-        let status = res.status().as_u16();
-        if (200..300).contains(&status) {
-            return Ok(());
+        let name = clean_name(name).ok_or("the file's name")?;
+        if uuid::Uuid::parse_str(file).is_err() {
+            return Err("the file's id".into());
         }
-        let value: Value = res.body_mut().read_json().unwrap_or(Value::Null);
-        Err(value.get("error").and_then(Value::as_str).map_or_else(|| format!("floor answered {status}"), str::to_owned))
+        if bytes.is_empty() {
+            return Err("Empty file".into());
+        }
+        if bytes.len() as u64 > FILE_MAX {
+            return Err(format!("File too big ({} MB at most)", FILE_MAX / 1024 / 1024));
+        }
+        // An image by its content; an « image » that isn't one isn't shown.
+        let mime = match image_of(bytes) {
+            Some(image) => image.to_owned(),
+            None if mime_of(&name).starts_with("image/") => "application/octet-stream".to_owned(),
+            None => mime_of(&name).to_owned(),
+        };
+        let path = self.file_path(id, file);
+        self.with(|db| {
+            db.project(id)?;
+            let on = db.target_of(id, on)?;
+            if db.files.iter().any(|f| f.id == file) {
+                return Err("This file is already there".into());
+            }
+            let used: u64 = db.files.iter().filter(|f| f.project == id).map(|f| f.size).sum();
+            if used + bytes.len() as u64 > FILES_QUOTA {
+                return Err("No more room for this project's files".into());
+            }
+            if let Some(dir) = path.parent() {
+                crate::config::create_private_dir(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+            db.files.push(StoredFile { id: file.to_owned(), project: id.to_owned(), on, name, mime, size: bytes.len() as u64, created: now_ms() });
+            db.touch(id);
+            Ok(())
+        })
     }
 
     /// A file joined elsewhere in the project (an image pasted before what it's in was made).
     pub fn move_file(&self, id: &str, file: &str, on: &str) -> Answer<()> {
-        self.call("PATCH", &format!("/projects/{id}/files/{file}"), Some(serde_json::json!({ "on": on }))).map(|_| ())
+        self.with(|db| {
+            let on = db.target_of(id, on)?;
+            let f = db.files.iter_mut().find(|f| f.id == file && f.project == id).ok_or("File not found")?;
+            f.on = on;
+            db.touch(id);
+            Ok(())
+        })
     }
 
     pub fn delete_file(&self, id: &str, file: &str) -> Answer<()> {
-        self.call("DELETE", &format!("/projects/{id}/files/{file}"), None).map(|_| ())
+        self.with(|db| {
+            if !db.files.iter().any(|f| f.id == file && f.project == id) {
+                return Err("File not found".into());
+            }
+            db.files.retain(|f| f.id != file);
+            db.touch(id);
+            Ok(())
+        })?;
+        let _ = std::fs::remove_file(self.file_path(id, file));
+        Ok(())
     }
 
     /// A file's bytes.
     pub fn download(&self, id: &str, file: &str) -> Answer<Vec<u8>> {
-        let url = format!("{}/v1/track/projects/{id}/files/{file}", self.url);
-        let mut res = account_agent().get(&url).header("User-Agent", USER_AGENT).header("Authorization", &format!("Bearer {}", self.token)).call().map_err(|e| e.to_string())?;
-        if res.status().as_u16() != 200 {
-            return Err(format!("floor answered {}", res.status().as_u16()));
-        }
-        res.body_mut().with_config().limit(FILE_MAX + 1024).read_to_vec().map_err(|e| e.to_string())
+        self.read(|db| if db.files.iter().any(|f| f.id == file && f.project == id) { Ok(()) } else { Err("File not found".into()) })?;
+        std::fs::read(self.file_path(id, file)).map_err(|e| e.to_string())
     }
 
     /// A planned task, of `quote` (None: the project's), under `parent`.
     pub fn add_item(&self, id: &str, quote: Option<&str>, parent: Option<&str>, item: &ItemInput) -> Answer<Project> {
-        let mut body = serde_json::to_value(item).map_err(|e| e.to_string())?;
-        body["quote"] = quote.map_or(Value::Null, |q| Value::String(q.to_owned()));
-        body["parent"] = parent.map_or(Value::Null, |p| Value::String(p.to_owned()));
-        self.project_of("POST", &format!("/projects/{id}/items"), Some(body))
+        let b = serde_json::to_value(item).map_err(|e| e.to_string())?;
+        self.change(id, |db| {
+            if let Some(q) = quote
+                && !db.quote_of(id, q)
+            {
+                return Err("quote: a quote of this project".into());
+            }
+            let parent = db.parent_of(id, parent.map(|p| Value::String(p.to_owned())).as_ref(), quote, None)?;
+            let at = now_ms();
+            let today = today();
+            let status = match b.get("status") {
+                None | Some(Value::Null) => Status::Todo,
+                v => status_of(v)?,
+            };
+            let (mut finished, mut live) = (day_or_none(b.get("finished"), "finished")?, day_or_none(b.get("live"), "live")?);
+            dates_of(status, &mut finished, &mut live, &today);
+            let env = env_of(b.get("env"))?.or_else(|| (status == Status::Live).then(|| "prod".to_owned()));
+            let position = db.last_position(id, quote, parent.as_deref()) + 1;
+            let i = StoredItem {
+                id: new_id(),
+                project: id.to_owned(),
+                quote: quote.map(str::to_owned),
+                parent,
+                title: required(b.get("title"), "title", 200)?,
+                body: text(b.get("body"), "body", BODY_MAX, false)?,
+                minutes: self::minutes(b.get("minutes"), "minutes", HOURS_MAX, false)?,
+                status,
+                position,
+                created: at,
+                updated: at,
+                requested: day_or_none(b.get("requested"), "requested")?.or(Some(today)),
+                due: day_or_none(b.get("due"), "due")?,
+                finished,
+                live,
+                requester: text(b.get("requester"), "requester", 80, false)?,
+                progress: percent(b.get("progress"), "progress")?,
+                comment: text(b.get("comment"), "comment", 500, false)?,
+                env,
+            };
+            db.items.push(i);
+            Ok(())
+        })
     }
 
-    /// A planned task's fields given in `fields` (title, body, minutes, status, parent, position).
+    /// A planned task's fields given in `fields` (title, body, minutes, status, parent, position…).
     pub fn update_item(&self, id: &str, item: &str, fields: Value) -> Answer<Project> {
-        self.project_of("PATCH", &format!("/projects/{id}/items/{item}"), Some(fields))
+        self.change(id, |db| {
+            let old = db.item_of(id, item).cloned().ok_or("Task not found")?;
+            let has = |k: &str| fields.get(k).is_some();
+            let parent = if has("parent") { db.parent_of(id, fields.get("parent"), old.quote.as_deref(), Some(item))? } else { old.parent.clone() };
+            let moved = parent != old.parent;
+            let position = match fields.get("position").and_then(Value::as_i64) {
+                Some(p) => p,
+                None if moved => db.last_position(id, old.quote.as_deref(), parent.as_deref()) + 1,
+                None => old.position,
+            };
+            let status = if has("status") { status_of(fields.get("status"))? } else { old.status };
+            let pick_day = |k: &str, before: &Option<String>| if has(k) { day_or_none(fields.get(k), k) } else { Ok(before.clone()) };
+            let requested = pick_day("requested", &old.requested)?;
+            let due = pick_day("due", &old.due)?;
+            let (mut finished, mut live) = (pick_day("finished", &old.finished)?, pick_day("live", &old.live)?);
+            // The day's dates: only when the state is written.
+            if has("status") {
+                dates_of(status, &mut finished, &mut live, &today());
+            }
+            let title = if has("title") { required(fields.get("title"), "title", 200)? } else { old.title.clone() };
+            let body = if has("body") { text(fields.get("body"), "body", BODY_MAX, false)? } else { old.body.clone() };
+            let minutes = if has("minutes") { self::minutes(fields.get("minutes"), "minutes", HOURS_MAX, false)? } else { old.minutes };
+            let requester = if has("requester") { text(fields.get("requester"), "requester", 80, false)? } else { old.requester.clone() };
+            let progress = if has("progress") { percent(fields.get("progress"), "progress")? } else { old.progress };
+            let comment = if has("comment") { text(fields.get("comment"), "comment", 500, false)? } else { old.comment.clone() };
+            let env = if has("env") { env_of(fields.get("env"))? } else if has("status") && status == Status::Live { Some("prod".into()) } else { old.env.clone() };
+            let i = db.items.iter_mut().find(|i| i.id == item).ok_or("Task not found")?;
+            *i = StoredItem { title, body, minutes, status, parent, position, updated: now_ms(), requested, due, finished, live, requester, progress, comment, env, ..old };
+            Ok(())
+        })
     }
 
     pub fn delete_item(&self, id: &str, item: &str) -> Answer<Project> {
-        self.project_of("DELETE", &format!("/projects/{id}/items/{item}"), None)
-    }
-
-    pub fn add_quote_full(&self, id: &str, number: Option<&str>, label: &str, minutes: Option<u64>, day: &str, note: Option<&str>) -> Answer<Project> {
-        self.project_of("POST", &format!("/projects/{id}/quotes"), Some(serde_json::json!({ "number": number, "label": label, "minutes": minutes, "day": day, "note": note })))
+        self.change(id, |db| {
+            if db.item_of(id, item).is_none() {
+                return Err("Task not found".into());
+            }
+            db.items.retain(|i| i.id != item);
+            Ok(())
+        })
     }
 }
 
@@ -732,12 +1407,12 @@ pub fn format_minutes(minutes: i64) -> String {
     }
 }
 
-/// Today, as floor takes days: "2026-11-18".
+/// Today, as the tracking takes days: "2026-11-18".
 pub fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// A day as typed ("18/11/2026", "18/11", "2026-11-18", "hier", "aujourd'hui"), as floor takes it.
+/// A day as typed ("18/11/2026", "18/11", "2026-11-18", "hier", "aujourd'hui"), as the tracking takes it.
 pub fn parse_day(text: &str) -> Option<String> {
     use chrono::{Datelike as _, NaiveDate};
     let t = text.trim().to_lowercase();
@@ -769,13 +1444,9 @@ pub fn show_day(day: &str) -> String {
     }
 }
 
-/// The account of this machine, to call floor with (`ronnie track`).
+/// The tracking of this computer (`ronnie track`).
 fn cli_client() -> Result<Client, String> {
-    let config: crate::config::Config = crate::config::load(crate::config::config_path()).map_err(|e| format!("{e:#}"))?;
-    match config.settings.floor {
-        Some(account) if account.name.is_some() => Ok(Client::new(&account)),
-        _ => Err("Not signed in to floor: the user signs in in Ronnie (Settings > Account) first.".into()),
-    }
+    Client::local()
 }
 
 /// The project named by `word`: its id (or its start), its name, or "client/name" (no case).
@@ -882,15 +1553,6 @@ fn split_options<'a>(rest: &[&'a str], flags: &[&str]) -> Result<(Vec<&'a str>, 
     Ok((words, options))
 }
 
-fn role_name(role: Role) -> &'static str {
-    match role {
-        Role::Owner => "owner",
-        Role::Admin => "admin",
-        Role::Editor => "editor (fills in tasks)",
-        Role::Viewer => "viewer",
-    }
-}
-
 fn charged(project: &Project, t: &Task) -> String {
     match t.billing {
         Billing::Counter => format!("counter {}", t.counter.as_ref().and_then(|c| project.counters.iter().find(|x| &x.id == c)).map_or("?", |c| c.label.as_str())),
@@ -902,7 +1564,7 @@ fn charged(project: &Project, t: &Task) -> String {
 
 /// The project, said for Claude.
 fn describe(p: &Project, all: bool) -> String {
-    let mut out = vec![format!("{} — {} ({}, you: {})", p.client.as_deref().unwrap_or("no client"), p.name, short(&p.id), role_name(p.role))];
+    let mut out = vec![format!("{} — {} ({})", p.client.as_deref().unwrap_or("no client"), p.name, short(&p.id))];
     if let Some(note) = &p.note {
         out.push(format!("note: {note}"));
     }
@@ -955,7 +1617,6 @@ fn describe(p: &Project, all: bool) -> String {
     if p.quotes.is_empty() {
         out.push("  (none)".into());
     }
-    out.push(format!("members: {}", p.members.iter().map(|m| format!("{} ({})", m.name, m.role.word())).collect::<Vec<_>>().join(", ")));
     out.push("tasks (newest first):".into());
     let shown = if all { p.tasks.len() } else { 30.min(p.tasks.len()) };
     for t in &p.tasks[..shown] {
@@ -977,9 +1638,9 @@ fn describe(p: &Project, all: bool) -> String {
     out.join("\n")
 }
 
-/// `ronnie track …`: the project tracking, straight with floor (the page in Ronnie follows).
+/// `ronnie track …`: the project tracking, straight in its file (the page in Ronnie follows).
 pub fn cli(rest: &[&str]) -> Result<String, String> {
-    cli_run(rest).map_err(|e| if e == PENDING { "The user's account waits for floor's administrator to allow it: no project tracking until then.".to_owned() } else { e })
+    cli_run(rest)
 }
 
 fn cli_run(rest: &[&str]) -> Result<String, String> {
@@ -1010,11 +1671,10 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
                     None => "no open counter".into(),
                 };
                 lines.push(format!(
-                    "{}  {} / {}  [{}]  spent {}, {left}{}{}",
+                    "{}  {} / {}  spent {}, {left}{}{}",
                     short(&s.id),
                     s.client.as_deref().unwrap_or("-"),
                     s.name,
-                    s.role.word(),
                     format_minutes(s.spent as i64),
                     if p.counters_spent() { "  (counters used up)" } else { "" },
                     if s.archived.is_some() { "  (archived)" } else { "" }
@@ -1022,7 +1682,6 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             }
             Ok(format!("{}\n(`ronnie track show <project>` for one)", lines.join("\n")))
         }
-        ["people"] => Ok(client.people()?.join("\n")),
         ["show", rest @ ..] => {
             let (words, o) = split_options(rest, &["all"])?;
             let project = open(&words.join(" "))?;
@@ -1159,21 +1818,8 @@ fn cli_run(rest: &[&str]) -> Result<String, String> {
             let made = after.items.iter().filter(|i| i.title == title).max_by_key(|i| i.position).map_or("?", |i| short(&i.id));
             Ok(format!("Planned task {title} made ({made}) in {}.", after.name))
         }
-        ["share", project, pseudo, role] => {
-            let role = Role::parse(role).ok_or("A role: admin, editor (fills in tasks) or viewer.")?;
-            let p = open(project)?;
-            client.share(&p.id, pseudo, role)?;
-            Ok(format!("{pseudo} has access to {} ({}).", p.name, role_name(role)))
-        }
         _ => Err(usage()),
     }
-}
-
-/// A text for a URL's query or a header: every byte but letters, digits and `-_.~:` escaped.
-fn urlencode(text: &str) -> String {
-    text.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~:".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
-        .collect()
 }
 
 #[cfg(test)]
@@ -1210,8 +1856,8 @@ mod tests {
         assert_eq!(super::size_text(900), "900 o");
         assert_eq!(super::size_text(12 * 1024), "12 Ko");
         assert_eq!(super::size_text(3_565_158), "3,4 Mo");
-        assert_eq!(super::urlencode("task:a1"), "task:a1");
-        assert_eq!(super::urlencode("Contrat signé.pdf"), "Contrat%20sign%C3%A9.pdf");
+        assert_eq!(super::clean_name("../../.ssh/Contrat:signé?.pdf").as_deref(), Some("Contratsigné.pdf"));
+        assert_eq!(super::clean_name(".cache"), None);
     }
 
     use super::*;
@@ -1305,4 +1951,58 @@ mod tests {
         p.counters[0].closed = Some(1);
         assert_eq!(p.current_counter(), None);
     }
+
+    /// The tracking kept on this computer, the whole way: a project, a counter, a quote with its
+    /// planned tasks (a sub-task, a level too deep refused), time spent and charged, a file joined,
+    /// what can't go (a counter used) and what goes with its quote.
+    #[test]
+    fn a_project_kept_here() {
+        let dir = std::env::temp_dir().join(format!("ronnie-track-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let c = Client::at(&dir);
+        assert!(c.projects().unwrap().is_empty());
+        assert!(c.create("  ", None, None).is_err(), "a name");
+        let p = c.create("Site", Some("Acme"), Some("#AABBCC")).unwrap();
+        assert_eq!((p.color.as_deref(), p.role), (Some("#aabbcc"), Role::Owner));
+        let id = p.id.clone();
+        let p = c.add_counter(&id, "Contrat", 600, "2026-11-01").unwrap();
+        let counter = p.counters[0].id.clone();
+        let p = c.add_quote(&id, Some("D-1"), "Refonte", Some(1200), "2026-11-02").unwrap();
+        let quote = p.quotes[0].id.clone();
+        let p = c.add_item(&id, Some(&quote), None, &ItemInput { title: "Accueil".into(), status: Status::Todo, ..ItemInput::default() }).unwrap();
+        let top = p.items[0].id.clone();
+        let p = c.add_item(&id, Some(&quote), Some(&top), &ItemInput { title: "Menu".into(), status: Status::Live, ..ItemInput::default() }).unwrap();
+        let sub = p.items.iter().find(|i| i.title == "Menu").unwrap();
+        assert_eq!((sub.env.as_deref(), sub.finished.is_some(), sub.live.is_some()), (Some("prod"), true, true));
+        let sub = sub.id.clone();
+        let p = c.add_item(&id, Some(&quote), Some(&sub), &ItemInput { title: "Lien".into(), ..ItemInput::default() }).unwrap();
+        let deep = p.items.iter().find(|i| i.title == "Lien").unwrap().id.clone();
+        assert!(c.add_item(&id, Some(&quote), Some(&deep), &ItemInput { title: "Trop".into(), ..ItemInput::default() }).is_err(), "three levels at most");
+        assert!(c.update_item(&id, &top, serde_json::json!({ "parent": deep })).is_err(), "not under itself");
+        let task = |minutes, billing, counter: Option<&str>, quote: Option<&str>, item: Option<&str>| TaskInput { day: "2026-11-05".into(), label: "Travail".into(), minutes, billing, counter: counter.map(str::to_owned), quote: quote.map(str::to_owned), item: item.map(str::to_owned) };
+        let p = c.add_task(&id, &task(90, Billing::Counter, Some(&counter), None, None)).unwrap();
+        let p2 = c.add_task(&id, &task(60, Billing::Quote, None, Some(&quote), Some(&sub))).unwrap();
+        assert!(c.add_task(&id, &task(30, Billing::Counter, Some("nope"), None, None)).is_err());
+        assert_eq!((p.counters[0].used, p2.quotes[0].used, p2.items.iter().find(|i| i.id == sub).unwrap().spent), (90, 60, 60));
+        assert_eq!(p2.summary().spent, 150);
+        assert!(c.delete_counter(&id, &counter).is_err(), "tasks are taken off it");
+        // A file joined to the quote: kept, read back; it goes with what it's joined to.
+        let file = uuid::Uuid::new_v4().to_string();
+        c.upload(&id, &format!("quote:{quote}"), &file, "devis.pdf", b"%PDF-1.4").unwrap();
+        assert_eq!(c.download(&id, &file).unwrap(), b"%PDF-1.4");
+        assert!(c.upload(&id, "item:nope", &uuid::Uuid::new_v4().to_string(), "x.txt", b"x").is_err());
+        let worked = c.project(&id).unwrap().tasks.iter().find(|t| t.quote.is_some()).unwrap().id.clone();
+        c.delete_task(&id, &worked).unwrap();
+        let p = c.delete_quote(&id, &quote).unwrap();
+        assert!(p.quotes.is_empty() && p.items.is_empty() && p.files.is_empty(), "its tasks and files go with it");
+        assert!(c.download(&id, &file).is_err());
+        // Archived, then gone.
+        assert!(c.update(&id, serde_json::json!({ "archived": true })).unwrap().archived.is_some());
+        assert_eq!(c.projects().unwrap().len(), 1);
+        c.delete(&id).unwrap();
+        assert!(c.projects().unwrap().is_empty() && c.project(&id).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

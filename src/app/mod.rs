@@ -1423,11 +1423,14 @@ impl App {
                 app.error = Some(format!("{} : {e:#}", app.t().config_not_loaded));
             }
         }
-        // The usage statistics went: what an older version kept for them goes too.
+        // What older versions kept for what went (the usage statistics, the notes' sync, the rewards'
+        // seal) goes too.
         if !app.read_only
             && let Some(dir) = config::config_dir()
         {
-            let _ = std::fs::remove_file(dir.join("telemetry.json"));
+            for gone in ["telemetry.json", "notes-sync.json", ".rewards-sealed"] {
+                let _ = std::fs::remove_file(dir.join(gone));
+            }
         }
         if let Some(e) = session_error {
             app.session_frozen = true;

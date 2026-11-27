@@ -9,6 +9,11 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Plus de statistiques d'usage** : Ronnie n'envoie plus rien à floor (compteurs, lancements, plantages), et l'interrupteur de Paramètres › Général s'en va. Le fichier qui les gardait est effacé au lancement. Demande floor 0.32.0.
 - **Plus de synchronisation des notes** : les notes restent sur l'ordinateur, sans copie sur le serveur, et l'interrupteur de Paramètres › Compte s'en va. Demande floor 0.32.0.
 
+### Changements
+
+- **Le Suivi de projets est sur l'ordinateur** : projets, compteurs d'heures, devis, tâches prévues, temps passés et fichiers joints sont gardés dans le dossier de Ronnie, plus sur le serveur. Plus de partage avec des collègues ni d'onglet Accès, et plus besoin de compte pour s'en servir. Les projets d'avant, restés sur le serveur, ne sont pas repris.
+- **La sauvegarde prend tout ce qui reste sur l'ordinateur** : en plus des réglages, des historiques et des notes, le Suivi (et ses fichiers), ses conversations avec Claude, les conversations Claude rapatriées des serveurs SSH et l'état de Mathéo.
+
 ## [1.12.0] - 2026-11-27
 
 ### Retraits

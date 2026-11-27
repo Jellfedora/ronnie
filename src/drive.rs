@@ -268,10 +268,7 @@ Project tracking (\"Suivi\", kept on floor with the user's account; <project>: i
   ronnie track counter close <project> <label|id>
                                         close a counter (used up)
   ronnie track quote <project> <label…> [--number N] [--hours H] [--day D]
-                                        a new quote
-  ronnie track share <project> <pseudo> <admin|editor|viewer>
-                                        give a colleague access (editor: fills in tasks)
-  ronnie track people                   the colleagues one can share with";
+                                        a new quote";
 
 /// The commands of this module: None when `ronnie` was started for something else.
 pub fn run_cli() -> Option<Result<(), String>> {
