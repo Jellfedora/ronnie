@@ -428,12 +428,12 @@ impl Config {
 }
 
 /// What the games and the chat kept in the config, before they went: dropped when it is read.
-const GONE: [&str; 50] = [
+const GONE: [&str; 51] = [
     "typing_scores", "blob_best", "mines_best", "runner_best", "riff_bests", "backstage_best", "bughunt_best", "bughunt_best_wave", "fish_cards", "fish_baits", "fish_dry",
     "jurassic_unlocked", "hyperspace_unlocked", "four_online_played", "wizard_unlocked", "open_streak", "open_last", "coffee_bests", "fish_budget", "fish_rod", "fish_bait",
     "progress_bases", "monday_best", "monday_seen", "monday_revives", "monday_escorts", "monday_letters", "monday_horde", "monday_agnes_card", "monday_gerard", "monday_wins",
     "monday_dailies", "riff_games", "tycoon", "christmas_unlocked", "openspace", "rewards_seal", "blob_skin", "game_sound", "player_name", "talk_read", "talk_last",
-    "talk_nicknames", "talk_nicknames_synced", "talk_pseudo_asked", "emoji_recent", "emoji_skin", "game_usage", "telemetry", "notes_sync",
+    "talk_nicknames", "talk_nicknames_synced", "talk_pseudo_asked", "emoji_recent", "emoji_skin", "game_usage", "telemetry", "notes_sync", "floor",
 ];
 
 fn forget_games(map: &mut serde_json::Map<String, serde_json::Value>) {
@@ -697,9 +697,6 @@ pub struct Settings {
     /// The special themes' music (Gryffindor's opening tune).
     #[serde(default = "default_true")]
     pub theme_music: bool,
-    /// The account on floor (see floor.rs): the notes kept in sync, the project tracking.
-    #[serde(default)]
-    pub floor: Option<FloorAccount>,
     /// The activity simulator (see awake.rs).
     #[serde(default)]
     pub keep_active: KeepActive,
@@ -936,7 +933,7 @@ pub enum Category {
     Talk,
     /// The user's sites, served locally with nginx and PHP: see `crate::projects`.
     Projects,
-    /// Project tracking: tasks done, hour counters, quotes, kept on floor (see `crate::track`).
+    /// Project tracking: tasks done, hour counters, quotes, kept on this computer (see `crate::track`).
     Track,
 }
 
@@ -1063,28 +1060,6 @@ impl Default for KeepActive {
     fn default() -> Self {
         Self { enabled: false, days: [true, true, true, true, true, false, false], ranges: vec![(8 * 60 + 30, 12 * 60), (14 * 60, 18 * 60)] }
     }
-}
-
-/// An account on floor.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct FloorAccount {
-    /// The floor it was made on.
-    pub url: String,
-    pub id: String,
-    pub token: String,
-    /// The pseudo floor keeps for it (none: an account made before pseudos, to pick one).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// An administrator of floor (for a later administration page).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub admin: bool,
-    /// Its avatar's version on floor (none: its initial is drawn).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub avatar: Option<String>,
-    /// Not yet allowed by floor's administrator: no online feature until then (looked at again now
-    /// and then).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub pending: bool,
 }
 
 pub const NOTIFY_AFTER_SECS: std::ops::RangeInclusive<u64> = 3..=600;
@@ -1403,7 +1378,7 @@ fn default_theme() -> String {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, theme_music: true, christmas_worn: 0, floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), pane_bar_hidden: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default(), track_profiles: Default::default(), track_selected: None }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, theme_music: true, christmas_worn: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), pane_bar_hidden: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default(), track_profiles: Default::default(), track_selected: None }
     }
 }
 

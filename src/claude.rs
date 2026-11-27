@@ -579,9 +579,7 @@ it on the project's panes.",
     let running = config.is_some_and(|c| c.settings.mail_running);
     text.push_str(&format!("\n- The mail catcher is {} (port {port}).", if running { "running" } else { "stopped" }));
     if let Some(config) = config {
-        if config.settings.floor.as_ref().is_none_or(|a| a.name.is_none()) {
-            text.push_str("\n- Not signed in to floor: project tracking needs the user to sign in first (Settings > Account).");
-        } else if !config.settings.track_profiles.is_empty() {
+        if !config.settings.track_profiles.is_empty() {
             // Which tracked project a profile is (the projects' ids: `ronnie track show <id>`).
             let ties: Vec<String> = config.settings.track_profiles.iter().filter_map(|(project, profile)| {
                 let p = config.profiles.iter().find(|p| p.id == *profile)?;

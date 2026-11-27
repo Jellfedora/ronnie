@@ -98,7 +98,7 @@ fn free_name(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
     Ok(out)
 }
 
-/// A project id as a file name (floor's ids are UUIDs: anything else is dropped).
+/// A project id as a file name (the ids are UUIDs: anything else is dropped).
 fn file_of(project: &str) -> Option<PathBuf> {
     let name: String = project.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
     (!name.is_empty()).then(|| dir().map(|d| d.join(format!("{name}.json")))).flatten()

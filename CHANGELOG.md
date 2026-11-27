@@ -8,6 +8,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 - **Plus de statistiques d'usage** : Ronnie n'envoie plus rien à floor (compteurs, lancements, plantages), et l'interrupteur de Paramètres › Général s'en va. Le fichier qui les gardait est effacé au lancement. Demande floor 0.32.0.
 - **Plus de synchronisation des notes** : les notes restent sur l'ordinateur, sans copie sur le serveur, et l'interrupteur de Paramètres › Compte s'en va. Demande floor 0.32.0.
+- **Plus de compte** : ni connexion, ni pseudo, ni avatar, et l'onglet Paramètres › Compte s'en va. Ronnie ne parle plus au serveur que pour ses mises à jour.
 
 ### Changements
 

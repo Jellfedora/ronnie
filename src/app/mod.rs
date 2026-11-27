@@ -17,7 +17,6 @@ use crate::ssh::{self, SshAuth, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
-mod avatar;
 mod backup;
 mod bell;
 mod bigtext;
@@ -389,8 +388,6 @@ pub struct App {
     settings_dialog: bool,
     /// The activity simulator's window, opened only by its shortcut (⌘ ⌥ ⇧ A).
     keep_active_dialog: bool,
-    /// The floor account's window: signing in or up, the pseudo, the avatar, the password.
-    pseudo_prompt: Option<popups::PseudoPrompt>,
     /// The pointer's trail.
     trail: trail::Trail,
     /// Gryffindor's wand and its sparks.
@@ -488,8 +485,6 @@ pub struct App {
     attention: bool,
     /// The project tracking: its projects, kept on floor.
     track: track::Track,
-    /// The players' avatars, fetched from floor when shown (chat, account).
-    avatars: crate::floor::Avatars,
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
     notes_page: bool,
@@ -523,8 +518,6 @@ pub struct App {
     profile_names: HashMap<Uuid, String>,
     profile_error: Option<&'static str>,
     updater: Updater,
-    /// The leaderboards' server: its board, the sync running.
-    floor: crate::floor::Floor,
     /// When the last automatic update check started (app time, seconds).
     last_update_check: Option<f64>,
     /// "Later" was clicked on the update invitation: don't show it again this session.
@@ -1068,7 +1061,6 @@ impl PuttyKey {
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
     General,
-    Account,
     Appearance,
     Terminal,
     Claude,
@@ -1256,7 +1248,6 @@ impl App {
             window: None,
             settings_dialog: false,
             keep_active_dialog: false,
-            pseudo_prompt: None,
             trail: trail::Trail::default(),
             wand: wizard::Wand::default(),
             cane: noel::Cane::default(),
@@ -1307,7 +1298,6 @@ impl App {
             track_page: false,
             attention: false,
             track: track::Track::default(),
-            avatars: crate::floor::Avatars::default(),
             procs_page: false,
             notes_page: false,
             sidebar_seen: (None, false, false, false, false),
@@ -1330,7 +1320,6 @@ impl App {
             profile_names: HashMap::new(),
             profile_error: None,
             updater: Updater::new(),
-            floor: Default::default(),
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
@@ -5485,13 +5474,13 @@ impl App {
         if self.theme.wizard
             && let Some(area) = self.terminals_rect
         {
-            let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you).to_owned();
+            let name = self.t().game_you.to_owned();
             wizard::footprints(ui.ctx(), area, &name);
         }
         if self.theme.christmas
             && let Some(area) = self.terminals_rect
         {
-            let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you).to_owned();
+            let name = self.t().game_you.to_owned();
             noel::footprints(ui.ctx(), area, &name);
         }
 
@@ -5552,7 +5541,6 @@ impl App {
             self.tree_windows(ui.ctx());
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
-            self.pseudo_window(ui.ctx());
             self.imports_windows(ui.ctx());
             self.track_windows(ui.ctx());
         }
