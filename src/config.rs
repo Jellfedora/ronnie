@@ -937,7 +937,7 @@ pub enum Category {
     Games,
     /// Development tools: the Node.js versions.
     Dev,
-    /// The modules to download (Serj…): apps of their own, see `crate::modules`.
+    /// Retired (the downloads went): still read from older configs, never shown.
     Modules,
     /// Retired (the chat went): still read from older configs, never shown.
     Talk,
@@ -948,11 +948,11 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 9] = [Category::Local, Category::Projects, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Track, Category::Modules];
+    pub const ALL: [Category; 8] = [Category::Local, Category::Projects, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Track];
 
     /// Retired: read from older configs, never shown.
     pub fn retired(self) -> bool {
-        matches!(self, Category::Files | Category::Games | Category::Talk)
+        matches!(self, Category::Files | Category::Games | Category::Talk | Category::Modules)
     }
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in

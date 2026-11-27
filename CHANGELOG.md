@@ -11,6 +11,7 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 - **Plus de jeux** : Speed Metal, Puissance 4, Larsen, Ronnie.io, Lundi matin, Ronnie Run, Riff Hero, Backstage, Bug Hunt, le Démineur, Pause Café, Ronnie Corp, la Pêche aux talents et Open Space s'en vont, avec la catégorie Jeux, leurs classements et la limite des heures de travail. Le récap de la semaine ne compte plus le temps de jeu. Demande floor 0.31.0.
 - **Plus de tchat**, ni sa catégorie : les messages, groupes, fichiers, GIF et émojis, le wizz, le cochon, Hodor, la morsure et le chèque géant. Les cadres d'avatar, les titres et les badges partent avec lui. Demande floor 0.31.0.
 - **Plus d'onglet Récompenses** dans les paramètres.
+- **Plus de catégorie Téléchargements** : Ronnie ne propose plus d'installer Serj ni Till (ceux déjà installés restent dans son dossier). Demande floor 0.31.0.
 
 ### Nouveautés
 

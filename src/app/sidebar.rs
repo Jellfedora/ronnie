@@ -40,8 +40,6 @@ impl App {
             Category::Music
         } else if self.dev_page {
             self.dev_category()
-        } else if self.modules_page {
-            Category::Modules
         } else if self.track_page {
             Category::Track
         } else if self.home.is_some() {
@@ -58,8 +56,8 @@ impl App {
     fn category_screen(&self, category: Category) -> bool {
         match category {
             Category::Local | Category::Ssh | Category::Db => self.last_tab_of(category).is_some(),
-            Category::Notes | Category::Music | Category::Dev | Category::Modules | Category::Projects | Category::Track => true,
-            Category::Files | Category::Games | Category::Talk => false,
+            Category::Notes | Category::Music | Category::Dev | Category::Projects | Category::Track => true,
+            Category::Files | Category::Games | Category::Talk | Category::Modules => false,
         }
     }
 
@@ -74,10 +72,9 @@ impl App {
             Category::Notes => self.open_notes(),
             Category::Music => self.open_music_page(None),
             Category::Dev => self.open_dev_page_tool(),
-            Category::Modules => self.open_modules_page(),
             Category::Projects => self.open_projects_page(),
             Category::Track => self.open_track_page(),
-            Category::Files | Category::Games | Category::Talk => {}
+            Category::Files | Category::Games | Category::Talk | Category::Modules => {}
         }
     }
 
@@ -129,7 +126,7 @@ impl App {
     /// When what is shown changes (another tab, the notes, the music, a page), the sidebar shows its
     /// category; the home page leaves it as it is.
     fn follow_shown(&mut self) {
-        let seen = (self.shown_tab(), self.notes_page, self.music_page, self.dev_page, self.modules_page, self.track_page);
+        let seen = (self.shown_tab(), self.notes_page, self.music_page, self.dev_page, self.track_page);
         if seen == self.sidebar_seen {
             return;
         }
@@ -140,8 +137,6 @@ impl App {
             Category::Music
         } else if self.dev_page {
             self.dev_category()
-        } else if self.modules_page {
-            Category::Modules
         } else if self.track_page {
             Category::Track
         } else if let Some(i) = seen.0 {
@@ -225,12 +220,6 @@ impl App {
                 ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
                 ui.painter().circle_filled(dot, 3.0, self.theme.accent);
             }
-            // A module has an update waiting.
-            if category == Category::Modules && self.modules.any_update() {
-                let dot = slot.right_top() + Vec2::new(-8.0, 8.0);
-                ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
-                ui.painter().circle_filled(dot, 3.0, self.theme.accent);
-            }
             // A right click: the category's screen in a new window, or the category hidden (the last
             // one shown stays).
             let alone = categories_shown <= 1;
@@ -263,7 +252,7 @@ impl App {
                     if elsewhere {
                         self.show_category(category);
                         // Seen: the sidebar stays on the category clicked (the home page belongs to none).
-                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, self.dev_page, self.modules_page, self.track_page);
+                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, self.dev_page, self.track_page);
                     }
                 }
             }
@@ -1640,10 +1629,9 @@ impl App {
             Category::Db => self.db_section(ui, left, row_w, y, action),
             Category::Music => self.music_section(ui, left, row_w, y),
             Category::Notes => self.notes_section(ui, left, row_w, y, action),
-            // Retired: the file tree is in the terminals' panel; the games and the chat went.
-            Category::Files | Category::Games | Category::Talk => {}
+            // Retired: the file tree is in the terminals' panel; the games, the chat and the downloads went.
+            Category::Files | Category::Games | Category::Talk | Category::Modules => {}
             Category::Dev => self.dev_section(ui, left, row_w, y),
-            Category::Modules => self.modules_section(ui, left, row_w, y),
             Category::Projects => self.projects_section(ui, left, row_w, y),
             Category::Track => self.track_section(ui, left, row_w, y),
         }
@@ -2006,14 +1994,13 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
 pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
     match category {
         // The retired ones are never shown.
-        Category::Local | Category::Games | Category::Talk => t.cat_local,
+        Category::Local | Category::Games | Category::Talk | Category::Modules => t.cat_local,
         Category::Files => t.cat_files,
         Category::Ssh => t.profiles,
         Category::Db => t.db_section,
         Category::Music => t.music_nav,
         Category::Notes => t.notes,
         Category::Dev => t.cat_dev,
-        Category::Modules => t.cat_modules,
         Category::Projects => t.cat_projects,
         Category::Track => t.cat_track,
     }
@@ -2023,13 +2010,12 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
 pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Category, color: Color32) {
     match category {
         Category::Local => paint_prompt_icon(painter, c, color),
-        Category::Files | Category::Games | Category::Talk => super::notes::paint_folder_icon(painter, c, color),
+        Category::Files | Category::Games | Category::Talk | Category::Modules => super::notes::paint_folder_icon(painter, c, color),
         Category::Ssh => paint_server_icon(painter, c, color),
         Category::Db => super::dbview::paint_db_icon(painter, c, color),
         Category::Music => super::music::paint_note(painter, c, color),
         Category::Notes => super::notes::paint_notes_icon(painter, c, color),
         Category::Dev => super::dev::paint_dev_icon(painter, c, color),
-        Category::Modules => super::modules::paint_modules_icon(painter, c, color),
         Category::Projects => super::projects::paint_projects_icon(painter, c, color),
         Category::Track => super::track::paint_track_icon(painter, c, color),
     }

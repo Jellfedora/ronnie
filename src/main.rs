@@ -14,7 +14,6 @@ mod i18n;
 mod log;
 mod mailbox;
 mod media_keys;
-mod modules;
 mod node;
 mod envs;
 mod eta;

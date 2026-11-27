@@ -220,7 +220,6 @@ impl App {
     pub(super) fn open_procs_page(&mut self) {
         self.procs_page = true;
         self.dev_page = false;
-        self.modules_page = false;
         self.track_page = false;
         self.music_page = false;
         self.notes_page = false;

@@ -57,7 +57,7 @@ impl App {
         if self.notices.is_empty() || !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
             return;
         }
-        let page = self.home.is_some() || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.track_page;
+        let page = self.home.is_some() || self.notes_page || self.music_page || self.dev_page || self.procs_page || self.track_page;
         let tab = if page { None } else { self.tabs.get(self.active) };
         let pane_shown = |id: PaneId| tab.is_some_and(|t| t.layout.leaves().contains(&id));
         let mails = self.dev_page && self.dev.tool == dev::DevTool::Mail;

@@ -811,7 +811,6 @@ impl App {
         self.library.open(configured_server(&self.config.settings), view);
         self.music_page = true;
         self.dev_page = false;
-        self.modules_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;

@@ -559,7 +559,6 @@ impl App {
     /// The tracking page, in this window: shown instead of the tabs.
     pub(super) fn open_track_page(&mut self) {
         self.track_page = true;
-        self.modules_page = false;
         self.procs_page = false;
         self.dev_page = false;
         self.music_page = false;

@@ -44,9 +44,8 @@ struct HostedAsset {
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct Asset {
-    pub name: String,
     browser_download_url: String,
-    /// "sha256:<hex>", computed by GitHub on upload (a module's) or by floor (Ronnie's).
+    /// "sha256:<hex>", computed by floor.
     #[serde(default)]
     digest: Option<String>,
     /// Ronnie's archives: their Ed25519 signature (base64), checked before installing.
@@ -282,7 +281,7 @@ fn latest(appimage: bool) -> Result<Option<Available>> {
     }
     let name = asset_name(appimage);
     let hosted = release.assets.into_iter().find(|a| a.name == name).with_context(|| format!("version {version} has no {name} archive"))?;
-    let asset = Asset { name: hosted.name, browser_download_url: format!("{base}/{}", hosted.file.trim_start_matches('/')), digest: Some(format!("sha256:{}", hosted.sha256)), signature: Some(hosted.signature) };
+    let asset = Asset { browser_download_url: format!("{base}/{}", hosted.file.trim_start_matches('/')), digest: Some(format!("sha256:{}", hosted.sha256)), signature: Some(hosted.signature) };
     Ok(Some(Available { version, url: crate::floor::site().unwrap_or(base), asset }))
 }
 

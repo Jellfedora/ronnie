@@ -229,7 +229,6 @@ impl App {
     /// isn't yet.
     pub(super) fn open_dev_page(&mut self) {
         self.dev_page = true;
-        self.modules_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.music_page = false;

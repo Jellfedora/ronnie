@@ -72,7 +72,6 @@ mod projects;
 mod mdedit;
 mod track;
 mod trackchat;
-mod modules;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
@@ -345,7 +344,6 @@ struct WindowSlot {
     ronnie_show: Option<(PaneId, f64)>,
     music_page: bool,
     dev_page: bool,
-    modules_page: bool,
     procs_page: bool,
     notes_page: bool,
     track_page: bool,
@@ -482,8 +480,6 @@ pub struct App {
     music_page: bool,
     /// The Dev page (the Node.js versions and those of the terminals): shown instead of the tabs.
     dev_page: bool,
-    /// The Downloads page (the modules: Serj…): shown instead of the tabs.
-    modules_page: bool,
     /// The machine's processes (opened from the resources' gauges): shown instead of the tabs.
     procs_page: bool,
     /// The project tracking ("Suivi"): shown instead of the tabs.
@@ -495,13 +491,12 @@ pub struct App {
     track: track::Track,
     /// The players' avatars, fetched from floor when shown (chat, account).
     avatars: crate::floor::Avatars,
-    modules: modules::Modules,
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
     notes_page: bool,
     /// What was shown when the sidebar last looked (tab, notes, music, a page): when it changes, the
     /// sidebar shows the category of the new one.
-    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool),
+    sidebar_seen: (Option<usize>, bool, bool, bool, bool),
     /// The notes, the same in every window.
     notes: notes::Notes,
     /// The sidebar's file tree.
@@ -1313,15 +1308,13 @@ impl App {
             procs: procs::ProcsPage::default(),
             music_page: false,
             dev_page: false,
-            modules_page: false,
             track_page: false,
             attention: false,
             track: track::Track::default(),
             avatars: crate::floor::Avatars::default(),
             procs_page: false,
-            modules: modules::Modules::default(),
             notes_page: false,
-            sidebar_seen: (None, false, false, false, false, false),
+            sidebar_seen: (None, false, false, false, false),
             notes: notes::Notes::load(),
             tree: tree::FileTree::default(),
             rail_flyout: None,
@@ -2026,7 +2019,6 @@ impl App {
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
         swap(&mut self.music_page, &mut slot.music_page);
         swap(&mut self.dev_page, &mut slot.dev_page);
-        swap(&mut self.modules_page, &mut slot.modules_page);
         swap(&mut self.procs_page, &mut slot.procs_page);
         swap(&mut self.track_page, &mut slot.track_page);
         swap(&mut self.notes_page, &mut slot.notes_page);
@@ -2273,7 +2265,7 @@ impl App {
         }
         let t = self.t();
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page && !app.track_page;
+        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.procs_page && !app.track_page;
         let mut notified = false;
         for (event, i) in mine {
             let shown = tab_shown(self, i);
@@ -2712,7 +2704,6 @@ impl App {
             self.home = None;
             self.music_page = false;
             self.dev_page = false;
-            self.modules_page = false;
             self.track_page = false;
             self.procs_page = false;
             self.notes_page = false;
@@ -2735,7 +2726,6 @@ impl App {
         self.home = Some(line.unwrap_or_default());
         self.music_page = false;
         self.dev_page = false;
-        self.modules_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;
@@ -2794,7 +2784,6 @@ impl App {
         self.notes_page = true;
         self.music_page = false;
         self.dev_page = false;
-        self.modules_page = false;
         self.track_page = false;
         self.procs_page = false;
     }
@@ -2890,7 +2879,7 @@ impl App {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The Dev, Downloads and processes pages, likewise.
-        if self.dev_page || self.modules_page || self.procs_page || self.track_page {
+        if self.dev_page || self.procs_page || self.track_page {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The music page, likewise; its search takes ⌘ F.
@@ -2965,7 +2954,7 @@ impl App {
             });
         }
         // A file open beside the terminals (VS Code layout), likewise.
-        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !self.track_page).and_then(|t| t.docs.get_mut(t.doc?)) {
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.procs_page && !self.track_page).and_then(|t| t.docs.get_mut(t.doc?)) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
                     if ui.input(|i| i.modifiers.alt) {
@@ -4508,7 +4497,7 @@ impl App {
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
             // Its last tab closed, out of the notes, the music and the other pages: the window goes too.
-            let shows_page = self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.track_page;
+            let shows_page = self.notes_page || self.music_page || self.dev_page || self.procs_page || self.track_page;
             let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {
                 while !self.tabs.is_empty() {
@@ -4662,10 +4651,6 @@ impl App {
                 }
                 if self.dev_page {
                     self.dev_page_ui(ui, rect);
-                    return;
-                }
-                if self.modules_page {
-                    self.modules_page_ui(ui, rect);
                     return;
                 }
                 if self.procs_page {
@@ -5876,7 +5861,6 @@ impl eframe::App for App {
         self.imports_poll();
         self.projects_restart_poll();
         self.procs.poll();
-        self.modules_poll();
         self.track_poll();
         self.mail_poll(ctx);
         self.watch_servers(ctx);
