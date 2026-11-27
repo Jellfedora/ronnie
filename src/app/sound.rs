@@ -8,10 +8,15 @@ pub(super) struct Sound {
 
 impl Sound {
     pub(super) fn open() -> Option<Self> {
-        let mut device = rodio::DeviceSinkBuilder::open_default_sink().map_err(|e| crate::log::error(&format!("sound: {e}"))).ok()?;
+        let mut device = rodio::DeviceSinkBuilder::open_default_sink()
+            .map_err(|e| crate::log::error(&format!("sound: {e}")))
+            .ok()?;
         device.log_on_drop(false);
         let mixer = device.mixer().clone();
-        Some(Self { _device: device, mixer })
+        Some(Self {
+            _device: device,
+            mixer,
+        })
     }
 
     /// A tune on bells (a celesta): each note's MIDI number (0: a rest) and length; each one struck
@@ -28,17 +33,26 @@ impl Sound {
                 let start = (at * RATE as f32) as usize;
                 let n = (RING * RATE as f32) as usize;
                 for k in 0..n {
-                    let Some(out) = samples.get_mut(start + k) else { break };
+                    let Some(out) = samples.get_mut(start + k) else {
+                        break;
+                    };
                     let t = k as f32 / RATE as f32;
                     let env = (t * 400.0).min(1.0) * (-t * 3.2).exp();
                     let tau = std::f32::consts::TAU;
-                    let wave = (tau * f * t).sin() + 0.35 * (tau * 2.0 * f * t).sin() * (-t * 6.0).exp() + 0.12 * (tau * 3.0 * f * t).sin() * (-t * 9.0).exp();
+                    let wave = (tau * f * t).sin()
+                        + 0.35 * (tau * 2.0 * f * t).sin() * (-t * 6.0).exp()
+                        + 0.12 * (tau * 3.0 * f * t).sin() * (-t * 9.0).exp();
                     *out += wave * env * loud * 0.2;
                 }
             }
             at += len;
         }
-        let (Some(channels), Some(rate)) = (std::num::NonZero::new(1), std::num::NonZero::new(RATE)) else { return };
-        self.mixer.add(rodio::buffer::SamplesBuffer::new(channels, rate, samples));
+        let (Some(channels), Some(rate)) =
+            (std::num::NonZero::new(1), std::num::NonZero::new(RATE))
+        else {
+            return;
+        };
+        self.mixer
+            .add(rodio::buffer::SamplesBuffer::new(channels, rate, samples));
     }
 }

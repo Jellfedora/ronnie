@@ -54,17 +54,17 @@ impl App {
         shown != category
     }
 
-    /// `category` has a screen of its own to show: a tab open, the notes, the music, the games.
+    /// `category` has a screen of its own to show: a tab open, the notes, the music, a page.
     fn category_screen(&self, category: Category) -> bool {
         match category {
             Category::Local | Category::Ssh | Category::Db => self.last_tab_of(category).is_some(),
-            Category::Notes | Category::Music | Category::Games | Category::Dev | Category::Modules | Category::Talk | Category::Projects | Category::Track => true,
-            Category::Files => false,
+            Category::Notes | Category::Music | Category::Dev | Category::Modules | Category::Projects | Category::Track => true,
+            Category::Files | Category::Games | Category::Talk => false,
         }
     }
 
     /// Shows `category`'s screen: its last tab (the home page when it has none open), the notes, the
-    /// music, the games' page, the Dev page.
+    /// music, the Dev page.
     fn show_category(&mut self, category: Category) {
         match category {
             Category::Local | Category::Ssh | Category::Db => match self.last_tab_of(category) {
@@ -1432,7 +1432,7 @@ impl App {
         if self.theme.christmas {
             super::noel::ornament(ui.painter(), Pos2::new(logo_rect.center().x, logo_rect.max.y + 2.0), (logo_rect.width() - 40.0).min(200.0));
         }
-        // The logo leads home (the typing game).
+        // The logo leads home.
         let logo_hit = Rect::from_center_size(logo_rect.center(), Vec2::new(150.0, logo_rect.height()));
         let logo = ui.interact(logo_hit, ui.id().with("logo-home"), Sense::click()).on_hover_text(t.home_tip).on_hover_cursor(egui::CursorIcon::PointingHand);
         self.logo_clicked(&logo);

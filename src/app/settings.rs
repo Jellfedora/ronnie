@@ -1759,7 +1759,7 @@ impl App {
             }
         });
         self.looks_card(ui, t, theme, picked);
-        // The usual themes by light, then the special ones won in the games.
+        // The usual themes by light, then the special ones.
         let special = |p: &Preset| crate::theme::SPECIAL_THEMES.contains(&p.id);
         for (group, title) in [(Some(true), t.themes_dark), (Some(false), t.themes_light), (None, t.themes_special)] {
             section_title(ui, theme, title);
@@ -2080,7 +2080,7 @@ impl App {
     }
 
     pub(super) fn config_editor_ui(&mut self, ui: &mut Ui, t: &Strings) {
-        let current = self.config.to_json_public();
+        let current = self.config.to_json();
         let editor = self.editor.get_or_insert_with(|| ConfigEditor::new(current.clone()));
         if editor.text == editor.base && editor.base != current {
             // Nothing typed: follow changes made elsewhere (renamed tab, outside edit...).
@@ -2132,7 +2132,7 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add_enabled(dirty, egui::Button::new(egui::RichText::new(t.save).size(14.0)).min_size(Vec2::new(110.0, 30.0))).clicked() {
-                    match self.config.from_public_json(&editor.text) {
+                    match Config::from_json(&editor.text) {
                         Ok(config) => apply = Some(config),
                         Err(e) => editor.error = Some(e.to_string()),
                     }
@@ -2147,7 +2147,7 @@ impl App {
             self.config_writable = !self.read_only;
             self.save_config();
             // Show the file as written (normalized formatting, defaults filled in).
-            self.editor = Some(ConfigEditor::new(self.config.to_json_public()));
+            self.editor = Some(ConfigEditor::new(self.config.to_json()));
         }
     }
 }

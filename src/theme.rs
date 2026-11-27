@@ -33,7 +33,7 @@ pub struct Theme {
     pub thrones: bool,
     /// Lundi matin: the stapler for a pointer.
     pub monday: bool,
-    /// Wall Street: the skyline, a stock ticker with the company's valuation, the opening bell when a
+    /// Wall Street: the skyline, a stock ticker, the opening bell when a
     /// long command ends (see `app::wallstreet`).
     pub wallstreet: bool,
     /// Christmas: a candy cane for the pointer, fairy lights, holly, the snowy village, Santa's sleigh
@@ -146,7 +146,7 @@ pub const PRESETS: &[Preset] = &[
         ],
         dark: true,
     },
-    // Unlocked by the typing game: black as a stage, a red that burns and the gold of the spotlights.
+    // Heavy metal: black as a stage, a red that burns and the gold of the spotlights.
     Preset {
         id: METAL_THEME,
         name: "Ronnie Métal",

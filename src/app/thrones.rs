@@ -1,6 +1,6 @@
-//! The Game of Thrones theme, won at Pause Café: the title between two swords, the Wall under the snow
-//! with White Walkers at its foot, a dragon diving down the sidebar now and then, a sword under the bar of the pane in focus, and when the theme is picked
-//! or won, the Iron Throne in the dark and the words of House Stark.
+//! The Game of Thrones theme: the title between two swords, the Wall under the snow
+//! with White Walkers at its foot, a dragon diving down the sidebar now and then, a sword under the bar of the pane in focus, and when the theme is picked,
+//! the Iron Throne in the dark and the words of House Stark.
 
 use super::*;
 

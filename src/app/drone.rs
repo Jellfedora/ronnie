@@ -1,6 +1,6 @@
 //! The delivery drone flying along the foot of the screen now and then, dropping a parcel under a
 //! small parachute that lands and pops. Drawn by the companions (`super::desktop`), over every screen
-//! or in Ronnie's window, and in the settings.
+//! or in Ronnie's window.
 
 use super::*;
 

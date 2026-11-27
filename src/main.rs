@@ -236,7 +236,7 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     log::install_panic_hook();
-    // ring and aws-lc-rs are both compiled in: without a default, rustls panics at the first wss:// (Ronnie.io).
+    // ring and aws-lc-rs are both compiled in: without a default, rustls panics at its first connection.
     let _ = rustls::crypto::ring::default_provider().install_default();
     // Claude Code's status line command: keeps the plan's usage for the panes where Claude runs.
     if std::env::args().nth(1).as_deref() == Some("claude-statusline") {
@@ -256,7 +256,7 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
-    // The rewards over the whole screen, outside Ronnie too (started by Ronnie).
+    // The companions over the whole screen, outside Ronnie too (started by Ronnie).
     if std::env::args().nth(1).as_deref() == Some("desktop-fx") {
         app::run_desktop_fx();
         return Ok(());

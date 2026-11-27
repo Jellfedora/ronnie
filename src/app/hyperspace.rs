@@ -1,4 +1,4 @@
-//! The Star Wars theme's own touches (unlocked at Larsen): lightsaber beams, a white core in a colored
+//! The Star Wars theme's own touches: lightsaber beams, a white core in a colored
 //! glow (under the profiles' bar, the focused pane's bar, above the settings, over the active tab), the
 //! focused pane framed by a blade, the logo in yellow outline among the stars, and at the foot of the
 //! sidebar a twinkling starfield, the Death Star, an astromech droid and, now and then, an X-wing chased

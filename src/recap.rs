@@ -418,7 +418,7 @@ pub struct Report {
     pub date: NaiveDate,
     pub section: String,
     pub facts: Facts,
-    /// Nothing done that day: no project, server, database or game.
+    /// Nothing done that day: no project, server or database.
     pub empty: bool,
     /// The parts of the note the user's instructions leave out (the week's total among them).
     pub hidden: Hidden,
@@ -1528,7 +1528,7 @@ fn claude_program() -> PathBuf {
 /// `subjects` in French, by Claude, in their order; None where it didn't answer.
 fn translated(subjects: &[&str]) -> Vec<Option<String>> {
     let mut prompt = String::from(
-        "Traduis en français chacun de ces titres de commits git. Garde tels quels les noms propres, les noms de jeux, \
+        "Traduis en français chacun de ces titres de commits git. Garde tels quels les noms propres, les noms \
          de fichiers, de fonctions, le code et les touches. Un titre déjà en français reste tel quel. Réponds uniquement \
          par les traductions, une par ligne, chacune précédée de son numéro et d'un point (« 1. »), sans rien d'autre.\n\n",
     );
@@ -1575,7 +1575,7 @@ fn hidden_by_claude(rules: &str) -> Option<Hidden> {
          - SERVEURS : la ligne « Serveurs » de chaque journée (le temps passé sur chaque serveur SSH)\n\
          - BASES : la ligne « Bases de données » de chaque journée (le temps passé sur chaque base)\n\
          - CHIFFRES : « Les chiffres du jour » de chaque journée (temps devant Ronnie, commits, demandes et tokens de Claude, coût, \
-         électricité, pause dans les jeux)\n\
+         électricité)\n\
          - BILAN : le « Bilan de la semaine » à la fin de la note\n\n\
          Quelles rubriques les consignes de l'utilisateur ci-dessous demandent-elles d'enlever ? Ignore les consignes sur les \
          projets. Réponds uniquement par leurs mots-clés séparés par des virgules, ou AUCUNE, sans rien d'autre.\n\n\

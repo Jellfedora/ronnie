@@ -394,7 +394,7 @@ pub struct App {
     keep_active_dialog: bool,
     /// The floor account's window: signing in or up, the pseudo, the avatar, the password.
     pseudo_prompt: Option<popups::PseudoPrompt>,
-    /// The pointer's trail (unlocked at Ronnie Run).
+    /// The pointer's trail.
     trail: trail::Trail,
     /// Gryffindor's wand and its sparks.
     wand: wizard::Wand,
@@ -499,7 +499,7 @@ pub struct App {
     library: library::Library,
     /// The notes page: shown instead of the tabs (in this window) when set.
     notes_page: bool,
-    /// What was shown when the sidebar last looked (tab, notes, music, game): when it changes, the
+    /// What was shown when the sidebar last looked (tab, notes, music, a page): when it changes, the
     /// sidebar shows the category of the new one.
     sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool),
     /// The notes, the same in every window.
@@ -592,7 +592,7 @@ pub struct App {
     close_confirmed: bool,
     /// App time when the startup splash began; None once it is over.
     splash: Option<f64>,
-    /// Star Wars: app time when the jump to hyperspace began (the theme picked or unlocked).
+    /// Star Wars: app time when the jump to hyperspace began (the theme picked).
     jump: Option<f64>,
     /// Game of Thrones: app time when the opening began (the theme picked or won).
     winter: Option<f64>,
@@ -2739,7 +2739,7 @@ impl App {
         self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;
-        // The keys go to the game, not to a terminal no longer shown.
+        // The keys go to the page, not to a terminal no longer shown.
         self.ctx.memory_mut(|m| m.stop_text_input());
     }
 
@@ -4507,7 +4507,7 @@ impl App {
             }
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
-            // Its last tab closed, out of a game, the notes and the music: the window goes too.
+            // Its last tab closed, out of the notes, the music and the other pages: the window goes too.
             let shows_page = self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.track_page;
             let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {

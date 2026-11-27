@@ -4,6 +4,22 @@ Les nouveautés de chaque version de Ronnie. La section d'une version sert aussi
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-27
+
+### Retraits
+
+- **Plus de jeux** : Speed Metal, Puissance 4, Larsen, Ronnie.io, Lundi matin, Ronnie Run, Riff Hero, Backstage, Bug Hunt, le Démineur, Pause Café, Ronnie Corp, la Pêche aux talents et Open Space s'en vont, avec la catégorie Jeux, leurs classements et la limite des heures de travail. Le récap de la semaine ne compte plus le temps de jeu. Demande floor 0.31.0.
+- **Plus de tchat**, ni sa catégorie : les messages, groupes, fichiers, GIF et émojis, le wizz, le cochon, Hodor, la morsure et le chèque géant. Les cadres d'avatar, les titres et les badges partent avec lui. Demande floor 0.31.0.
+- **Plus d'onglet Récompenses** dans les paramètres.
+
+### Nouveautés
+
+- **Tout ce qui se gagnait est à tout le monde** : les thèmes (Ronnie Métal, Jurassic Park, Star Wars, Open space, Gryffondor, Game of Thrones, Lundi matin, Wall Street, Noël), les pointeurs, les deux traînées, le mouton à cinq pattes et tous les compagnons (la horde de 10 h, Gérard, Mathéo, le droïde, l'elfe, la licorne, le louveteau, le traîneau, la neige, le drone) se choisissent dans Paramètres › Apparence. Les boutons Claude des notes marchent sans condition.
+
+### Corrections
+
+- **Windows, Ronnie s'appelle « Ronnie » dans la recherche** : Ronnie se met dans le menu Démarrer à son lancement, avec un R majuscule (la recherche ne trouvait que le fichier « ronnie.exe »), et suit l'exe s'il est déplacé.
+
 ## [1.11.0] - 2026-11-24
 
 ### Nouveautés

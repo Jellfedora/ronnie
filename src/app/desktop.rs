@@ -1,4 +1,4 @@
-//! The rewards over the whole screen, outside Ronnie too: the pointer's trail, the pointer chosen (the
+//! The companions over the whole screen, outside Ronnie too: the pointer's trail, the pointer chosen (the
 //! wand, the lightsaber, the sword, Ronnie Métal's arrow, the stapler), the sheep, the droid, Gérard and the house-elf walking along the foot of the screen,
 //! the unicorn galloping by.
 //!

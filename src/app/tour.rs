@@ -186,7 +186,7 @@ fn shown_category(spot: Spot, age: f32) -> Category {
         Spot::Categories => Category::ALL[turn % Category::ALL.len()],
         Spot::Remote => Category::Ssh,
         Spot::Db => Category::Db,
-        Spot::Leisure => [Category::Notes, Category::Music, Category::Games][turn % 3],
+        Spot::Leisure => [Category::Notes, Category::Music][turn % 2],
         _ => Category::Local,
     }
 }
@@ -208,7 +208,7 @@ fn paint_window(painter: &egui::Painter, rect: Rect, theme: &Theme, spot: Spot, 
         Spot::Remote => vec![icon(Category::Ssh), panes[1].shrink(2.0)],
         Spot::Db => vec![icon(Category::Db), panes[1].shrink(2.0)],
         Spot::Claude => vec![claude_badge.expand(3.0)],
-        Spot::Leisure => vec![icon(Category::Notes), icon(Category::Music), icon(Category::Games)],
+        Spot::Leisure => vec![icon(Category::Notes), icon(Category::Music)],
         Spot::Settings => vec![settings.expand(1.0)],
     };
     if !lit.is_empty() {

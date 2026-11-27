@@ -57,7 +57,6 @@ Les pull requests sont les bienvenues : voir [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Crédits
 
-- Musique du jeu Speed Metal : « Thrash Metal » par [Alex Morgan](https://pixabay.com/fr/users/alex-morgan-54692529/), sur Pixabay.
 - Polices : JetBrains Mono et Metal Mania (licence OFL, voir `assets/fonts/`).
 
 ## Licence

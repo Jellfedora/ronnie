@@ -407,16 +407,6 @@ impl Config {
         serde_json::to_string_pretty(self).expect("config serializes")
     }
 
-    /// The config as the editor shows it.
-    pub fn to_json_public(&self) -> String {
-        self.to_json()
-    }
-
-    /// The config the editor wrote (`text`).
-    pub fn from_public_json(&self, text: &str) -> Result<Self, serde_json::Error> {
-        Self::from_json(text)
-    }
-
     /// Parses the config; the error names the line and column of the mistake. Entries this version
     /// can't read (a profile, host or group written by a newer version, say) don't make the whole file
     /// fail: they are kept aside under "unreadable_<list>" and written back as they were. An unknown
@@ -642,7 +632,7 @@ pub struct Settings {
     /// Show the animated "Ronnie" logo when the app starts.
     #[serde(default = "default_true")]
     pub splash: bool,
-    /// The pointer's trail, one at a time (None: never chosen, the last won).
+    /// The pointer's trail, one at a time (None: never chosen, none).
     #[serde(default)]
     pub trail: Option<Trail>,
     /// The pointer, one at a time (None: never chosen, the worn theme's own).
@@ -651,7 +641,7 @@ pub struct Settings {
     /// The companions, and whether the trail, the pointer and they go outside Ronnie (`app::desktop`).
     #[serde(default)]
     pub desktop_fx: DesktopFx,
-    /// The five-legged sheep grazing at the foot of the sidebar, once caught at the fishing.
+    /// The five-legged sheep grazing at the foot of the terminals.
     #[serde(default = "default_true")]
     pub sheep: bool,
     /// Tips about Ronnie scrolling by at the bottom of the home page.
@@ -791,9 +781,8 @@ fn default_projects_port() -> u16 {
     crate::projects::DEFAULT_PORT
 }
 
-/// The companions won in the games (each its own choice: the 10 o'clock horde, Gérard and Mathéo on
-/// at first, surprises), and whether they, the trail and the pointer go over every screen, outside
-/// Ronnie too (`on`).
+/// The companions (each its own choice), and whether they, the trail and the pointer go over every
+/// screen, outside Ronnie too (`on`).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct DesktopFx {
@@ -803,13 +792,13 @@ pub struct DesktopFx {
     pub droid: bool,
     /// The house-elf walking along the foot of the screen, waving his sock (Gryffindor).
     pub elf: bool,
-    /// The unicorn galloping along the foot of the screen, a rainbow behind it (Ronnie Corp).
+    /// The unicorn galloping along the foot of the screen, a rainbow behind it (Wall Street).
     pub unicorn: bool,
-    /// Lundi matin's zombies running across the screen at 10, shouting for the break.
+    /// The zombies running across the screen at 10, shouting for the break (Lundi matin).
     pub horde: bool,
-    /// Gérard, Lundi matin's kind zombie, strolling along the foot of the screen.
+    /// Gérard, the kind zombie, strolling along the foot of the screen (Lundi matin).
     pub gerard: bool,
-    /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
+    /// Mathéo, the green plant, at the foot of the screen (to drag elsewhere).
     pub matheo: bool,
     /// Mathéo's advice in a bubble now and then: a glass of water, a stretch, a few steps.
     pub matheo_tips: bool,
@@ -819,7 +808,7 @@ pub struct DesktopFx {
     pub sleigh: bool,
     /// A snow shower over the screen now and then (Christmas).
     pub snow: bool,
-    /// The delivery drone flying along the foot of the screen, dropping a parcel (Open Space).
+    /// The delivery drone flying along the foot of the screen, dropping a parcel.
     pub drone: bool,
 }
 
@@ -834,13 +823,13 @@ impl Default for DesktopFx {
 #[serde(rename_all = "lowercase")]
 pub enum Trail {
     Off,
-    /// Sparks (Ronnie Run).
+    /// Sparks.
     Sparks,
-    /// Bank notes (Ronnie Corp).
+    /// Bank notes (Wall Street).
     Bills,
 }
 
-/// The pointer, drawn in place of the system's plain arrow (each a theme's, won with it).
+/// The pointer, drawn in place of the system's plain arrow (each a theme's).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Pointer {
@@ -863,7 +852,7 @@ pub enum Pointer {
 impl Pointer {
     pub const ALL: [Pointer; 7] = [Pointer::System, Pointer::Metal, Pointer::Saber, Pointer::Wand, Pointer::Sword, Pointer::Stapler, Pointer::Cane];
 
-    /// The theme it comes with (won with it).
+    /// The theme it comes with.
     pub fn theme(self) -> Option<&'static str> {
         match self {
             Pointer::System => None,
@@ -1734,7 +1723,7 @@ mod tests {
         let json = r#"{"theme":"ronnie-metal","cursor_trail":false,"money_trail":true,"desktop_fx":{"wand":true,"horde":false,"gerard":false,"matheo":false}}"#;
         let s = Config::from_json(json).unwrap().settings;
         assert_eq!((s.trail, s.pointer, s.desktop_fx.on), (Some(Trail::Bills), Some(Pointer::Wand), true));
-        // Métal's arrow switched off, nothing outside Ronnie, both trails on (the last won).
+        // Métal's arrow switched off, nothing outside Ronnie.
         let json = r#"{"theme":"ronnie-metal","theme_pointers":{"metal":false},"desktop_fx":{"horde":false,"gerard":false,"matheo":false}}"#;
         let config = Config::from_json(json).unwrap();
         assert_eq!((config.settings.trail, config.settings.pointer, config.settings.desktop_fx.on), (None, Some(Pointer::System), false));

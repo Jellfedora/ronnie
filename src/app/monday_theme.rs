@@ -1,4 +1,4 @@
-//! The Lundi matin theme's touches, won by beating the executive committee on the roof: blood dripping
+//! The Lundi matin theme's touches: blood dripping
 //! from the logo, the bars and the active tab, splatters on the sidebar, bloody hands on the corners of
 //! the dialogs, the zombies shambling under a red moon at the foot of the sidebar (a hand bursting out
 //! of the ground now and then), the stapler for a pointer, and a bloody entrance when it is picked.
