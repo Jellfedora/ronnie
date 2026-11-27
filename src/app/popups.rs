@@ -1149,11 +1149,6 @@ enum Asked {
 
 /// The account window: sign in or up (pseudo and password), or, signed in, the account (avatar,
 /// pseudo, password, signing out).
-enum NotesPassword {
-    Signed(String),
-    Changed { current: String, new: String },
-}
-
 pub(super) struct PseudoPrompt {
     mode: AccountMode,
     text: String,
@@ -1162,9 +1157,6 @@ pub(super) struct PseudoPrompt {
     /// Changing the password: the current one (the new one is in `password`, again in `confirm`).
     current: String,
     changing_password: bool,
-    /// The password just given (signing in or changing it), for the notes' key (`crate::notesync`)
-    /// once floor took it; never kept longer.
-    notes_password: Option<NotesPassword>,
     error: Option<crate::floor::ClaimError>,
     /// What went well last (in green).
     notice: Option<&'static str>,
@@ -1177,7 +1169,7 @@ pub(super) struct PseudoPrompt {
 
 impl PseudoPrompt {
     fn new(mode: AccountMode, text: String) -> Self {
-        Self { mode, text, password: String::new(), confirm: String::new(), current: String::new(), changing_password: false, notes_password: None, error: None, notice: None, asked: None, focus: true, typed_at: 0.0, checked: None }
+        Self { mode, text, password: String::new(), confirm: String::new(), current: String::new(), changing_password: false, error: None, notice: None, asked: None, focus: true, typed_at: 0.0, checked: None }
     }
 }
 
@@ -1228,21 +1220,6 @@ impl App {
         let Some(answer) = self.floor.claimed() else { return };
         let t = self.t();
         let asked = self.pseudo_prompt.as_mut().and_then(|p| p.asked.take());
-        let notes_password = self.pseudo_prompt.as_mut().and_then(|p| p.notes_password.take());
-        match (&answer, notes_password) {
-            // Signed in: the notes' key opened with the password (sync on).
-            (Ok(AccountDone::Account(account)), Some(NotesPassword::Signed(password))) if self.config.settings.notes_sync => {
-                let ctx = self.ctx.clone();
-                self.notesync.unlock(&ctx, account, password);
-            }
-            // The password changed: the key wrapped again with the new one.
-            (Ok(AccountDone::PasswordChanged), Some(NotesPassword::Changed { current, new })) => {
-                if let Some(account) = self.config.settings.floor.clone() {
-                    self.notesync.rewrap(&account, current, new);
-                }
-            }
-            _ => {}
-        }
         match answer {
             Ok(AccountDone::Account(account)) => {
                 self.config.settings.floor = Some(account);
@@ -1515,11 +1492,6 @@ impl App {
             prompt.focus = true;
         }
         if let Some(ask) = go {
-            prompt.notes_password = match &ask {
-                AccountAsk::SignIn { password, .. } | AccountAsk::SignUp { password, .. } => Some(NotesPassword::Signed(password.clone())),
-                AccountAsk::Password { current, new } => Some(NotesPassword::Changed { current: current.clone(), new: new.clone() }),
-                _ => None,
-            };
             prompt.asked = asked;
             prompt.error = None;
             prompt.notice = None;

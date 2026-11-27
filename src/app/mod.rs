@@ -25,7 +25,6 @@ mod desktop;
 mod assist;
 mod sshclaude;
 mod complete;
-mod notesync;
 mod dbview;
 mod drive;
 mod easter;
@@ -526,9 +525,6 @@ pub struct App {
     updater: Updater,
     /// The leaderboards' server: its board, the sync running.
     floor: crate::floor::Floor,
-    notesync: crate::notesync::NoteSync,
-    /// The account's password typed to open the notes' key on this computer (cleared once sent).
-    notes_password: String,
     /// When the last automatic update check started (app time, seconds).
     last_update_check: Option<f64>,
     /// "Later" was clicked on the update invitation: don't show it again this session.
@@ -1335,8 +1331,6 @@ impl App {
             profile_error: None,
             updater: Updater::new(),
             floor: Default::default(),
-            notesync: Default::default(),
-            notes_password: String::new(),
             last_update_check: None,
             update_dismissed: false,
             update_attempted: false,
@@ -5843,7 +5837,6 @@ impl eframe::App for App {
         self.watch_servers(ctx);
         self.auto_backup_poll(ctx);
         self.recap_poll(ctx);
-        self.notesync_tick(ctx);
         self.desktop_tick();
         self.assist_tick();
         crate::outlook::sync(self.config.settings.outlook_claude);

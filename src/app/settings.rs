@@ -1046,7 +1046,7 @@ impl App {
                             egui::ScrollArea::vertical().id_salt("settings-general").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.general_page(ui, t, &theme, &mut picked));
                         }
                         SettingsTab::Account => {
-                            egui::ScrollArea::vertical().id_salt("settings-account").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.account_page(ui, t, &theme, &mut picked));
+                            egui::ScrollArea::vertical().id_salt("settings-account").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.account_page(ui, t, &theme));
                         }
                         SettingsTab::Music => {
                             egui::ScrollArea::vertical().id_salt("settings-music").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.music_page(ui, ctx, t, &theme, &mut picked));
@@ -1193,7 +1193,7 @@ impl App {
 
     /// "Claude Code" page: its usage, notifications, Ronnie's introduction and the shared memory.
     /// The floor account: who one is (avatar, pseudo, server), the account window, signing out; or signing in.
-    fn account_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
+    fn account_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme) {
         ui.set_width(ui.available_width() - 12.0);
         let account = self.config.settings.floor.clone().filter(|a| crate::floor::pseudo(Some(a)).is_some());
         let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
@@ -1233,78 +1233,6 @@ impl App {
                 sign_out = ui.add(egui::Button::new(egui::RichText::new(t.account_sign_out).size(13.0).color(theme.ansi[1])).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0))).clicked();
             });
         });
-        // The notes on every machine (off at first).
-        if let Some(a) = &account {
-            // Through `picked`, as every setting of the window (set straight, it was put back at once).
-            let mut on = picked.notes_sync;
-            let keyed = on && self.notesync.keyed(a);
-            if on && !keyed {
-                self.notesync.ask_remote(ui.ctx(), a);
-            }
-            let (mut unlock, mut reset) = (false, false);
-            card(ui, theme, Some(t.notes_sync_title), |ui| {
-                setting_row(ui, theme, t.notes_sync_setting, Some(t.notes_sync_desc), |ui| {
-                    toggle(ui, theme, &mut on);
-                });
-                // This computer without the key yet: the account's password opens it (or makes it).
-                if on && !keyed {
-                    let status = self.notesync.status();
-                    ui.add_space(4.0);
-                    let hint = if status.remote_key == Some(false) { t.notes_key_first } else { t.notes_key_again };
-                    ui.add(egui::Label::new(egui::RichText::new(hint).size(12.0).color(theme.text_muted)).wrap());
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let field = ui.add(egui::TextEdit::singleline(&mut self.notes_password).password(true).hint_text(t.notes_key_password).desired_width(220.0));
-                        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let ready = !self.notes_password.is_empty() && !status.busy;
-                        if status.busy {
-                            ui.add(egui::Spinner::new().size(14.0));
-                        } else if ui.add_enabled(ready, egui::Button::new(egui::RichText::new(t.notes_key_unlock).size(13.0).color(theme.bg)).fill(theme.accent).corner_radius(6.0)).clicked() || (enter && ready) {
-                            unlock = true;
-                        }
-                    });
-                    if status.wrong {
-                        ui.add_space(4.0);
-                        ui.add(egui::Label::new(egui::RichText::new(t.notes_key_wrong).size(12.0).color(theme.ansi[1])).wrap());
-                        ui.add_space(4.0);
-                        reset = ui.add(egui::Button::new(egui::RichText::new(t.notes_key_reset).size(12.0).color(theme.ansi[1])).corner_radius(6.0)).on_hover_text(t.notes_key_reset_hint).clicked();
-                    } else if let Some(e) = &status.error {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new(t.notes_sync_failed.replace("{e}", e)).size(12.0).color(theme.ansi[1]));
-                    }
-                    ui.add_space(8.0);
-                } else if on {
-                    let s = self.notesync.status();
-                    let (busy, error, at) = (s.busy, s.error, s.at);
-                    let (text, color) = match (busy, error, at) {
-                        (true, _, _) => (t.notes_sync_running.to_owned(), theme.text_muted),
-                        (_, Some(e), _) => (t.notes_sync_failed.replace("{e}", &e), theme.ansi[1]),
-                        (_, None, Some(at)) => {
-                            let when = chrono::DateTime::from_timestamp(at, 0).map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string()).unwrap_or_default();
-                            (t.notes_sync_done.replace("{t}", &when), theme.text_muted)
-                        }
-                        _ => (t.notes_sync_running.to_owned(), theme.text_muted),
-                    };
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new(text).size(12.0).color(color));
-                    ui.add_space(8.0);
-                }
-            });
-            if unlock {
-                let password = std::mem::take(&mut self.notes_password);
-                self.notesync.unlock(ui.ctx(), a, password);
-            }
-            if reset {
-                self.notesync.reset(ui.ctx(), a);
-            }
-            if on != picked.notes_sync {
-                self.notes_password.clear();
-                picked.notes_sync = on;
-                if on {
-                    self.notesync.soon();
-                }
-            }
-        }
         if manage {
             self.ask_pseudo();
         }

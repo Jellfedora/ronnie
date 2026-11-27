@@ -29,7 +29,6 @@ mod sysmon;
 mod pane;
 mod putty;
 mod procs;
-mod notesync;
 mod recap;
 mod screens;
 mod sftp;
