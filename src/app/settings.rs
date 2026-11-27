@@ -934,7 +934,7 @@ impl App {
                 let groups: [&[(SettingsTab, &str, &str)]; 4] = [
                     &[(SettingsTab::General, "⚙", t.general), (SettingsTab::Appearance, "🎨", t.appearance), (SettingsTab::Terminal, ">_", t.set_terminal), (SettingsTab::Shortcuts, "⌨", t.shortcuts)],
                     &[(SettingsTab::Claude, "✳", t.set_claude)],
-                    &[(SettingsTab::Rewards, "🏆", t.set_rewards), (SettingsTab::Music, "♫", t.music_nav)],
+                    &[(SettingsTab::Music, "♫", t.music_nav)],
                     &[(SettingsTab::Account, "@", t.account_nav), (SettingsTab::Backup, "💾", t.backup_section), (SettingsTab::ConfigFile, "{ }", t.nav_advanced)],
                 ];
                 let current = nav_entry(self.settings_tab);
@@ -978,7 +978,6 @@ impl App {
                     SettingsTab::Features => (t.features_nav, t.sub_features),
                     SettingsTab::Changelog => (t.changelog_nav, t.sub_changelog),
                     SettingsTab::About => (t.about, t.sub_about),
-                    SettingsTab::Rewards => (t.set_rewards, t.sub_rewards),
                 };
                 // Title and subtitle, with the close button at the right.
                 let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
@@ -1060,9 +1059,6 @@ impl App {
                         }
                         SettingsTab::Claude => {
                             egui::ScrollArea::vertical().id_salt("settings-claude").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.claude_page(ui, t, &theme, &mut picked));
-                        }
-                        SettingsTab::Rewards => {
-                            egui::ScrollArea::vertical().id_salt("settings-rewards").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.rewards_page(ui, t, &theme, &picked));
                         }
                         SettingsTab::Backup => {
                             egui::ScrollArea::vertical().id_salt("settings-backup").max_height(height).auto_shrink([false, false]).show(ui, |ui| self.backup_page(ui, t, &theme, &mut picked));
@@ -1218,7 +1214,7 @@ impl App {
             let name = a.name.clone().unwrap_or_default();
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-                super::talk::paint_avatar(ui.painter(), rect.center(), 28.0, &name, false, face.as_ref(), a.frame.as_deref(), theme);
+                super::avatar::paint_avatar(ui.painter(), rect.center(), 28.0, &name, face.as_ref(), theme);
                 ui.add_space(12.0);
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
@@ -1780,34 +1776,12 @@ impl App {
                 Some(dark) => p.dark == dark && !special(p),
                 None => special(p),
             }).collect();
-            let best = picked.typing_scores.first().map_or(0, |s| s.letters);
             let per_row = ((ui.available_width() + 12.0) / (THEME_CARD.x + 12.0)).floor().max(1.0) as usize;
             for row in presets.chunks(per_row) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     for preset in row {
-                        if preset.locked(best, picked.jurassic_unlocked, picked.hyperspace_unlocked, crate::theme::office_unlocked(&picked.riff_bests), picked.wizard_unlocked, crate::coffee::thrones_won(&picked.coffee_bests), picked.monday_wins > 0, super::wallstreet::theme_unlocked(picked), picked.christmas_unlocked || crate::theme::christmas_season(chrono::Local::now().date_naive())) {
-                            let how = if preset.id == crate::theme::CHRISTMAS_THEME {
-                                t.unlock_christmas_how.to_owned()
-                            } else if preset.id == crate::theme::WALL_STREET_THEME {
-                                t.theme_locked_corp.to_owned()
-                            } else if preset.id == crate::theme::HYPERSPACE_THEME {
-                                t.theme_locked_larsen.to_owned()
-                            } else if preset.id == crate::theme::THRONES_THEME {
-                                t.theme_locked_coffee.replace("{n}", &crate::coffee::THRONES_UNLOCK.to_string())
-                            } else if preset.id == crate::theme::WIZARD_THEME {
-                                t.unlock_wizard_how.replace("{n}", &crate::theme::WIZARD_DAYS.to_string())
-                            } else if preset.id == crate::theme::MONDAY_THEME {
-                                t.unlock_monday_theme_how.replace("{n}", &crate::zombie::LAST_WAVE.to_string())
-                            } else if preset.id == crate::theme::OFFICE_THEME {
-                                t.theme_locked_office.replace("{n}", &crate::theme::OFFICE_UNLOCK.to_string())
-                            } else if preset.id == crate::theme::JURASSIC_THEME {
-                                t.theme_locked_blob.replace("{n}", &crate::theme::JURASSIC_UNLOCK.to_string())
-                            } else {
-                                t.theme_locked.replace("{n}", &crate::theme::METAL_UNLOCK.to_string())
-                            };
-                            theme_card(ui, preset, false, true).on_hover_text(how);
-                        } else if theme_card(ui, preset, picked.theme == preset.id, false).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        if theme_card(ui, preset, picked.theme == preset.id, false).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             picked.theme = preset.id.to_owned();
                         }
                     }
@@ -2034,23 +2008,6 @@ impl App {
             });
         }
         contributors_card(ui, t, &theme);
-        card(ui, &theme, Some(t.credits), |ui| {
-            setting_row(ui, &theme, t.credits_music, Some(t.game_music_credit), |ui| {
-                let pixabay = egui::Button::new(egui::RichText::new("Pixabay").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                if ui.add(pixabay).on_hover_text(super::game::MUSIC_CREDIT_URL).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    crate::terminal::open_url(super::game::MUSIC_CREDIT_URL);
-                }
-            });
-            divider(ui, &theme);
-            // Twemoji's licence (CC-BY 4.0) asks for its authors to be named.
-            setting_row(ui, &theme, t.credits_emoji, Some(t.credits_emoji_desc), |ui| {
-                let url = "https://creativecommons.org/licenses/by/4.0/";
-                let licence = egui::Button::new(egui::RichText::new("CC-BY 4.0").size(13.5)).corner_radius(6.0).min_size(Vec2::new(0.0, 30.0));
-                if ui.add(licence).on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    crate::terminal::open_url(url);
-                }
-            });
-        });
     }
 
     /// The config file, editable as JSON. Saving validates it first: a mistake is reported, never written.
@@ -2240,186 +2197,13 @@ fn nav_entry(tab: SettingsTab) -> SettingsTab {
 }
 
 impl App {
-    /// "Rewards" page: everything the games unlock, game by game: done (and then switched on here: a
-    /// theme worn, the trail, the sheep, a frame from the account) or how to get it and how far.
-    /// A reward's look: the theme's card, the avatar in its frame or with its badge, the sheep
-    /// walking, the pointer's sparks; locked, a padlock in its corner.
-    fn reward_preview(&mut self, ui: &mut Ui, u: &super::unlocks::Unlock, theme: &Theme) {
-        use super::unlocks::Reward;
-        let now = ui.input(|i| i.time);
-        let rect = match u.reward {
-            Some(Reward::Theme(id)) => theme_card(ui, crate::theme::Preset::find(id), false, false).rect,
-            _ => {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(THEME_CARD.x, THEME_CARD.y), Sense::hover());
-                let painter = ui.painter_at(rect);
-                painter.rect_filled(rect, 8.0, theme.bg);
-                painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.tab_active), egui::StrokeKind::Inside);
-                let name = crate::floor::pseudo(self.config.settings.floor.as_ref()).unwrap_or(self.t().game_you);
-                match u.reward {
-                    Some(Reward::Frame(id)) => {
-                        super::talk::paint_avatar(&painter, rect.center(), 26.0, name, false, None, Some(id), theme);
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Badge(id)) => {
-                        super::talk::paint_avatar(&painter, rect.center(), 26.0, name, false, None, None, theme);
-                        super::office::paint_badge(&painter, rect.center(), 26.0, &[id.to_owned()]);
-                    }
-                    Some(Reward::Sheep) => {
-                        // Grass, the sheep walking to and fro.
-                        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 16.0), rect.max), egui::CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, Color32::from_rgb(0x4c, 0x8a, 0x3a));
-                        let p = ((now * 0.25) % 2.0) as f32;
-                        let (k, dir) = if p < 1.0 { (p, 1.0) } else { (2.0 - p, -1.0) };
-                        let x = rect.min.x + 30.0 + (rect.width() - 60.0) * k;
-                        super::office::paint_sheep(&painter, Pos2::new(x, rect.max.y - 26.0), dir, Some(now as f32));
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Trail) => {
-                        // The real trail, behind a pointer wandering in the card.
-                        let tm = now as f32;
-                        let tip = rect.center() + Vec2::new((tm * 2.0).cos() * rect.width() * 0.38, (tm * 3.2).sin() * rect.height() * 0.32);
-                        let dt = ui.input(|i| i.stable_dt).min(0.05);
-                        self.trail_preview.step(Some(tip), dt);
-                        self.trail_preview.paint(&painter, theme);
-                        painter.add(egui::Shape::convex_polygon(vec![tip, tip + Vec2::new(0.0, 13.0), tip + Vec2::new(3.5, 10.0), tip + Vec2::new(9.0, 9.5)], Color32::WHITE, Stroke::new(1.0, Color32::BLACK)));
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Horde) => {
-                        super::desktop::paint_horde(&painter, rect, (now % 6.0) / 6.0, 5, &super::zombie::met_kinds(&self.config.settings));
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Matheo) => {
-                        // Mathéo in his pot, swaying, now and then a little hop.
-                        let hop = ((now * 0.8) % 3.0 < 0.4).then(|| ((now * 0.8) % 3.0 / 0.4 * std::f64::consts::PI).sin() as f32 * 10.0).unwrap_or(0.0);
-                        super::desktop::paint_matheo(&painter, Pos2::new(rect.center().x, rect.max.y - 6.0 - hop), 56.0, now, false);
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Gerard) => {
-                        // Gérard walking to and fro, waving at each end.
-                        let p = ((now * 0.12) % 2.0) as f32;
-                        let (k, dir) = if p < 1.0 { (p, 1.0) } else { (2.0 - p, -1.0) };
-                        let x = rect.min.x + 26.0 + (rect.width() - 52.0) * k;
-                        super::desktop::paint_gerard(&painter, Pos2::new(x, rect.max.y - 8.0), 40.0, dir, now, !(0.08..=0.92).contains(&k));
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Bills) => {
-                        super::wallstreet::bills_preview(&painter, rect, now);
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Unicorn) => {
-                        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 8.0), rect.max), egui::CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, theme.tab_active);
-                        super::wallstreet::unicorn_preview(&painter, rect, now);
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Drone) => {
-                        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 8.0), rect.max), egui::CornerRadius { nw: 0, ne: 0, sw: 8, se: 8 }, theme.tab_active);
-                        super::openspace_drone::drone_preview(&painter, rect, now);
-                        ui.ctx().request_repaint();
-                    }
-                    Some(Reward::Cheque) => {
-                        let fr = self.config.settings.language == crate::i18n::Lang::Fr;
-                        let amount = crate::tycoon::money(super::wallstreet::cheque(&self.config.settings).unwrap_or(12_300_000.0), fr);
-                        let date = chrono::Local::now().format("%d/%m/%Y").to_string();
-                        let paper = Rect::from_center_size(rect.center(), Vec2::new(rect.width() - 12.0, (rect.width() - 12.0) * 0.44));
-                        super::wallstreet::paint_cheque(&painter, paper, &amount, name, &date, fr);
-                    }
-                    _ => {
-                        let mark = if u.done { "✓" } else if u.info { "•" } else { "?" };
-                        painter.text(rect.center(), Align2::CENTER_CENTER, mark, FontId::proportional(30.0), theme.accent.gamma_multiply(0.7));
-                    }
-                }
-                rect
-            }
-        };
-        if !u.done && !u.info {
-            let corner = Pos2::new(rect.max.x - 14.0, rect.min.y + 14.0);
-            ui.painter().circle_filled(corner, 11.0, Color32::from_black_alpha(190));
-            super::unlocks::paint_padlock(ui.painter(), corner, false, theme.accent);
-        }
-    }
-
-    fn rewards_page(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &config::Settings) {
-        let games = self.games_list();
-        let mut all: Vec<_> = games.iter().map(|(g, name, _)| (*name, self.unlocks(*g))).filter(|(_, u)| !u.is_empty()).collect();
-        // Ronnie's own: open days in a row.
-        let days = crate::theme::WIZARD_DAYS;
-        let wizard = vec![super::unlocks::Unlock { what: t.unlock_wizard.to_owned(), how: t.unlock_wizard_how.replace("{n}", &days.to_string()), done: !config::OFFICIAL || picked.wizard_unlocked, progress: Some((picked.open_streak.min(days), days)), info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::WIZARD_THEME)), gives: t.unlock_gives_theme.into() }];
-        all.push((t.rewards_loyal, wizard));
-        // The season's: Christmas, given in December.
-        let christmas = vec![super::unlocks::Unlock { what: t.unlock_christmas.to_owned(), how: t.unlock_christmas_how.to_owned(), done: !config::OFFICIAL || picked.christmas_unlocked, progress: None, info: false, reward: Some(super::unlocks::Reward::Theme(crate::theme::CHRISTMAS_THEME)), gives: t.unlock_gives_theme.into() }];
-        all.push((t.rewards_season, christmas));
-        let counted = all.iter().flat_map(|(_, u)| u.iter()).filter(|u| !u.info);
-        let (done, total) = counted.fold((0, 0), |(d, n), u| (d + u.done as usize, n + 1));
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(t.arcade_rewards.replace("{n}", &done.to_string()).replace("{max}", &total.to_string())).size(13.5).color(if done == total { theme.ansi[2] } else { theme.accent }));
-            // Everything won is worn from Appearance: only a way there.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let link = egui::Button::new(egui::RichText::new(format!("{}  →", t.rewards_to_appearance)).size(13.0).color(theme.accent)).frame_when_inactive(false).corner_radius(6.0);
-                if ui.add(link).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    self.settings_tab = SettingsTab::Appearance;
-                }
-            });
-        });
-        ui.add_space(12.0);
-        for (name, items) in all {
-            card(ui, theme, Some(name), |ui| {
-                for (k, u) in items.iter().enumerate() {
-                    if k > 0 {
-                        divider(ui, theme);
-                    }
-                    let mark = if u.done { "✓" } else if u.info { "•" } else { "🔒" };
-                    let title = format!("{mark}  {}", u.what);
-                    let desc = u.said(t);
-                    ui.horizontal(|ui| {
-                        // What it looks like, shown whole even locked: to make one want it.
-                        self.reward_preview(ui, u, theme);
-                        ui.add_space(14.0);
-                        ui.vertical(|ui| {
-                            ui.set_width(ui.available_width().max(120.0));
-                            ui.add_space(6.0);
-                            ui.label(egui::RichText::new(&title).size(14.0).strong().color(if u.done { theme.text } else { theme.text.gamma_multiply(0.85) }));
-                            ui.add(egui::Label::new(egui::RichText::new(&desc).size(12.5).color(theme.text_muted)).wrap());
-                            if let (Some((have, need)), false, false) = (u.progress, u.done, u.info) {
-                                ui.add_space(4.0);
-                                let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(220.0), 6.0), Sense::hover());
-                                ui.painter().rect_filled(bar, 3.0, theme.tab_hover);
-                                let k = (have.min(need) as f32 / need.max(1) as f32).clamp(0.0, 1.0);
-                                ui.painter().rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * k, bar.height())), 3.0, theme.accent);
-                                ui.label(egui::RichText::new(format!("{} / {}", have.min(need), need)).size(11.5).color(theme.text_muted));
-                            }
-                        });
-                    });
-                }
-            });
-            ui.add_space(14.0);
-        }
-    }
-
-    /// Appearance's card of what the games give to wear: one pointer, one trail, the companions, and
-    /// one switch for all of it outside Ronnie, on every screen. Only what is won is offered.
+    /// Appearance's card of what there is to wear: one pointer, one trail, the companions, and one
+    /// switch for all of it outside Ronnie, on every screen.
     fn looks_card(&mut self, ui: &mut Ui, t: &Strings, theme: &Theme, picked: &mut config::Settings) {
         use config::{Pointer, Trail};
-        let official = config::OFFICIAL;
-        let pointers: Vec<Pointer> = Pointer::ALL.into_iter().filter(|p| trail::pointer_won(picked, *p)).collect();
-        let trails: Vec<Trail> = [Trail::Off, Trail::Sparks, Trail::Bills].into_iter().filter(|x| trail::trail_won(picked, *x)).collect();
+        let pointers = Pointer::ALL;
+        let trails = [Trail::Off, Trail::Sparks, Trail::Bills];
         let desktop = super::desktop::supported();
-        let sheep_won = super::office::sheep_unlocked(picked);
-        // The companions that only go outside Ronnie, as won.
-        let walkers = [
-            !official || picked.monday_horde,
-            !official || picked.monday_gerard,
-            !official || picked.riff_games >= super::riff::MATHEO_GAMES,
-            !official || picked.hyperspace_unlocked,
-            !official || picked.wizard_unlocked,
-            super::wallstreet::unicorn_unlocked(picked),
-            !official || crate::coffee::thrones_won(&picked.coffee_bests),
-            !official || picked.christmas_unlocked,
-            !official || picked.christmas_unlocked,
-            super::openspace_drone::drone_unlocked(picked),
-        ];
-        let any_walker = desktop && walkers.iter().any(|w| *w);
-        if pointers.len() < 2 && trails.len() < 2 && !sheep_won && !any_walker {
-            return;
-        }
         let (worn_pointer, worn_trail) = (trail::pointer(picked), trail::worn(picked));
         let mut demo = false;
         card(ui, theme, Some(t.looks_title), |ui| {
@@ -2430,7 +2214,7 @@ impl App {
                 }
                 first = false;
             };
-            if pointers.len() > 1 {
+            {
                 gap(ui);
                 setting_row(ui, theme, t.looks_pointer, Some(t.looks_pointer_desc), |ui| {
                     let mut chosen = worn_pointer;
@@ -2444,7 +2228,7 @@ impl App {
                     }
                 });
             }
-            if trails.len() > 1 {
+            {
                 gap(ui);
                 setting_row(ui, theme, t.looks_trail, Some(t.looks_trail_desc), |ui| {
                     let mut chosen = worn_trail;
@@ -2458,22 +2242,17 @@ impl App {
                     }
                 });
             }
-            if sheep_won {
-                gap(ui);
-                setting_row(ui, theme, t.desktop_sheep, Some(t.looks_sheep_desc), |ui| {
-                    toggle(ui, theme, &mut picked.sheep);
-                });
-            }
+            gap(ui);
+            setting_row(ui, theme, t.desktop_sheep, Some(t.looks_sheep_desc), |ui| {
+                toggle(ui, theme, &mut picked.sheep);
+            });
             if !desktop {
                 return;
             }
             let fx = &mut picked.desktop_fx;
             let on = fx.on;
             let rows = [(t.desktop_horde, &mut fx.horde), (t.desktop_gerard, &mut fx.gerard), (t.desktop_matheo, &mut fx.matheo), (t.desktop_droid, &mut fx.droid), (t.desktop_elf, &mut fx.elf), (t.desktop_unicorn, &mut fx.unicorn), (t.desktop_wolf, &mut fx.wolf), (t.desktop_sleigh, &mut fx.sleigh), (t.desktop_snow, &mut fx.snow), (t.desktop_drone, &mut fx.drone)];
-            for ((label, shown), won) in rows.into_iter().zip(walkers) {
-                if !won {
-                    continue;
-                }
+            for (label, shown) in rows {
                 gap(ui);
                 // Over every screen, or in Ronnie's window only (`fx.on` off): each still its own choice.
                 setting_row(ui, theme, label, None, |ui| {
@@ -2484,7 +2263,7 @@ impl App {
                 });
             }
             // Mathéo's advice, beside him.
-            if walkers[2] && fx.matheo {
+            if fx.matheo {
                 gap(ui);
                 ui.add_enabled_ui(on, |ui| {
                     setting_row(ui, theme, t.desktop_matheo_tips, Some(t.desktop_matheo_tips_desc), |ui| {

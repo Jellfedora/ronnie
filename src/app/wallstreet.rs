@@ -1,45 +1,11 @@
-//! Ronnie Corp's rewards (the idle tycoon, `crate::tycoon`), won by how far the company ever went:
-//! - the pointer's trail in bank notes (a small business), in place of Ronnie Run's sparks;
-//! - the Wall Street theme (a big company): a skyline at night at the foot of the sidebar with a stock
-//!   ticker scrolling the company's valuation, a ticker tape over the settings and the active tab, the
-//!   opening bell over a pane when a long command ends in sight;
-//! - the unicorn galloping along the foot of the screen, a rainbow behind it (a unicorn; `super::desktop`);
-//! - the golden ticker frame around the avatar (listed, or sold once; drawn in `super::frames`);
-//! - the giant cheque (sold once): the chat's 💸 button sends a plain message
-//!   (`crate::tycoon::cheque_text`) that every Ronnie draws as a cheque.
-//!
-//! Development builds have them all, to try them.
+//! The Wall Street looks:
+//! - the pointer's trail in bank notes;
+//! - the Wall Street theme: a skyline at night at the foot of the sidebar with a stock ticker scrolling,
+//!   a ticker tape over the settings and the active tab, the opening bell over a pane when a long
+//!   command ends in sight;
+//! - the unicorn galloping along the foot of the screen, a rainbow behind it (`super::desktop`).
 
 use super::*;
-use crate::tycoon::{BILLS_STAGE, UNICORN_STAGE, WALL_STREET_STAGE};
-
-/// How far Ronnie Corp went: the furthest stage, the companies sold (never started: nothing).
-pub(super) fn reached(s: &crate::config::Settings) -> (u8, u32) {
-    s.tycoon.as_ref().map_or((0, 0), |c| (c.best_stage(), c.legacy.sales))
-}
-
-fn won(s: &crate::config::Settings, stage: u8) -> bool {
-    !crate::config::OFFICIAL || reached(s).0 >= stage
-}
-
-pub(super) fn bills_unlocked(s: &crate::config::Settings) -> bool {
-    won(s, BILLS_STAGE)
-}
-
-pub(super) fn theme_unlocked(s: &crate::config::Settings) -> bool {
-    won(s, WALL_STREET_STAGE)
-}
-
-pub(super) fn unicorn_unlocked(s: &crate::config::Settings) -> bool {
-    won(s, UNICORN_STAGE)
-}
-
-/// The cheque's amount, once the company was sold (in development, the best valuation or a made-up one).
-pub(super) fn cheque(s: &crate::config::Settings) -> Option<f64> {
-    let c = s.tycoon.as_ref();
-    let sold = c.filter(|c| c.legacy.sales > 0).map(|c| if c.legacy.best_sale > 0.0 { c.legacy.best_sale } else { c.legacy.best });
-    sold.or_else(|| (!crate::config::OFFICIAL).then(|| c.map_or(0.0, |c| c.legacy.best).max(1_234_567.0)))
-}
 
 // --- the bank notes
 
@@ -64,19 +30,6 @@ pub(super) fn paint_bill(painter: &egui::Painter, c: Pos2, w: f32, angle: f32, f
     }
 }
 
-/// A few notes falling through `rect`, for the rewards' page.
-pub(super) fn bills_preview(painter: &egui::Painter, rect: Rect, now: f64) {
-    for k in 0..7 {
-        let speed = 0.18 + k as f32 * 0.025;
-        let t = ((now as f32 * speed + k as f32 * 0.37) % 1.0 + 1.0) % 1.0;
-        let x = rect.min.x + rect.width() * ((k as f32 * 0.61) % 1.0) * 0.85 + rect.width() * 0.07 + (now as f32 * 1.3 + k as f32).sin() * 8.0;
-        let y = rect.min.y - 10.0 + (rect.height() + 20.0) * t;
-        let angle = (now as f32 * 1.7 + k as f32 * 2.0).sin() * 0.6;
-        let flip = (now as f32 * 2.3 + k as f32).cos().abs().max(0.25);
-        paint_bill(painter, Pos2::new(x, y), 18.0, angle, flip, 1.0);
-    }
-}
-
 // --- the theme
 
 const GOLD: Color32 = Color32::from_rgb(0xf5, 0xb7, 0x00);
@@ -91,12 +44,9 @@ fn hash(n: u32) -> u32 {
     x ^ (x >> 13)
 }
 
-/// The quotes going by on the ticker: Ronnie Corp's own first, at its valuation.
-fn quotes(valuation: Option<&str>, now: f64) -> Vec<(String, bool)> {
+/// The quotes going by on the ticker.
+fn quotes(now: f64) -> Vec<(String, bool)> {
     let mut list = Vec::new();
-    if let Some(v) = valuation {
-        list.push((format!("RNC {v}"), true));
-    }
     // The others move a bit each minute.
     let minute = (now / 60.0) as u32;
     for (k, name) in ["CAC40", "NASDAQ", "DAX", "NIKKEI", "BTC", "OR", "CAFÉ", "PIZZA"].iter().enumerate() {
@@ -109,9 +59,9 @@ fn quotes(valuation: Option<&str>, now: f64) -> Vec<(String, bool)> {
 }
 
 /// Wall Street at the foot of the sidebar, in `field`: towers at night, their windows lit and going out,
-/// a beacon blinking on the tallest, and over them the ticker scrolling the quotes (the company's first).
+/// a beacon blinking on the tallest, and over them the ticker scrolling the quotes.
 /// Seconds before it is drawn again.
-pub(super) fn scene(painter: &egui::Painter, field: Rect, theme: &Theme, valuation: Option<&str>, now: f64) -> f32 {
+pub(super) fn scene(painter: &egui::Painter, field: Rect, theme: &Theme, now: f64) -> f32 {
     let painter = painter.with_clip_rect(field.intersect(painter.clip_rect()));
     let base = field.max.y - 2.0;
     // The towers, back row dimmer.
@@ -160,8 +110,8 @@ pub(super) fn scene(painter: &egui::Painter, field: Rect, theme: &Theme, valuati
     painter.hline(band.x_range(), band.max.y, Stroke::new(1.0, GOLD.gamma_multiply(0.5)));
     let mut job = egui::text::LayoutJob::default();
     let font = FontId::new(11.0, egui::FontFamily::Name("mono".into()));
-    for (k, (text, up)) in quotes(valuation, now).into_iter().enumerate() {
-        let color = if k == 0 && valuation.is_some() { GOLD } else if up { GREEN } else { RED };
+    for (text, up) in quotes(now) {
+        let color = if up { GREEN } else { RED };
         job.append(&text, 0.0, egui::TextFormat { font_id: font.clone(), color, ..Default::default() });
         job.append("   ·   ", 0.0, egui::TextFormat { font_id: font.clone(), color: theme.text_muted, ..Default::default() });
     }
@@ -358,62 +308,6 @@ pub(super) fn unicorn_run(painter: &egui::Painter, strip: Rect, now: f64) -> (bo
     (true, 0.0)
 }
 
-/// The unicorn galloping on the spot in `rect`, its rainbow behind, for the rewards' page.
-pub(super) fn unicorn_preview(painter: &egui::Painter, rect: Rect, now: f64) {
-    let s = rect.height() * 0.62;
-    let foot = Pos2::new(rect.center().x + s * 0.3, rect.max.y - 8.0);
-    rainbow(painter, rect.min.x - 4.0, foot.x - s * 0.45, foot.y, s, now);
-    paint_unicorn(painter, foot, s, 1.0, now);
-}
-
-// --- the giant cheque
-
-/// The giant cheque in `rect`: Ronnie Corp's bank, paid to `payee`, `amount` in figures, the date, a
-/// signature. Its fonts follow the rect's height.
-pub(super) fn paint_cheque(painter: &egui::Painter, rect: Rect, amount: &str, payee: &str, date: &str, fr: bool) {
-    let u = rect.height() / 150.0;
-    let paper = Color32::from_rgb(0xf6, 0xf1, 0xdf);
-    let ink = Color32::from_rgb(0x1f, 0x2a, 0x44);
-    let green = Color32::from_rgb(0x2f, 0x7a, 0x4a);
-    painter.rect_filled(rect.translate(Vec2::new(2.0, 3.0) * u), 8.0 * u, Color32::from_black_alpha(60));
-    painter.rect(rect, 8.0 * u, paper, Stroke::new(1.5 * u, green), egui::StrokeKind::Inside);
-    // The guilloche: waves across.
-    let clip = painter.with_clip_rect(rect.shrink(3.0 * u).intersect(painter.clip_rect()));
-    for k in 0..6 {
-        let points: Vec<Pos2> = (0..=40).map(|i| {
-            let t = i as f32 / 40.0;
-            Pos2::new(rect.min.x + rect.width() * t, rect.min.y + rect.height() * (0.3 + k as f32 * 0.09) + (t * 18.0 + k as f32).sin() * 6.0 * u)
-        }).collect();
-        clip.add(egui::Shape::line(points, Stroke::new(0.7 * u, green.gamma_multiply(0.13))));
-    }
-    let pad = 14.0 * u;
-    let font = |size: f32| FontId::proportional(size * u);
-    // The bank, the number, the date.
-    painter.text(rect.min + Vec2::new(pad, pad), Align2::LEFT_TOP, "RONNIE CORP", FontId::new(15.0 * u, egui::FontFamily::Name("metal".into())), green);
-    painter.text(Pos2::new(rect.min.x + pad, rect.min.y + pad + 18.0 * u), Align2::LEFT_TOP, if fr { "Banque des licornes" } else { "Bank of unicorns" }, font(10.0), ink.gamma_multiply(0.6));
-    painter.text(Pos2::new(rect.max.x - pad, rect.min.y + pad), Align2::RIGHT_TOP, format!("N° 000042 · {date}"), font(10.5), ink.gamma_multiply(0.7));
-    // To whom.
-    let line_y = rect.min.y + 78.0 * u;
-    painter.text(Pos2::new(rect.min.x + pad, line_y - 4.0 * u), Align2::LEFT_BOTTOM, if fr { "Payez à" } else { "Pay to" }, font(10.5), ink.gamma_multiply(0.7));
-    let name_x = rect.min.x + pad + 52.0 * u;
-    painter.text(Pos2::new(name_x, line_y - 3.0 * u), Align2::LEFT_BOTTOM, payee, FontId::proportional(17.0 * u), ink);
-    painter.hline(name_x..=rect.max.x - 120.0 * u, line_y, Stroke::new(0.8 * u, ink.gamma_multiply(0.5)));
-    // The amount, in its box.
-    let galley = painter.layout_no_wrap(amount.to_owned(), FontId::proportional(20.0 * u), ink);
-    let boxed = Rect::from_min_max(Pos2::new(rect.max.x - pad - (galley.size().x + 20.0 * u).max(96.0 * u), line_y - 32.0 * u), Pos2::new(rect.max.x - pad, line_y + 4.0 * u));
-    painter.rect(boxed, 4.0 * u, Color32::WHITE.gamma_multiply(0.7), Stroke::new(1.2 * u, green), egui::StrokeKind::Inside);
-    painter.galley(boxed.center() - galley.size() / 2.0, galley, ink);
-    // What for, the signature.
-    let memo_y = rect.max.y - pad;
-    painter.text(Pos2::new(rect.min.x + pad, memo_y), Align2::LEFT_BOTTOM, if fr { "Objet : revente de la boîte ★" } else { "For: company sold ★" }, font(10.5), ink.gamma_multiply(0.7));
-    let sign: Vec<Pos2> = (0..=30).map(|i| {
-        let t = i as f32 / 30.0;
-        Pos2::new(rect.max.x - pad - 100.0 * u + t * 92.0 * u, memo_y - 10.0 * u + (t * 19.0).sin() * 6.0 * u * (1.0 - t * 0.5) - t * 4.0 * u)
-    }).collect();
-    painter.add(egui::Shape::line(sign, Stroke::new(1.3 * u, ink)));
-    painter.hline(rect.max.x - pad - 104.0 * u..=rect.max.x - pad, memo_y - 2.0 * u, Stroke::new(0.8 * u, ink.gamma_multiply(0.5)));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,21 +318,5 @@ mod tests {
         // 7 s out of 540.
         assert!((65..=75).contains(&shown), "{shown}");
         assert!(unicorn_at(50.0).is_err_and(|again| again > 0.0));
-    }
-
-    #[test]
-    fn the_ticker_starts_with_the_company() {
-        let q = quotes(Some("12,3 M€"), 100.0);
-        assert_eq!(q[0].0, "RNC 12,3 M€");
-        assert!(quotes(None, 100.0).iter().all(|(t, _)| !t.starts_with("RNC")));
-    }
-
-    #[test]
-    fn nothing_is_won_without_a_company() {
-        let s = crate::config::Settings::default();
-        assert_eq!(reached(&s), (0, 0));
-        if crate::config::OFFICIAL {
-            assert!(!bills_unlocked(&s) && cheque(&s).is_none());
-        }
     }
 }

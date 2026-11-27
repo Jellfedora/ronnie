@@ -17,6 +17,7 @@ use crate::ssh::{self, SshAuth, SshHost};
 use crate::theme::{Preset, Theme, PRESETS, TAB_COLORS};
 use crate::update::{self, Updater};
 
+mod avatar;
 mod backup;
 mod bell;
 mod bigtext;
@@ -24,34 +25,16 @@ mod desktop;
 mod assist;
 mod sshclaude;
 mod complete;
-mod blob;
 mod notesync;
-mod progress;
-mod chat;
 mod dbview;
 mod drive;
 mod easter;
 mod editor;
 mod files;
 mod filesearch;
-mod four;
-mod larsen;
-mod bughunt;
-mod zombie;
-mod zombie_floors;
-mod zombie_rewards;
 mod monday_theme;
-mod fishing;
-mod tycoon;
-mod tycoon_scene;
-mod openspace;
-mod openspace_scene;
-mod openspace_raid;
-mod openspace_cards;
-mod openspace_drone;
-mod frames;
+mod drone;
 mod trail;
-mod game;
 mod git;
 mod home;
 mod imageview;
@@ -69,11 +52,7 @@ mod library;
 mod mail;
 mod procs;
 mod mailhtml;
-mod mines;
-mod pig;
 mod westeros;
-mod riff;
-mod runner;
 mod loading;
 mod motion;
 mod music;
@@ -94,22 +73,15 @@ mod mdedit;
 mod track;
 mod trackchat;
 mod modules;
-mod arcade;
-mod backstage;
-mod coffee;
 mod sqlcomplete;
 mod popups;
 mod profilebar;
 mod resources;
-mod playtime;
 mod recap;
 mod viewer;
 mod settings;
-mod unlocks;
-mod scorecard;
+mod sound;
 mod sidebar;
-mod emojis;
-mod talk;
 mod textmenu;
 mod tour;
 mod tree;
@@ -368,21 +340,14 @@ struct WindowSlot {
     toasts: Vec<Toast>,
     toast_rects: Vec<Rect>,
     home: Option<String>,
-    home_game: bool,
-    games_hub: bool,
-    /// Which game: Speed Metal or Puissance 4.
-    home_which: four::HomeGame,
     /// The pane last shown of each kind of tab (see `last_tab_of`).
     category_panes: Vec<(Category, PaneId)>,
-    game: game::Game,
     ronnie_show: Option<(PaneId, f64)>,
-    game_folded: bool,
     music_page: bool,
     dev_page: bool,
     modules_page: bool,
     procs_page: bool,
     notes_page: bool,
-    talk_page: bool,
     track_page: bool,
 }
 
@@ -427,22 +392,10 @@ pub struct App {
     settings_dialog: bool,
     /// The activity simulator's window, opened only by its shortcut (⌘ ⌥ ⇧ A).
     keep_active_dialog: bool,
-    /// The window asking the player's pseudo (on the way into the games).
+    /// The floor account's window: signing in or up, the pseudo, the avatar, the password.
     pseudo_prompt: Option<popups::PseudoPrompt>,
-    /// The game for two on floor: who is online, the invitations, the match.
-    versus: crate::live::Live,
-    /// Puissance 4's page.
-    four: four::Four,
-    larsen: larsen::Larsen,
-    bughunt: bughunt::BugHunt,
-    monday: zombie::Monday,
-    fishing: fishing::Fishing,
-    tycoon: tycoon::Tycoon,
-    openspace: openspace::Space,
     /// The pointer's trail (unlocked at Ronnie Run).
     trail: trail::Trail,
-    /// The trail run in its preview (Settings › Rewards).
-    trail_preview: trail::Trail,
     /// Gryffindor's wand and its sparks.
     wand: wizard::Wand,
     cane: noel::Cane,
@@ -451,23 +404,7 @@ pub struct App {
     /// Christmas's present opening (picking the theme): since when (NaN: not started yet).
     present: Option<f64>,
     /// The opening's bells (opened when first played).
-    bells: Option<blob::Sound>,
-    /// The minesweeper's page.
-    mines: mines::Mines,
-    /// Ronnie Run's page.
-    runner: runner::Runner,
-    /// Riff Hero's page, and the song being played.
-    riff: riff::Riff,
-    /// Backstage's page.
-    backstage: backstage::Backstage,
-    /// Pause Café's page.
-    coffee: coffee::Coffee,
-    /// Ronnie.io's page, and its connection to floor.
-    blob: blob::Blob,
-    /// The sidebar showed the games at the last frame: the pseudo is asked on the way in.
-    games_seen: bool,
-    /// The games whose page a window drew this frame: the others' stop at its end (see `leave_games`).
-    games_drawn: Vec<four::HomeGame>,
+    bells: Option<sound::Sound>,
     /// Exporting or importing the configuration.
     backup: Option<backup::BackupDialog>,
     /// The automatic backup of the configuration.
@@ -480,8 +417,6 @@ pub struct App {
     dictation: Option<(PaneId, crate::voice::Dictation)>,
     /// Reads the machine's resources while their panel shows.
     sysmon: Option<crate::sysmon::Monitor>,
-    /// Seconds on Ronnie.io not yet counted (see `playtime`).
-    blob_played: f32,
     /// What was dictated was typed in that pane: Enter follows, a moment later (typed with the text,
     /// Claude Code would take it for a pasted line break).
     dictation_enter: Option<(PaneId, Instant)>,
@@ -551,8 +486,6 @@ pub struct App {
     modules_page: bool,
     /// The machine's processes (opened from the resources' gauges): shown instead of the tabs.
     procs_page: bool,
-    /// The chat's page (a conversation): shown instead of the tabs.
-    talk_page: bool,
     /// The project tracking ("Suivi"): shown instead of the tabs.
     track_page: bool,
     /// The window asked for the user's attention (its icon blinks): withdrawn once it is focused (on
@@ -560,9 +493,6 @@ pub struct App {
     attention: bool,
     /// The project tracking: its projects, kept on floor.
     track: track::Track,
-    /// The chat: the connection to floor and the conversations (for all windows).
-    talk: crate::talk::Talk,
-    talk_ui: talk::TalkUi,
     /// The players' avatars, fetched from floor when shown (chat, account).
     avatars: crate::floor::Avatars,
     modules: modules::Modules,
@@ -571,7 +501,7 @@ pub struct App {
     notes_page: bool,
     /// What was shown when the sidebar last looked (tab, notes, music, game): when it changes, the
     /// sidebar shows the category of the new one.
-    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool, (bool, bool)),
+    sidebar_seen: (Option<usize>, bool, bool, bool, bool, bool),
     /// The notes, the same in every window.
     notes: notes::Notes,
     /// The sidebar's file tree.
@@ -601,8 +531,6 @@ pub struct App {
     updater: Updater,
     /// The leaderboards' server: its board, the sync running.
     floor: crate::floor::Floor,
-    /// The games' progress kept with the floor account, on every machine signed in to it.
-    progress: crate::progress::Progress,
     notesync: crate::notesync::NoteSync,
     /// The account's password typed to open the notes' key on this computer (cleared once sent).
     notes_password: String,
@@ -702,20 +630,11 @@ pub struct App {
     /// The home page is shown instead of the active tab: at launch, after a tab closed (with a line
     /// about it), or from the logo.
     home: Option<String>,
-    /// The home page shows the typing game (three clicks on the logo).
-    home_game: bool,
-    /// With `home_game`: the games' page, each game on it, rather than one of them.
-    games_hub: bool,
-    /// Which game: Speed Metal or Puissance 4.
-    home_which: four::HomeGame,
     /// The pane last shown of each kind of tab (local, SSH, database): coming back to its category
     /// shows its tab again.
     category_panes: Vec<(Category, PaneId)>,
-    game: game::Game,
     /// "ronnie" was typed in this pane: its show, since when (see `easter`).
     ronnie_show: Option<(PaneId, f64)>,
-    /// The sidebar was folded for a round of the game: unfolded after it.
-    game_folded: bool,
     /// A pane's startup commands being edited: in which window and tab, and the text typed.
     startup_edit: Option<(egui::ViewportId, usize, PaneId, String)>,
     /// Notices in the window's corner, and where they were drawn (for the hover).
@@ -1170,7 +1089,6 @@ enum SettingsTab {
     Features,
     Changelog,
     About,
-    Rewards,
 }
 
 /// A shortcut that can be changed in the settings.
@@ -1348,36 +1266,18 @@ impl App {
             settings_dialog: false,
             keep_active_dialog: false,
             pseudo_prompt: None,
-            versus: crate::live::Live::default(),
-            four: four::Four::default(),
-            larsen: larsen::Larsen::default(),
-            bughunt: bughunt::BugHunt::default(),
-            monday: zombie::Monday::default(),
-            fishing: fishing::Fishing::default(),
-            tycoon: tycoon::Tycoon::default(),
-            openspace: openspace::Space::default(),
             trail: trail::Trail::default(),
-            trail_preview: trail::Trail::default(),
             wand: wizard::Wand::default(),
             cane: noel::Cane::default(),
             sorting: None,
             present: None,
             bells: None,
-            mines: mines::Mines::default(),
-            runner: runner::Runner::default(),
-            riff: riff::Riff::default(),
-            backstage: backstage::Backstage::default(),
-            coffee: coffee::Coffee::default(),
-            blob: blob::Blob::default(),
-            games_seen: false,
-            games_drawn: Vec::new(),
             backup: None,
             auto_backup: backup::AutoBackupState::default(),
             recap: recap::Recap::default(),
             backup_ask: None,
             dictation: None,
             sysmon: None,
-            blob_played: 0.0,
             dictation_enter: None,
             dictation_last: false,
             dictation_typed: 0,
@@ -1414,17 +1314,14 @@ impl App {
             music_page: false,
             dev_page: false,
             modules_page: false,
-            talk_page: false,
             track_page: false,
             attention: false,
             track: track::Track::default(),
-            talk: crate::talk::Talk::default(),
-            talk_ui: talk::TalkUi::default(),
             avatars: crate::floor::Avatars::default(),
             procs_page: false,
             modules: modules::Modules::default(),
             notes_page: false,
-            sidebar_seen: (None, false, false, false, false, false, (false, false)),
+            sidebar_seen: (None, false, false, false, false, false),
             notes: notes::Notes::load(),
             tree: tree::FileTree::default(),
             rail_flyout: None,
@@ -1445,7 +1342,6 @@ impl App {
             profile_error: None,
             updater: Updater::new(),
             floor: Default::default(),
-            progress: Default::default(),
             notesync: Default::default(),
             notes_password: String::new(),
             last_update_check: None,
@@ -1472,13 +1368,8 @@ impl App {
             pane_path: None,
             startup_edit: None,
             home: None,
-            home_game: false,
-            games_hub: false,
-            home_which: four::HomeGame::SpeedMetal,
             category_panes: Vec::new(),
-            game: game::Game::default(),
             ronnie_show: None,
-            game_folded: false,
             toasts: Vec::new(),
             toast_rects: Vec::new(),
             path_cache: HashMap::new(),
@@ -1621,36 +1512,6 @@ impl App {
                 app.splash = None;
                 app.push_toast(Toast { ok: true, title: app.t().command_done.to_owned(), body: "sleep 15 && echo \"Terminé\"\nAcqpa  ·  15 s".into(), tab: 0, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
             }
-            // Puissance 4: "lobby", or the columns played against the computer ("3342"...).
-            if let Ok(four) = std::env::var("RONNIE_OPEN_FOUR") {
-                app.splash = None;
-                app.four.demo(&four);
-                app.open_four();
-            }
-            if std::env::var("RONNIE_OPEN_BLOB").is_ok() {
-                app.splash = None;
-                app.open_blob();
-            }
-            // Riff Hero: "lobby", or "solo" (a song started).
-            if let Ok(riff) = std::env::var("RONNIE_OPEN_RIFF") {
-                app.splash = None;
-                app.open_riff();
-                app.riff_demo(&riff);
-            }
-            // Lundi matin: a game alone started, invincible, up to the wave given (a floor of development).
-            if let Ok(wave) = std::env::var("RONNIE_OPEN_MONDAY") {
-                app.splash = None;
-                app.open_monday();
-                app.monday.demo = Some((if wave == "lift" { 0 } else { wave.parse().unwrap_or(1) }, 0, None));
-            }
-            if std::env::var("RONNIE_OPEN_COFFEE").is_ok() {
-                app.splash = None;
-                app.open_coffee();
-            }
-            if std::env::var("RONNIE_OPEN_BACKSTAGE").is_ok() {
-                app.splash = None;
-                app.open_backstage();
-            }
             // The project tracking: its page ("tab": a tab of the project shown, tasks counters quotes access).
             if let Ok(tab) = std::env::var("RONNIE_OPEN_TRACK") {
                 app.splash = None;
@@ -1671,7 +1532,6 @@ impl App {
                     "music" => SettingsTab::Music,
                     "config" => SettingsTab::ConfigFile,
                     "about" => SettingsTab::About,
-                    "rewards" => SettingsTab::Rewards,
                     _ => SettingsTab::General,
                 };
             }
@@ -1992,25 +1852,6 @@ impl App {
         self.new_windows.push(slot);
     }
 
-    /// `game` shown in another window (a game shows in one window at a time): brings that window to the front.
-    fn show_game_elsewhere(&mut self, game: four::HomeGame) -> bool {
-        let Some(w) = self.others.iter().chain(&self.new_windows).find(|w| w.home.is_some() && w.home_game && !w.games_hub && w.home_which == game) else { return false };
-        self.ctx.send_viewport_cmd_to(w.viewport, ViewportCommand::Focus);
-        true
-    }
-
-    /// Opens `game` in a new window, taken from the window that showed it (which goes back to its home page,
-    /// or closes when it has nothing else).
-    fn game_to_new_window(&mut self, game: four::HomeGame) {
-        if self.home_game && !self.games_hub && self.home_which == game {
-            self.home_game = false;
-        }
-        for w in self.others.iter_mut().filter(|w| w.home_game && !w.games_hub && w.home_which == game) {
-            w.home_game = false;
-        }
-        self.new_window(|app| app.open_home_game(game));
-    }
-
     /// Takes tab `index` out of this window (to move it to another), keeping its programs running.
     fn take_tab(&mut self, index: usize) -> Option<Tab> {
         if index >= self.tabs.len() {
@@ -2181,28 +2022,18 @@ impl App {
         swap(&mut self.toasts, &mut slot.toasts);
         swap(&mut self.toast_rects, &mut slot.toast_rects);
         swap(&mut self.home, &mut slot.home);
-        swap(&mut self.home_game, &mut slot.home_game);
-        swap(&mut self.games_hub, &mut slot.games_hub);
-        swap(&mut self.home_which, &mut slot.home_which);
         swap(&mut self.category_panes, &mut slot.category_panes);
-        swap(&mut self.game, &mut slot.game);
         swap(&mut self.ronnie_show, &mut slot.ronnie_show);
-        swap(&mut self.game_folded, &mut slot.game_folded);
         swap(&mut self.music_page, &mut slot.music_page);
         swap(&mut self.dev_page, &mut slot.dev_page);
         swap(&mut self.modules_page, &mut slot.modules_page);
         swap(&mut self.procs_page, &mut slot.procs_page);
-        swap(&mut self.talk_page, &mut slot.talk_page);
         swap(&mut self.track_page, &mut slot.track_page);
         swap(&mut self.notes_page, &mut slot.notes_page);
     }
 
     fn save_config(&mut self) {
-        // The sidebar folded for a round of the game is saved as it was before.
-        let mut config = self.config.clone();
-        if self.game_folded {
-            config.settings.sidebar_folded = false;
-        }
+        let config = self.config.clone();
         if !self.config_writable || config == self.saved_config {
             return;
         }
@@ -2442,7 +2273,7 @@ impl App {
         }
         let t = self.t();
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page && !app.talk_page && !app.track_page;
+        let tab_shown = |app: &Self, i: usize| i == app.active && app.home.is_none() && !app.notes_page && !app.music_page && !app.dev_page && !app.modules_page && !app.procs_page && !app.track_page;
         let mut notified = false;
         for (event, i) in mine {
             let shown = tab_shown(self, i);
@@ -2882,7 +2713,6 @@ impl App {
             self.music_page = false;
             self.dev_page = false;
             self.modules_page = false;
-            self.talk_page = false;
             self.track_page = false;
             self.procs_page = false;
             self.notes_page = false;
@@ -2903,11 +2733,9 @@ impl App {
             t.home_quips[nanos as usize % t.home_quips.len()].replace("{name}", name)
         });
         self.home = Some(line.unwrap_or_default());
-        self.home_game = false;
         self.music_page = false;
         self.dev_page = false;
         self.modules_page = false;
-        self.talk_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;
@@ -2967,10 +2795,8 @@ impl App {
         self.music_page = false;
         self.dev_page = false;
         self.modules_page = false;
-        self.talk_page = false;
         self.track_page = false;
         self.procs_page = false;
-        self.home_game = false;
     }
 
     /// Back to what the notes page covered.
@@ -3064,7 +2890,7 @@ impl App {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The Dev, Downloads and processes pages, likewise.
-        if self.dev_page || self.modules_page || self.procs_page || self.talk_page || self.track_page {
+        if self.dev_page || self.modules_page || self.procs_page || self.track_page {
             fired.retain(|a| matches!(a, ShortcutAction::NewTab | ShortcutAction::ReopenTab | ShortcutAction::OpenSettings | ShortcutAction::NewWindow | ShortcutAction::ToggleSidebar | ShortcutAction::ToggleNotes));
         }
         // The music page, likewise; its search takes ⌘ F.
@@ -3139,7 +2965,7 @@ impl App {
             });
         }
         // A file open beside the terminals (VS Code layout), likewise.
-        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !self.talk_page && !self.track_page).and_then(|t| t.docs.get_mut(t.doc?)) {
+        if let Some(editor) = self.tabs.get_mut(self.active).filter(|_| self.home.is_none() && !self.notes_page && !self.music_page && !self.dev_page && !self.modules_page && !self.procs_page && !self.track_page).and_then(|t| t.docs.get_mut(t.doc?)) {
             fired.retain(|a| match a {
                 ShortcutAction::FindText => {
                     if ui.input(|i| i.modifiers.alt) {
@@ -4682,7 +4508,7 @@ impl App {
             let viewport = self.viewport;
             ctx.show_viewport_immediate(viewport, builder, |ui, _| self.window_ui(ui));
             // Its last tab closed, out of a game, the notes and the music: the window goes too.
-            let shows_page = (self.home.is_some() && self.home_game) || self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.talk_page || self.track_page;
+            let shows_page = self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.track_page;
             let closing = self.window_closing || (self.tabs.is_empty() && !shows_page);
             if closing {
                 while !self.tabs.is_empty() {
@@ -4823,49 +4649,30 @@ impl App {
                     rect.min.y = bar.max.y;
                 }
                 if self.notes_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
                     let strings = self.t();
                     let mode_key = self.config.settings.shortcuts.toggle_files.label();
-                    self.notes.claude_unlocked = !config::OFFICIAL || self.config.settings.four_online_played;
                     if matches!(self.notes.ui(ui, rect, &theme, strings, &mode_key), Some(notes::Action::Close)) {
                         self.close_notes();
                     }
                     return;
                 }
                 if self.music_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
                     self.library_ui(ui, rect);
                     return;
                 }
                 if self.dev_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
                     self.dev_page_ui(ui, rect);
                     return;
                 }
                 if self.modules_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
                     self.modules_page_ui(ui, rect);
                     return;
                 }
                 if self.procs_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
                     self.procs_page_ui(ui, rect);
                     return;
                 }
-                if self.talk_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
-                    self.talk_page_ui(ui, rect);
-                    return;
-                }
                 if self.track_page {
-                    self.game.leave();
-                    self.fold_for_game(false);
                     self.track_page_ui(ui, rect);
                     return;
                 }
@@ -4873,9 +4680,6 @@ impl App {
                     self.home_page(ui, rect);
                     return;
                 }
-                // Away from the home page: its game stops, music included, and the sidebar comes back.
-                self.game.leave();
-                self.fold_for_game(false);
                 // The VS Code layout: the tab's files opened beside its terminals, in a strip of tabs.
                 if let Some(i) = self.ws_tab() {
                     if self.docs_shown(i) {
@@ -5789,10 +5593,6 @@ impl App {
             self.tree_windows(ui.ctx());
             self.link_confirm_window(ui.ctx());
             self.ssh_prompt_window(ui.ctx());
-            self.live_frame(ui.ctx());
-            self.talk_frame(ui.ctx());
-            self.blob_frame(ui.ctx());
-            self.riff_frame(ui.ctx());
             self.pseudo_window(ui.ctx());
             self.imports_windows(ui.ctx());
             self.track_windows(ui.ctx());
@@ -5806,9 +5606,6 @@ impl App {
                 self.worklog_ask_window(ui.ctx());
                 if !self.worklog_ask {
                     self.backup_ask_window(ui.ctx());
-                    if self.backup_ask.is_none() {
-                        self.launch_pseudo_ask();
-                    }
                 }
             }
         }
@@ -5955,30 +5752,14 @@ impl App {
                 config::Pointer::Cane => self.cane.frame(ui.ctx()),
             }
         }
-        // The days in a row Ronnie is open; at `WIZARD_DAYS`, Gryffindor won.
         let today = chrono::Local::now().date_naive();
-        let today_s = today.format("%Y-%m-%d").to_string();
-        if self.config.settings.open_last != today_s {
-            let yesterday = today.pred_opt().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
-            let s = &mut self.config.settings;
-            s.open_streak = if s.open_last == yesterday { s.open_streak + 1 } else { 1 };
-            s.open_last = today_s;
-            self.save_config();
-        }
-        if !self.config.settings.wizard_unlocked && self.config.settings.open_streak >= crate::theme::WIZARD_DAYS {
-            self.config.settings.wizard_unlocked = true;
-            self.save_config();
-            let t = self.t();
-            self.push_toast(Toast { ok: true, title: t.wizard_unlocked_title.to_owned(), body: t.wizard_unlocked_body.to_owned(), tab: self.active, at: Instant::now(), mail: None, notice: 0, lead: None });
-        }
-        // Christmas: given in its season and kept for good; worn by everyone at the first opening of each
-        // season (a present opening), then taken off by whoever wants: not put back before the next one.
+        // Christmas: worn by everyone at the first opening of each season (a present opening), then taken
+        // off by whoever wants: not put back before the next one.
         let season = crate::theme::christmas_year(today);
         if let Some(year) = season
             && self.config.settings.christmas_worn != year
         {
             let s = &mut self.config.settings;
-            s.christmas_unlocked = true;
             s.christmas_worn = year;
             if s.theme != crate::theme::CHRISTMAS_THEME {
                 s.theme = crate::theme::CHRISTMAS_THEME.to_owned();
@@ -6000,7 +5781,7 @@ impl App {
             return;
         }
         if self.bells.is_none() {
-            self.bells = blob::Sound::open();
+            self.bells = sound::Sound::open();
         }
         if let Some(bells) = &self.bells {
             bells.bells(&noel::OPENING_TUNE, 0.9);
@@ -6013,7 +5794,7 @@ impl App {
             return;
         }
         if self.bells.is_none() {
-            self.bells = blob::Sound::open();
+            self.bells = sound::Sound::open();
         }
         if let Some(bells) = &self.bells {
             bells.bells(&wizard::OPENING_TUNE, 0.9);
@@ -6101,9 +5882,6 @@ impl eframe::App for App {
         self.watch_servers(ctx);
         self.auto_backup_poll(ctx);
         self.recap_poll(ctx);
-        self.progress_tick(ctx);
-        self.tycoon_tick(ctx);
-        self.openspace_tick(ctx);
         self.notesync_tick(ctx);
         self.desktop_tick();
         self.assist_tick();
@@ -6145,7 +5923,6 @@ impl eframe::App for App {
         self.window_ui(ui);
         self.other_windows(ui.ctx());
         self.tool_windows_ui(ui.ctx());
-        self.leave_games();
 
         // Errors shown to the user also go to ronnie.log, to diagnose them later.
         if self.error != self.logged_error {

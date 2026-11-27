@@ -407,31 +407,14 @@ impl Config {
         serde_json::to_string_pretty(self).expect("config serializes")
     }
 
-    /// The config as the editor shows it: without the rewards and their seal.
+    /// The config as the editor shows it.
     pub fn to_json_public(&self) -> String {
-        let mut value: serde_json::Value = serde_json::from_str(&self.to_json()).expect("config serializes");
-        if let Some(map) = value.as_object_mut() {
-            for key in REWARD_KEYS.iter().chain(["rewards_seal"].iter()) {
-                map.remove(*key);
-            }
-        }
-        serde_json::to_string_pretty(&value).expect("config serializes")
+        self.to_json()
     }
 
-    /// The config the editor wrote (`text`, without the rewards), with this one's rewards back.
+    /// The config the editor wrote (`text`).
     pub fn from_public_json(&self, text: &str) -> Result<Self, serde_json::Error> {
-        let mut value: serde_json::Value = serde_json::from_str(text)?;
-        let ours: serde_json::Value = serde_json::from_str(&self.to_json()).expect("config serializes");
-        if let (Some(map), Some(from)) = (value.as_object_mut(), ours.as_object()) {
-            for key in REWARD_KEYS {
-                match from.get(key) {
-                    Some(v) => map.insert(key.to_owned(), v.clone()),
-                    None => map.remove(key),
-                };
-            }
-        }
-        seal_rewards(&mut value);
-        Self::from_json(&serde_json::to_string(&value)?)
+        Self::from_json(text)
     }
 
     /// Parses the config; the error names the line and column of the mistake. Entries this version
@@ -439,15 +422,9 @@ impl Config {
     /// fail: they are kept aside under "unreadable_<list>" and written back as they were. An unknown
     /// language falls back to the default one.
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        Self::from_json_sealed(text, false)
-    }
-
-    /// As `from_json`, the rewards kept only if their seal holds (`legacy`: or if there is none, as
-    /// written before seals).
-    pub fn from_json_sealed(text: &str, legacy: bool) -> Result<Self, serde_json::Error> {
         let mut value: serde_json::Value = serde_json::from_str(text)?;
-        check_rewards(&mut value, legacy);
         if let Some(map) = value.as_object_mut() {
+            forget_games(map);
             if map.get("language").is_some_and(|l| serde_json::from_value::<Lang>(l.clone()).is_err()) {
                 map.remove("language");
             }
@@ -460,65 +437,18 @@ impl Config {
     }
 }
 
-/// The settings that record what the games unlocked: sealed, so that editing them by hand undoes them.
-pub const REWARD_KEYS: [&str; 34] = [
+/// What the games and the chat kept in the config, before they went: dropped when it is read.
+const GONE: [&str; 48] = [
     "typing_scores", "blob_best", "mines_best", "runner_best", "riff_bests", "backstage_best", "bughunt_best", "bughunt_best_wave", "fish_cards", "fish_baits", "fish_dry",
-    "jurassic_unlocked", "hyperspace_unlocked", "four_online_played", "wizard_unlocked", "open_streak", "open_last",
-    "coffee_bests", "fish_budget", "fish_rod", "progress_bases", "monday_best",
-    "monday_revives", "monday_escorts", "monday_letters", "monday_horde", "monday_agnes_card", "monday_gerard",
-    "monday_wins", "monday_dailies", "riff_games", "tycoon", "christmas_unlocked", "openspace",
-];
-/// The rewards the first seals covered. Those added since count only once written: without that, a
-/// config sealed before them would no longer hold, and its rewards would all be reset.
-const FIRST_SEALED: usize = 17;
-
-/// The seal's key, kept apart from its mask (so it isn't one plain string in the binary).
-const SEAL_KEY: [u8; 32] = [
-    0x5e, 0x91, 0x2c, 0xd7, 0x08, 0xb3, 0x6f, 0x4a, 0xe1, 0x37, 0x9c, 0x02, 0x7d, 0xc8, 0x55, 0xaa, 0x13, 0xf6, 0x48, 0x8b, 0x2e, 0xd0, 0x61, 0x9f, 0x3c, 0x75, 0xe9, 0x04, 0xb7, 0x5a, 0x86, 0x1d,
-];
-const SEAL_MASK: [u8; 32] = [
-    0x33, 0x4e, 0xa7, 0x19, 0xc2, 0x6d, 0x90, 0xf5, 0x28, 0x8b, 0x5c, 0xe3, 0x07, 0xba, 0x41, 0x9e, 0xd6, 0x2f, 0x73, 0x08, 0xac, 0x55, 0xe1, 0x3b, 0x92, 0x6e, 0x0f, 0xc4, 0x7a, 0xb9, 0x24, 0xd3,
+    "jurassic_unlocked", "hyperspace_unlocked", "four_online_played", "wizard_unlocked", "open_streak", "open_last", "coffee_bests", "fish_budget", "fish_rod", "fish_bait",
+    "progress_bases", "monday_best", "monday_seen", "monday_revives", "monday_escorts", "monday_letters", "monday_horde", "monday_agnes_card", "monday_gerard", "monday_wins",
+    "monday_dailies", "riff_games", "tycoon", "christmas_unlocked", "openspace", "rewards_seal", "blob_skin", "game_sound", "player_name", "talk_read", "talk_last",
+    "talk_nicknames", "talk_nicknames_synced", "talk_pseudo_asked", "emoji_recent", "emoji_skin", "game_usage",
 ];
 
-/// The seal over the rewards in `value` (the config as JSON): an HMAC of their values, in order.
-fn rewards_seal(value: &serde_json::Value) -> String {
-    use hmac::Mac;
-    let key: Vec<u8> = SEAL_KEY.iter().zip(SEAL_MASK).map(|(k, m)| k ^ m).collect();
-    let later = REWARD_KEYS[FIRST_SEALED..].iter().filter_map(|k| value.get(*k).cloned());
-    let fields: Vec<serde_json::Value> = REWARD_KEYS[..FIRST_SEALED].iter().map(|k| value.get(*k).cloned().unwrap_or(serde_json::Value::Null)).chain(later).collect();
-    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(&key).expect("any key length");
-    mac.update(b"ronnie-rewards-v1");
-    mac.update(serde_json::to_string(&fields).unwrap_or_default().as_bytes());
-    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Seals the rewards in `value` (the config as JSON).
-fn seal_rewards(value: &mut serde_json::Value) {
-    let seal = rewards_seal(value);
-    if let Some(map) = value.as_object_mut() {
-        map.insert("rewards_seal".to_owned(), serde_json::Value::String(seal));
-    }
-}
-
-/// The rewards in `value` reset when their seal doesn't hold (missing: only when `legacy`, written
-/// before seals, are they kept).
-fn check_rewards(value: &mut serde_json::Value, legacy: bool) {
-    let seal = value.get("rewards_seal").and_then(|s| s.as_str()).unwrap_or_default().to_owned();
-    if seal.is_empty() && legacy {
-        return;
-    }
-    if !seal.is_empty() && seal == rewards_seal(value) {
-        return;
-    }
-    if let Some(map) = value.as_object_mut() {
-        let tampered = REWARD_KEYS.iter().any(|k| map.contains_key(*k));
-        for key in REWARD_KEYS {
-            map.remove(key);
-        }
-        map.remove("rewards_seal");
-        if tampered {
-            crate::log::info("config: the rewards' seal didn't hold, they are reset");
-        }
+fn forget_games(map: &mut serde_json::Map<String, serde_json::Value>) {
+    for key in GONE {
+        map.remove(key);
     }
 }
 
@@ -544,9 +474,7 @@ pub fn load_config() -> Result<Config> {
     let path = config_path();
     if let Some(path) = path.as_ref().filter(|p| p.exists()) {
         let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        // Written before the seals (never sealed here yet): its rewards are kept, then sealed.
-        let legacy = !path.with_file_name(SEALED_MARK).exists();
-        let mut config = Config::from_json_sealed(&text, legacy).with_context(|| format!("reading {}", path.display()))?;
+        let mut config = Config::from_json(&text).with_context(|| format!("reading {}", path.display()))?;
         config.normalize();
         return Ok(config);
     }
@@ -780,160 +708,15 @@ pub struct Settings {
     /// The user answered whether to turn `claude_worklog` on (or set it in the settings).
     #[serde(default)]
     pub claude_worklog_asked: bool,
-    /// The home page's typing game: the best rounds, the best first.
-    #[serde(default)]
-    pub typing_scores: Vec<TypingScore>,
-    /// Ronnie.io: the largest mass reached.
-    #[serde(default)]
-    pub blob_best: u32,
-    /// The minesweeper: the fastest game won, in milliseconds (0: none yet).
-    #[serde(default)]
-    pub mines_best: u32,
-    /// Ronnie Run: the farthest run, in meters.
-    #[serde(default)]
-    pub runner_best: u32,
-    /// Riff Hero: the best score of each level's song played alone (easy, medium, hard). A list, so
-    /// that a level added reads the configs written before. The record of the songs never the same
-    /// before them is not kept: it does not compare.
-    #[serde(default)]
-    pub riff_bests: Vec<u32>,
-    /// Backstage: the best score.
-    #[serde(default)]
-    pub backstage_best: u32,
-    /// Pause Café: the best score of each level, 0 if it was never finished.
-    #[serde(default)]
-    pub coffee_bests: Vec<u32>,
-    /// Bug Hunt: the best score.
-    #[serde(default)]
-    pub bughunt_best: u32,
-    /// Bug Hunt: the highest wave reached.
-    #[serde(default)]
-    pub bughunt_best_wave: u32,
-    /// Lundi matin: the highest wave held (floor keeps the board).
-    #[serde(default)]
-    pub monday_best: u32,
-    /// Lundi matin: the kinds of zombies met (bits, in the bestiary's order), the others shown as shadows.
-    #[serde(default)]
-    pub monday_seen: u32,
-    /// Lundi matin, from the career floor keeps: the colleagues helped up, Agnès escorted to the
-    /// coffee, her letters found, the wave 10 held with her standing (what the rewards hang on).
-    #[serde(default)]
-    pub monday_revives: u32,
-    #[serde(default)]
-    pub monday_escorts: u32,
-    #[serde(default)]
-    pub monday_letters: u32,
-    #[serde(default)]
-    pub monday_horde: bool,
-    /// Gérard found Agnès in a game: he walks along the foot of the screen.
-    #[serde(default)]
-    pub monday_gerard: bool,
-    /// Games won (the executive committee beaten): the Lundi matin theme.
-    #[serde(default)]
-    pub monday_wins: u32,
-    /// Daily challenges done: the Monday Survivor frame.
-    #[serde(default)]
-    pub monday_dailies: u32,
-    /// Riff Hero: songs played to the end (Mathéo, the green plant, at 5).
-    #[serde(default)]
-    pub riff_games: u32,
-    /// Agnès' card at the fishing: how many times she was hired (a card apart).
-    #[serde(default)]
-    pub monday_agnes_card: u32,
-    /// La pêche aux talents: the cards of the candidates caught, by id (`crate::fishing::FISH`).
-    #[serde(default)]
-    pub fish_cards: std::collections::BTreeMap<String, FishCard>,
-    /// La pêche aux talents: the baits won (`crate::fishing::Bait`'s ids) and how many of each.
-    #[serde(default)]
-    pub fish_baits: std::collections::BTreeMap<String, u32>,
-    /// La pêche aux talents: the budget (k€) the duplicates sold brought, not spent yet.
-    #[serde(default)]
-    pub fish_budget: u32,
-    /// La pêche aux talents: the rod's level (`crate::fishing::Rod`), 0 to `ROD_LEVELS`.
-    #[serde(default)]
-    pub fish_rod: u32,
-    /// The bait put on the hook for the next casts, while there are some left.
-    #[serde(default)]
-    pub fish_bait: Option<String>,
-    /// The Gryffindor theme won: Ronnie open `WIZARD_DAYS` days in a row.
-    #[serde(default)]
-    pub wizard_unlocked: bool,
-    /// The Christmas theme had (given in its season, kept for good).
-    #[serde(default)]
-    pub christmas_unlocked: bool,
     /// The last Christmas season the theme was put on by itself (the year of its December; 0: never).
     #[serde(default)]
     pub christmas_worn: i32,
-    /// The days in a row Ronnie was open, the last of them (YYYY-MM-DD).
-    #[serde(default)]
-    pub open_streak: u32,
-    #[serde(default)]
-    pub open_last: String,
-    /// The progress last agreed with floor, for each account (`crate::progress`): what changed since
-    /// is what a sync sends. Sealed with the rewards: edited, the counters would be counted again.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub progress_bases: std::collections::BTreeMap<String, serde_json::Value>,
-    /// The seal over the rewards' settings (`REWARD_KEYS`): edited by hand, they are reset.
-    #[serde(default)]
-    pub rewards_seal: String,
-    /// The special themes' music (Gryffindor's opening tune), whatever the games' sounds.
+    /// The special themes' music (Gryffindor's opening tune).
     #[serde(default = "default_true")]
     pub theme_music: bool,
-    /// Hires in a row with no new card (at `crate::fishing::PITY`, the next is a new one).
-    #[serde(default)]
-    pub fish_dry: u32,
-    /// Ronnie Corp: the company (`crate::tycoon`), once started. Sealed with the rewards and synced
-    /// (the side with the most actions wins, see `crate::progress`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tycoon: Option<crate::tycoon::Corp>,
-    /// Open Space: the open space (`crate::openspace`), once started. Sealed with the rewards and synced
-    /// (the side with the most actions wins, see `crate::progress`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openspace: Option<crate::openspace::OpenSpace>,
-    /// A round of Ronnie.io reached `theme::JURASSIC_UNLOCK` (since the Jurassic Park theme exists: a
-    /// best made before doesn't count).
-    #[serde(default)]
-    pub jurassic_unlocked: bool,
-    /// Larsen unlocked the Hyperspace theme: the computer beaten at its hardest, or someone online.
-    #[serde(default)]
-    pub hyperspace_unlocked: bool,
-    /// Ronnie.io: the skin picked (floor checks it is unlocked).
-    #[serde(default = "default_skin")]
-    pub blob_skin: String,
-    /// Its music: on or off (None: asked the first time).
-    #[serde(default)]
-    pub game_sound: Option<bool>,
-    /// The name put on the cards of its rounds, when shared, and on floor's board.
-    #[serde(default)]
-    pub player_name: String,
-    /// The player's account on floor, the leaderboards' server (see floor.rs): made with the first round sent.
+    /// The account on floor (see floor.rs): the notes kept in sync, the project tracking.
     #[serde(default)]
     pub floor: Option<FloorAccount>,
-    /// The last message read in each conversation (its id), by conversation.
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub talk_read: std::collections::HashMap<String, i64>,
-    /// The conversation last shown on the chat's page: shown again when it opens.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub talk_last: Option<String>,
-    /// The names given to others in the chat, for oneself only (by player id).
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub talk_nicknames: std::collections::HashMap<String, String>,
-    /// This computer's names given to others sent up to floor once (floor keeps them since).
-    #[serde(default)]
-    pub talk_nicknames_synced: bool,
-    /// A game of Puissance 4 played to its end against someone online: it unlocks Claude's buttons
-    /// (the chat's fix, the notes' clean-up).
-    #[serde(default)]
-    pub four_online_played: bool,
-    /// The pseudo was asked at launch, for the chat (once; it can be picked later in the chat).
-    #[serde(default)]
-    pub talk_pseudo_asked: bool,
-    /// The emojis used last (the most recent first): the picker's first row.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub emoji_recent: Vec<String>,
-    /// The skin tone the picker gives (0: none, 1 light – 5 dark).
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
-    pub emoji_skin: u8,
     /// The activity simulator (see awake.rs).
     #[serde(default)]
     pub keep_active: KeepActive,
@@ -965,9 +748,6 @@ pub struct Settings {
     /// Arrows on the cut edges of the profiles' bar, to scroll it with a click.
     #[serde(default = "default_true")]
     pub bar_arrows: bool,
-    /// What was played in the half-day of work under way (see `crate::playtime`).
-    #[serde(default)]
-    pub game_usage: GameUsage,
     /// The Node.js version new terminals use (see `crate::node`); none: the system's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_default: Option<String>,
@@ -1152,58 +932,6 @@ fn take_up_looks(map: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
-/// A candidate's card, at the fishing: how many caught, the biggest, the shiny ones, the first.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
-#[serde(default)]
-pub struct FishCard {
-    pub count: u32,
-    pub best_cm: u32,
-    pub shiny: u32,
-    /// When it was first caught (Unix seconds).
-    pub first_at: i64,
-    /// Duplicates sold (`count` stays all those ever hired).
-    #[serde(skip_serializing_if = "is_zero_u32")]
-    pub sold: u32,
-}
-
-fn is_zero_u32(n: &u32) -> bool {
-    *n == 0
-}
-
-/// The games played in a half-day of work.
-/// (Each field defaults: a field deleted by hand doesn't break the config, the seal catches it.)
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
-#[serde(default)]
-pub struct GameUsage {
-    /// Which one (`crate::playtime::Period::key`); another one starts afresh.
-    pub period: String,
-    pub speed_metal: bool,
-    pub four: bool,
-    pub blob_secs: u32,
-    /// The minesweeper played enough (`crate::playtime::MINES_GAMES` games started).
-    pub mines: bool,
-    /// The minesweeper's games started.
-    pub mines_games: u32,
-    pub runner: bool,
-    pub riff: bool,
-    pub backstage: bool,
-    /// Larsen.
-    pub larsen: bool,
-    /// The Président, a game since removed: kept so the half-days sealed with it stay valid.
-    pub president: bool,
-    /// Bug Hunt.
-    pub bughunt: bool,
-    /// Pause Café.
-    pub coffee: bool,
-    /// The candidates caught at the fishing (`crate::playtime::FISH_CATCHES` at most).
-    pub fish: u32,
-    /// Lundi matin.
-    pub monday: bool,
-    /// Its HMAC (`crate::playtime`): an edit by hand shows.
-    #[serde(default)]
-    pub seal: String,
-}
-
 /// A category of the sidebar: an icon in its strip, and what the panel next to it lists.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -1216,12 +944,13 @@ pub enum Category {
     Db,
     Music,
     Notes,
+    /// Retired (the games went): still read from older configs, never shown.
     Games,
     /// Development tools: the Node.js versions.
     Dev,
     /// The modules to download (Serj…): apps of their own, see `crate::modules`.
     Modules,
-    /// The chat with the other users of Ronnie (see `crate::talk`).
+    /// Retired (the chat went): still read from older configs, never shown.
     Talk,
     /// The user's sites, served locally with nginx and PHP: see `crate::projects`.
     Projects,
@@ -1230,14 +959,19 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 11] = [Category::Local, Category::Projects, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Track, Category::Talk, Category::Games, Category::Modules];
+    pub const ALL: [Category; 9] = [Category::Local, Category::Projects, Category::Ssh, Category::Db, Category::Dev, Category::Music, Category::Notes, Category::Track, Category::Modules];
+
+    /// Retired: read from older configs, never shown.
+    pub fn retired(self) -> bool {
+        matches!(self, Category::Files | Category::Games | Category::Talk)
+    }
 
     /// Every category in the order `order` gives (dragged in the strip), those it leaves out after in
     /// their usual place.
     pub fn ordered(order: &[Category]) -> Vec<Category> {
         let mut all: Vec<Category> = Vec::with_capacity(Self::ALL.len());
         for c in order.iter().chain(Self::ALL.iter()) {
-            if !all.contains(c) && *c != Category::Files {
+            if !all.contains(c) && !c.retired() {
                 all.push(*c);
             }
         }
@@ -1349,24 +1083,6 @@ impl Default for KeepActive {
     }
 }
 
-/// A round of the home page's typing game.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
-pub struct TypingScore {
-    /// Letters typed right in the minute: the score.
-    pub letters: u32,
-    pub words: u32,
-    pub wpm: u32,
-    /// Percent of the keys typed that were right.
-    pub accuracy: u32,
-    pub combo: u32,
-    /// When, in seconds since 1970.
-    pub at: i64,
-}
-
-fn is_zero_u8(n: &u8) -> bool {
-    *n == 0
-}
-
 /// An account on floor.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct FloorAccount {
@@ -1383,23 +1099,11 @@ pub struct FloorAccount {
     /// Its avatar's version on floor (none: its initial is drawn).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
-    /// The frame worn around it (`app::frames`), kept on floor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame: Option<String>,
     /// Not yet allowed by floor's administrator: no online feature until then (looked at again now
     /// and then).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
-    /// The title worn (a Lundi matin achievement's id), kept on floor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// The titles won, to pick one (as floor said last).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub titles: Vec<String>,
 }
-
-/// Places kept on the leaderboard.
-pub const TYPING_SCORES: usize = 10;
 
 pub const NOTIFY_AFTER_SECS: std::ops::RangeInclusive<u64> = 3..=600;
 
@@ -1711,17 +1415,13 @@ fn default_true() -> bool {
     true
 }
 
-fn default_skin() -> String {
-    "plain".to_owned()
-}
-
 fn default_theme() -> String {
     crate::theme::DEFAULT_THEME.to_owned()
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, telemetry: true, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, typing_scores: Vec::new(), blob_best: 0, mines_best: 0, runner_best: 0, riff_bests: Vec::new(), backstage_best: 0, coffee_bests: Vec::new(), bughunt_best: 0, bughunt_best_wave: 0, monday_best: 0, monday_seen: 0, monday_revives: 0, monday_escorts: 0, monday_letters: 0, monday_horde: false, monday_gerard: false, monday_wins: 0, monday_dailies: 0, riff_games: 0, monday_agnes_card: 0, fish_cards: Default::default(), fish_baits: Default::default(), fish_bait: None, fish_budget: 0, fish_rod: 0, fish_dry: 0, tycoon: None, openspace: None, progress_bases: Default::default(), theme_music: true, rewards_seal: String::new(), wizard_unlocked: false, christmas_unlocked: false, christmas_worn: 0, open_streak: 0, open_last: String::new(), jurassic_unlocked: false, hyperspace_unlocked: false, blob_skin: default_skin(), game_sound: None, player_name: String::new(), floor: None, talk_read: std::collections::HashMap::new(), talk_nicknames: std::collections::HashMap::new(), talk_nicknames_synced: false, talk_last: None, four_online_played: false, talk_pseudo_asked: false, emoji_recent: Vec::new(), emoji_skin: 0, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), pane_bar_hidden: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, game_usage: GameUsage::default(), node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default(), track_profiles: Default::default(), track_selected: None }
+        Self { language: Lang::default(), theme: default_theme(), show_cwd: true, auto_update: true, shortcuts: Shortcuts::default(), clipboard_from_programs: true, font_size: default_font_size(), scrollback: default_scrollback(), ui_zoom: default_zoom(), notify_commands: true, notify_after: default_notify_after(), toast_position: ToastPosition::default(), notify_style: NotifyStyle::default(), sidebar_folded: false, local_collapsed: false, ssh_collapsed: false, db_collapsed: false, path_suggestions: true, restore_scrollback: true, metal_guard: true, db_confirm_changes: true, confirm_close_busy: true, splash: true, trail: None, pointer: None, desktop_fx: DesktopFx::default(), sheep: true, home_tips: true, resources_panel: true, tour_version: 0, home_hosts: true, home_databases: true, claude_usage: true, server_health: true, claude_statusline: true, claude_notify: true, claude_context: true, claude_worklog: false, notes_sync: false, telemetry: true, teams_claude: false, outlook_claude: false, claude_worklog_asked: false, theme_music: true, christmas_worn: 0, floor: None, keep_active: KeepActive::default(), subsonic: Subsonic::default(), notes_collapsed: false, sidebar_category: Category::Local, hidden_categories: Vec::new(), pane_bar_hidden: Vec::new(), category_order: Vec::new(), files_root: None, files_width: default_files_width(), bar_arrows: true, node_default: None, mail_port: default_mail_port(), mail_running: false, projects_port: default_projects_port(), projects_dir: None, auto_backup: AutoBackup::default(), recap: Recap::default(), projects_sort: Default::default(), projects_grouping: Default::default(), track_profiles: Default::default(), track_selected: None }
     }
 }
 
@@ -1869,18 +1569,10 @@ pub fn save_config_file(path: &Path, config: &Config) -> Result<()> {
     if stale && path.exists() {
         let _ = fs::copy(path, &backup);
     }
-    let mut value: serde_json::Value = serde_json::from_str(&config.to_json())?;
-    seal_rewards(&mut value);
+    let value: serde_json::Value = serde_json::from_str(&config.to_json())?;
     save(path, &value)?;
-    let mark = path.with_file_name(SEALED_MARK);
-    if !mark.exists() {
-        let _ = fs::write(mark, "");
-    }
     Ok(())
 }
-
-/// Beside the config once it was sealed: from then on, a config with no seal has its rewards reset.
-const SEALED_MARK: &str = ".rewards-sealed";
 
 /// Creates `dir` (and its parents) accessible by the user only.
 pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
@@ -2109,52 +1801,13 @@ mod tests {
         assert_eq!(serde_json::from_str::<Profile>(&json).unwrap(), p);
     }
 
-    /// The rewards hold while their seal does: edited by hand, or their seal taken away, they are
-    /// reset; written before seals, they are kept; the editor never shows them and keeps them.
+    /// What the games and the chat kept is dropped when the config is read.
     #[test]
-    fn a_reward_added_later_leaves_older_seals_valid() {
-        let mut config = Config::default();
-        config.settings.jurassic_unlocked = true;
-        let mut value: serde_json::Value = serde_json::from_str(&config.to_json()).unwrap();
-        // As a version before Pause Café wrote it: no such key, its seal over the first rewards alone.
-        value.as_object_mut().unwrap().remove("coffee_bests");
-        seal_rewards(&mut value);
-        let old = serde_json::to_string(&value).unwrap();
-        assert!(Config::from_json(&old).unwrap().settings.jurassic_unlocked);
-        // Added by hand to that config, it no longer holds.
-        value.as_object_mut().unwrap().insert("coffee_bests".to_owned(), serde_json::json!([900, 900, 900]));
-        let edited = Config::from_json(&serde_json::to_string(&value).unwrap()).unwrap();
-        assert!(!edited.settings.jurassic_unlocked && edited.settings.coffee_bests.is_empty());
-    }
-
-    #[test]
-    fn rewards_are_sealed() {
-        let mut config = Config::default();
-        config.settings.jurassic_unlocked = true;
-        config.settings.riff_bests = vec![0, 49_000];
-        let mut value: serde_json::Value = serde_json::from_str(&config.to_json()).unwrap();
-        seal_rewards(&mut value);
-        let sealed = serde_json::to_string(&value).unwrap();
-        let back = Config::from_json(&sealed).unwrap();
-        assert!(back.settings.jurassic_unlocked && back.settings.riff_bests == vec![0, 49_000]);
-
-        let edited = sealed.replace("49000", "99000");
-        let back = Config::from_json(&edited).unwrap();
-        assert!(!back.settings.jurassic_unlocked && back.settings.riff_bests.is_empty(), "edited: reset");
-
-        let mut unsealed = value.clone();
-        unsealed.as_object_mut().unwrap().remove("rewards_seal");
-        let text = serde_json::to_string(&unsealed).unwrap();
-        assert!(!Config::from_json(&text).unwrap().settings.jurassic_unlocked, "no seal: reset");
-        assert!(Config::from_json_sealed(&text, true).unwrap().settings.jurassic_unlocked, "before seals: kept");
-
-        let public = back_with(&sealed).to_json_public();
-        assert!(!public.contains("jurassic_unlocked") && !public.contains("rewards_seal"));
-        let edited = back_with(&sealed).from_public_json(&public.replace("\"show_cwd\": true", "\"show_cwd\": false")).unwrap();
-        assert!(edited.settings.jurassic_unlocked && !edited.settings.show_cwd, "the editor keeps them");
-    }
-
-    fn back_with(text: &str) -> Config {
-        Config::from_json(text).unwrap()
+    fn the_games_leftovers_are_dropped() {
+        let text = r#"{"jurassic_unlocked": true, "typing_scores": [], "talk_read": {"a": 1}, "rewards_seal": "x", "show_cwd": false}"#;
+        let back = Config::from_json(text).unwrap();
+        assert!(!back.settings.show_cwd);
+        let json = back.to_json();
+        assert!(!json.contains("jurassic_unlocked") && !json.contains("talk_read") && !json.contains("rewards_seal"), "{json}");
     }
 }

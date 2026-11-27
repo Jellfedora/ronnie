@@ -1,26 +1,15 @@
-//! floor: the server of the games' leaderboards (its own repository, next to Ronnie's). It keeps the
-//! best round of each player; the typing game shows its board, and its own rounds when it can't reach it.
-//!
-//! The account is made when the player picks a pseudo (a claim): floor keeps each pseudo for one player.
-//! Without one, nothing goes to floor: the rounds stay here.
-//!
-//! The work is a sync, in the background, after which the board and the account are up to date: the
-//! board is fetched, and the round just finished sent if it beats the player's line on floor.
-//!
-//! Only a round ended in the game is sent, never the scores kept in the settings (a file anyone can
-//! edit). One floor couldn't take is tried again at the next syncs, while the app runs.
+//! floor: Ronnie's server (its own repository, next to Ronnie's): the accounts (a pseudo and a
+//! password, a session per machine), their avatars, and what the other features keep there (the notes
+//! in sync, the project tracking, the usage statistics, the releases).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::config::{FloorAccount, TypingScore};
+use crate::config::FloorAccount;
 
-const GAME: &str = "speed-metal";
-/// Places shown on the board.
-pub const BOARD: usize = 10;
 /// The names floor takes, at most.
 const NAME_MAX: usize = 24;
 
@@ -46,63 +35,7 @@ pub fn site() -> Option<String> {
     })
 }
 
-/// A line of the board.
-#[derive(Clone, Debug)]
-pub struct Entry {
-    /// None: the player gave none.
-    pub name: Option<String>,
-    pub score: TypingScore,
-    /// The line of this player.
-    pub me: bool,
-    /// The player's id, avatar version and frame (an older floor, a round played here: none).
-    pub id: Option<String>,
-    pub avatar: Option<String>,
-    pub frame: Option<String>,
-    /// Their face, once fetched (`App::faced`), to draw on the board.
-    pub face: Option<Face>,
-}
-
-/// A face fetched, on a line of a board.
-#[derive(Clone)]
-pub struct Face(pub egui::TextureHandle);
-
-impl std::fmt::Debug for Face {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Face")
-    }
-}
-
-#[derive(Deserialize)]
-struct Board {
-    entries: Vec<WireEntry>,
-}
-
-#[derive(Deserialize)]
-struct WireEntry {
-    name: Option<String>,
-    score: u32,
-    details: Details,
-    /// Milliseconds since 1970.
-    at: i64,
-    me: bool,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    avatar: Option<String>,
-    #[serde(default)]
-    frame: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct Details {
-    letters: u32,
-    words: u32,
-    wpm: u32,
-    accuracy: u32,
-    combo: u32,
-}
-
-/// The pseudo of the account, when it was made on this floor: without one, no online scores.
+/// The pseudo of the account, when it was made on this floor.
 pub fn pseudo(account: Option<&FloorAccount>) -> Option<&str> {
     let url = url()?;
     account.filter(|a| a.url == url)?.name.as_deref()
@@ -141,12 +74,6 @@ pub enum AccountAsk {
     SignOut,
     /// The avatar: an image file's bytes (made small before it goes), or none.
     Avatar(Option<Vec<u8>>),
-    /// The frame around it (`app::frames`), or none.
-    Frame(Option<String>),
-    /// The titles won, and the one worn.
-    Titles,
-    /// The title worn (an achievement won), or none.
-    Title(Option<String>),
 }
 
 /// What floor did.
@@ -165,22 +92,8 @@ pub fn floor_name(name: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// What a sync brings back.
-#[derive(Default)]
-struct Synced {
-    board: Option<Vec<Entry>>,
-    /// The account changed (made, or forgotten by floor): to save.
-    account: Option<Option<FloorAccount>>,
-    /// The round to send, not sent (floor unreachable): tried again.
-    unsent: Option<TypingScore>,
-}
-
 #[derive(Default)]
 struct Shared {
-    busy: bool,
-    /// A sync asked while one runs: another one after it.
-    again: bool,
-    done: Option<Synced>,
     /// The pseudo typed last asked about, and floor's answer once it came: free or not (None: floor
     /// didn't answer).
     checked: Option<(String, Option<Option<bool>>)>,
@@ -189,52 +102,13 @@ struct Shared {
     claimed: Option<Result<AccountDone, ClaimError>>,
 }
 
-/// Kept by the app: the last board, the sync running.
+/// Kept by the app: what the account window asked floor, and its answers.
 #[derive(Default)]
 pub struct Floor {
     shared: Arc<Mutex<Shared>>,
-    board: Option<Vec<Entry>>,
-    /// When the last sync started (app time): the board is fetched again a minute later.
-    last: Option<f64>,
-    /// A round finished, not sent yet (kept in memory only).
-    pending: Option<TypingScore>,
 }
 
 impl Floor {
-    /// floor's board when it answered, the best first.
-    pub fn board(&self) -> Option<&[Entry]> {
-        self.board.as_deref()
-    }
-
-    /// Takes what a sync brought back: the account, when it changed (to save).
-    pub fn poll(&mut self) -> Option<Option<FloorAccount>> {
-        let mut shared = self.shared.lock().ok()?;
-        let done = shared.done.take()?;
-        // Asked during the sync: another one, with what is known now, at the next frame.
-        if std::mem::take(&mut shared.again) {
-            self.last = None;
-        }
-        drop(shared);
-        if let Some(round) = done.unsent {
-            self.keep(round);
-        }
-        if done.board.is_some() {
-            self.board = done.board;
-        }
-        done.account
-    }
-
-    /// A round just finished in the game: sent at the next sync (the best one, when several wait).
-    pub fn finished(&mut self, round: TypingScore) {
-        self.keep(round);
-    }
-
-    fn keep(&mut self, round: TypingScore) {
-        if self.pending.as_ref().is_none_or(|p| round.letters > p.letters) {
-            self.pending = Some(round);
-        }
-    }
-
     /// Asked to floor in the background (sign in, sign up, rename…): its answer comes to `claimed`.
     pub fn ask(&mut self, ctx: &egui::Context, account: Option<&FloorAccount>, ask: AccountAsk) {
         let Some(url) = url() else { return };
@@ -254,7 +128,6 @@ impl Floor {
                 shared.claimed = Some(claimed);
                 shared.claiming = false;
             }
-            // The board, with the new name.
             ctx.request_repaint();
         });
     }
@@ -303,47 +176,9 @@ impl Floor {
 
     /// floor's answer to what was asked: what it did, or why not.
     pub fn claimed(&mut self) -> Option<Result<AccountDone, ClaimError>> {
-        let claimed = self.shared.lock().ok()?.claimed.take()?;
-        if claimed.is_ok() {
-            self.last = None;
-        }
-        Some(claimed)
+        self.shared.lock().ok()?.claimed.take()
     }
 
-    /// A sync, if the last one is older than `every` seconds (None: now). Without a pseudo, only the
-    /// board is fetched.
-    pub fn sync(&mut self, ctx: &egui::Context, now: f64, every: Option<f64>, account: Option<&FloorAccount>) {
-        if every.is_some_and(|every| self.last.is_some_and(|last| now - last < every)) {
-            return;
-        }
-        let Some(url) = url() else { return };
-        self.last = Some(now);
-        {
-            let Ok(mut shared) = self.shared.lock() else { return };
-            if shared.busy {
-                shared.again = true;
-                return;
-            }
-            shared.busy = true;
-        }
-        // The account made for another floor (a dev build sharing the installed app's settings...) isn't used.
-        let account = account.filter(|a| a.url == url && a.name.is_some()).cloned();
-        let round = self.pending.take().filter(|_| account.is_some());
-        let (shared, ctx) = (self.shared.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let synced = sync(&url, account, round.clone()).unwrap_or_else(|e| {
-                crate::log::info(&format!("floor: {e}"));
-                // Refused by floor (out of its bounds): not tried again.
-                let refused = matches!(e, ureq::Error::StatusCode(400..=499));
-                Synced { unsent: round.filter(|_| !refused), ..Default::default() }
-            });
-            if let Ok(mut shared) = shared.lock() {
-                shared.done = Some(synced);
-                shared.busy = false;
-            }
-            ctx.request_repaint();
-        });
-    }
 }
 
 pub(crate) fn agent() -> ureq::Agent {
@@ -351,45 +186,6 @@ pub(crate) fn agent() -> ureq::Agent {
 }
 
 pub(crate) const USER_AGENT: &str = concat!("ronnie/", env!("CARGO_PKG_VERSION"));
-
-fn board(agent: &ureq::Agent, url: &str, account: Option<&FloorAccount>) -> Result<(Vec<Entry>, Option<WireEntry>), ureq::Error> {
-    #[derive(Deserialize)]
-    struct Answer {
-        #[serde(flatten)]
-        board: Board,
-        me: Option<WireEntry>,
-    }
-    let mut request = agent.get(format!("{url}/v1/games/{GAME}/leaderboard")).query("limit", BOARD.to_string()).header("User-Agent", USER_AGENT);
-    if let Some(a) = account {
-        request = request.header("Authorization", format!("Bearer {}", a.token));
-    }
-    let answer: Answer = request.call()?.body_mut().read_json()?;
-    let entries = answer.board.entries.into_iter().map(entry).collect();
-    Ok((entries, answer.me))
-}
-
-fn entry(e: WireEntry) -> Entry {
-    let d = e.details;
-    Entry { name: e.name, me: e.me, id: e.id, avatar: e.avatar, frame: e.frame, face: None, score: TypingScore { letters: e.score, words: d.words, wpm: d.wpm, accuracy: d.accuracy, combo: d.combo, at: e.at / 1000 } }
-}
-
-fn sync(url: &str, account: Option<FloorAccount>, round: Option<TypingScore>) -> Result<Synced, ureq::Error> {
-    let agent = agent();
-    let mut synced = Synced::default();
-    let (mut entries, me) = board(&agent, url, account.as_ref())?;
-    // The round, if it beats the player's line (floor keeps the best one anyway).
-    if let (Some(account), Some(best)) = (&account, round.filter(|r| me.as_ref().is_none_or(|m| r.letters > m.score))) {
-        let details = Details { letters: best.letters, words: best.words, wpm: best.wpm, accuracy: best.accuracy, combo: best.combo };
-        match agent.post(format!("{url}/v1/games/{GAME}/scores")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).send_json(&details) {
-            Ok(_) => entries = board(&agent, url, Some(account))?.0,
-            // An account floor doesn't know (its base started over): the pseudo is to pick again.
-            Err(ureq::Error::StatusCode(401)) => synced.account = Some(None),
-            Err(e) => return Err(e),
-        }
-    }
-    synced.board = Some(entries);
-    Ok(synced)
-}
 
 /// The account's requests: an error status is read (its message), not an error.
 pub(crate) fn account_agent() -> ureq::Agent {
@@ -456,8 +252,6 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
         admin: bool,
         #[serde(default)]
         avatar: Option<String>,
-        #[serde(default)]
-        frame: Option<String>,
         /// Allowed by the administrator (a floor from before: always).
         #[serde(default = "yes")]
         approved: bool,
@@ -469,10 +263,6 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
     struct Avatar {
         avatar: Option<String>,
     }
-    #[derive(Deserialize)]
-    struct Framed {
-        frame: Option<String>,
-    }
     let agent = account_agent();
     let bad = |e: ureq::Error| {
         crate::log::info(&format!("floor: {e}"));
@@ -481,7 +271,7 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
     let signed = |res: ureq::http::Response<ureq::Body>| -> Result<AccountDone, ClaimError> {
         let mut res = res;
         let s: Signed = res.body_mut().read_json().map_err(bad)?;
-        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, frame: s.frame, pending: !s.approved, title: None, titles: Vec::new() }))
+        Ok(AccountDone::Account(FloorAccount { url: url.to_owned(), id: s.id, token: s.token, name: Some(s.name), admin: s.admin, avatar: s.avatar, pending: !s.approved }))
     };
     // A request with the session's token: none, or floor no longer knows it, and it is over.
     let token = || account.map(|a| format!("Bearer {}", a.token)).ok_or(ClaimError::Expired);
@@ -540,33 +330,6 @@ pub(crate) fn account_ask(url: &str, account: Option<&FloorAccount>, ask: Accoun
             let answer: Avatar = res.body_mut().read_json().map_err(bad)?;
             let mut a = account.cloned().ok_or(ClaimError::Expired)?;
             a.avatar = answer.avatar;
-            Ok(AccountDone::Account(a))
-        }
-        AccountAsk::Frame(frame) => {
-            let res = agent.put(format!("{url}/v1/players/me/frame")).header("User-Agent", USER_AGENT).header("Authorization", token()?).send_json(serde_json::json!({ "frame": frame }));
-            let mut res = answered(res, expired)?;
-            let answer: Framed = res.body_mut().read_json().map_err(bad)?;
-            let mut a = account.cloned().ok_or(ClaimError::Expired)?;
-            a.frame = answer.frame;
-            Ok(AccountDone::Account(a))
-        }
-        AccountAsk::Titles | AccountAsk::Title(_) => {
-            #[derive(Deserialize)]
-            struct Titles {
-                title: Option<String>,
-                #[serde(default)]
-                earned: Vec<String>,
-            }
-            let target = format!("{url}/v1/players/me/title");
-            let res = match &ask {
-                AccountAsk::Title(title) => agent.put(&target).header("User-Agent", USER_AGENT).header("Authorization", token()?).send_json(serde_json::json!({ "id": title })),
-                _ => agent.get(format!("{target}s")).header("User-Agent", USER_AGENT).header("Authorization", token()?).call(),
-            };
-            let mut res = answered(res, expired)?;
-            let answer: Titles = res.body_mut().read_json().map_err(bad)?;
-            let mut a = account.cloned().ok_or(ClaimError::Expired)?;
-            a.title = answer.title;
-            a.titles = answer.earned;
             Ok(AccountDone::Account(a))
         }
     }
@@ -648,201 +411,13 @@ impl Avatars {
     }
 }
 
-/// An avatar fetched from floor (another player's, or one's own; a group's icon, by its `g:` id), as a picture.
+/// An avatar fetched from floor (another player's, or one's own), as a picture.
 pub fn fetch_avatar(url: &str, token: &str, id: &str, version: &str) -> Option<egui::ColorImage> {
-    let path = if id.starts_with("g:") { format!("{url}/v1/talk/rooms/{}/icon", id.replace(':', "%3A")) } else { format!("{url}/v1/players/{id}/avatar") };
+    let path = format!("{url}/v1/players/{id}/avatar");
     let mut res = agent().get(path).query("v", version).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {token}")).call().ok()?;
     let bytes = res.body_mut().with_config().limit(512 * 1024).read_to_vec().ok()?;
     let image = image::load_from_memory(&bytes).ok()?.thumbnail(256, 256).to_rgba8();
     Some(egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()))
-}
-
-/// The board to show: floor's when it answered and the player has a pseudo, with the player's line
-/// taken from the rounds played here (the best one, if floor doesn't have it yet); else the rounds
-/// played here.
-pub fn shown(floor: Option<&[Entry]>, local: &[TypingScore], pseudo: Option<&str>) -> Vec<Entry> {
-    let name = pseudo.map(str::to_owned);
-    let Some(floor) = floor.filter(|_| pseudo.is_some()) else {
-        return local.iter().map(|s| Entry { name: name.clone(), score: s.clone(), me: true, id: None, avatar: None, frame: None, face: None }).collect();
-    };
-    let mut rows: Vec<Entry> = floor.to_vec();
-    if let Some(best) = local.first() {
-        let mine = rows.iter().position(|r| r.me);
-        if mine.is_none_or(|k| best.letters >= rows[k].score.letters) {
-            if let Some(k) = mine {
-                rows.remove(k);
-            }
-            // Below the rounds it ties with.
-            let place = rows.iter().filter(|r| r.score.letters >= best.letters).count();
-            rows.insert(place, Entry { name: name.clone(), score: best.clone(), me: true, id: None, avatar: None, frame: None, face: None });
-        }
-    }
-    for r in rows.iter_mut().filter(|r| r.me) {
-        r.name = name.clone();
-    }
-    rows.truncate(BOARD);
-    rows
-}
-
-/// A game's board on floor, kept as `Floor` keeps Speed Metal's: fetched in the background, the round
-/// just played sent with it. The minesweeper's (the fastest), Ronnie Run's (the farthest).
-pub struct GameFloor {
-    game: &'static str,
-    /// The smaller score wins (a time).
-    lower_wins: bool,
-    shared: Arc<Mutex<GameShared>>,
-    board: Option<Vec<GameEntry>>,
-    last: Option<f64>,
-    pending: Option<GameRound>,
-    /// The lines fetched.
-    limit: usize,
-}
-
-/// A round to send: its score, and the body floor reads it from.
-#[derive(Clone, Debug)]
-pub struct GameRound {
-    pub score: u32,
-    pub details: serde_json::Value,
-}
-
-/// A line of a game's board.
-#[derive(Clone, Debug)]
-pub struct GameEntry {
-    /// Its place on floor's board (floor decides the ties).
-    pub rank: u32,
-    pub name: Option<String>,
-    pub score: u32,
-    pub me: bool,
-    /// What floor keeps with the score (Bug Hunt's wave...).
-    pub details: serde_json::Value,
-    /// The player's id, avatar version and frame (an older floor: none).
-    pub id: Option<String>,
-    pub avatar: Option<String>,
-    pub frame: Option<String>,
-    /// The badges floor gave the player (the fishing's « chasseur »).
-    pub badges: Vec<String>,
-    /// The Lundi matin title they wear (an achievement's id).
-    pub title: Option<String>,
-    /// When floor got it (unix ms; an older floor: none).
-    pub at: Option<i64>,
-}
-
-#[derive(Default)]
-struct GameShared {
-    busy: bool,
-    /// The board, and the round not sent (floor unreachable).
-    done: Option<(Option<Vec<GameEntry>>, Option<GameRound>)>,
-}
-
-impl GameFloor {
-    pub fn new(game: &'static str, lower_wins: bool) -> Self {
-        Self { game, lower_wins, shared: Default::default(), board: None, last: None, pending: None, limit: BOARD }
-    }
-
-    /// More lines than the usual board (Ronnie Corp's Players tab).
-    pub fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = limit;
-        self
-    }
-
-    /// floor's board when it answered, the best first.
-    pub fn board(&self) -> Option<&[GameEntry]> {
-        self.board.as_deref()
-    }
-
-    /// A round played: sent at the next sync (the best one, when several wait).
-    pub fn finished(&mut self, round: GameRound) {
-        // A tie too: the later one's details (the fishing's hires...) go on.
-        let better = |p: &GameRound| if self.lower_wins { round.score <= p.score } else { round.score >= p.score };
-        if self.pending.as_ref().is_none_or(better) {
-            self.pending = Some(round);
-        }
-    }
-
-    /// Takes what a sync brought back.
-    pub fn poll(&mut self) {
-        let Some((board, unsent)) = self.shared.lock().ok().and_then(|mut s| s.done.take()) else { return };
-        if let Some(round) = unsent {
-            self.finished(round);
-        }
-        if board.is_some() {
-            self.board = board;
-        }
-    }
-
-    /// A sync, if the last one is older than `every` seconds (None: now). Without a pseudo, only the
-    /// board is fetched.
-    pub fn sync(&mut self, ctx: &egui::Context, now: f64, every: Option<f64>, account: Option<&FloorAccount>) {
-        if every.is_some_and(|every| self.last.is_some_and(|last| now - last < every)) {
-            return;
-        }
-        let Some(url) = url() else { return };
-        self.last = Some(now);
-        {
-            let Ok(mut shared) = self.shared.lock() else { return };
-            if shared.busy {
-                return;
-            }
-            shared.busy = true;
-        }
-        let account = account.filter(|a| a.url == url && a.name.is_some()).cloned();
-        let round = self.pending.take().filter(|_| account.is_some());
-        let (game, shared, ctx, limit) = (self.game, self.shared.clone(), ctx.clone(), self.limit);
-        std::thread::spawn(move || {
-            let done = match game_sync(&url, game, account.as_ref(), round.as_ref(), limit) {
-                Ok(board) => (Some(board), None),
-                Err(e) => {
-                    crate::log::info(&format!("floor: {e}"));
-                    // Refused by floor (out of its bounds): not tried again.
-                    (None, round.filter(|_| !matches!(e, ureq::Error::StatusCode(400..=499))))
-                }
-            };
-            if let Ok(mut shared) = shared.lock() {
-                shared.done = Some(done);
-                shared.busy = false;
-            }
-            ctx.request_repaint();
-        });
-    }
-}
-
-fn game_sync(url: &str, game: &str, account: Option<&FloorAccount>, round: Option<&GameRound>, limit: usize) -> Result<Vec<GameEntry>, ureq::Error> {
-    #[derive(Deserialize)]
-    struct Line {
-        rank: u32,
-        name: Option<String>,
-        score: u32,
-        me: bool,
-        #[serde(default)]
-        details: serde_json::Value,
-        #[serde(default)]
-        id: Option<String>,
-        #[serde(default)]
-        avatar: Option<String>,
-        #[serde(default)]
-        frame: Option<String>,
-        #[serde(default)]
-        badges: Vec<String>,
-        #[serde(default)]
-        title: Option<String>,
-        #[serde(default)]
-        at: Option<i64>,
-    }
-    #[derive(Deserialize)]
-    struct Answer {
-        entries: Vec<Line>,
-    }
-    let agent = agent();
-    // floor keeps the best one anyway.
-    if let (Some(account), Some(round)) = (account, round) {
-        agent.post(format!("{url}/v1/games/{game}/scores")).header("User-Agent", USER_AGENT).header("Authorization", format!("Bearer {}", account.token)).send_json(&round.details)?;
-    }
-    let mut request = agent.get(format!("{url}/v1/games/{game}/leaderboard")).query("limit", limit.to_string()).header("User-Agent", USER_AGENT);
-    if let Some(a) = account {
-        request = request.header("Authorization", format!("Bearer {}", a.token));
-    }
-    let answer: Answer = request.call()?.body_mut().read_json()?;
-    Ok(answer.entries.into_iter().map(|l| GameEntry { rank: l.rank, name: l.name, score: l.score, me: l.me, details: l.details, id: l.id, avatar: l.avatar, frame: l.frame, badges: l.badges, title: l.title, at: l.at }).collect())
 }
 
 #[cfg(test)]
@@ -890,38 +465,6 @@ mod tests {
 
         assert_eq!(account_ask(&url, Some(&with), AccountAsk::SignOut), Ok(AccountDone::SignedOut));
         assert_eq!(account_ask(&url, Some(&with), AccountAsk::Avatar(None)), Err(ClaimError::Expired));
-    }
-
-    fn round(letters: u32, at: i64) -> TypingScore {
-        TypingScore { letters, at, ..Default::default() }
-    }
-
-    fn row(name: &str, letters: u32, me: bool) -> Entry {
-        Entry { name: Some(name.into()), score: round(letters, 0), me, id: None, avatar: None, frame: None, face: None }
-    }
-
-    #[test]
-    fn the_local_best_takes_the_players_line() {
-        let floor = [row("Dio", 500, false), row("moi", 300, true), row("Ozzy", 200, false)];
-        let rows = shown(Some(&floor), &[round(400, 7)], Some("Ronnie James"));
-        let names: Vec<_> = rows.iter().map(|r| (r.name.clone().unwrap(), r.score.letters)).collect();
-        assert_eq!(names, [("Dio".into(), 500), ("Ronnie James".into(), 400), ("Ozzy".into(), 200)]);
-        assert_eq!(rows[1].score.at, 7);
-        // Not better than floor's: floor's line stays, renamed.
-        let rows = shown(Some(&floor), &[round(100, 7)], Some("Dio"));
-        assert_eq!(rows[1].score.letters, 300);
-        assert_eq!(rows[1].name.as_deref(), Some("Dio"));
-    }
-
-    #[test]
-    fn offline_the_rounds_played_here() {
-        let rows = shown(None, &[round(400, 1), round(300, 2)], Some("Dio"));
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| r.me && r.name.as_deref() == Some("Dio")));
-        // Without a pseudo, the same, floor's board not shown.
-        let floor = [row("Ozzy", 200, false)];
-        let rows = shown(Some(&floor), &[round(400, 1)], None);
-        assert!(rows.len() == 1 && rows[0].me && rows[0].name.is_none());
     }
 
     #[test]

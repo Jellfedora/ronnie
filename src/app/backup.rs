@@ -333,9 +333,7 @@ fn prepare(path: &Path, manifest: &Manifest, password: &str, t: &Strings) -> Res
         Some(bytes)
     };
     let text = read("config.json").ok_or_else(|| t.backup_bad_file.to_owned())?;
-    // An export made before the seals keeps its rewards.
-    let legacy = older_than_seals(&manifest.version);
-    let mut config = Config::from_json_sealed(&String::from_utf8_lossy(&text), legacy).map_err(|e| format!("config.json : {e}"))?;
+    let mut config = Config::from_json(&String::from_utf8_lossy(&text)).map_err(|e| format!("config.json : {e}"))?;
     let mut session = match read("session.json") {
         Some(bytes) => Some(serde_json::from_slice::<Session>(&bytes).map_err(|e| format!("session.json : {e}"))?),
         None => None,
@@ -884,13 +882,6 @@ impl App {
     }
 }
 
-/// Whether an export's version is older than the rewards' seals (0.44.0).
-fn older_than_seals(version: &str) -> bool {
-    let parts: Vec<u32> = version.split('.').map(|p| p.parse().unwrap_or(0)).collect();
-    let v = |k: usize| parts.get(k).copied().unwrap_or(0);
-    (v(0), v(1), v(2)) < (0, 44, 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,9 +902,7 @@ mod tests {
         let host = Uuid::new_v4();
         let profile = Uuid::new_v4();
         let config = format!(
-            r#"{{"theme": "ronnie", "shortcuts": {{"new_tab": "Cmd+Y"}},
-                "jurassic_unlocked": true, "wizard_unlocked": true, "open_streak": 7, "riff_bests": [0, 49000], "runner_best": 1200,
-                "fish_cards": {{"maria": {{"count": 2, "shiny": 1}}}}, "fish_baits": {{"salaire": 3}},
+            r#"{{"theme": "ronnie", "shortcuts": {{"new_tab": "Cmd+Y"}}, "sheep": false,
                 "profiles": [{{"id": "{profile}", "name": "web", "layout": {{"type": "pane", "cwd": "/Users/me/web"}}}}],
                 "ssh": [{{"id": "{host}", "name": "srv", "host": "srv.example", "identity_file": "/nowhere/id_ed25519", "password_saved": true, "sftp_local": "/Users/me"}}]}}"#
         );
@@ -936,10 +925,8 @@ mod tests {
         assert!(prepare(&zip, &read, "nope", t).is_err(), "a wrong password changes nothing");
         let prepared = prepare(&zip, &read, "longpassword", t).unwrap();
         assert_eq!(prepared.config.settings.shortcuts, config::Shortcuts::default());
-        // The rewards won come along.
-        let s = &prepared.config.settings;
-        assert!(s.jurassic_unlocked && s.wizard_unlocked && crate::theme::office_unlocked(&s.riff_bests));
-        assert_eq!((s.open_streak, s.runner_best, s.fish_cards["maria"].shiny, s.fish_baits["salaire"]), (7, 1200, 1, 3));
+        // The settings come along.
+        assert!(!prepared.config.settings.sheep);
         assert_eq!(prepared.config.profiles[0].tab.layout.cwds(), vec![None]);
         assert!(prepared.config.ssh[0].sftp_local.is_none());
         let passwords = write_import(&to, prepared).unwrap();

@@ -1,25 +1,14 @@
-//! The office's unlocks (the fishing's, apart from its avatar frame in `super::frames`, and Riff Hero's theme):
-//! - the Open space theme (won at Riff Hero, `crate::theme::OFFICE_UNLOCK` points): a cork board of
+//! The office's looks:
+//! - the Open space theme: a cork board of
 //!   post-its, a coffee machine steaming, a plant, a water cooler at the foot of the sidebar; a strip of post-its over the settings and over
 //!   the active tab; « T'as 5 minutes ? » over a pane when its bell rings;
-//! - the five-legged sheep, for the legendary card: now and then it walks along the foot of the
-//!   terminals, stops to graze, and bleats when hovered (switched off in the settings);
-//! - the « Chasseur de têtes » badge, for 100 candidates hired (kept on floor): a small hook beside the
-//!   avatar, wherever the others see it.
+//! - the five-legged sheep: now and then it walks along the foot of the terminals, stops to graze,
+//!   and bleats when hovered (switched off in the settings).
 
 use super::*;
 
 /// The post-its' colors.
 const POSTITS: [Color32; 4] = [Color32::from_rgb(0xff, 0xe4, 0x5a), Color32::from_rgb(0xff, 0x9e, 0xc8), Color32::from_rgb(0x8a, 0xe0, 0xff), Color32::from_rgb(0xa8, 0xf0, 0x8a)];
-
-/// The badge floor gives for 100 candidates hired.
-pub(super) const HUNTER_BADGE: &str = "chasseur";
-
-/// Whether the sheep is unlocked: the legendary card caught (all of it in development).
-pub(super) fn sheep_unlocked(s: &crate::config::Settings) -> bool {
-    let id = crate::fishing::SHEEP;
-    !crate::config::OFFICIAL || s.fish_cards.get(id).is_some_and(|c| c.count > 0)
-}
 
 fn postit(painter: &egui::Painter, c: Pos2, s: f32, tilt: f32, color: Color32) {
     let rot = |dx: f32, dy: f32| c + Vec2::new(dx * tilt.cos() - dy * tilt.sin(), dx * tilt.sin() + dy * tilt.cos()) * s;
@@ -121,7 +110,7 @@ impl super::App {
         if self.desktop_draws().2 {
             return;
         }
-        let Some(area) = self.terminals_rect.filter(|_| self.config.settings.sheep && sheep_unlocked(&self.config.settings)) else { return };
+        let Some(area) = self.terminals_rect.filter(|_| self.config.settings.sheep) else { return };
         let strip = Rect::from_min_max(Pos2::new(area.min.x + 6.0, area.max.y - 32.0), Pos2::new(area.max.x - 6.0, area.max.y - 2.0));
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sheep-walk")));
         let (shown, again) = sheep(&painter, strip, ctx.input(|i| i.time));
@@ -203,33 +192,5 @@ pub(super) fn paint_sheep(painter: &egui::Painter, c: Pos2, dir: f32, step: Opti
     painter.circle_filled(head + Vec2::new(1.4 * dir, -0.8), 0.9, Color32::WHITE);
     if step.is_none() {
         painter.line_segment([head + Vec2::new(2.0 * dir, 4.0), head + Vec2::new(3.5 * dir, 1.0)], Stroke::new(1.2, Color32::from_rgb(0x4c, 0x9a, 0x48)));
-    }
-}
-
-/// The « Chasseur de têtes » badge beside an avatar of radius `r` centered at `c`: a small round
-/// medal with a hook, at its bottom left (the bottom right is the online dot's).
-pub(super) fn paint_badge(painter: &egui::Painter, c: Pos2, r: f32, badges: &[String]) {
-    if !badges.iter().any(|b| b == HUNTER_BADGE) {
-        return;
-    }
-    let s = (r * 0.42).clamp(4.5, 12.0);
-    let m = c + Vec2::new(-r * 0.78, r * 0.78);
-    painter.circle_filled(m, s, Color32::from_rgb(0x2f, 0x6f, 0xde));
-    painter.circle_stroke(m, s, Stroke::new((s * 0.16).max(0.8), Color32::from_rgb(0xf2, 0xc2, 0x3a)));
-    // The hook.
-    let w = (s * 0.17).max(0.9);
-    let stroke = Stroke::new(w, Color32::WHITE);
-    painter.line_segment([m + Vec2::new(0.15, -0.6) * s, m + Vec2::new(0.15, 0.25) * s], stroke);
-    let curve: Vec<Pos2> = (0..=8).map(|k| m + Vec2::new(-0.15, 0.25) * s + Vec2::angled(k as f32 / 8.0 * std::f32::consts::PI) * 0.3 * s).collect();
-    painter.add(egui::Shape::line(curve, stroke));
-    painter.circle_filled(m + Vec2::new(0.15, -0.65) * s, w * 0.9, Color32::WHITE);
-}
-
-impl App {
-    /// The player's own badges, as floor gives them for what was played here: the « chasseur » once
-    /// 100 candidates hired (floor's own tally may lag a sync behind).
-    pub(super) fn own_badges(&self) -> Vec<String> {
-        let hires: u32 = self.config.settings.fish_cards.values().map(|c| c.count).sum();
-        if hires >= crate::fishing::HUNTER { vec![HUNTER_BADGE.to_owned()] } else { Vec::new() }
     }
 }

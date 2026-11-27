@@ -230,12 +230,10 @@ impl App {
     pub(super) fn open_dev_page(&mut self) {
         self.dev_page = true;
         self.modules_page = false;
-        self.talk_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.music_page = false;
         self.notes_page = false;
-        self.home_game = false;
         self.dev.show_installed();
         self.envs.refresh();
         if let Some(kind) = self.dev.tool.env() {

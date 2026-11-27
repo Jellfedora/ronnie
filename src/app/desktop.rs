@@ -29,19 +29,16 @@ pub(crate) struct Fx {
     trail: bool,
     sheep: bool,
     droid: bool,
-    /// Lundi matin's horde, at 10.
+    /// The zombie horde, at 10.
     #[serde(default)]
     horde: bool,
-    /// Gérard, Lundi matin's kind zombie, strolling now and then.
+    /// Gérard, the kind zombie, strolling now and then.
     #[serde(default)]
     gerard: bool,
     /// The horde run once right now, to see it (switched on): when, in Unix milliseconds.
     #[serde(default)]
     horde_demo: Option<i64>,
-    /// The zombies met in Lundi matin (places in its bestiary): the horde is made of them.
-    #[serde(default)]
-    horde_kinds: Vec<u8>,
-    /// Mathéo, Riff Hero's green plant, at the foot of the screen (to drag elsewhere).
+    /// Mathéo, the green plant, at the foot of the screen (to drag elsewhere).
     #[serde(default)]
     matheo: bool,
     /// His advice in a bubble now and then (water, stretches, steps).
@@ -117,8 +114,7 @@ impl Desktop {
 }
 
 impl App {
-    /// What the settings ask to show over the screen (each reward still to be won, left out; nothing
-    /// unless switched on outside Ronnie).
+    /// What the settings ask to show over the screen (nothing unless switched on outside Ronnie).
     fn desktop_wanted(&self) -> Fx {
         if !self.config.settings.desktop_fx.on {
             return Fx::default();
@@ -126,15 +122,14 @@ impl App {
         self.companions()
     }
 
-    /// Every companion, the trail and the pointer as the settings choose them (each won), wherever they
+    /// Every companion, the trail and the pointer as the settings choose them, wherever they
     /// show: over every screen, or only in Ronnie's window.
     fn companions(&self) -> Fx {
         let s = &self.config.settings;
         let d = s.desktop_fx;
-        let official = crate::config::OFFICIAL;
         let worn = trail::worn(s);
         let pointer = Some(trail::pointer(s)).filter(|p| *p != Pointer::System);
-        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep && office::sheep_unlocked(s), droid: d.droid && (!official || s.hyperspace_unlocked), horde: d.horde && (!official || s.monday_horde), gerard: d.gerard && (!official || s.monday_gerard), horde_demo: self.desktop.horde_demo.filter(|_| d.horde), horde_kinds: super::zombie::met_kinds(s), matheo: d.matheo && (!official || s.riff_games >= super::riff::MATHEO_GAMES), matheo_tips: d.matheo_tips, lang: s.language, elf: d.elf && (!official || s.wizard_unlocked), unicorn: d.unicorn && wallstreet::unicorn_unlocked(s), wolf: d.wolf && (!official || crate::coffee::thrones_won(&s.coffee_bests)), sleigh: d.sleigh && (!official || s.christmas_unlocked), snow: d.snow && (!official || s.christmas_unlocked), drone: d.drone && super::openspace_drone::drone_unlocked(s), bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
+        Fx { trail: worn != crate::config::Trail::Off, sheep: s.sheep, droid: d.droid, horde: d.horde, gerard: d.gerard, horde_demo: self.desktop.horde_demo.filter(|_| d.horde), matheo: d.matheo, matheo_tips: d.matheo_tips, lang: s.language, elf: d.elf, unicorn: d.unicorn, wolf: d.wolf, sleigh: d.sleigh, snow: d.snow, drone: d.drone, bills: worn == crate::config::Trail::Bills, pointer, theme: s.theme.clone() }
     }
 
     /// The pointer's effects are drawn by the process over the screen (Ronnie doesn't draw its own:
@@ -857,7 +852,7 @@ fn matheo_grounds(screens: &[(Rect, Rect)], works: &[Rect], dock: Option<Rect>) 
     }
 }
 
-/// Mathéo, Riff Hero's green plant, his pot's foot at `foot`, `size` tall: a terracotta pot with a
+/// Mathéo, the green plant, his pot's foot at `foot`, `size` tall: a terracotta pot with a
 /// face, his big leaves swaying; held, his eyes wide and his leaves flapping.
 pub(super) fn paint_matheo(painter: &egui::Painter, foot: Pos2, size: f32, now: f64, held: bool) {
     paint_matheo_as(painter, foot, size, now, Look { held, ..Look::default() });
@@ -1173,12 +1168,12 @@ pub(crate) fn run() {
 /// The horde crosses the screen this long, from 10:00:00 on working days.
 const HORDE_RUN: f64 = 14.0;
 
-/// Lundi matin's horde, at 10 o'clock: the zombies running across the screen, shouting for the break.
+/// The horde, at 10 o'clock: the zombies running across the screen, shouting for the break.
 /// Whether it shows, and when to look again. (`RONNIE_HORDE=1`, in a build of one's own: every minute.)
-fn horde_run(painter: &egui::Painter, screen: Rect, demo: Option<i64>, kinds: &[u8]) -> (bool, f32) {
+fn horde_run(painter: &egui::Painter, screen: Rect, demo: Option<i64>) -> (bool, f32) {
     match horde_since(demo) {
         Ok(since) => {
-            paint_horde(painter, screen, since / HORDE_RUN, 14, kinds);
+            paint_horde(painter, screen, since / HORDE_RUN, 14);
             (true, 0.0)
         }
         Err(again) => (false, again),
@@ -1209,9 +1204,8 @@ fn horde_since(demo: Option<i64>) -> Result<f64, f32> {
 
 /// The horde at `k` of its run (0 to 1): `count` zombies from the left edge of `area` to the right,
 /// each on its own line and at its own pace, "PAUSE !" over their heads.
-/// The zombies, Lundi matin's met ones (`kinds`, places in its bestiary) seen from above, or, none met,
-/// runners seen from the side.
-pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u32, kinds: &[u8]) {
+/// The zombies run from the side.
+pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u32) {
     let size = (area.height() / 14.0).clamp(10.0, 26.0);
     for n in 0..count {
         let h = n.wrapping_mul(2_654_435_761);
@@ -1225,12 +1219,7 @@ pub(super) fn paint_horde(painter: &egui::Painter, area: Rect, k: f64, count: u3
         let x = area.min.x - size * 2.0 + (area.width() + size * 4.0) * along;
         let y = area.min.y + area.height() * lane;
         let step = (k * 40.0 + f64::from(n)).sin() as f32;
-        if kinds.is_empty() {
-            paint_runner(painter, Pos2::new(x, y + step.abs() * size * 0.15), size, step);
-        } else {
-            let kind = super::zombie::bestiary_kind(kinds[(h >> 5) as usize % kinds.len()]);
-            super::zombie::paint_zombie(painter, Pos2::new(x, y), size / 20.0, kind, 0.0, n, (k * 60.0) as f32 + n as f32, 1.0, super::zombie::Fx::default());
-        }
+        paint_runner(painter, Pos2::new(x, y + step.abs() * size * 0.15), size, step);
         let bubble = Pos2::new(x, y - size * 1.9);
         let font = FontId::proportional(size * 0.75);
         let galley = painter.layout_no_wrap("PAUSE !".to_owned(), font, Color32::from_rgb(61, 42, 99));
@@ -1405,7 +1394,7 @@ fn walks(fx: &Fx, now: f64, n: usize) -> [(bool, usize); 8] {
         (fx.unicorn && wallstreet::unicorn_at(now).is_ok(), at(wallstreet::unicorn_lap(now), 5)),
         (fx.wolf && wolf_at(now).is_ok(), at(((now + 40.0) / WOLF_EVERY).floor(), 6)),
         (fx.sleigh && noel::sleigh_at(now).is_ok(), at(noel::sleigh_lap(now), 7)),
-        (fx.drone && super::openspace_drone::drone_at(now).is_ok(), at(super::openspace_drone::drone_lap(now), 8)),
+        (fx.drone && super::drone::drone_at(now).is_ok(), at(super::drone::drone_lap(now), 8)),
     ]
 }
 
@@ -1455,7 +1444,7 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
         next = next.min(again);
     }
     if fx.drone && drone.1 == here {
-        let (shown, again) = super::openspace_drone::drone_run(painter, strip, now);
+        let (shown, again) = super::drone::drone_run(painter, strip, now);
         busy |= shown;
         next = next.min(again);
     }
@@ -1466,7 +1455,7 @@ fn paint_walkers(painter: &egui::Painter, strip: Rect, whole: Rect, now: f64, he
         next = next.min(again);
     }
     if fx.horde {
-        let (shown, again) = horde_run(painter, whole, fx.horde_demo, &fx.horde_kinds);
+        let (shown, again) = horde_run(painter, whole, fx.horde_demo);
         busy |= shown;
         next = next.min(again);
     }
@@ -2846,7 +2835,7 @@ mod tests {
 
     #[test]
     fn the_line_sent_reads_back() {
-        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, horde_kinds: vec![1, 4], matheo: true, matheo_tips: true, lang: crate::i18n::Lang::En, elf: true, unicorn: true, wolf: true, sleigh: true, snow: true, drone: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
+        let fx = Fx { trail: true, sheep: false, droid: true, horde: true, gerard: true, horde_demo: None, matheo: true, matheo_tips: true, lang: crate::i18n::Lang::En, elf: true, unicorn: true, wolf: true, sleigh: true, snow: true, drone: true, bills: true, pointer: Some(Pointer::Wand), theme: "gryffondor".into() };
         let back: Fx = serde_json::from_str(&serde_json::to_string(&fx).unwrap()).unwrap();
         assert_eq!(back, fx);
         assert!(fx.any() && fx.follows());

@@ -82,13 +82,13 @@ impl App {
         }
     }
 
-    /// Where this window's time goes: the games, the SSH server or the database of the tab shown, or
+    /// Where this window's time goes: the SSH server or the database of the tab shown, or
     /// the project of its focused pane's folder. None on the other pages.
     fn recap_place(&self) -> Option<Place> {
         if self.home.is_some() {
-            return self.home_game.then_some(Place::Games);
+            return None;
         }
-        if self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.talk_page || self.track_page {
+        if self.notes_page || self.music_page || self.dev_page || self.modules_page || self.procs_page || self.track_page {
             return None;
         }
         let tab = self.tabs.get(self.active)?;

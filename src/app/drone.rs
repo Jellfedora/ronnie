@@ -1,32 +1,8 @@
-//! Open Space's rewards outside the game: the delivery drone flying along the foot of the screen now
-//! and then (50 campaign stars), dropping a parcel under a small parachute that lands and pops. Drawn
-//! by the companions (`super::desktop`), over every screen or in Ronnie's window, and on the rewards'
-//! page.
+//! The delivery drone flying along the foot of the screen now and then, dropping a parcel under a
+//! small parachute that lands and pops. Drawn by the companions (`super::desktop`), over every screen
+//! or in Ronnie's window, and in the settings.
 
 use super::*;
-
-/// The campaign's stars for the drone.
-pub(super) const DRONE_STARS: u64 = 50;
-/// The boss's office level for the « Pare-feu » frame.
-pub(super) const FRAME_HQ: u8 = crate::openspace::HQ_MAX;
-
-fn stars(s: &crate::config::Settings) -> u64 {
-    s.openspace.as_ref().map_or(0, |o| o.campaign.iter().map(|&n| n as u64).sum())
-}
-
-/// The campaign's stars won, toward the drone.
-pub(super) fn drone_progress(s: &crate::config::Settings) -> (u32, u32) {
-    (stars(s).min(DRONE_STARS) as u32, DRONE_STARS as u32)
-}
-
-pub(super) fn drone_unlocked(s: &crate::config::Settings) -> bool {
-    !crate::config::OFFICIAL || stars(s) >= DRONE_STARS
-}
-
-/// The boss's office's level, toward the frame.
-pub(super) fn hq_level(s: &crate::config::Settings) -> u8 {
-    s.openspace.as_ref().map_or(0, |o| o.hq_level())
-}
 
 const BODY: Color32 = Color32::from_rgb(0x3a, 0x40, 0x4c);
 const ARM: Color32 = Color32::from_rgb(0x55, 0x5d, 0x6b);
@@ -176,15 +152,3 @@ pub(super) fn drone_run(painter: &egui::Painter, strip: Rect, now: f64) -> (bool
     (true, 0.0)
 }
 
-/// The drone hovering in `rect`, dropping a parcel now and then, for the rewards' page.
-pub(super) fn drone_preview(painter: &egui::Painter, rect: Rect, now: f64) {
-    let s = rect.height() * 0.5;
-    let t = now % 4.0;
-    let c = Pos2::new(rect.center().x, rect.min.y + s * 0.5);
-    paint_drone(painter, c, s, 1.0, now, t < 1.4);
-    if t >= 1.4 {
-        let k = ((t - 1.4) / 1.6) as f32;
-        let pop = (k >= 1.0).then(|| ((t - 3.0) / 0.8) as f32);
-        parcel_fall(painter, c.x, c.y + s * 0.72, rect.max.y - 6.0, k.min(1.0), pop, s);
-    }
-}

@@ -4,177 +4,15 @@ use super::*;
 
 impl App {
     /// Shown when every tab is closed: the app stays open.
-    /// The home page: what just closed, the typing game, tips scrolling below (the sidebar leads back
-    /// to the tabs).
     pub(super) fn home_page(&mut self, ui: &mut Ui, rect: Rect) {
-        // The games' page: each game, to pick one.
-        if self.home_game && self.games_hub {
-            self.game.leave();
-            self.fold_for_game(false);
-            self.arcade_page(ui, rect);
-            return;
-        }
-        if !self.home_game || self.home_which != super::four::HomeGame::SpeedMetal {
-            self.game.leave();
-            if self.home_game && self.home_which == super::four::HomeGame::Blob {
-                // Its minutes of the half-day of work up: out of the game, its page still there (to watch).
-                let locked = self.game_locked(super::four::HomeGame::Blob);
-                if locked.is_some() && self.blob_alive() {
-                    self.blob_leave();
-                    self.fold_for_game(false);
-                }
-                // It folds the sidebar itself, during a life.
-                self.games_drawn.push(super::four::HomeGame::Blob);
-                self.blob_page(ui, rect);
-                if let Some(p) = &locked {
-                    self.locked_band(ui, rect, super::four::HomeGame::Blob, p);
-                }
-                if !self.blob_alive() {
-                    self.unlocks_pill(ui, rect, super::four::HomeGame::Blob);
-                }
-                let dt = ui.input(|i| i.stable_dt).min(0.1);
-                if let Some(left) = self.count_blob(dt) {
-                    self.paint_blob_left(ui, rect, left);
-                }
-                return;
-            }
-            // These fold the sidebar themselves, during a run, a song, a show.
-            if self.home_game && matches!(self.home_which, super::four::HomeGame::Runner | super::four::HomeGame::Riff | super::four::HomeGame::Backstage | super::four::HomeGame::Coffee | super::four::HomeGame::BugHunt | super::four::HomeGame::Fishing | super::four::HomeGame::Monday | super::four::HomeGame::Tycoon | super::four::HomeGame::OpenSpace) {
-                self.games_drawn.push(self.home_which);
-                return match self.home_which {
-                    super::four::HomeGame::Runner => self.runner_page(ui, rect),
-                    super::four::HomeGame::Riff => self.riff_page(ui, rect),
-                    super::four::HomeGame::BugHunt => self.bughunt_page(ui, rect),
-                    super::four::HomeGame::Fishing => self.fishing_page(ui, rect),
-                    super::four::HomeGame::Monday => self.monday_page(ui, rect),
-                    super::four::HomeGame::Tycoon => self.tycoon_page(ui, rect),
-                    super::four::HomeGame::OpenSpace => self.openspace_page(ui, rect),
-                    super::four::HomeGame::Coffee => self.coffee_page(ui, rect),
-                    _ => self.backstage_page(ui, rect),
-                };
-            }
-            self.fold_for_game(false);
-            if self.home_game && self.home_which == super::four::HomeGame::Mines {
-                self.mines_page(ui, rect);
-                self.unlocks_pill(ui, rect, super::four::HomeGame::Mines);
-            } else if self.home_game && self.home_which == super::four::HomeGame::Larsen {
-                self.larsen_page(ui, rect);
-                if !self.larsen_playing() {
-                    self.unlocks_pill(ui, rect, super::four::HomeGame::Larsen);
-                }
-            } else if self.home_game {
-                self.four_page(ui, rect);
-                if !self.four_playing() {
-                    self.unlocks_pill(ui, rect, super::four::HomeGame::Four);
-                }
-            } else {
-                self.home_dashboard(ui, rect);
-            }
-            return;
-        }
-        // Its round of the half-day of work played: none more (one under way or just over stays).
-        let locked = self.game_locked(super::four::HomeGame::SpeedMetal);
-        self.game.locked = locked.is_some();
-        // Its page still shown, to look at; Play brings back to the start (it says why).
-        if let Some(p) = locked.filter(|_| self.game.idle()) {
-            self.locked_band(ui, rect, super::four::HomeGame::SpeedMetal, &p);
-        }
-        let t = self.t();
-        let now = ui.input(|i| i.time);
-        if let Some(line) = self.home.as_ref().filter(|l| !l.is_empty()) {
-            let a = self.game.entrance(now, 0.15) * (1.0 - self.game.focus(ui.ctx()));
-            ui.painter().text(Pos2::new(rect.center().x, rect.min.y + 22.0 - (1.0 - a) * 10.0), Align2::CENTER_CENTER, line, FontId::proportional(13.5), self.theme.text_muted.gamma_multiply(a));
-        }
-        let french = matches!(self.config.settings.language, Lang::Fr);
-        // At the bottom, tips about Ronnie scroll by; the game above. They rise in with the page, and
-        // sink away during a round (the game spreading over their room).
-        let focus = self.game.focus(ui.ctx());
-        let sunk = focus.max(1.0 - self.game.entrance(now, 0.5));
-        let tips_h = if self.config.settings.home_tips { 44.0 } else { 0.0 };
-        let game_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - tips_h * (1.0 - focus)));
-        if sunk < 0.999 && self.config.settings.home_tips {
-            let ticker = Rect::from_min_size(Pos2::new(rect.min.x, rect.max.y - 44.0 + 44.0 * sunk), Vec2::new(rect.width(), 44.0));
-            tips_ticker(ui, ticker, &self.theme, t, &self.config.settings.shortcuts);
-        }
-        // floor's board, fetched again every minute out of a round; the player's line from here.
-        self.poll_floor();
-        let settings = &self.config.settings;
-        if !self.game.playing() {
-            self.floor.sync(ui.ctx(), now, Some(60.0), settings.floor.as_ref());
-        }
-        let pseudo = crate::floor::pseudo(settings.floor.as_ref());
-        let board = self.faced(crate::floor::shown(self.floor.board(), &settings.typing_scores, pseudo));
-        let best = settings.typing_scores.first().map_or(0, |s| s.letters);
-        let out = self.game.ui(ui, game_rect, &self.theme, t, &board, best, french, settings.game_sound, pseudo.unwrap_or(&settings.player_name));
-        // During a round the sidebar folds away, and unfolds after (if it was open).
-        self.fold_for_game(self.game.playing());
-        if !self.game.playing() {
-            self.unlocks_pill(ui, game_rect, super::four::HomeGame::SpeedMetal);
-        }
-        if self.game.playing() {
-            self.count_round(super::four::HomeGame::SpeedMetal);
-        }
-        if let Some(on) = out.sound {
-            self.config.settings.game_sound = Some(on);
-            self.save_config();
-        }
-        // The name typed on a card: the next cards' (the pseudo only changes in its window).
-        if let Some(name) = out.player {
-            self.config.settings.player_name = name;
-            self.save_config();
-        }
-        if let Some(score) = out.finished {
-            // On the board, below the rounds it ties with (stable sort).
-            let scores = &mut self.config.settings.typing_scores;
-            let before = scores.first().map_or(0, |s| s.letters);
-            let unlocked = before < crate::theme::METAL_UNLOCK && score.letters >= crate::theme::METAL_UNLOCK;
-            // Online only with a pseudo.
-            if crate::floor::pseudo(self.config.settings.floor.as_ref()).is_some() {
-                self.floor.finished(score.clone());
-            }
-            let scores = &mut self.config.settings.typing_scores;
-            scores.push(score);
-            scores.sort_by(|a, b| b.letters.cmp(&a.letters));
-            scores.truncate(config::TYPING_SCORES);
-            self.save_config();
-            self.floor.sync(ui.ctx(), now, None, self.config.settings.floor.as_ref());
-            if unlocked {
-                self.push_toast(super::Toast { ok: true, title: t.metal_unlocked.to_owned(), body: t.metal_unlocked_body.to_owned(), tab: self.active, at: std::time::Instant::now(), mail: None, notice: 0, lead: None });
-            }
-        }
-        // Back to the home page, out of a round.
-        if !self.game.playing() {
-            let back = Rect::from_min_size(rect.min + Vec2::new(16.0, 14.0), Vec2::new(0.0, 0.0));
-            let resp = ui.put(Rect::from_min_size(back.min, Vec2::new(110.0, 28.0)), egui::Button::new(egui::RichText::new(format!("←  {}", t.home_back)).size(13.0)).frame_when_inactive(false).corner_radius(6.0));
-            if resp.clicked() {
-                self.home_game = false;
-            }
-        }
-
+        self.home_dashboard(ui, rect);
     }
 
     /// The logo leads to the home page.
     fn logo_clicked(&mut self, logo: &egui::Response) {
-        if logo.clicked() && (self.home.is_none() || self.home_game) {
+        if logo.clicked() && self.home.is_none() {
             self.go_home(None);
         }
-    }
-
-    /// The typing game, on the home page.
-    pub(super) fn open_game(&mut self) {
-        if self.home.is_none() {
-            self.go_home(None);
-        }
-        self.home_game = true;
-        self.games_hub = false;
-        self.dev_page = false;
-        self.modules_page = false;
-        self.talk_page = false;
-        self.track_page = false;
-        self.procs_page = false;
-        self.home_which = super::four::HomeGame::SpeedMetal;
-        self.music_page = false;
-        self.notes_page = false;
     }
 
     /// The categories in the sidebar's strip, in order: those not hidden in the settings, the music
@@ -194,7 +32,7 @@ impl App {
     }
 
     /// What is shown belongs to another category than `category`: a tab of another kind, the notes,
-    /// the music, the Dev page, a game (the home page without its game belongs to none).
+    /// the music, the Dev page (the home page belongs to none).
     fn shows_other_category(&self, category: Category) -> bool {
         let shown = if self.notes_page {
             Category::Notes
@@ -204,15 +42,10 @@ impl App {
             self.dev_category()
         } else if self.modules_page {
             Category::Modules
-        } else if self.talk_page {
-            Category::Talk
         } else if self.track_page {
             Category::Track
         } else if self.home.is_some() {
-            if !self.home_game {
-                return self.category_screen(category);
-            }
-            Category::Games
+            return self.category_screen(category);
         } else if let Some(i) = self.shown_tab() {
             self.tab_category(i)
         } else {
@@ -240,13 +73,11 @@ impl App {
             },
             Category::Notes => self.open_notes(),
             Category::Music => self.open_music_page(None),
-            Category::Games => self.open_arcade(),
             Category::Dev => self.open_dev_page_tool(),
             Category::Modules => self.open_modules_page(),
-            Category::Talk => self.open_talk_page(),
             Category::Projects => self.open_projects_page(),
             Category::Track => self.open_track_page(),
-            Category::Files => {}
+            Category::Files | Category::Games | Category::Talk => {}
         }
     }
 
@@ -295,11 +126,10 @@ impl App {
         }
     }
 
-    /// When what is shown changes (another tab, the notes, the music, the game), the sidebar shows its
+    /// When what is shown changes (another tab, the notes, the music, a page), the sidebar shows its
     /// category; the home page leaves it as it is.
     fn follow_shown(&mut self) {
-        let game = self.home.is_some() && self.home_game;
-        let seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, (self.talk_page, self.track_page));
+        let seen = (self.shown_tab(), self.notes_page, self.music_page, self.dev_page, self.modules_page, self.track_page);
         if seen == self.sidebar_seen {
             return;
         }
@@ -312,12 +142,8 @@ impl App {
             self.dev_category()
         } else if self.modules_page {
             Category::Modules
-        } else if self.talk_page {
-            Category::Talk
         } else if self.track_page {
             Category::Track
-        } else if game {
-            Category::Games
         } else if let Some(i) = seen.0 {
             self.tab_category(i)
         } else {
@@ -405,17 +231,6 @@ impl App {
                 ui.painter().circle_filled(dot, 4.0, self.theme.chrome_bg);
                 ui.painter().circle_filled(dot, 3.0, self.theme.accent);
             }
-            // The chat: the messages not read.
-            if category == Category::Talk {
-                let unread = self.talk_unread();
-                if unread > 0 {
-                    let galley = ui.painter().layout_no_wrap(if unread > 99 { "99+".to_owned() } else { unread.to_string() }, FontId::proportional(9.5), self.theme.bg);
-                    let pill = Rect::from_center_size(slot.right_top() + Vec2::new(-8.0, 8.0), Vec2::new((galley.size().x + 7.0).max(15.0), 15.0));
-                    ui.painter().rect_filled(pill.expand(1.5), 9.0, self.theme.chrome_bg);
-                    ui.painter().rect_filled(pill, 7.5, self.theme.accent);
-                    ui.painter().galley(pill.center() - galley.size() / 2.0, galley, self.theme.bg);
-                }
-            }
             // A right click: the category's screen in a new window, or the category hidden (the last
             // one shown stays).
             let alone = categories_shown <= 1;
@@ -439,9 +254,7 @@ impl App {
             if resp.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 // What is shown follows: the category's own screen, never one of another's left
                 // behind (on the one already shown, the click folds the sidebar).
-                // In a game, the Games icon leads back to the games' page.
-                let in_game = category == Category::Games && self.home.is_some() && self.home_game && !self.games_hub;
-                let elsewhere = in_game || self.shows_other_category(category);
+                let elsewhere = self.shows_other_category(category);
                 if active && !elsewhere {
                     self.config.settings.sidebar_folded = true;
                 } else {
@@ -450,8 +263,7 @@ impl App {
                     if elsewhere {
                         self.show_category(category);
                         // Seen: the sidebar stays on the category clicked (the home page belongs to none).
-                        let game = self.home.is_some() && self.home_game;
-                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, game, self.dev_page, self.modules_page, (self.talk_page, self.track_page));
+                        self.sidebar_seen = (self.shown_tab(), self.notes_page, self.music_page, self.dev_page, self.modules_page, self.track_page);
                     }
                 }
             }
@@ -479,232 +291,6 @@ impl App {
             }
         }
         hovered
-    }
-
-    /// The "Games" category: Speed Metal (with the best score), Puissance 4 (with the players online),
-    /// Ronnie.io (with the best mass), the minesweeper (with the best time), Ronnie Run (with the
-    /// farthest run), Riff Hero and Backstage (with the best score).
-    fn games_section(&mut self, ui: &mut Ui, left: f32, row_w: f32, y: &mut f32) {
-        use super::four::HomeGame;
-        let t = self.t();
-        let theme = self.theme.clone();
-        let painter = ui.painter().clone();
-        if self.panel_part.head() {
-            paint_panel_title(&painter, Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, SECTION_HEADER_H)), t.cat_games, &theme);
-            *y += SECTION_HEADER_H;
-        }
-        if !self.panel_part.body() {
-            return;
-        }
-        let (mut open, mut new_window) = (None, None);
-        for (game, name, note) in self.games_list() {
-            let slot = Rect::from_min_size(Pos2::new(left, *y), Vec2::new(row_w, ROW_H + 8.0));
-            *y += slot.height() + ROW_GAP;
-            let resp = ui.interact(slot, ui.id().with(("game", game as u8)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let active = self.home.is_some() && self.home_game && !self.games_hub && self.home_which == game;
-            paint_row_bg(&painter, slot, active, resp.hovered(), &theme);
-            let icon = Pos2::new(slot.min.x + 17.0, slot.center().y);
-            match game {
-                HomeGame::SpeedMetal => super::paint_metal(&painter, icon, Align2::CENTER_CENTER, "R", 20.0, theme.accent, 1.0),
-                HomeGame::Four => super::four::paint_four_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Blob => super::blob::paint_blob_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Mines => super::mines::paint_mines_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Runner => super::runner::paint_runner_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Riff => super::riff::paint_riff_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Backstage => super::backstage::paint_backstage_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Coffee => super::coffee::paint_coffee_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Larsen => super::larsen::paint_larsen_icon(&painter, icon, &theme, 1.0),
-                HomeGame::BugHunt => super::bughunt::paint_bughunt_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Monday => super::zombie::paint_monday_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Fishing => super::fishing::paint_fishing_icon(&painter, icon, &theme, 1.0),
-                HomeGame::Tycoon => super::tycoon::paint_tycoon_icon(&painter, icon, &theme, 1.0),
-                HomeGame::OpenSpace => super::openspace::paint_openspace_icon(&painter, icon, &theme, 1.0),
-            }
-            // The note on the right; the name cut before it if both don't fit.
-            let note_w = note.map_or(0.0, |note| painter.text(Pos2::new(slot.max.x - 10.0, slot.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.5), theme.text_muted.gamma_multiply(0.85)).width() + 10.0);
-            let color = if active || resp.hovered() { theme.text } else { theme.text_muted };
-            let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), FontId::proportional(13.0), color);
-            job.wrap = egui::text::TextWrapping::truncate_at_width((slot.width() - 46.0 - note_w).max(30.0));
-            let galley = painter.layout_job(job);
-            painter.galley(Pos2::new(slot.min.x + 36.0, slot.center().y - galley.size().y / 2.0), galley, color);
-            if resp.clicked() {
-                open = Some(game);
-            }
-            resp.context_menu(|ui| menu_item(ui, &format!("⧉  {}", t.new_window_open), game, &mut new_window));
-        }
-        if let Some(game) = new_window {
-            self.game_to_new_window(game);
-        } else if let Some(game) = open.filter(|&g| !self.show_game_elsewhere(g)) {
-            self.open_home_game(game);
-        }
-    }
-
-    /// The games, with their name and a note: the best score of Speed Metal, Ronnie.io, the
-    /// minesweeper, Ronnie Run, Riff Hero and Backstage, the players online at Puissance 4; when played enough this half-day of work, when
-    /// it's back.
-    pub(super) fn games_list(&mut self) -> [(super::four::HomeGame, &'static str, Option<String>); 14] {
-        use super::four::HomeGame;
-        let t = self.t();
-        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
-        let best = self.config.settings.typing_scores.first().map(|s| s.letters.to_string());
-        let online = (pseudo.is_some() && self.versus.reachable == Some(true)).then(|| t.four_online.replace("{n}", &self.versus.online.len().to_string()));
-        let blob_best = (self.config.settings.blob_best > 0).then(|| self.config.settings.blob_best.to_string());
-        let runner_best = (self.config.settings.runner_best > 0).then(|| super::runner::meters_text(self.config.settings.runner_best));
-        let mines_best = (self.config.settings.mines_best > 0).then(|| super::mines::time_text(self.config.settings.mines_best));
-        let riff_best = self.config.settings.riff_bests.iter().max().filter(|&&b| b > 0).map(u32::to_string);
-        let backstage_best = (self.config.settings.backstage_best > 0).then(|| self.config.settings.backstage_best.to_string());
-        let coffee_total: u32 = self.config.settings.coffee_bests.iter().sum();
-        let coffee_best = (coffee_total > 0).then(|| coffee_total.to_string());
-        let bughunt_best = (self.config.settings.bughunt_best > 0).then(|| self.config.settings.bughunt_best.to_string());
-        let cards = self.config.settings.fish_cards.len();
-        let tycoon = self.tycoon_note();
-        let openspace = self.openspace_note();
-        let fishing = (cards > 0).then(|| t.fishing_species.replace("{n}", &cards.to_string()).replace("{max}", &crate::fishing::FISH.len().to_string()));
-        // Short, as the others: the wave reached.
-        let monday_best = (self.config.settings.monday_best > 0).then(|| t.monday_wave.to_lowercase().replace("{n}", &self.config.settings.monday_best.to_string()));
-        let mut games = [(HomeGame::SpeedMetal, "Speed Metal", best), (HomeGame::Four, t.four_name, online.clone()), (HomeGame::Blob, t.blob_name, blob_best), (HomeGame::Mines, t.mines_name, mines_best), (HomeGame::Runner, t.runner_name, runner_best), (HomeGame::Riff, t.riff_name, riff_best), (HomeGame::Backstage, t.backstage_name, backstage_best), (HomeGame::Coffee, t.coffee_name, coffee_best), (HomeGame::Larsen, t.larsen_name, online), (HomeGame::BugHunt, t.bughunt_name, bughunt_best), (HomeGame::Fishing, t.fishing_name, fishing), (HomeGame::Monday, t.monday_name, monday_best), (HomeGame::Tycoon, t.tycoon_name, tycoon), (HomeGame::OpenSpace, t.openspace_name, openspace)];
-        for (game, _, note) in &mut games {
-            if let Some(p) = self.game_locked(*game) {
-                *note = Some(t.playtime_after.replace("{h}", &self.hour_text(p.end)));
-            }
-        }
-        games
-    }
-
-    /// At the end of each frame: the games whose page no window drew (left for another game, a tab, the
-    /// games' page...) stop what was under way. Their state is the app's, shared by the windows: one
-    /// window can't stop them while another shows them.
-    pub(super) fn leave_games(&mut self) {
-        use super::four::HomeGame;
-        let drawn = std::mem::take(&mut self.games_drawn);
-        if !drawn.contains(&HomeGame::Blob) {
-            self.blob_leave();
-        }
-        if !drawn.contains(&HomeGame::Runner) {
-            self.runner.leave();
-        }
-        if !drawn.contains(&HomeGame::Riff) {
-            self.riff.leave();
-        }
-        if !drawn.contains(&HomeGame::Backstage) {
-            self.backstage.leave();
-        }
-        if !drawn.contains(&HomeGame::Coffee) {
-            self.coffee.leave();
-        }
-        if !drawn.contains(&HomeGame::BugHunt) {
-            self.bughunt.leave();
-        }
-        if !drawn.contains(&HomeGame::Monday) {
-            self.monday.leave();
-        }
-        if !drawn.contains(&HomeGame::Fishing) {
-            self.fishing.leave(self.config.settings.floor.as_ref());
-        }
-    }
-
-    /// The games' page, on this window's home page.
-    pub(super) fn open_arcade(&mut self) {
-        self.open_game();
-        self.games_hub = true;
-    }
-
-    /// Opens `game` on this window's home page.
-    pub(super) fn open_home_game(&mut self, game: super::four::HomeGame) {
-        use super::four::HomeGame;
-        crate::telemetry::count(&format!("game.{}", format!("{game:?}").to_lowercase()));
-        match game {
-            HomeGame::SpeedMetal => self.open_game(),
-            HomeGame::Four => self.open_four(),
-            HomeGame::Blob => self.open_blob(),
-            HomeGame::Mines => self.open_mines(),
-            HomeGame::Runner => self.open_runner(),
-            HomeGame::Riff => self.open_riff(),
-            HomeGame::Backstage => self.open_backstage(),
-            HomeGame::Coffee => self.open_coffee(),
-            HomeGame::Larsen => self.open_larsen(),
-            HomeGame::BugHunt => self.open_bughunt(),
-            HomeGame::Fishing => self.open_fishing(),
-            HomeGame::Monday => self.open_monday(),
-            HomeGame::Tycoon => self.open_tycoon(),
-            HomeGame::OpenSpace => self.open_openspace(),
-        }
-    }
-
-    /// The player's account, in a card at the bottom of the "Games" and "Chat" categories: its avatar
-    /// and pseudo, with a pencil opening the account window (or a button to sign in). Returns the card's top.
-    fn pseudo_card(&mut self, ui: &mut Ui, left: f32, width: f32, bottom: f32) -> f32 {
-        let t = self.t();
-        let theme = self.theme.clone();
-        let painter = ui.painter().clone();
-        let pseudo = crate::floor::pseudo(self.config.settings.floor.as_ref()).map(str::to_owned);
-        let card = Rect::from_min_max(Pos2::new(left, bottom - 62.0 - 6.0), Pos2::new(left + width, bottom - 6.0));
-        let resp = ui.interact(card, ui.id().with("game-pseudo"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        let fill = if resp.hovered() { lerp_color(theme.tab_active, theme.accent, 0.08) } else { theme.tab_active };
-        painter.rect_filled(card, 10.0, fill);
-        painter.rect_stroke(card, 10.0, Stroke::new(1.0, theme.accent.gamma_multiply(if resp.hovered() { 0.6 } else { 0.3 })), egui::StrokeKind::Inside);
-        // The avatar: its picture, else the pseudo's first letter in a disc of the accent; a green dot when online.
-        let avatar = Pos2::new(card.min.x + 30.0, card.center().y);
-        let account = self.config.settings.floor.clone().filter(|_| pseudo.is_some());
-        let face = account.as_ref().and_then(|a| self.avatars.get(ui.ctx(), Some(a), &a.id, a.avatar.as_deref()));
-        if let (Some(face), Some(name)) = (&face, &pseudo) {
-            super::talk::paint_avatar(&painter, avatar, 18.0, name, false, Some(face), account.as_ref().and_then(|a| a.frame.as_deref()), &theme);
-            super::office::paint_badge(&painter, avatar, 18.0, &self.own_badges());
-        } else {
-            painter.circle_filled(avatar, 18.0, theme.accent.gamma_multiply(if pseudo.is_some() { 1.0 } else { 0.25 }));
-            let initial = pseudo.as_deref().and_then(|p| p.chars().next()).map_or("?".to_owned(), |c| c.to_uppercase().to_string());
-            painter.text(avatar + Vec2::new(0.0, 0.5), Align2::CENTER_CENTER, initial, FontId::proportional(17.0), if pseudo.is_some() { theme.bg } else { theme.text_muted });
-        }
-        let online = if self.category() == Category::Talk { self.talk.ready() } else { self.versus.reachable == Some(true) };
-        if pseudo.is_some() && online {
-            let dot = avatar + Vec2::new(13.0, 13.0);
-            painter.circle_filled(dot, 5.0, theme.tab_active);
-            painter.circle_filled(dot, 3.5, theme.ansi[2]);
-        }
-        let x = avatar.x + 28.0;
-        // Over the pseudo: the title worn (in gold), else the word.
-        let worn = account.as_ref().and_then(|a| self.talk.title_of(&a.id).or_else(|| a.title.clone())).and_then(|id| super::talk::title_name(t, &id));
-        let (over, over_color) = match worn {
-            Some(title) => (title.to_uppercase(), super::talk::GOLD),
-            None => (t.pseudo_row.to_uppercase(), theme.text_muted),
-        };
-        let mut job = egui::text::LayoutJob::default();
-        job.wrap = egui::text::TextWrapping::truncate_at_width(card.max.x - 40.0 - x);
-        job.append(&over, 0.0, egui::TextFormat { font_id: FontId::proportional(10.0), color: over_color, extra_letter_spacing: 1.2, ..Default::default() });
-        painter.galley(Pos2::new(x, card.center().y - 17.0), painter.layout_job(job), theme.text_muted);
-        let (name, color) = match &pseudo {
-            Some(name) => (name.clone(), theme.text),
-            None => (t.pseudo_pick.to_owned(), theme.accent),
-        };
-        let mut job = egui::text::LayoutJob::simple_singleline(name, FontId::proportional(16.0), color);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(card.max.x - 40.0 - x);
-        painter.galley(Pos2::new(x, card.center().y - 4.0), painter.layout_job(job), color);
-        // The pencil (or a plus, without a pseudo yet).
-        let edit = Rect::from_center_size(Pos2::new(card.max.x - 20.0, card.center().y), Vec2::splat(26.0));
-        let pencil = icon_button(ui, &painter, edit, "game-pseudo-edit", &theme, if pseudo.is_some() { super::paint_pencil } else { paint_plus });
-        let tip = if pseudo.is_some() { t.pseudo_edit } else { t.pseudo_pick };
-        if pencil.on_hover_text(tip).clicked() || resp.on_hover_text(tip).clicked() {
-            self.ask_pseudo();
-        }
-        card.min.y
-    }
-
-    /// Folds the sidebar for a round of the game (`playing`), unfolds it after if the game folded it;
-    /// the music pauses the same way.
-    pub(super) fn fold_for_game(&mut self, playing: bool) {
-        // The music from the server pauses during the round.
-        self.music.hold(playing);
-        match (playing, self.game_folded) {
-            (true, false) if !self.config.settings.sidebar_folded => {
-                self.config.settings.sidebar_folded = true;
-                self.game_folded = true;
-            }
-            (false, true) => {
-                self.config.settings.sidebar_folded = false;
-                self.game_folded = false;
-            }
-            _ => {}
-        }
     }
 
     /// A profile or an SSH host, as shown in the sidebar.
@@ -1762,12 +1348,6 @@ impl App {
         self.note_shown_pane();
         self.follow_shown();
         let category = self.category();
-        // On the way into the games, the pseudo, if there is none yet.
-        let games = category == Category::Games;
-        if games && !self.games_seen && crate::floor::pseudo(self.config.settings.floor.as_ref()).is_none() {
-            self.ask_pseudo();
-        }
-        self.games_seen = games;
         let whole = ui.max_rect();
         // A slight gradient, darker at the bottom.
         {
@@ -1877,8 +1457,6 @@ impl App {
         }
         let card_top = self.update_card(ui, Rect::from_min_max(Pos2::new(left, bar.min.y), Pos2::new(left + row_w, footer_top)));
         let card_top = self.music_card(ui, left, row_w, card_top);
-        // The account's card: in the games and the chat (a click: the account window).
-        let card_top = if matches!(self.category(), Category::Games | Category::Talk) { self.pseudo_card(ui, left, row_w, card_top) } else { card_top };
         // Where a theme's scene starts, above the cards: the list stops over it (never on it). A scene
         // `h` high only when the list keeps its room above it (LIST_MIN): in a short window, no scene
         // rather than the list going behind it.
@@ -1935,14 +1513,11 @@ impl App {
             ui.interact(super::noel::village_rect(field), ui.id().with("village"), Sense::hover()).on_hover_text(t.christmas_village);
         }
         if self.theme.wallstreet && fits(110.0) {
-            // Wall Street: the towers at night and the ticker over them, the company's valuation first,
-            // just above the cards.
+            // Wall Street: the towers at night and the ticker over them, just above the cards.
             let field = Rect::from_min_max(Pos2::new(bar.min.x, card_top - 110.0), Pos2::new(bar.max.x - 1.0, card_top - 2.0));
             scene_top = field.min.y;
             let now = ui.input(|i| i.time);
-            let fr = self.config.settings.language == crate::i18n::Lang::Fr;
-            let valuation = self.tycoon.live.as_ref().or(self.config.settings.tycoon.as_ref()).map(|c| crate::tycoon::money(c.valuation(), fr));
-            let again = super::wallstreet::scene(ui.painter(), field, &self.theme, valuation.as_deref(), now);
+            let again = super::wallstreet::scene(ui.painter(), field, &self.theme, now);
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(again));
         }
         if self.theme.office && fits(96.0) {
@@ -2065,12 +1640,10 @@ impl App {
             Category::Db => self.db_section(ui, left, row_w, y, action),
             Category::Music => self.music_section(ui, left, row_w, y),
             Category::Notes => self.notes_section(ui, left, row_w, y, action),
-            // Retired: the file tree is in the terminals' panel.
-            Category::Files => {}
-            Category::Games => self.games_section(ui, left, row_w, y),
+            // Retired: the file tree is in the terminals' panel; the games and the chat went.
+            Category::Files | Category::Games | Category::Talk => {}
             Category::Dev => self.dev_section(ui, left, row_w, y),
             Category::Modules => self.modules_section(ui, left, row_w, y),
-            Category::Talk => self.talk_section(ui, left, row_w, y),
             Category::Projects => self.projects_section(ui, left, row_w, y),
             Category::Track => self.track_section(ui, left, row_w, y),
         }
@@ -2432,16 +2005,15 @@ pub(super) fn paint_panel_title(painter: &egui::Painter, rect: Rect, title: &str
 /// The name of a category of the sidebar.
 pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
     match category {
-        Category::Local => t.cat_local,
+        // The retired ones are never shown.
+        Category::Local | Category::Games | Category::Talk => t.cat_local,
         Category::Files => t.cat_files,
         Category::Ssh => t.profiles,
         Category::Db => t.db_section,
         Category::Music => t.music_nav,
         Category::Notes => t.notes,
-        Category::Games => t.cat_games,
         Category::Dev => t.cat_dev,
         Category::Modules => t.cat_modules,
-        Category::Talk => t.cat_talk,
         Category::Projects => t.cat_projects,
         Category::Track => t.cat_track,
     }
@@ -2451,29 +2023,16 @@ pub(super) fn category_name(t: &Strings, category: Category) -> &'static str {
 pub(super) fn paint_category_icon(painter: &egui::Painter, c: Pos2, category: Category, color: Color32) {
     match category {
         Category::Local => paint_prompt_icon(painter, c, color),
-        Category::Files => super::notes::paint_folder_icon(painter, c, color),
+        Category::Files | Category::Games | Category::Talk => super::notes::paint_folder_icon(painter, c, color),
         Category::Ssh => paint_server_icon(painter, c, color),
         Category::Db => super::dbview::paint_db_icon(painter, c, color),
         Category::Music => super::music::paint_note(painter, c, color),
         Category::Notes => super::notes::paint_notes_icon(painter, c, color),
-        Category::Games => paint_gamepad_icon(painter, c, color),
         Category::Dev => super::dev::paint_dev_icon(painter, c, color),
         Category::Modules => super::modules::paint_modules_icon(painter, c, color),
-        Category::Talk => super::talk::paint_talk_icon(painter, c, color),
         Category::Projects => super::projects::paint_projects_icon(painter, c, color),
         Category::Track => super::track::paint_track_icon(painter, c, color),
     }
-}
-
-/// A game controller: the games category.
-fn paint_gamepad_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.3, color);
-    painter.rect_stroke(Rect::from_center_size(c, Vec2::new(17.0, 11.0)), 5.0, stroke, egui::StrokeKind::Middle);
-    let pad = c + Vec2::new(-4.0, 0.0);
-    painter.line_segment([pad - Vec2::new(2.5, 0.0), pad + Vec2::new(2.5, 0.0)], stroke);
-    painter.line_segment([pad - Vec2::new(0.0, 2.5), pad + Vec2::new(0.0, 2.5)], stroke);
-    painter.circle_filled(c + Vec2::new(3.5, 1.2), 1.1, color);
-    painter.circle_filled(c + Vec2::new(5.5, -1.2), 1.1, color);
 }
 
 /// « : fold the sidebar.

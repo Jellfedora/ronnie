@@ -23,8 +23,6 @@ pub(super) enum Lead {
     Profile(Uuid),
     Notes,
     Dev,
-    /// A conversation of the chat.
-    Talk(String),
     /// An SSH server: connected to.
     Host(Uuid),
     /// A PHP project: its page.
@@ -176,11 +174,6 @@ impl App {
                 self.home = None;
                 self.notes_page = false;
                 self.open_dev_page();
-            }
-            Lead::Talk(room) => {
-                self.home = None;
-                self.notes_page = false;
-                self.open_talk_room(&room);
             }
             Lead::Host(id) => self.open_ssh(id),
             Lead::Project(id) => {

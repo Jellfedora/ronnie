@@ -185,13 +185,11 @@ impl App {
     /// when it is old (or failed).
     pub(super) fn open_modules_page(&mut self) {
         self.modules_page = true;
-        self.talk_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.dev_page = false;
         self.music_page = false;
         self.notes_page = false;
-        self.home_game = false;
         self.modules.read_installed();
         let now = self.ctx.input(|i| i.time);
         let stale = self.modules.fetched_at.is_none_or(|at| now - at > REFRESH_SECS) || matches!(self.modules.catalog, Some(Err(_)));

@@ -559,13 +559,11 @@ impl App {
     /// The tracking page, in this window: shown instead of the tabs.
     pub(super) fn open_track_page(&mut self) {
         self.track_page = true;
-        self.talk_page = false;
         self.modules_page = false;
         self.procs_page = false;
         self.dev_page = false;
         self.music_page = false;
         self.notes_page = false;
-        self.home_game = false;
         self.track_refresh();
         if self.track.people.is_empty()
             && let Some(client) = self.track_client()

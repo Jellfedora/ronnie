@@ -194,8 +194,6 @@ pub(super) struct Music {
     current: Option<Song>,
     audio: Option<Audio>,
     paused: bool,
-    /// Paused for a round of the typing game: played again after it.
-    held: bool,
     /// The progress bar dragged: where it is, 0 to 1 (the song moves there when let go of).
     scrub: Option<f32>,
     /// A finite radio's songs have all come.
@@ -212,7 +210,7 @@ pub(super) struct Music {
 impl Default for Music {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { server: None, genres: None, genres_loading: false, station: None, liked: None, liked_loading: false, generation: 0, queue: VecDeque::new(), asking: false, next: None, playing_stream: None, downloading: false, current: None, audio: None, paused: false, held: false, scrub: None, all_asked: false, history: Vec::new(), scrobbled: false, failures: 0, error: None, tx, rx }
+        Self { server: None, genres: None, genres_loading: false, station: None, liked: None, liked_loading: false, generation: 0, queue: VecDeque::new(), asking: false, next: None, playing_stream: None, downloading: false, current: None, audio: None, paused: false, scrub: None, all_asked: false, history: Vec::new(), scrobbled: false, failures: 0, error: None, tx, rx }
     }
 }
 
@@ -362,7 +360,6 @@ impl Music {
         self.asking = false;
         self.downloading = false;
         self.paused = false;
-        self.held = false;
         self.failures = 0;
         // The device closed too: nothing keeps the sound output busy.
         self.audio = None;
@@ -407,17 +404,6 @@ impl Music {
             if let Err(e) = audio.player.try_seek(to) {
                 crate::log::error(&format!("music: seek: {e}"));
             }
-        }
-    }
-
-    /// A round of the typing game starts (`on`) or ends: the song pauses during it, and plays again
-    /// after if it was playing.
-    pub(super) fn hold(&mut self, on: bool) {
-        if on && !self.held && self.playing() && !self.paused {
-            self.toggle_pause();
-            self.held = true;
-        } else if !on && std::mem::take(&mut self.held) && self.paused {
-            self.toggle_pause();
         }
     }
 
@@ -826,7 +812,6 @@ impl App {
         self.music_page = true;
         self.dev_page = false;
         self.modules_page = false;
-        self.talk_page = false;
         self.track_page = false;
         self.procs_page = false;
         self.notes_page = false;

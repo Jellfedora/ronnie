@@ -2,7 +2,7 @@
 //! of the week (Tuesday to Tuesday) in the notes, and the week's total under it is written again.
 //!
 //! What it says comes from a journal kept here (`recap.json`: the time spent on each project, server
-//! and database, Ronnie in front and in use, and in the games), from git (the user's own commits of the
+//! and database, Ronnie in front and in use), from git (the user's own commits of the
 //! day in those projects) and from Claude Code's sessions (`~/.claude/projects/*/*.jsonl`: the requests
 //! typed, the tokens). Only the commits' subjects leave this computer, to Claude, to be translated
 //! into French, and the folders of the day's projects when the user gave Claude instructions for the
@@ -68,9 +68,6 @@ pub struct Day {
     pub servers: BTreeMap<String, u32>,
     #[serde(default)]
     pub databases: BTreeMap<String, u32>,
-    /// Seconds in the games.
-    #[serde(default)]
-    pub games: u32,
     /// What its section counted, once written: for the week's total.
     #[serde(default)]
     pub facts: Option<Facts>,
@@ -88,7 +85,7 @@ pub struct Day {
 impl Day {
     /// All the seconds counted.
     pub fn seconds(&self) -> u32 {
-        self.projects.values().chain(self.servers.values()).chain(self.databases.values()).sum::<u32>() + self.games
+        self.projects.values().chain(self.servers.values()).chain(self.databases.values()).sum::<u32>()
     }
 }
 
@@ -137,7 +134,6 @@ pub enum Place {
     Project(PathBuf),
     Server(String),
     Database(String),
-    Games,
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -172,10 +168,6 @@ impl Journal {
             Place::Project(path) => (&mut day.projects, path.display().to_string()),
             Place::Server(name) => (&mut day.servers, name.clone()),
             Place::Database(name) => (&mut day.databases, name.clone()),
-            Place::Games => {
-                day.games += seconds;
-                return;
-            }
         };
         *map.entry(name).or_default() += seconds;
     }
@@ -721,8 +713,8 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &Rules) -> Report {
     if !databases.is_empty() {
         out.push(if fr { format!("**Bases de données** : {databases}") } else { format!("**Databases**: {databases}") });
     }
-    // Nothing to show: what was done left out too (the games are said in the figures).
-    let empty = works.is_empty() && servers.is_empty() && databases.is_empty() && (day.games < 60 || hidden.figures);
+    // Nothing to show: what was done left out too.
+    let empty = works.is_empty() && servers.is_empty() && databases.is_empty();
     if empty {
         out.push(if fr {
             "Rien de noté pour l'instant : un projet apparaît après une minute de travail dans Ronnie, un commit ou une minute avec Claude.".to_owned()
@@ -733,7 +725,7 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &Rules) -> Report {
         if out.last().is_some_and(|l| !l.is_empty()) {
             out.push(String::new());
         }
-        out.extend(figures(&facts, day.seconds(), day.games, lang));
+        out.extend(figures(&facts, day.seconds(), lang));
     }
     while out.last().is_some_and(String::is_empty) {
         out.pop();
@@ -746,7 +738,7 @@ pub fn report(date: NaiveDate, day: &Day, lang: Lang, rules: &Rules) -> Report {
 }
 
 /// The day's figures, for fun.
-fn figures(facts: &Facts, seconds: u32, games: u32, lang: Lang) -> Vec<String> {
+fn figures(facts: &Facts, seconds: u32, lang: Lang) -> Vec<String> {
     let fr = lang == Lang::Fr;
     let mut out = vec![if fr { "**🎲 Les chiffres du jour**".to_owned() } else { "**🎲 The day in figures**".to_owned() }];
     if seconds >= 60 {
@@ -768,9 +760,6 @@ fn figures(facts: &Facts, seconds: u32, games: u32, lang: Lang) -> Vec<String> {
         });
     }
     out.extend(claude_figures(facts, lang));
-    if games >= 60 {
-        out.push(if fr { format!("- {} de pause dans les jeux 🎸", duration(games)) } else { format!("- {} of break in the games 🎸", duration(games)) });
-    }
     if out.len() == 1 {
         out.clear();
     }
@@ -883,7 +872,6 @@ pub fn total(journal: &Journal, week: NaiveDate, lang: Lang) -> String {
     let fr = lang == Lang::Fr;
     let mut projects: BTreeMap<String, u32> = BTreeMap::new();
     let mut facts = Facts::default();
-    let mut games = 0;
     // The busiest day, the earliest commit, the latest.
     let mut busiest: Option<(NaiveDate, u32)> = None;
     let mut early: Option<(NaiveDate, String)> = None;
@@ -895,7 +883,6 @@ pub fn total(journal: &Journal, week: NaiveDate, lang: Lang) -> String {
             Some(named) => named.iter().for_each(|(name, seconds)| *projects.entry(name.clone()).or_default() += seconds),
             None => day.projects.iter().for_each(|(path, seconds)| *projects.entry(name_of(path)).or_default() += seconds),
         }
-        games += day.games;
         if day.seconds() >= 60 && busiest.is_none_or(|(_, s)| day.seconds() > s) {
             busiest = Some((date, day.seconds()));
         }
@@ -955,9 +942,6 @@ pub fn total(journal: &Journal, week: NaiveDate, lang: Lang) -> String {
         out.push(if fr { format!("- **Couche-tard** : un commit {} à {}", day_name(*date, lang), clock(time, lang)) } else { format!("- **Night owl**: a commit on {} at {time}", day_name(*date, lang)) });
     }
     out.extend(claude_figures(&facts, lang));
-    if games >= 60 {
-        out.push(if fr { format!("- **Pause** : {} dans les jeux 🎸", duration(games)) } else { format!("- **Break**: {} in the games 🎸", duration(games)) });
-    }
     if out.len() == 2 {
         out.push(if fr { "Rien de noté pour l'instant.".to_owned() } else { "Nothing noted yet.".to_owned() });
     }

@@ -81,34 +81,24 @@ pub struct Preset {
 
 pub const DEFAULT_THEME: &str = "dracula";
 
-/// The theme unlocked by the typing game.
+/// The themes with their own touches, shown apart in the settings: heavy metal.
 pub const METAL_THEME: &str = "ronnie-metal";
-/// The theme with the park's own touches, unlocked by Ronnie.io.
+/// The park's.
 pub const JURASSIC_THEME: &str = "jurassic-park";
-/// Mass to reach in a round of Ronnie.io to unlock it.
-pub const JURASSIC_UNLOCK: u32 = 4_000;
-/// The space theme, unlocked at Larsen: beating the computer at its hardest, or someone online.
+/// Space.
 pub const HYPERSPACE_THEME: &str = "hyperspace";
-/// The office theme, unlocked at Riff Hero: `OFFICE_UNLOCK` points in a song.
+/// The office.
 pub const OFFICE_THEME: &str = "open-space";
-pub const OFFICE_UNLOCK: u32 = 30_000;
-
-/// Whether a song of Riff Hero (any level) reached `OFFICE_UNLOCK`.
-pub fn office_unlocked(riff_bests: &[u32]) -> bool {
-    riff_bests.iter().any(|&b| b >= OFFICE_UNLOCK)
-}
-/// Gryffindor, won with Ronnie open `WIZARD_DAYS` days in a row.
-pub const WIZARD_DAYS: u32 = 7;
+/// Gryffindor.
 pub const WIZARD_THEME: &str = "gryffondor";
-/// Game of Thrones, won by finishing levels of Pause Café.
+/// Game of Thrones.
 pub const THRONES_THEME: &str = "game-of-thrones";
-/// Wall Street, won at Ronnie Corp: the company a big one (`crate::tycoon::WALL_STREET_STAGE`).
+/// Wall Street.
 pub const WALL_STREET_THEME: &str = "wall-street";
-/// The themes with their own touches, most won in the games, shown apart in the settings.
-/// Lundi matin, won by beating the executive committee on the roof.
+/// Lundi matin (a Monday morning at the office, zombies on the floor).
 pub const MONDAY_THEME: &str = "lundi-matin";
-/// Christmas, given to everyone from the 1st of December to the 6th of January (`christmas_season`), kept
-/// for good once had.
+/// Christmas, put on for everyone once each season (`christmas_season`), from the 1st of December to the
+/// 6th of January.
 pub const CHRISTMAS_THEME: &str = "noel";
 pub const SPECIAL_THEMES: [&str; 9] = [METAL_THEME, JURASSIC_THEME, HYPERSPACE_THEME, OFFICE_THEME, THRONES_THEME, WIZARD_THEME, MONDAY_THEME, WALL_STREET_THEME, CHRISTMAS_THEME];
 
@@ -138,9 +128,6 @@ mod christmas_tests {
         assert_eq!(christmas_year(d(2027, 12, 25)), Some(2027));
     }
 }
-
-/// Letters to reach in a round of the typing game to unlock it.
-pub const METAL_UNLOCK: u32 = 300;
 
 pub const PRESETS: &[Preset] = &[
     // The house theme: deep black, blood red, old gold and bone-colored text.
@@ -518,14 +505,6 @@ impl Preset {
             wallstreet: self.id == WALL_STREET_THEME,
             christmas: self.id == CHRISTMAS_THEME,
         }
-    }
-
-    /// Still locked, with this best score at the typing game, and whether a round of Ronnie.io unlocked
-    /// the park, whether Larsen unlocked hyperspace, and whether the fishing's binder is full (never in
-    /// a dev build, to try them).
-    #[allow(clippy::too_many_arguments)]
-    pub fn locked(&self, best: u32, jurassic: bool, hyperspace: bool, office: bool, wizard: bool, thrones: bool, monday: bool, wallstreet: bool, christmas: bool) -> bool {
-        crate::config::OFFICIAL && ((self.id == CHRISTMAS_THEME && !christmas) || (self.id == WALL_STREET_THEME && !wallstreet) || (self.id == MONDAY_THEME && !monday) || (self.id == THRONES_THEME && !thrones) || (self.id == METAL_THEME && best < METAL_UNLOCK) || (self.id == JURASSIC_THEME && !jurassic) || (self.id == HYPERSPACE_THEME && !hyperspace) || (self.id == OFFICE_THEME && !office) || (self.id == WIZARD_THEME && !wizard))
     }
 
     /// The preset with this id, or the default one.

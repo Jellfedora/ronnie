@@ -1,6 +1,5 @@
 //! The home page: shown at launch and after the tab shown closed. What can be opened (profiles, SSH
-//! hosts, databases), the tabs open to go back to, and quick ways to start something new. The typing
-//! game hides behind it: three clicks on the logo.
+//! hosts, databases), the tabs open to go back to, and quick ways to start something new.
 
 use super::*;
 use super::sidebar::paint_badge;
@@ -25,7 +24,7 @@ impl App {
         let t = self.t();
         let theme = self.theme.clone();
         let mut action = None;
-        // The tips scroll by at the bottom, as with the game.
+        // The tips scroll by at the bottom.
         let tips_h = if self.config.settings.home_tips { 44.0 } else { 0.0 };
         let ticker = Rect::from_min_size(Pos2::new(rect.min.x, rect.max.y - tips_h), Vec2::new(rect.width(), tips_h));
         if self.config.settings.home_tips {
